@@ -60,86 +60,28 @@ const Login = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#efede5] flex">
-      {/* Left Panel - Premium Branding */}
-      <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-[#063c88]">
-        {/* Gradient Overlay */}
-        <div className="absolute inset-0 bg-gradient-to-br from-[#063c88] via-[#052d66] to-[#041d44]" />
-        
-        {/* Subtle Grid Pattern */}
-        <div className="absolute inset-0 opacity-[0.03]" style={{
-          backgroundImage: `linear-gradient(rgba(255,255,255,.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.1) 1px, transparent 1px)`,
-          backgroundSize: '60px 60px'
-        }} />
-        
-        {/* Floating Orbs */}
-        <div className="absolute top-20 right-20 w-72 h-72 bg-white/5 rounded-full blur-3xl" />
-        <div className="absolute bottom-40 left-10 w-96 h-96 bg-blue-400/5 rounded-full blur-3xl" />
-        <div className="absolute top-1/2 left-1/3 w-48 h-48 bg-white/3 rounded-full blur-2xl" />
-        
-        {/* Content */}
-        <div className="relative z-10 flex flex-col justify-between p-12 w-full h-full">
-          {/* Logo */}
-          <div>
-            <img src="/logo-white.png" alt="BluBridge" className="w-auto" />
-          </div>
-
-          {/* Main Content - Centered */}
-          <div className="flex-1 flex flex-col justify-center max-w-lg">
-            <h1 className="text-5xl lg:text-6xl font-bold text-white leading-[1.1] tracking-tight" style={{ fontFamily: 'Outfit' }}>
-              Elevate your
-              <br />
-              <span className="text-white/60">workforce</span>
-              <br />
-              management
-            </h1>
-            <p className="mt-8 text-lg text-white/50 leading-relaxed">
-              Streamline HR operations with an intelligent platform built for modern enterprises.
-            </p>
-            
-            {/* Stats Row */}
-            <div className="mt-12 flex gap-12">
-              <div>
-                <p className="text-3xl font-bold text-white" style={{ fontFamily: 'Outfit' }}>500+</p>
-                <p className="text-sm text-white/40 mt-1">Enterprises</p>
-              </div>
-              <div>
-                <p className="text-3xl font-bold text-white" style={{ fontFamily: 'Outfit' }}>50K+</p>
-                <p className="text-sm text-white/40 mt-1">Employees</p>
-              </div>
-              <div>
-                <p className="text-3xl font-bold text-white" style={{ fontFamily: 'Outfit' }}>99.9%</p>
-                <p className="text-sm text-white/40 mt-1">Uptime</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Footer */}
-          <div className="flex items-center justify-between">
-            <p className="text-white/30 text-sm">© 2026 BluBridge HRMS.</p>
-            
-          </div>
+    <div className="min-h-screen bg-[#FFFDF6] flex items-center justify-center p-6">
+      {/* Main Container */}
+      <div className="w-full max-w-md">
+        {/* Logo */}
+        <div className="text-center mb-8">
+          <img src="/logo-black.png" alt="BluBridge" className="h-10 mx-auto" />
         </div>
-      </div>
 
-      {/* Right Panel - Login Form */}
-      <div className="flex-1 flex items-center justify-center p-6 lg:p-12">
-        <div className="w-full max-w-md">
-          {/* Mobile Logo */}
-          <div className="lg:hidden text-center mb-10">
-            <img src="/logo-black.png" alt="BluBridge" className="w-auto mx-auto" />
-          </div>
-
-          {/* Login Card */}
-          <div className="card-premium p-8 lg:p-10 animate-scale-in">
+        {/* Login Card with Animated Border */}
+        <div className="login-card-wrapper">
+          <div className="login-card-animated-border"></div>
+          <div className="login-card-content">
             <div className="text-center mb-8">
               <h2 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>
                 Welcome back
               </h2>
-              <p className="text-slate-500 mt-2">Sign in to your account to continue</p>
+              <p className="text-slate-500 mt-2 text-sm">
+                Sign in to your account to continue
+              </p>
             </div>
 
-            <form onSubmit={handleSubmit} className="space-y-6">
+            <form onSubmit={handleSubmit} className="space-y-5">
               <div className="space-y-2">
                 <Label htmlFor="username" className="text-sm font-medium text-slate-700">
                   Username
@@ -152,7 +94,7 @@ const Login = () => {
                     placeholder="Enter your username"
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    className="pl-12 h-12 bg-slate-50 border-slate-200 rounded-xl focus:bg-white transition-colors"
+                    className="pl-12 h-12 bg-[#F8F7F4] border-slate-200 rounded-xl focus:bg-white focus:border-[#063c88] transition-all"
                     data-testid="username-input"
                   />
                 </div>
@@ -170,13 +112,14 @@ const Login = () => {
                     placeholder="Enter your password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="pl-12 pr-12 h-12 bg-slate-50 border-slate-200 rounded-xl focus:bg-white transition-colors"
+                    className="pl-12 pr-12 h-12 bg-[#F8F7F4] border-slate-200 rounded-xl focus:bg-white focus:border-[#063c88] transition-all"
                     data-testid="password-input"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                    data-testid="toggle-password-btn"
                   >
                     {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                   </button>
@@ -186,7 +129,7 @@ const Login = () => {
               <Button
                 type="submit"
                 disabled={loading || seeding}
-                className="w-full h-12 bg-[#063c88] hover:bg-[#052d66] text-white font-semibold rounded-xl shadow-lg shadow-[#063c88]/30 transition-all duration-200 active:scale-[0.98]"
+                className="w-full h-12 bg-[#063c88] hover:bg-[#052d66] text-white font-semibold rounded-xl shadow-lg shadow-[#063c88]/25 transition-all duration-200 active:scale-[0.98] mt-2"
                 data-testid="login-submit-btn"
               >
                 {loading ? (
@@ -208,11 +151,12 @@ const Login = () => {
               </Button>
             </form>
           </div>
-
-          <p className="text-center text-sm text-slate-400 mt-8">
-            © 2026 BluBridge HRMS. All rights reserved.
-          </p>
         </div>
+
+        {/* Footer */}
+        <p className="text-center text-sm text-slate-400 mt-8">
+          © 2026 BluBridge HRMS. All rights reserved.
+        </p>
       </div>
     </div>
   );
