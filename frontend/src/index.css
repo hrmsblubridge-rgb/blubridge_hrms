@@ -328,61 +328,48 @@ a[href*="emergent.sh"][style*="bottom: 20px"] {
 .login-card-wrapper {
     position: relative;
     border-radius: 16px;
+    padding: 1px;
+    overflow: hidden;
+    background: rgba(6, 60, 136, 0.12);
 }
 
-/* Single 1px border with traveling highlight using conic gradient */
+/* Rotating highlight on single border */
 .login-card-wrapper::before {
     content: '';
     position: absolute;
-    inset: 0;
-    border-radius: 16px;
-    padding: 1px;
+    top: 50%;
+    left: 50%;
+    width: 150%;
+    height: 150%;
     background: conic-gradient(
-        from var(--angle, 0deg),
-        rgba(6, 60, 136, 0.12) 0deg,
-        rgba(6, 60, 136, 0.12) 60deg,
-        #063c88 90deg,
-        #063c88 120deg,
-        rgba(6, 60, 136, 0.12) 150deg,
-        rgba(6, 60, 136, 0.12) 360deg
+        from 0deg,
+        transparent 0deg,
+        transparent 270deg,
+        #063c88 300deg,
+        #063c88 330deg,
+        transparent 360deg
     );
-    -webkit-mask: 
-        linear-gradient(#fff 0 0) content-box, 
-        linear-gradient(#fff 0 0);
-    mask: 
-        linear-gradient(#fff 0 0) content-box, 
-        linear-gradient(#fff 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    animation: rotateBorderHighlight 5s linear infinite;
-    pointer-events: none;
+    animation: spinHighlight 5s linear infinite;
+    transform-origin: center;
 }
 
-@property --angle {
-    syntax: '<angle>';
-    initial-value: 0deg;
-    inherits: false;
-}
-
-@keyframes rotateBorderHighlight {
-    0% { --angle: 0deg; }
-    100% { --angle: 360deg; }
-}
-
-/* Fallback for browsers without @property support */
-@supports not (background: conic-gradient(from var(--angle), red, blue)) {
-    .login-card-wrapper::before {
-        background: rgba(6, 60, 136, 0.12);
+@keyframes spinHighlight {
+    0% {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+    100% {
+        transform: translate(-50%, -50%) rotate(360deg);
     }
 }
 
-/* Card content - NO border here */
+/* Card content - covers the rotating element */
 .login-card-content {
     position: relative;
     background: #fffdf7;
     border-radius: 15px;
     padding: 2rem 2.5rem;
     box-shadow: 0 1px 3px rgba(0,0,0,0.02), 0 4px 12px rgba(0,0,0,0.03);
+    z-index: 1;
 }
 
 /* Remove the inner element - not needed */
