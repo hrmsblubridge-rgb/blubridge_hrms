@@ -328,60 +328,51 @@ a[href*="emergent.sh"][style*="bottom: 20px"] {
 .login-card-wrapper {
     position: relative;
     border-radius: 16px;
-    overflow: hidden;
 }
 
-/* Single 1px border with traveling highlight */
+/* Single 1px border with traveling highlight using conic gradient */
 .login-card-wrapper::before {
     content: '';
     position: absolute;
     inset: 0;
     border-radius: 16px;
     padding: 1px;
-    background: 
-        linear-gradient(90deg, rgba(6,60,136,0.12) 0%, #063c88 15%, rgba(6,60,136,0.12) 30%) top/200% 1px no-repeat,
-        linear-gradient(180deg, rgba(6,60,136,0.12) 0%, #063c88 15%, rgba(6,60,136,0.12) 30%) right/1px 200% no-repeat,
-        linear-gradient(270deg, rgba(6,60,136,0.12) 0%, #063c88 15%, rgba(6,60,136,0.12) 30%) bottom/200% 1px no-repeat,
-        linear-gradient(0deg, rgba(6,60,136,0.12) 0%, #063c88 15%, rgba(6,60,136,0.12) 30%) left/1px 200% no-repeat;
-    animation: borderTravel 5s linear infinite;
+    background: conic-gradient(
+        from var(--angle, 0deg),
+        rgba(6, 60, 136, 0.12) 0deg,
+        rgba(6, 60, 136, 0.12) 60deg,
+        #063c88 90deg,
+        #063c88 120deg,
+        rgba(6, 60, 136, 0.12) 150deg,
+        rgba(6, 60, 136, 0.12) 360deg
+    );
+    -webkit-mask: 
+        linear-gradient(#fff 0 0) content-box, 
+        linear-gradient(#fff 0 0);
+    mask: 
+        linear-gradient(#fff 0 0) content-box, 
+        linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: rotateBorderHighlight 5s linear infinite;
     pointer-events: none;
 }
 
-@keyframes borderTravel {
-    0% {
-        background-position: 
-            -100% 0,
-            100% -100%,
-            200% 100%,
-            0 200%;
-    }
-    25% {
-        background-position: 
-            200% 0,
-            100% -100%,
-            200% 100%,
-            0 200%;
-    }
-    50% {
-        background-position: 
-            200% 0,
-            100% 200%,
-            200% 100%,
-            0 200%;
-    }
-    75% {
-        background-position: 
-            200% 0,
-            100% 200%,
-            -100% 100%,
-            0 200%;
-    }
-    100% {
-        background-position: 
-            200% 0,
-            100% 200%,
-            -100% 100%,
-            0 -100%;
+@property --angle {
+    syntax: '<angle>';
+    initial-value: 0deg;
+    inherits: false;
+}
+
+@keyframes rotateBorderHighlight {
+    0% { --angle: 0deg; }
+    100% { --angle: 360deg; }
+}
+
+/* Fallback for browsers without @property support */
+@supports not (background: conic-gradient(from var(--angle), red, blue)) {
+    .login-card-wrapper::before {
+        background: rgba(6, 60, 136, 0.12);
     }
 }
 
