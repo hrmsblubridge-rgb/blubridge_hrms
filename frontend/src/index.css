@@ -328,25 +328,17 @@ a[href*="emergent.sh"][style*="bottom: 20px"] {
 .login-card-wrapper {
     position: relative;
     border-radius: 20px;
-    padding: 3px;
-    background: transparent;
-    overflow: hidden;
+    isolation: isolate;
 }
 
-/* Animated border using conic gradient */
-.login-card-animated-border {
+/* Base static border */
+.login-card-wrapper::before {
+    content: '';
     position: absolute;
     inset: 0;
     border-radius: 20px;
-    padding: 2px;
-    background: conic-gradient(
-        from var(--border-angle, 0deg),
-        transparent 0%,
-        transparent 25%,
-        #063c88 50%,
-        transparent 75%,
-        transparent 100%
-    );
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(6, 60, 136, 0.1), rgba(6, 60, 136, 0.05));
     -webkit-mask: 
         linear-gradient(#fff 0 0) content-box, 
         linear-gradient(#fff 0 0);
@@ -355,43 +347,75 @@ a[href*="emergent.sh"][style*="bottom: 20px"] {
         linear-gradient(#fff 0 0);
     -webkit-mask-composite: xor;
     mask-composite: exclude;
-    animation: borderRotate 5s linear infinite;
+    z-index: 0;
 }
 
-/* Add subtle glow effect */
+/* Animated border container */
+.login-card-animated-border {
+    position: absolute;
+    inset: -1px;
+    border-radius: 21px;
+    overflow: hidden;
+    z-index: 0;
+}
+
+/* The moving light stroke */
 .login-card-animated-border::before {
     content: '';
     position: absolute;
-    inset: -2px;
-    border-radius: 22px;
+    width: 150%;
+    height: 150%;
+    top: -25%;
+    left: -25%;
     background: conic-gradient(
-        from var(--border-angle, 0deg),
-        transparent 0%,
-        transparent 25%,
-        rgba(6, 60, 136, 0.3) 50%,
-        transparent 75%,
-        transparent 100%
+        from 0deg,
+        transparent 0deg,
+        transparent 60deg,
+        #063c88 120deg,
+        rgba(6, 60, 136, 0.6) 180deg,
+        transparent 240deg,
+        transparent 360deg
     );
-    filter: blur(8px);
-    animation: borderRotate 5s linear infinite;
-    z-index: -1;
+    animation: rotateBorder 5s linear infinite;
 }
 
-/* Keyframes for border rotation */
-@keyframes borderRotate {
+/* Subtle glow following the border */
+.login-card-animated-border::after {
+    content: '';
+    position: absolute;
+    width: 150%;
+    height: 150%;
+    top: -25%;
+    left: -25%;
+    background: conic-gradient(
+        from 0deg,
+        transparent 0deg,
+        transparent 60deg,
+        rgba(6, 60, 136, 0.25) 120deg,
+        rgba(6, 60, 136, 0.15) 180deg,
+        transparent 240deg,
+        transparent 360deg
+    );
+    filter: blur(12px);
+    animation: rotateBorder 5s linear infinite;
+}
+
+/* Inner mask to show only the border */
+.login-card-animated-border-inner {
+    position: absolute;
+    inset: 2px;
+    border-radius: 18px;
+    background: #FFFDF6;
+    z-index: 1;
+}
+
+@keyframes rotateBorder {
     0% {
-        --border-angle: 0deg;
+        transform: rotate(0deg);
     }
     100% {
-        --border-angle: 360deg;
+        transform: rotate(360deg);
     }
-}
-
-/* Register the CSS property for animation */
-@property --border-angle {
-    syntax: '<angle>';
-    initial-value: 0deg;
-    inherits: false;
 }
 
 /* Card content styling */
@@ -403,20 +427,7 @@ a[href*="emergent.sh"][style*="bottom: 20px"] {
     box-shadow: 
         0 1px 3px rgba(0, 0, 0, 0.02),
         0 8px 24px rgba(0, 0, 0, 0.04);
-    z-index: 1;
-}
-
-/* Fallback for browsers without @property support */
-@supports not (background: conic-gradient(from 0deg, red, blue)) {
-    .login-card-animated-border {
-        background: linear-gradient(90deg, transparent, #063c88, transparent);
-        animation: borderSlide 3s linear infinite;
-    }
-    
-    @keyframes borderSlide {
-        0% { background-position: 0% 50%; }
-        100% { background-position: 200% 50%; }
-    }
+    z-index: 2;
 }
 
 /* Number display */
