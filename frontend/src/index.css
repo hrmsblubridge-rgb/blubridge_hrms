@@ -328,93 +328,85 @@ a[href*="emergent.sh"][style*="bottom: 20px"] {
 .login-card-wrapper {
     position: relative;
     border-radius: 20px;
-    isolation: isolate;
+    background: linear-gradient(135deg, rgba(6, 60, 136, 0.08), rgba(6, 60, 136, 0.03));
+    padding: 2px;
 }
 
-/* Base static border */
-.login-card-wrapper::before {
-    content: '';
+/* Animated border effect using pseudo-elements */
+.login-card-animated-border {
     position: absolute;
     inset: 0;
     border-radius: 20px;
-    padding: 1px;
-    background: linear-gradient(135deg, rgba(6, 60, 136, 0.1), rgba(6, 60, 136, 0.05));
-    -webkit-mask: 
-        linear-gradient(#fff 0 0) content-box, 
-        linear-gradient(#fff 0 0);
-    mask: 
-        linear-gradient(#fff 0 0) content-box, 
-        linear-gradient(#fff 0 0);
-    -webkit-mask-composite: xor;
-    mask-composite: exclude;
-    z-index: 0;
-}
-
-/* Animated border container */
-.login-card-animated-border {
-    position: absolute;
-    inset: -1px;
-    border-radius: 21px;
     overflow: hidden;
-    z-index: 0;
+    pointer-events: none;
 }
 
-/* The moving light stroke */
+/* The rotating gradient that creates the border animation */
 .login-card-animated-border::before {
     content: '';
     position: absolute;
-    width: 150%;
-    height: 150%;
-    top: -25%;
-    left: -25%;
+    top: 50%;
+    left: 50%;
+    width: 200%;
+    height: 200%;
     background: conic-gradient(
         from 0deg,
-        transparent 0deg,
-        transparent 60deg,
-        #063c88 120deg,
-        rgba(6, 60, 136, 0.6) 180deg,
-        transparent 240deg,
-        transparent 360deg
+        transparent 0deg 90deg,
+        #063c88 90deg 180deg,
+        transparent 180deg 270deg,
+        rgba(6, 60, 136, 0.4) 270deg 360deg
     );
-    animation: rotateBorder 5s linear infinite;
+    transform-origin: center;
+    animation: borderSpin 5s linear infinite;
+    transform: translate(-50%, -50%);
 }
 
-/* Subtle glow following the border */
+/* Mask to show only the border */
 .login-card-animated-border::after {
     content: '';
-    position: absolute;
-    width: 150%;
-    height: 150%;
-    top: -25%;
-    left: -25%;
-    background: conic-gradient(
-        from 0deg,
-        transparent 0deg,
-        transparent 60deg,
-        rgba(6, 60, 136, 0.25) 120deg,
-        rgba(6, 60, 136, 0.15) 180deg,
-        transparent 240deg,
-        transparent 360deg
-    );
-    filter: blur(12px);
-    animation: rotateBorder 5s linear infinite;
-}
-
-/* Inner mask to show only the border */
-.login-card-animated-border-inner {
     position: absolute;
     inset: 2px;
     border-radius: 18px;
     background: #FFFDF6;
-    z-index: 1;
 }
 
-@keyframes rotateBorder {
+/* Subtle glow trail */
+.login-card-animated-border-inner {
+    position: absolute;
+    inset: -4px;
+    border-radius: 24px;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0.4;
+    z-index: -1;
+}
+
+.login-card-animated-border-inner::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 200%;
+    height: 200%;
+    background: conic-gradient(
+        from 0deg,
+        transparent 0deg 90deg,
+        rgba(6, 60, 136, 0.5) 90deg 180deg,
+        transparent 180deg 270deg,
+        rgba(6, 60, 136, 0.2) 270deg 360deg
+    );
+    transform-origin: center;
+    animation: borderSpin 5s linear infinite;
+    transform: translate(-50%, -50%);
+    filter: blur(10px);
+}
+
+@keyframes borderSpin {
     0% {
-        transform: rotate(0deg);
+        transform: translate(-50%, -50%) rotate(0deg);
     }
     100% {
-        transform: rotate(360deg);
+        transform: translate(-50%, -50%) rotate(360deg);
     }
 }
 
@@ -427,7 +419,6 @@ a[href*="emergent.sh"][style*="bottom: 20px"] {
     box-shadow: 
         0 1px 3px rgba(0, 0, 0, 0.02),
         0 8px 24px rgba(0, 0, 0, 0.04);
-    z-index: 2;
 }
 
 /* Number display */
