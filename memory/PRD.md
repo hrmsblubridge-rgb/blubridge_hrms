@@ -1,5 +1,23 @@
 # BluBridge HRMS - Product Requirements Document
 
+## Latest Updates (February 10, 2026)
+
+### Login Page UI Enhancement - COMPLETED
+- **Requirement:** Light-themed login page with animated border
+- **Background:** Soft cream/off-white (#FFFDF6)
+- **Card Features:**
+  - Rounded rectangle with subtle shadow
+  - Animated blue border (5s loop, top→right→bottom→left)
+  - CSS conic-gradient rotation technique
+- **Form Elements:** Username/password inputs with icons, eye toggle, blue Sign In button
+- **Status:** ✅ Implemented and tested
+
+### Pending Items:
+1. **eSSL X990 Biometric Integration** - Awaiting user's integration preferences
+2. **Backend Date Filtering Bug** - Dates stored as "DD-MM-YYYY" strings break MongoDB range queries
+
+---
+
 ## Original Problem Statement
 Build a complete Human Resource Management System (HRMS) with admin and employee modules, including:
 - Employee management with CRUD operations
