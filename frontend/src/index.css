@@ -324,6 +324,101 @@ a[href*="emergent.sh"][style*="bottom: 20px"] {
     background-clip: text;
 }
 
+/* ===== LOGIN CARD WITH ANIMATED BORDER ===== */
+.login-card-wrapper {
+    position: relative;
+    border-radius: 20px;
+    padding: 3px;
+    background: transparent;
+    overflow: hidden;
+}
+
+/* Animated border using conic gradient */
+.login-card-animated-border {
+    position: absolute;
+    inset: 0;
+    border-radius: 20px;
+    padding: 2px;
+    background: conic-gradient(
+        from var(--border-angle, 0deg),
+        transparent 0%,
+        transparent 25%,
+        #063c88 50%,
+        transparent 75%,
+        transparent 100%
+    );
+    -webkit-mask: 
+        linear-gradient(#fff 0 0) content-box, 
+        linear-gradient(#fff 0 0);
+    mask: 
+        linear-gradient(#fff 0 0) content-box, 
+        linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: borderRotate 5s linear infinite;
+}
+
+/* Add subtle glow effect */
+.login-card-animated-border::before {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 22px;
+    background: conic-gradient(
+        from var(--border-angle, 0deg),
+        transparent 0%,
+        transparent 25%,
+        rgba(6, 60, 136, 0.3) 50%,
+        transparent 75%,
+        transparent 100%
+    );
+    filter: blur(8px);
+    animation: borderRotate 5s linear infinite;
+    z-index: -1;
+}
+
+/* Keyframes for border rotation */
+@keyframes borderRotate {
+    0% {
+        --border-angle: 0deg;
+    }
+    100% {
+        --border-angle: 360deg;
+    }
+}
+
+/* Register the CSS property for animation */
+@property --border-angle {
+    syntax: '<angle>';
+    initial-value: 0deg;
+    inherits: false;
+}
+
+/* Card content styling */
+.login-card-content {
+    position: relative;
+    background: #FFFDF6;
+    border-radius: 18px;
+    padding: 2.5rem;
+    box-shadow: 
+        0 1px 3px rgba(0, 0, 0, 0.02),
+        0 8px 24px rgba(0, 0, 0, 0.04);
+    z-index: 1;
+}
+
+/* Fallback for browsers without @property support */
+@supports not (background: conic-gradient(from 0deg, red, blue)) {
+    .login-card-animated-border {
+        background: linear-gradient(90deg, transparent, #063c88, transparent);
+        animation: borderSlide 3s linear infinite;
+    }
+    
+    @keyframes borderSlide {
+        0% { background-position: 0% 50%; }
+        100% { background-position: 200% 50%; }
+    }
+}
+
 /* Number display */
 .number-display {
     font-family: 'Outfit', sans-serif;
