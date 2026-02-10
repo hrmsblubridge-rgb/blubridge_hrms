@@ -70,7 +70,9 @@ const Login = () => {
 
         {/* Login Card with Animated Border */}
         <div className="login-card-wrapper">
-          <div className="login-card-animated-border"></div>
+          <div className="login-card-animated-border">
+            <div className="login-card-animated-border-inner"></div>
+          </div>
           <div className="login-card-content">
             <div className="text-center mb-8">
               <h2 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>
