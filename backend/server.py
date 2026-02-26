@@ -1473,6 +1473,31 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     
     await log_audit(current_user["id"], "create", "employee", employee.id, f"Created employee: {data.full_name}")
     
+    # Create onboarding record for new employee
+    onboarding_record = OnboardingRecord(
+        employee_id=employee.id,
+        emp_id=emp_id,
+        emp_name=data.full_name,
+        department=data.department,
+        team=data.team,
+        designation=data.designation
+    )
+    onboarding_doc = onboarding_record.model_dump()
+    onboarding_doc['created_at'] = onboarding_doc['created_at'].isoformat()
+    onboarding_doc['updated_at'] = onboarding_doc['updated_at'].isoformat()
+    await db.onboarding.insert_one(onboarding_doc.copy())
+    
+    # Create document placeholders for onboarding
+    for req_doc in REQUIRED_DOCUMENTS:
+        doc_record = OnboardingDocument(
+            employee_id=employee.id,
+            document_type=req_doc["type"],
+            document_label=req_doc["label"]
+        )
+        doc_data = doc_record.model_dump()
+        doc_data['created_at'] = doc_data['created_at'].isoformat()
+        await db.onboarding_documents.insert_one(doc_data.copy())
+    
     result = serialize_doc(doc)
     if data.login_enabled:
         result['temp_password'] = temp_password
