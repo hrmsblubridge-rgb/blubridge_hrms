@@ -26,6 +26,7 @@ import EmployeeLeave from "./pages/EmployeeLeave";
 import EmployeeHolidays from "./pages/EmployeeHolidays";
 import EmployeeEducationExperience from "./pages/EmployeeEducationExperience";
 import EmployeeIssueTickets from "./pages/EmployeeIssueTickets";
+import EmployeeDocuments from "./pages/EmployeeDocuments";
 import EmployeeProfile from "./pages/EmployeeProfile";
 import EmployeeOnboarding from "./pages/EmployeeOnboarding";
 import "./App.css";
