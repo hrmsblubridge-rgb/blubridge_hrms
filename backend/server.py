@@ -1044,7 +1044,7 @@ async def send_welcome_email(emp_name: str, emp_id: str, email: str, username: s
 
 @api_router.get("/cloudinary/signature")
 async def get_cloudinary_signature(
-    resource_type: str = Query("image", enum=["image", "video", "auto"]),
+    resource_type: str = Query("auto", enum=["image", "video", "auto", "raw"]),
     folder: str = Query("employees"),
     current_user: dict = Depends(get_current_user)
 ):
@@ -1057,7 +1057,8 @@ async def get_cloudinary_signature(
     # Simple params for public upload
     params = {
         "timestamp": timestamp,
-        "folder": f"blubridge/{folder}"
+        "folder": f"blubridge/{folder}",
+        "type": "upload"  # Ensure public upload type
     }
     
     signature = cloudinary.utils.api_sign_request(
@@ -1071,7 +1072,8 @@ async def get_cloudinary_signature(
         "cloud_name": os.environ.get("CLOUDINARY_CLOUD_NAME"),
         "api_key": os.environ.get("CLOUDINARY_API_KEY"),
         "folder": f"blubridge/{folder}",
-        "resource_type": resource_type
+        "resource_type": resource_type,
+        "type": "upload"  # Ensure public access
     }
 
 @api_router.delete("/cloudinary/{public_id:path}")
