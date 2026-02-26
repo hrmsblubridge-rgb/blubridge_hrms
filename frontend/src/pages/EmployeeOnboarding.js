@@ -27,17 +27,19 @@ import {
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const DOCUMENT_ICONS = {
-  id_proof: FileText,
-  address_proof: FileText,
+  aadhaar_card: FileText,
   pan_card: FileText,
+  passport: FileText,
+  voter_id: FileText,
   education: FileText,
   experience: Briefcase,
-  bank_details: FileText,
+  offer_letter: FileText,
+  relieving_letter: FileText,
   photo: User
 };
 
 const STATUS_CONFIG = {
-  not_uploaded: { color: 'bg-slate-100 text-slate-600', icon: Upload, label: 'Not Uploaded' },
+  not_uploaded: { color: 'bg-slate-100 text-slate-600', icon: Upload, label: 'NOT UPLOADED' },
   uploaded: { color: 'bg-amber-100 text-amber-700', icon: Clock, label: 'Pending Review' },
   verified: { color: 'bg-emerald-100 text-emerald-700', icon: CheckCircle2, label: 'Verified' },
   rejected: { color: 'bg-red-100 text-red-700', icon: XCircle, label: 'Rejected' }
