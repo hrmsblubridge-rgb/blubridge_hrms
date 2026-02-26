@@ -3558,6 +3558,138 @@ def get_onboarding_status_email(emp_name: str, status: str, notes: Optional[str]
     </div>
     """
 
+# ============== HOLIDAY ROUTES ==============
+
+class HolidayCreate(BaseModel):
+    name: str
+    date: str  # YYYY-MM-DD format
+    day: str
+    type: str = "company"  # national, regional, religious, company
+    note: Optional[str] = None
+
+class HolidayUpdate(BaseModel):
+    name: Optional[str] = None
+    date: Optional[str] = None
+    day: Optional[str] = None
+    type: Optional[str] = None
+    note: Optional[str] = None
+
+@api_router.get("/holidays")
+async def get_holidays(
+    year: int = Query(2026),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all holidays for a given year"""
+    # First check if we have holidays in database
+    holidays = await db.holidays.find({"year": year}, {"_id": 0}).sort("date", 1).to_list(50)
+    
+    if not holidays:
+        # Seed default holidays for 2026 if not present
+        if year == 2026:
+            for h in COMPANY_HOLIDAYS_2026:
+                holiday_doc = {
+                    "id": h["id"],
+                    "name": h["name"],
+                    "date": h["date"],
+                    "day": h["day"],
+                    "type": h["type"],
+                    "note": h.get("note"),
+                    "year": 2026,
+                    "created_at": get_ist_now().isoformat()
+                }
+                await db.holidays.insert_one(holiday_doc.copy())
+            holidays = await db.holidays.find({"year": year}, {"_id": 0}).sort("date", 1).to_list(50)
+    
+    # Calculate stats
+    total = len(holidays)
+    upcoming = sum(1 for h in holidays if h["date"] >= datetime.now().strftime("%Y-%m-%d"))
+    by_type = {}
+    for h in holidays:
+        t = h.get("type", "company")
+        by_type[t] = by_type.get(t, 0) + 1
+    
+    return {
+        "holidays": [serialize_doc(h) for h in holidays],
+        "stats": {
+            "total": total,
+            "upcoming": upcoming,
+            "by_type": by_type
+        }
+    }
+
+@api_router.get("/holidays/upcoming")
+async def get_upcoming_holidays(
+    limit: int = Query(5, ge=1, le=10),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get next upcoming holidays"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    holidays = await db.holidays.find(
+        {"date": {"$gte": today}}, 
+        {"_id": 0}
+    ).sort("date", 1).limit(limit).to_list(limit)
+    
+    return [serialize_doc(h) for h in holidays]
+
+@api_router.post("/holidays")
+async def create_holiday(data: HolidayCreate, current_user: dict = Depends(get_current_user)):
+    """Create a new holiday (admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    # Parse year from date
+    year = int(data.date.split("-")[0])
+    
+    holiday_doc = {
+        "id": str(uuid.uuid4()),
+        "name": data.name,
+        "date": data.date,
+        "day": data.day,
+        "type": data.type,
+        "note": data.note,
+        "year": year,
+        "created_at": get_ist_now().isoformat()
+    }
+    
+    await db.holidays.insert_one(holiday_doc.copy())
+    await log_audit(current_user["id"], "create_holiday", "holiday", holiday_doc["id"], data.name)
+    
+    return serialize_doc(holiday_doc)
+
+@api_router.put("/holidays/{holiday_id}")
+async def update_holiday(holiday_id: str, data: HolidayUpdate, current_user: dict = Depends(get_current_user)):
+    """Update a holiday (admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    holiday = await db.holidays.find_one({"id": holiday_id}, {"_id": 0})
+    if not holiday:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    if update_data:
+        if "date" in update_data:
+            update_data["year"] = int(update_data["date"].split("-")[0])
+        await db.holidays.update_one({"id": holiday_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "update_holiday", "holiday", holiday_id)
+    
+    return {"message": "Holiday updated successfully"}
+
+@api_router.delete("/holidays/{holiday_id}")
+async def delete_holiday(holiday_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a holiday (admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    result = await db.holidays.delete_one({"id": holiday_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    
+    await log_audit(current_user["id"], "delete_holiday", "holiday", holiday_id)
+    
+    return {"message": "Holiday deleted successfully"}
+
 # ============== SEED DATA ==============
 
 @api_router.post("/seed")
