@@ -2,6 +2,49 @@
 
 ## Latest Updates (February 26, 2026)
 
+### Policies & Education/Experience Modules - COMPLETED
+**100% Complete** - Full implementation tested and verified
+
+#### Policies Module
+- **3 Company Policies** created and accessible by both Admin and Employees:
+  1. **Leave Policy** (HR, v2.0) - Leave types, entitlements, application process, restrictions, encashment
+  2. **IT Team Policy** (Department, v1.5) - Working hours, code standards, equipment, security, career development
+  3. **Research Unit Policy** (Department, v1.0) - Research standards, IP, funding, project management, safety
+
+- **Features:**
+  - Policy cards with category badges, version, effective date
+  - Detail modal with expandable accordion sections
+  - Both Admin and Employee can view policies
+
+#### Education & Experience Module
+- **Employee Side** (`/employee/education-experience`):
+  - Add/Edit/Delete education qualifications (level, institution, board/university, year, percentage/CGPA)
+  - Add/Edit/Delete work experience (company, designation, dates, responsibilities)
+  - After verification by HR, entries become read-only
+
+- **Admin Side** (in Employee Details dialog):
+  - View employee education and experience via "Education & Experience" tab
+  - Verify education details with "Verify" button
+  - Verify experience details with "Verify" button
+  - Verified entries show "Verified" badge
+
+#### Backend APIs Added
+- `GET /api/policies` - List all policies
+- `GET /api/policies/{id}` - Get policy details
+- `PUT /api/policies/{id}` - Update policy (admin only)
+- `GET /api/employee-profile/education-experience` - Employee's own data
+- `PUT /api/employee-profile/education-experience` - Update own data
+- `GET /api/employees/{id}/education-experience` - Admin view
+- `POST /api/employees/{id}/verify-education` - HR verify education
+- `POST /api/employees/{id}/verify-experience` - HR verify experience
+
+#### Testing Status
+- **Testing Agent Iteration 19**: 100% Pass Rate
+- Backend: 17/17 tests passed
+- Frontend: 11/11 features verified
+
+---
+
 ### Employee Onboarding Flow - COMPLETED
 **100% Complete** - Full employee onboarding workflow implemented and tested
 
