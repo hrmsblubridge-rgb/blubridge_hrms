@@ -1346,6 +1346,170 @@ const Employees = () => {
                     </div>
                   )}
                 </TabsContent>
+                
+                {/* Salary Tab */}
+                <TabsContent value="salary" className="mt-4">
+                  {loadingSalary ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {/* CTC Update Section */}
+                      {canEdit && (
+                        <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-medium text-blue-700">Annual CTC</p>
+                              <p className="text-2xl font-bold text-blue-900">
+                                ₹{salaryData?.annual_ctc?.toLocaleString('en-IN') || '0'}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="number"
+                                placeholder="Enter Annual CTC"
+                                className="w-40 px-3 py-2 rounded-lg border border-blue-200 text-sm"
+                                id="new-ctc-input"
+                              />
+                              <Button
+                                size="sm"
+                                onClick={() => {
+                                  const input = document.getElementById('new-ctc-input');
+                                  if (input?.value) handleUpdateSalary(input.value);
+                                }}
+                                disabled={savingSalary}
+                                className="bg-blue-600 hover:bg-blue-700 rounded-lg"
+                              >
+                                {savingSalary ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Update CTC'}
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Salary Breakdown */}
+                      {salaryData ? (
+                        <div className="grid grid-cols-2 gap-4">
+                          {/* Earnings */}
+                          <div className="space-y-2">
+                            <h4 className="font-semibold text-sm text-emerald-700 flex items-center gap-2">
+                              <TrendingUp className="w-4 h-4" /> Earnings
+                            </h4>
+                            <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
+                              <SalaryItem label="Basic" amount={salaryData.basic} />
+                              <SalaryItem label="HRA" amount={salaryData.hra} />
+                              <SalaryItem label="DA" amount={salaryData.da} />
+                              <SalaryItem label="Conveyance" amount={salaryData.conveyance} />
+                              <SalaryItem label="Medical" amount={salaryData.medical_allowance} />
+                              <SalaryItem label="Special Allowance" amount={salaryData.special_allowance} />
+                              <div className="p-3 bg-emerald-50 flex justify-between font-semibold text-emerald-700">
+                                <span>Gross</span>
+                                <span>₹{salaryData.gross_salary?.toLocaleString('en-IN')}</span>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          {/* Deductions */}
+                          <div className="space-y-2">
+                            <h4 className="font-semibold text-sm text-red-700 flex items-center gap-2">
+                              <TrendingDown className="w-4 h-4" /> Deductions
+                            </h4>
+                            <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
+                              <SalaryItem label="PF (Employee)" amount={salaryData.pf_employee} isDeduction />
+                              <SalaryItem label="ESI" amount={salaryData.esi_employee} isDeduction />
+                              <SalaryItem label="Professional Tax" amount={salaryData.professional_tax} isDeduction />
+                              <SalaryItem label="TDS" amount={salaryData.tds} isDeduction />
+                              <div className="p-3 bg-red-50 flex justify-between font-semibold text-red-700">
+                                <span>Total Deductions</span>
+                                <span>₹{salaryData.total_deductions?.toLocaleString('en-IN')}</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-slate-500">
+                          <Wallet className="w-12 h-12 mx-auto text-slate-300 mb-2" />
+                          <p>No salary structure configured</p>
+                          <p className="text-sm">Enter Annual CTC above to auto-calculate salary breakup</p>
+                        </div>
+                      )}
+                      
+                      {/* Net Salary */}
+                      {salaryData && (
+                        <div className="p-4 bg-gradient-to-r from-blue-600 to-blue-700 rounded-xl text-white">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-blue-200 text-sm">Monthly Net Salary</p>
+                              <p className="text-3xl font-bold">₹{salaryData.net_salary?.toLocaleString('en-IN')}</p>
+                            </div>
+                            <Wallet className="w-12 h-12 text-blue-300" />
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Adjustments Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-semibold text-slate-700 flex items-center gap-2">
+                            <Receipt className="w-4 h-4" /> Salary Adjustments
+                          </h4>
+                          {canEdit && (
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              onClick={() => setShowAdjustmentModal(true)}
+                              className="rounded-lg"
+                            >
+                              <Plus className="w-4 h-4 mr-1" /> Add Adjustment
+                            </Button>
+                          )}
+                        </div>
+                        
+                        {adjustments.length > 0 ? (
+                          <div className="space-y-2">
+                            {adjustments.map((adj) => (
+                              <div key={adj.id} className="p-3 bg-white rounded-lg border border-slate-200 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${adj.category === 'earning' ? 'bg-emerald-100' : 'bg-red-100'}`}>
+                                    {adj.category === 'earning' ? (
+                                      <TrendingUp className="w-4 h-4 text-emerald-600" />
+                                    ) : (
+                                      <TrendingDown className="w-4 h-4 text-red-600" />
+                                    )}
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-medium text-slate-700">{adj.description}</p>
+                                    <p className="text-xs text-slate-500">
+                                      {adj.adjustment_type} • {adj.frequency === 'recurring' ? 'Recurring' : `One-time (${adj.applicable_month})`}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <span className={`font-semibold ${adj.category === 'earning' ? 'text-emerald-600' : 'text-red-600'}`}>
+                                    {adj.category === 'earning' ? '+' : '-'}₹{adj.amount?.toLocaleString('en-IN')}
+                                  </span>
+                                  {canEdit && (
+                                    <Button 
+                                      size="sm" 
+                                      variant="ghost" 
+                                      onClick={() => handleDeleteAdjustment(adj.id)}
+                                      className="h-8 w-8 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500 text-center py-4">No adjustments added</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </TabsContent>
               </Tabs>
             </div>
           )}
