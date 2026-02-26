@@ -186,6 +186,27 @@ REQUIRED_DOCUMENTS = [
     {"type": DocumentType.PHOTO, "label": "Passport-size Photograph", "required": True},
 ]
 
+# ============== HOLIDAYS DATA ==============
+
+COMPANY_HOLIDAYS_2026 = [
+    {"id": "h1", "name": "New Year's Day", "date": "2026-01-01", "day": "Thursday", "type": "national"},
+    {"id": "h2", "name": "Pongal", "date": "2026-01-15", "day": "Thursday", "type": "regional"},
+    {"id": "h3", "name": "Thiruvalluvar Day", "date": "2026-01-16", "day": "Friday", "type": "regional"},
+    {"id": "h4", "name": "Republic Day", "date": "2026-01-26", "day": "Monday", "type": "national"},
+    {"id": "h5", "name": "Ramzan (Eid ul-Fitr)", "date": "2026-03-21", "day": "Saturday", "type": "religious", "note": "Subject to lunar calendar"},
+    {"id": "h6", "name": "Good Friday", "date": "2026-04-03", "day": "Friday", "type": "religious"},
+    {"id": "h7", "name": "Mahavir Jayanti", "date": "2026-04-03", "day": "Friday", "type": "religious"},
+    {"id": "h8", "name": "Tamil New Year (Puthandu)", "date": "2026-04-14", "day": "Tuesday", "type": "regional"},
+    {"id": "h9", "name": "May Day (Labour Day)", "date": "2026-05-01", "day": "Friday", "type": "national"},
+    {"id": "h10", "name": "Bakrid (Eid ul-Adha)", "date": "2026-05-27", "day": "Wednesday", "type": "religious", "note": "Subject to lunar calendar"},
+    {"id": "h11", "name": "Muharram", "date": "2026-07-06", "day": "Monday", "type": "religious", "note": "Subject to lunar calendar"},
+    {"id": "h12", "name": "Independence Day", "date": "2026-08-15", "day": "Saturday", "type": "national"},
+    {"id": "h13", "name": "Vinayaka Chaturthi", "date": "2026-08-22", "day": "Saturday", "type": "religious"},
+    {"id": "h14", "name": "Gandhi Jayanti", "date": "2026-10-02", "day": "Friday", "type": "national"},
+    {"id": "h15", "name": "Diwali", "date": "2026-11-09", "day": "Monday", "type": "religious"},
+    {"id": "h16", "name": "Christmas Day", "date": "2026-12-25", "day": "Friday", "type": "religious"},
+]
+
 # ============== MODELS ==============
 
 class User(BaseModel):
