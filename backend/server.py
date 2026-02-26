@@ -195,6 +195,8 @@ class User(BaseModel):
     employee_id: Optional[str] = None
     department: Optional[str] = None
     team: Optional[str] = None
+    onboarding_status: str = OnboardingStatus.PENDING  # NEW: Track onboarding state
+    is_first_login: bool = True  # NEW: Track if first login
     created_at: datetime = Field(default_factory=lambda: get_ist_now())
     is_active: bool = True
 
