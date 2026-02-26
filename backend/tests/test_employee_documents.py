@@ -103,6 +103,23 @@ class TestEmployeeDocumentsAPI:
         """Test that uploaded document appears in employee documents list"""
         headers = {"Authorization": f"Bearer {self.admin_token}"}
         
+        # First upload a document to ensure one exists
+        document_data = {
+            "file_url": "https://res.cloudinary.com/djsvuh19j/image/upload/v1234567890/verify_test_offer.pdf",
+            "file_name": f"TEST_verify_offer_{uuid.uuid4().hex[:8]}.pdf",
+            "file_type": "application/pdf",
+            "file_public_id": f"blubridge/documents/verify_{uuid.uuid4().hex[:8]}",
+            "document_type": "offer_letter"
+        }
+        
+        upload_response = self.session.post(
+            f"{BASE_URL}/api/employees/{self.employee_id}/documents",
+            json=document_data,
+            headers=headers
+        )
+        assert upload_response.status_code == 200, f"Upload failed: {upload_response.text}"
+        
+        # Now verify it exists
         response = self.session.get(
             f"{BASE_URL}/api/employees/{self.employee_id}/documents",
             headers=headers
