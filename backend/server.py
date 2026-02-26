@@ -3733,15 +3733,417 @@ async def request_document_reupload(employee_id: str, document_type: str, reason
     
     return {"message": "Re-upload requested"}
 
-# ============== TICKET ROUTES ==============
+# ============== ISSUE TICKET ROUTES ==============
 
+@api_router.get("/issue-tickets/categories")
+async def get_ticket_categories(current_user: dict = Depends(get_current_user)):
+    """Get all ticket categories and subcategories"""
+    categories = []
+    for category, subcategories in TICKET_SUBCATEGORIES.items():
+        categories.append({
+            "category": category,
+            "subcategories": subcategories,
+            "assigned_role": TICKET_DEPARTMENT_ROLES.get(category)
+        })
+    return categories
+
+@api_router.get("/issue-tickets")
+async def get_issue_tickets(
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    category: Optional[str] = None,
+    assigned_department: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get issue tickets based on user role"""
+    query = {}
+    
+    # Role-based filtering
+    user_role = current_user.get("role")
+    
+    # Employees can only see their own tickets
+    if user_role == UserRole.EMPLOYEE:
+        query["employee_id"] = current_user.get("employee_id")
+    # Department admins see tickets assigned to their department
+    elif user_role in ["it_admin", "hr_admin", "finance_admin", "admin_dept", "compliance_officer", "operations_manager"]:
+        query["assigned_department"] = user_role
+    # Super admin, admin, hr_manager can see all tickets
+    
+    # Apply filters
+    if status and status != "All":
+        query["status"] = status
+    if priority and priority != "All":
+        query["priority"] = priority
+    if category and category != "All":
+        query["category"] = category
+    if assigned_department and assigned_department != "All":
+        query["assigned_department"] = assigned_department
+    if search:
+        query["$or"] = [
+            {"ticket_number": {"$regex": search, "$options": "i"}},
+            {"subject": {"$regex": search, "$options": "i"}},
+            {"emp_name": {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": search, "$options": "i"}}
+        ]
+    
+    skip = (page - 1) * limit
+    total = await db.issue_tickets.count_documents(query)
+    tickets = await db.issue_tickets.find(query, {"_id": 0}).skip(skip).limit(limit).sort("created_at", -1).to_list(limit)
+    
+    return {
+        "tickets": [serialize_doc(t) for t in tickets],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
+
+@api_router.get("/issue-tickets/stats")
+async def get_issue_ticket_stats(current_user: dict = Depends(get_current_user)):
+    """Get comprehensive ticket statistics"""
+    user_role = current_user.get("role")
+    query = {}
+    
+    # Role-based filtering for stats
+    if user_role == UserRole.EMPLOYEE:
+        query["employee_id"] = current_user.get("employee_id")
+    elif user_role in ["it_admin", "hr_admin", "finance_admin", "admin_dept", "compliance_officer", "operations_manager"]:
+        query["assigned_department"] = user_role
+    
+    # Get counts by status
+    total = await db.issue_tickets.count_documents(query)
+    by_status = {}
+    for status in [TicketStatus.OPEN, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_APPROVAL, 
+                   TicketStatus.ON_HOLD, TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.REJECTED]:
+        count = await db.issue_tickets.count_documents({**query, "status": status})
+        by_status[status] = count
+    
+    # Get counts by priority
+    by_priority = {}
+    for priority in [TicketPriority.HIGH, TicketPriority.MEDIUM, TicketPriority.LOW]:
+        count = await db.issue_tickets.count_documents({**query, "priority": priority})
+        by_priority[priority] = count
+    
+    # Get counts by category (admin only)
+    by_category = {}
+    if user_role not in [UserRole.EMPLOYEE]:
+        for category in TICKET_SUBCATEGORIES.keys():
+            count = await db.issue_tickets.count_documents({**query, "category": category})
+            by_category[category] = count
+    
+    # Get average resolution time (only for resolved/closed tickets)
+    avg_resolution_hours = None
+    resolved_tickets = await db.issue_tickets.find({
+        **query, 
+        "status": {"$in": [TicketStatus.RESOLVED, TicketStatus.CLOSED]},
+        "resolved_at": {"$ne": None}
+    }, {"_id": 0, "created_at": 1, "resolved_at": 1}).to_list(500)
+    
+    if resolved_tickets:
+        total_hours = 0
+        for ticket in resolved_tickets:
+            try:
+                created = datetime.fromisoformat(ticket["created_at"].replace("Z", "+00:00")) if isinstance(ticket["created_at"], str) else ticket["created_at"]
+                resolved = datetime.fromisoformat(ticket["resolved_at"].replace("Z", "+00:00")) if isinstance(ticket["resolved_at"], str) else ticket["resolved_at"]
+                total_hours += (resolved - created).total_seconds() / 3600
+            except:
+                pass
+        avg_resolution_hours = round(total_hours / len(resolved_tickets), 1) if resolved_tickets else None
+    
+    return {
+        "total": total,
+        "by_status": by_status,
+        "by_priority": by_priority,
+        "by_category": by_category,
+        "avg_resolution_hours": avg_resolution_hours
+    }
+
+@api_router.get("/issue-tickets/{ticket_id}")
+async def get_issue_ticket(ticket_id: str, current_user: dict = Depends(get_current_user)):
+    """Get single ticket details"""
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Check access
+    user_role = current_user.get("role")
+    if user_role == UserRole.EMPLOYEE:
+        if ticket.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    return serialize_doc(ticket)
+
+@api_router.post("/issue-tickets")
+async def create_issue_ticket(data: TicketCreate, current_user: dict = Depends(get_current_user)):
+    """Create a new issue ticket"""
+    # Validate category and subcategory
+    if data.category not in TICKET_SUBCATEGORIES:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    if data.subcategory not in TICKET_SUBCATEGORIES[data.category]:
+        raise HTTPException(status_code=400, detail="Invalid subcategory for this category")
+    
+    # Determine employee info
+    employee_id = data.employee_id if data.employee_id else current_user.get("employee_id")
+    employee = None
+    created_by = None
+    created_by_name = None
+    
+    if employee_id:
+        employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    
+    # If admin creating on behalf of employee
+    if data.employee_id and current_user.get("role") in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        created_by = current_user["id"]
+        created_by_name = current_user.get("name")
+    
+    # Generate ticket number
+    ticket_number = await generate_ticket_number()
+    
+    # Determine assigned department
+    assigned_department = TICKET_DEPARTMENT_ROLES.get(data.category, "hr_admin")
+    
+    # Process attachments
+    attachments = []
+    if data.attachments:
+        for att in data.attachments:
+            attachments.append({
+                "id": str(uuid.uuid4()),
+                "file_url": att.get("file_url"),
+                "file_name": att.get("file_name"),
+                "file_type": att.get("file_type"),
+                "file_public_id": att.get("file_public_id"),
+                "uploaded_at": get_ist_now().isoformat()
+            })
+    
+    # Create initial status history
+    status_history = [{
+        "id": str(uuid.uuid4()),
+        "status": TicketStatus.OPEN,
+        "updated_by": current_user["id"],
+        "updated_by_name": current_user.get("name"),
+        "notes": "Ticket created",
+        "updated_at": get_ist_now().isoformat()
+    }]
+    
+    ticket = Ticket(
+        ticket_number=ticket_number,
+        employee_id=employee_id or current_user["id"],
+        emp_name=employee.get("full_name") if employee else current_user.get("name"),
+        emp_email=employee.get("official_email") if employee else current_user.get("email"),
+        department=employee.get("department") if employee else current_user.get("department", "N/A"),
+        team=employee.get("team") if employee else current_user.get("team"),
+        category=data.category,
+        subcategory=data.subcategory,
+        subject=data.subject,
+        description=data.description,
+        priority=data.priority,
+        assigned_department=assigned_department,
+        attachments=attachments,
+        status_history=status_history,
+        created_by=created_by,
+        created_by_name=created_by_name
+    )
+    
+    doc = ticket.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    doc['updated_at'] = doc['updated_at'].isoformat()
+    await db.issue_tickets.insert_one(doc.copy())
+    
+    await log_audit(current_user["id"], "create_issue_ticket", "issue_ticket", ticket.id, f"Ticket {ticket_number} created")
+    
+    return serialize_doc(doc)
+
+@api_router.put("/issue-tickets/{ticket_id}/status")
+async def update_issue_ticket_status(
+    ticket_id: str, 
+    data: TicketStatusUpdateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update ticket status"""
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Validate status
+    valid_statuses = [TicketStatus.OPEN, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_APPROVAL,
+                     TicketStatus.ON_HOLD, TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.REJECTED]
+    if data.status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    # Check permissions
+    user_role = current_user.get("role")
+    # Employees can only close their own resolved tickets
+    if user_role == UserRole.EMPLOYEE:
+        if ticket.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+        if data.status != TicketStatus.CLOSED or ticket.get("status") != TicketStatus.RESOLVED:
+            raise HTTPException(status_code=403, detail="Employees can only close resolved tickets")
+    
+    # Create status update entry
+    status_update = {
+        "id": str(uuid.uuid4()),
+        "status": data.status,
+        "updated_by": current_user["id"],
+        "updated_by_name": current_user.get("name"),
+        "notes": data.notes,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    update_data = {
+        "status": data.status,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    # Add resolution info for resolved/closed statuses
+    if data.status in [TicketStatus.RESOLVED, TicketStatus.CLOSED]:
+        if data.resolution:
+            update_data["resolution"] = data.resolution
+        update_data["resolved_at"] = get_ist_now().isoformat()
+        update_data["resolved_by"] = current_user["id"]
+        update_data["resolved_by_name"] = current_user.get("name")
+    
+    await db.issue_tickets.update_one(
+        {"id": ticket_id},
+        {
+            "$set": update_data,
+            "$push": {"status_history": status_update}
+        }
+    )
+    
+    await log_audit(current_user["id"], "update_ticket_status", "issue_ticket", ticket_id, f"Status: {data.status}")
+    
+    return {"message": f"Ticket status updated to {data.status}"}
+
+@api_router.put("/issue-tickets/{ticket_id}/assign")
+async def assign_issue_ticket(
+    ticket_id: str,
+    data: TicketAssignRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Assign ticket to a specific user"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, 
+                                    "it_admin", "hr_admin", "finance_admin", "admin_dept", 
+                                    "compliance_officer", "operations_manager"]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Get assignee info
+    assignee = await db.users.find_one({"id": data.assigned_to}, {"_id": 0})
+    if not assignee:
+        raise HTTPException(status_code=404, detail="Assignee not found")
+    
+    # Create status update entry
+    status_update = {
+        "id": str(uuid.uuid4()),
+        "status": ticket.get("status"),
+        "updated_by": current_user["id"],
+        "updated_by_name": current_user.get("name"),
+        "notes": f"Ticket assigned to {assignee.get('name')}",
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.issue_tickets.update_one(
+        {"id": ticket_id},
+        {
+            "$set": {
+                "assigned_to": data.assigned_to,
+                "assigned_to_name": assignee.get("name"),
+                "updated_at": get_ist_now().isoformat()
+            },
+            "$push": {"status_history": status_update}
+        }
+    )
+    
+    return {"message": f"Ticket assigned to {assignee.get('name')}"}
+
+@api_router.post("/issue-tickets/{ticket_id}/feedback")
+async def submit_ticket_feedback(
+    ticket_id: str,
+    data: TicketFeedbackRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Submit feedback for a resolved/closed ticket"""
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Only ticket owner can submit feedback
+    if ticket.get("employee_id") != current_user.get("employee_id"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Only for resolved/closed tickets
+    if ticket.get("status") not in [TicketStatus.RESOLVED, TicketStatus.CLOSED]:
+        raise HTTPException(status_code=400, detail="Can only submit feedback for resolved/closed tickets")
+    
+    # Validate rating
+    if data.rating < 1 or data.rating > 5:
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+    
+    feedback = {
+        "rating": data.rating,
+        "comment": data.comment,
+        "submitted_at": get_ist_now().isoformat()
+    }
+    
+    await db.issue_tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"feedback": feedback, "updated_at": get_ist_now().isoformat()}}
+    )
+    
+    return {"message": "Feedback submitted successfully"}
+
+@api_router.post("/issue-tickets/{ticket_id}/attachment")
+async def add_ticket_attachment(
+    ticket_id: str,
+    file_url: str,
+    file_name: str,
+    file_type: str,
+    file_public_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Add attachment to an existing ticket"""
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Check access
+    if current_user.get("role") == UserRole.EMPLOYEE:
+        if ticket.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    attachment = {
+        "id": str(uuid.uuid4()),
+        "file_url": file_url,
+        "file_name": file_name,
+        "file_type": file_type,
+        "file_public_id": file_public_id,
+        "uploaded_at": get_ist_now().isoformat()
+    }
+    
+    await db.issue_tickets.update_one(
+        {"id": ticket_id},
+        {
+            "$push": {"attachments": attachment},
+            "$set": {"updated_at": get_ist_now().isoformat()}
+        }
+    )
+    
+    return {"message": "Attachment added", "attachment": attachment}
+
+# Keep legacy ticket routes for backward compatibility
 @api_router.get("/tickets")
 async def get_tickets(
     status: Optional[str] = None,
     priority: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all tickets (HR) or own tickets (employee)"""
+    """Get all tickets (HR) or own tickets (employee) - Legacy endpoint"""
     query = {}
     
     if current_user["role"] == UserRole.EMPLOYEE:
@@ -3756,35 +4158,38 @@ async def get_tickets(
     return [serialize_doc(t) for t in tickets]
 
 @api_router.post("/tickets")
-async def create_ticket(data: TicketCreate, current_user: dict = Depends(get_current_user)):
-    """Create a new support ticket"""
+async def create_ticket_legacy(data: dict, current_user: dict = Depends(get_current_user)):
+    """Create a new support ticket - Legacy endpoint"""
     employee_id = current_user.get("employee_id")
     employee = None
     
     if employee_id:
         employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     
-    ticket = Ticket(
-        employee_id=employee_id or current_user["id"],
-        emp_name=employee.get("full_name") if employee else current_user.get("name"),
-        department=employee.get("department") if employee else current_user.get("department", "N/A"),
-        subject=data.subject,
-        description=data.description,
-        priority=data.priority
-    )
+    ticket_doc = {
+        "id": str(uuid.uuid4()),
+        "employee_id": employee_id or current_user["id"],
+        "emp_name": employee.get("full_name") if employee else current_user.get("name"),
+        "department": employee.get("department") if employee else current_user.get("department", "N/A"),
+        "subject": data.get("subject", ""),
+        "description": data.get("description", ""),
+        "priority": data.get("priority", "medium"),
+        "status": "open",
+        "assigned_to": None,
+        "resolution": None,
+        "created_at": get_ist_now().isoformat(),
+        "updated_at": get_ist_now().isoformat(),
+        "resolved_at": None
+    }
     
-    doc = ticket.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
-    doc['updated_at'] = doc['updated_at'].isoformat()
-    await db.tickets.insert_one(doc.copy())
+    await db.tickets.insert_one(ticket_doc.copy())
+    await log_audit(current_user["id"], "create_ticket", "ticket", ticket_doc["id"])
     
-    await log_audit(current_user["id"], "create_ticket", "ticket", ticket.id)
-    
-    return serialize_doc(doc)
+    return serialize_doc(ticket_doc)
 
 @api_router.put("/tickets/{ticket_id}/status")
 async def update_ticket_status(ticket_id: str, status: str, resolution: Optional[str] = None, current_user: dict = Depends(get_current_user)):
-    """Update ticket status (HR only)"""
+    """Update ticket status (HR only) - Legacy endpoint"""
     if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
@@ -3807,7 +4212,7 @@ async def update_ticket_status(ticket_id: str, status: str, resolution: Optional
 
 @api_router.get("/tickets/stats")
 async def get_ticket_stats(current_user: dict = Depends(get_current_user)):
-    """Get ticket statistics"""
+    """Get ticket statistics - Legacy endpoint"""
     if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
