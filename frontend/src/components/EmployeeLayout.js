@@ -33,6 +33,7 @@ const navItems = [
   { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper },
   { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap },
   { path: '/employee/policies', label: 'Policies', icon: BookOpen },
+  { path: '/employee/tickets', label: 'Support Tickets', icon: MessageSquarePlus },
   { path: '/employee/profile', label: 'Profile', icon: User },
 ];
 
