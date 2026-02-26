@@ -1100,11 +1100,15 @@ const Employees = () => {
                 if (v === 'documents' && !documentsData && selectedEmployee.id) {
                   fetchDocuments(selectedEmployee.id);
                 }
+                if (v === 'salary' && !salaryData && selectedEmployee.id) {
+                  fetchSalary(selectedEmployee.id);
+                }
               }}>
-                <TabsList className="grid w-full grid-cols-3 bg-slate-100 rounded-lg p-1">
-                  <TabsTrigger value="profile" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">Profile</TabsTrigger>
-                  <TabsTrigger value="education" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">Education & Exp</TabsTrigger>
-                  <TabsTrigger value="documents" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm" data-testid="documents-tab">Documents</TabsTrigger>
+                <TabsList className="grid w-full grid-cols-4 bg-slate-100 rounded-lg p-1">
+                  <TabsTrigger value="profile" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm text-xs">Profile</TabsTrigger>
+                  <TabsTrigger value="education" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm text-xs">Education</TabsTrigger>
+                  <TabsTrigger value="documents" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm text-xs" data-testid="documents-tab">Documents</TabsTrigger>
+                  <TabsTrigger value="salary" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm text-xs" data-testid="salary-tab">Salary</TabsTrigger>
                 </TabsList>
                 
                 {/* Profile Tab */}
