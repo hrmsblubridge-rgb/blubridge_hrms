@@ -153,6 +153,7 @@ function App() {
           <Route path="/policies" element={<AdminRoute><Policies /></AdminRoute>} />
           <Route path="/verification" element={<AdminRoute><Verification /></AdminRoute>} />
           <Route path="/tickets" element={<AdminRoute><Tickets /></AdminRoute>} />
+          <Route path="/issue-tickets" element={<AdminRoute><IssueTickets /></AdminRoute>} />
           <Route path="/audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
           <Route path="/admin-profile" element={<AdminRoute><AdminProfile /></AdminRoute>} />
           <Route path="/change-password" element={<AdminRoute><ChangePassword /></AdminRoute>} />
