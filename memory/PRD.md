@@ -178,8 +178,10 @@ Build a complete Human Resource Management System (HRMS) with admin and employee
 ├── components/
 │   ├── Layout.js              # Admin layout with premium sidebar
 │   ├── EmployeeLayout.js      # Employee layout
-│   ├── EmployeeLeaveDetail.js # NEW: Employee leave visualization modal
+│   ├── EmployeeLeaveDetail.js # Employee leave visualization modal
 │   └── ui/                    # Shadcn components
+├── contexts/
+│   └── AuthContext.js         # Auth with needsOnboarding() function
 ├── pages/
 │   ├── Login.js               # Premium login page
 │   ├── Dashboard.js           # Admin dashboard with charts
@@ -190,14 +192,19 @@ Build a complete Human Resource Management System (HRMS) with admin and employee
 │   ├── Team.js                # Team dashboard
 │   ├── Payroll.js             # Payroll management
 │   ├── Reports.js             # Report generation
+│   ├── Verification.js        # NEW: HR onboarding verification
+│   ├── Tickets.js             # NEW: Support tickets
+│   ├── AuditLogs.js           # NEW: Activity audit logs
 │   ├── AdminProfile.js        # Admin profile
 │   ├── ChangePassword.js      # Password change
 │   ├── EmployeeDashboard.js
 │   ├── EmployeeAttendance.js
 │   ├── EmployeeLeave.js
-│   └── EmployeeProfile.js
+│   ├── EmployeeProfile.js
+│   └── EmployeeOnboarding.js  # NEW: Employee document upload
 └── index.css                  # Global premium styles
 ```
 
 ## Test Credentials
 - **Admin**: admin / admin
+- **Employee (needs onboarding)**: onboardtest / onbo@6655
