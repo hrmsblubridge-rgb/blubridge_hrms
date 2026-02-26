@@ -105,6 +105,22 @@ const Employees = () => {
   const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [uploadingDocument, setUploadingDocument] = useState(false);
   
+  // Salary state
+  const [salaryData, setSalaryData] = useState(null);
+  const [loadingSalary, setLoadingSalary] = useState(false);
+  const [adjustments, setAdjustments] = useState([]);
+  const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
+  const [newAdjustment, setNewAdjustment] = useState({
+    adjustment_type: 'bonus',
+    description: '',
+    amount: '',
+    frequency: 'one_time',
+    applicable_month: new Date().toISOString().slice(0, 7),
+    start_month: '',
+    end_month: ''
+  });
+  const [savingSalary, setSavingSalary] = useState(false);
+  
   const [form, setForm] = useState({
     full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
     date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
