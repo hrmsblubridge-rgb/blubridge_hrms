@@ -866,6 +866,134 @@ class TicketFeedbackRequest(BaseModel):
 class TicketAssignRequest(BaseModel):
     assigned_to: str  # User ID
 
+# ============== SALARY MANAGEMENT MODELS ==============
+
+class SalaryComponentType:
+    EARNING = "earning"
+    DEDUCTION = "deduction"
+
+class AdjustmentType:
+    BONUS = "bonus"
+    INCENTIVE = "incentive"
+    REIMBURSEMENT = "reimbursement"
+    DEDUCTION = "deduction"
+    LOP = "lop"
+    ADVANCE_RECOVERY = "advance_recovery"
+    PENALTY = "penalty"
+    OTHER = "other"
+
+class AdjustmentFrequency:
+    ONE_TIME = "one_time"
+    RECURRING = "recurring"
+
+# Default salary structure percentages (of Basic)
+DEFAULT_SALARY_STRUCTURE = {
+    "basic_percentage": 40,  # 40% of CTC
+    "hra_percentage": 50,    # 50% of Basic
+    "da_percentage": 10,     # 10% of Basic
+    "conveyance": 1600,      # Fixed amount
+    "medical_allowance": 1250,  # Fixed amount
+    "special_allowance_percentage": 0,  # Remaining after other components
+    "pf_percentage": 12,     # 12% of Basic (employee contribution)
+    "esi_percentage": 0.75,  # 0.75% of Gross (if applicable, gross < 21000)
+    "professional_tax": 200, # Fixed (varies by state)
+    "tds_percentage": 0      # Calculated based on tax slab
+}
+
+class SalaryStructure(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    
+    # CTC and Basic
+    annual_ctc: float = 0
+    monthly_ctc: float = 0
+    
+    # Earnings
+    basic: float = 0
+    hra: float = 0
+    da: float = 0
+    conveyance: float = 0
+    medical_allowance: float = 0
+    special_allowance: float = 0
+    other_allowances: float = 0
+    
+    # Gross
+    gross_salary: float = 0
+    
+    # Deductions
+    pf_employee: float = 0      # Employee PF contribution
+    pf_employer: float = 0      # Employer PF contribution
+    esi_employee: float = 0     # Employee ESI
+    esi_employer: float = 0     # Employer ESI
+    professional_tax: float = 0
+    tds: float = 0
+    other_deductions: float = 0
+    
+    # Net
+    total_deductions: float = 0
+    net_salary: float = 0
+    
+    # Metadata
+    effective_from: str = ""
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class SalaryAdjustment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    
+    # Adjustment details
+    adjustment_type: str  # bonus, incentive, reimbursement, deduction, lop, advance_recovery, penalty
+    category: str  # earning or deduction
+    description: str
+    amount: float
+    
+    # Frequency
+    frequency: str = AdjustmentFrequency.ONE_TIME  # one_time or recurring
+    
+    # For one-time: specific month
+    applicable_month: Optional[str] = None  # Format: "YYYY-MM"
+    
+    # For recurring: start and end
+    start_month: Optional[str] = None
+    end_month: Optional[str] = None  # None means ongoing
+    is_active: bool = True
+    
+    # Audit
+    created_by: str
+    created_by_name: str
+    approved_by: Optional[str] = None
+    approved_by_name: Optional[str] = None
+    
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class SalaryAdjustmentCreate(BaseModel):
+    adjustment_type: str
+    description: str
+    amount: float
+    frequency: str = AdjustmentFrequency.ONE_TIME
+    applicable_month: Optional[str] = None
+    start_month: Optional[str] = None
+    end_month: Optional[str] = None
+
+class SalaryStructureUpdate(BaseModel):
+    annual_ctc: Optional[float] = None
+    basic: Optional[float] = None
+    hra: Optional[float] = None
+    da: Optional[float] = None
+    conveyance: Optional[float] = None
+    medical_allowance: Optional[float] = None
+    special_allowance: Optional[float] = None
+    other_allowances: Optional[float] = None
+    pf_employee: Optional[float] = None
+    esi_employee: Optional[float] = None
+    professional_tax: Optional[float] = None
+    tds: Optional[float] = None
+    other_deductions: Optional[float] = None
+
 # ============== HELPERS ==============
 
 def hash_password(password: str) -> str:
