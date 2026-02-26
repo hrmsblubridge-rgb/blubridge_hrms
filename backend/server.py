@@ -1103,6 +1103,14 @@ async def login(request: LoginRequest):
     await log_audit(user["id"], "login", "auth")
     
     user_response = {k: v for k, v in user.items() if k != "password_hash"}
+    
+    # Add onboarding info for employees
+    if user.get("role") == UserRole.EMPLOYEE and user.get("employee_id"):
+        onboarding = await db.onboarding.find_one({"employee_id": user["employee_id"]}, {"_id": 0})
+        user_response["onboarding_status"] = onboarding.get("status") if onboarding else user.get("onboarding_status", OnboardingStatus.PENDING)
+        user_response["is_first_login"] = user.get("is_first_login", True)
+        user_response["onboarding_completed"] = user_response["onboarding_status"] == OnboardingStatus.APPROVED
+    
     return {"token": token, "user": user_response}
 
 @api_router.get("/auth/me")
