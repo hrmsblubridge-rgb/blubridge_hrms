@@ -3711,6 +3711,189 @@ async def get_audit_logs(
     
     return [serialize_doc(l) for l in logs]
 
+# ============== POLICIES ROUTES ==============
+
+@api_router.get("/policies")
+async def get_policies(current_user: dict = Depends(get_current_user)):
+    """Get all company policies"""
+    # Check if policies exist in database
+    policies = await db.policies.find({}, {"_id": 0}).to_list(20)
+    
+    if not policies:
+        # Seed default policies
+        for policy in COMPANY_POLICIES:
+            policy_doc = {
+                **policy,
+                "created_at": get_ist_now().isoformat(),
+                "updated_at": get_ist_now().isoformat()
+            }
+            await db.policies.insert_one(policy_doc.copy())
+        policies = await db.policies.find({}, {"_id": 0}).to_list(20)
+    
+    return [serialize_doc(p) for p in policies]
+
+@api_router.get("/policies/{policy_id}")
+async def get_policy(policy_id: str, current_user: dict = Depends(get_current_user)):
+    """Get a specific policy by ID"""
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    return serialize_doc(policy)
+
+@api_router.put("/policies/{policy_id}")
+async def update_policy(policy_id: str, data: dict, current_user: dict = Depends(get_current_user)):
+    """Update a policy (admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    
+    data["updated_at"] = get_ist_now().isoformat()
+    await db.policies.update_one({"id": policy_id}, {"$set": data})
+    
+    await log_audit(current_user["id"], "update_policy", "policy", policy_id)
+    return {"message": "Policy updated successfully"}
+
+# ============== EMPLOYEE EDUCATION & EXPERIENCE ROUTES ==============
+
+class EducationEntry(BaseModel):
+    level: str  # Class X, Class XII, Graduation, Post Graduation, Doctorate
+    institution: str
+    board_university: str
+    year_of_passing: str
+    percentage_cgpa: str
+
+class ExperienceEntry(BaseModel):
+    company_name: str
+    designation: str
+    start_date: str
+    end_date: Optional[str] = None
+    is_current: bool = False
+    responsibilities: Optional[str] = None
+
+class EducationExperienceUpdate(BaseModel):
+    education: Optional[List[dict]] = None
+    experience: Optional[List[dict]] = None
+
+@api_router.get("/employee-profile/education-experience")
+async def get_my_education_experience(current_user: dict = Depends(get_current_user)):
+    """Get current employee's education and experience"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    # Get employee record
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    return {
+        "education": employee.get("education", []),
+        "experience": employee.get("experience", []),
+        "education_verified": employee.get("education_verified", False),
+        "experience_verified": employee.get("experience_verified", False)
+    }
+
+@api_router.put("/employee-profile/education-experience")
+async def update_my_education_experience(
+    data: EducationExperienceUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update current employee's education and experience"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Check if already verified - cannot edit verified data
+    if data.education and employee.get("education_verified"):
+        raise HTTPException(status_code=400, detail="Education details are verified and cannot be modified")
+    if data.experience and employee.get("experience_verified"):
+        raise HTTPException(status_code=400, detail="Experience details are verified and cannot be modified")
+    
+    update_data = {}
+    if data.education is not None:
+        update_data["education"] = data.education
+    if data.experience is not None:
+        update_data["experience"] = data.experience
+    
+    if update_data:
+        update_data["updated_at"] = get_ist_now().isoformat()
+        await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "update_education_experience", "employee", employee_id)
+    return {"message": "Details updated successfully"}
+
+@api_router.get("/employees/{employee_id}/education-experience")
+async def get_employee_education_experience(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get employee's education and experience (admin view)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        # Employees can only view their own
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    return {
+        "employee_id": employee_id,
+        "emp_name": employee.get("full_name"),
+        "education": employee.get("education", []),
+        "experience": employee.get("experience", []),
+        "education_verified": employee.get("education_verified", False),
+        "experience_verified": employee.get("experience_verified", False)
+    }
+
+@api_router.post("/employees/{employee_id}/verify-education")
+async def verify_employee_education(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """HR verifies employee's education details"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {
+            "education_verified": True,
+            "education_verified_by": current_user["id"],
+            "education_verified_at": get_ist_now().isoformat()
+        }}
+    )
+    
+    await log_audit(current_user["id"], "verify_education", "employee", employee_id)
+    return {"message": "Education verified successfully"}
+
+@api_router.post("/employees/{employee_id}/verify-experience")
+async def verify_employee_experience(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """HR verifies employee's experience details"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {
+            "experience_verified": True,
+            "experience_verified_by": current_user["id"],
+            "experience_verified_at": get_ist_now().isoformat()
+        }}
+    )
+    
+    await log_audit(current_user["id"], "verify_experience", "employee", employee_id)
+    return {"message": "Experience verified successfully"}
+
 # ============== EMAIL HELPERS FOR ONBOARDING ==============
 
 def get_onboarding_status_email(emp_name: str, status: str, notes: Optional[str] = None):
