@@ -3587,17 +3587,20 @@ async def get_holidays(
         # Seed default holidays for 2026 if not present
         if year == 2026:
             for h in COMPANY_HOLIDAYS_2026:
-                holiday_doc = {
-                    "id": h["id"],
-                    "name": h["name"],
-                    "date": h["date"],
-                    "day": h["day"],
-                    "type": h["type"],
-                    "note": h.get("note"),
-                    "year": 2026,
-                    "created_at": get_ist_now().isoformat()
-                }
-                await db.holidays.insert_one(holiday_doc.copy())
+                # Check if already exists
+                existing = await db.holidays.find_one({"id": h["id"], "year": 2026})
+                if not existing:
+                    holiday_doc = {
+                        "id": h["id"],
+                        "name": h["name"],
+                        "date": h["date"],
+                        "day": h["day"],
+                        "type": h["type"],
+                        "note": h.get("note"),
+                        "year": 2026,
+                        "created_at": get_ist_now().isoformat()
+                    }
+                    await db.holidays.insert_one(holiday_doc.copy())
             holidays = await db.holidays.find({"year": year}, {"_id": 0}).sort("date", 1).to_list(50)
     
     # Calculate stats
