@@ -148,6 +148,40 @@ class AttendanceStatus:
     LOGIN = "Login"
     COMPLETED = "Completed"
 
+# ============== ONBOARDING ENUMS ==============
+
+class OnboardingStatus:
+    PENDING = "pending"  # Employee created, not started onboarding
+    IN_PROGRESS = "in_progress"  # Employee has started uploading docs
+    UNDER_REVIEW = "under_review"  # All docs submitted, awaiting HR review
+    APPROVED = "approved"  # HR approved, full HRMS access granted
+    REJECTED = "rejected"  # HR rejected, needs re-upload
+
+class DocumentStatus:
+    NOT_UPLOADED = "not_uploaded"
+    UPLOADED = "uploaded"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+
+class DocumentType:
+    ID_PROOF = "id_proof"
+    ADDRESS_PROOF = "address_proof"
+    EDUCATION = "education"
+    EXPERIENCE = "experience"
+    BANK_DETAILS = "bank_details"
+    PAN_CARD = "pan_card"
+    PHOTO = "photo"
+
+REQUIRED_DOCUMENTS = [
+    {"type": DocumentType.ID_PROOF, "label": "ID Proof (Aadhar/Passport)", "required": True},
+    {"type": DocumentType.ADDRESS_PROOF, "label": "Address Proof", "required": True},
+    {"type": DocumentType.PAN_CARD, "label": "PAN Card", "required": True},
+    {"type": DocumentType.EDUCATION, "label": "Education Certificates", "required": True},
+    {"type": DocumentType.EXPERIENCE, "label": "Experience Letters", "required": False},
+    {"type": DocumentType.BANK_DETAILS, "label": "Bank Account Details", "required": True},
+    {"type": DocumentType.PHOTO, "label": "Passport Size Photo", "required": True},
+]
+
 # ============== MODELS ==============
 
 class User(BaseModel):
