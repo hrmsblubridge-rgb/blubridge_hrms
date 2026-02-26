@@ -140,6 +140,7 @@ function App() {
           <Route path="/change-password" element={<AdminRoute><ChangePassword /></AdminRoute>} />
           
           {/* Employee Routes */}
+          <Route path="/employee/onboarding" element={<OnboardingRoute><EmployeeOnboarding /></OnboardingRoute>} />
           <Route path="/employee/dashboard" element={<EmployeeRoute><EmployeeDashboard /></EmployeeRoute>} />
           <Route path="/employee/attendance" element={<EmployeeRoute><EmployeeAttendance /></EmployeeRoute>} />
           <Route path="/employee/leave" element={<EmployeeRoute><EmployeeLeave /></EmployeeRoute>} />
