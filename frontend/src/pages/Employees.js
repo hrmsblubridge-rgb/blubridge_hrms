@@ -201,7 +201,52 @@ const Employees = () => {
     setShowEditSheet(true);
   };
 
-  const handleView = (employee) => { setSelectedEmployee(employee); setShowViewDialog(true); };
+  const handleView = async (employee) => { 
+    setSelectedEmployee(employee); 
+    setViewTab('profile');
+    setEduExpData(null);
+    setShowViewDialog(true);
+  };
+  
+  const fetchEduExp = async (employeeId) => {
+    setLoadingEduExp(true);
+    try {
+      const response = await axios.get(`${API}/employees/${employeeId}/education-experience`, { headers: getAuthHeaders() });
+      setEduExpData(response.data);
+    } catch (error) {
+      console.error('Error fetching education/experience:', error);
+      toast.error('Failed to load education/experience data');
+    } finally {
+      setLoadingEduExp(false);
+    }
+  };
+  
+  const handleVerifyEducation = async (employeeId) => {
+    setVerifyingEducation(true);
+    try {
+      await axios.post(`${API}/employees/${employeeId}/verify-education`, {}, { headers: getAuthHeaders() });
+      toast.success('Education details verified');
+      fetchEduExp(employeeId);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to verify education');
+    } finally {
+      setVerifyingEducation(false);
+    }
+  };
+  
+  const handleVerifyExperience = async (employeeId) => {
+    setVerifyingExperience(true);
+    try {
+      await axios.post(`${API}/employees/${employeeId}/verify-experience`, {}, { headers: getAuthHeaders() });
+      toast.success('Experience details verified');
+      fetchEduExp(employeeId);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to verify experience');
+    } finally {
+      setVerifyingExperience(false);
+    }
+  };
+  
   const handleDelete = (employee) => { setSelectedEmployee(employee); setShowDeleteDialog(true); };
 
   const validateForm = () => {
