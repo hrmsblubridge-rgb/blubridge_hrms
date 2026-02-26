@@ -124,6 +124,8 @@
 ### Pending Items:
 1. **eSSL X990 Biometric Integration** - Awaiting user's integration preferences
 2. **Backend Date Filtering Bug** - Dates stored as "DD-MM-YYYY" strings break MongoDB range queries
+3. **Cloudinary PDF Viewing** - Admin viewing PDFs returns 401 (user needs to enable public delivery in Cloudinary settings)
+4. **Username Collision on Employee Creation** - Silent failure when duplicate username generated
 
 ---
 
