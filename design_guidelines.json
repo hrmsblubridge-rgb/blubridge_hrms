@@ -1,131 +1,135 @@
 {
-  "design_system": {
-    "identity": {
-      "name": "BluBridge HRMS",
-      "tone": "Premium Enterprise, Trustworthy, Human-Centric, Efficient",
-      "archetype": "Organic & Earthy (with Enterprise Precision)",
-      "vibe": "Stripe Admin meets Architectural Digest. Clean, warm, but data-dense."
+  "identity": {
+    "name": "E1: The Anti-AI Designer",
+    "mission": "Create a premium, human-centric HRMS that breaks the sterile 'SaaS' mold.",
+    "principles": [
+      "Fusion over Imitation: Mix 'Swiss Precision' with 'Organic Warmth'.",
+      "Emotion First: HR is about people. The UI should feel calm and trustworthy.",
+      "Content is King: Ticket details are the story. Make them readable.",
+      "Negative Space: Use the '#efede5' background to let content breathe."
+    ],
+    "anti_patterns": [
+      "No generic 'Bootstrap' tables.",
+      "No pure black (#000000). Use Navy (#0b1f3b).",
+      "No default scrollbars. Use custom thin ones.",
+      "No 'Inter' for headings. Use 'Outfit'."
+    ]
+  },
+  "typography": {
+    "font_family": {
+      "headings": "Outfit, sans-serif",
+      "body": "Public Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
     },
-    "typography": {
-      "font_family": {
-        "headings": "Outfit, sans-serif",
-        "body": "Public Sans, sans-serif",
-        "mono": "JetBrains Mono, monospace"
-      },
-      "scale": {
-        "h1": "text-4xl font-bold tracking-tight",
-        "h2": "text-3xl font-semibold tracking-tight",
-        "h3": "text-2xl font-semibold",
-        "body": "text-sm leading-relaxed",
-        "small": "text-xs font-medium tracking-wide uppercase text-muted-foreground"
-      }
-    },
-    "colors": {
-      "palette": {
-        "background": "#efede5",
-        "container": "#fffdf7",
-        "primary": "#004EEB",
-        "primary_foreground": "#ffffff",
-        "secondary": "#e2e8f0",
-        "accent": "#F59E0B",
-        "text_main": "#0f172a",
-        "text_muted": "#64748b",
-        "border": "#e2e8f0",
-        "success": "#10b981",
-        "warning": "#f59e0b",
-        "error": "#ef4444"
-      },
-      "usage": {
-        "global_bg": "bg-[#efede5]",
-        "card_bg": "bg-[#fffdf7]",
-        "sidebar_bg": "bg-[#fffdf7]/80 backdrop-blur-xl border-r border-white/20",
-        "header_bg": "bg-[#fffdf7]/60 backdrop-blur-md border-b border-black/5"
-      }
-    },
-    "layout": {
-      "spacing": "Generous. Use p-6 or p-8 for cards. Gap-6 for grids.",
-      "radius": "rounded-xl",
-      "container_width": "max-w-7xl mx-auto",
-      "grid_system": "Bento Grid for Dashboard (mix of col-span-1, col-span-2, row-span-2)",
-      "sidebar_width": "w-64"
-    },
-    "components": {
-      "cards": {
-        "style": "Flat with subtle border. No heavy shadows.",
-        "classes": "bg-[#fffdf7] border border-black/5 shadow-sm hover:shadow-md transition-all duration-200 rounded-xl"
-      },
-      "buttons": {
-        "primary": "bg-[#004EEB] hover:bg-[#003cc9] text-white shadow-sm rounded-lg px-4 py-2 font-medium transition-transform active:scale-95",
-        "secondary": "bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 rounded-lg px-4 py-2 font-medium",
-        "ghost": "hover:bg-black/5 text-gray-600 hover:text-black rounded-lg px-3 py-2"
-      },
-      "inputs": {
-        "style": "Minimalist, light background.",
-        "classes": "bg-white border-gray-200 focus:border-[#004EEB] focus:ring-2 focus:ring-[#004EEB]/20 rounded-lg"
-      },
-      "badges": {
-        "style": "Soft pastel background with dark text.",
-        "classes": "rounded-full px-2.5 py-0.5 text-xs font-semibold"
-      }
-    },
-    "visual_enhancers": {
-      "glassmorphism": "Use heavily in Sidebar and Sticky Headers. backdrop-blur-xl bg-[#fffdf7]/70",
-      "gradients": "Subtle mesh gradients allowed ONLY in 'Star Rewards' cards or specific hero areas. NO full screen gradients.",
-      "shadows": "shadow-[0_2px_8px_rgba(0,0,0,0.04)]",
-      "micro_interactions": "All interactive elements must have hover/active states. Use 'framer-motion' for page transitions."
-    },
-    "assets": {
-      "icons": "Lucide React (default). Use stroke-width={1.5} for elegance.",
-      "images": {
-        "employee_avatars": [
-          "https://images.unsplash.com/photo-1589668944320-409833e5ba10?crop=entropy&cs=srgb&fm=jpg&q=85",
-          "https://images.unsplash.com/photo-1589220286904-3dcef62c68ee?crop=entropy&cs=srgb&fm=jpg&q=85",
-          "https://images.pexels.com/photos/29852895/pexels-photo-29852895.jpeg",
-          "https://images.unsplash.com/photo-1660074127797-1c429fbb8cd6?crop=entropy&cs=srgb&fm=jpg&q=85"
-        ],
-        "team_collaboration": [
-          "https://images.unsplash.com/photo-1758873268663-5a362616b5a7?crop=entropy&cs=srgb&fm=jpg&q=85",
-          "https://images.unsplash.com/photo-1758518729685-f88df7890776?crop=entropy&cs=srgb&fm=jpg&q=85"
-        ],
-        "placeholders": {
-          "logo": "Use text 'BluBridge' in Outfit Bold, or a simple geometric shape SVG."
-        }
-      }
+    "scale": {
+      "h1": "text-4xl md:text-5xl font-bold tracking-tight text-[#0b1f3b]",
+      "h2": "text-3xl font-semibold tracking-tight text-[#0b1f3b]",
+      "h3": "text-2xl font-medium text-[#0b1f3b]",
+      "body_lg": "text-lg leading-relaxed text-slate-700",
+      "body": "text-base leading-relaxed text-slate-600",
+      "caption": "text-sm text-slate-500 font-medium tracking-wide uppercase"
     }
   },
-  "implementation_steps": [
-    {
-      "step": 1,
-      "action": "Setup Global Theme",
-      "details": "Update index.css with new CSS variables for colors (#efede5, #fffdf7). Install fonts 'Outfit' and 'Public Sans'."
+  "colors": {
+    "palette": {
+      "primary": "#063c88",
+      "primary_hover": "#052d66",
+      "secondary": "#ffffff",
+      "background": "#efede5",
+      "surface": "#fffdf7",
+      "text_main": "#0f172a",
+      "text_muted": "#64748b",
+      "border": "rgba(0,0,0,0.06)"
     },
-    {
-      "step": 2,
-      "action": "Layout Skeleton",
-      "details": "Create the AppShell layout with Sidebar (Left) and Header (Top). Ensure the main content area has the global background #efede5."
+    "status_colors": {
+      "Open": "bg-blue-50 text-blue-700 border-blue-200",
+      "In Progress": "bg-purple-50 text-purple-700 border-purple-200",
+      "Waiting for Approval": "bg-amber-50 text-amber-700 border-amber-200",
+      "On Hold": "bg-orange-50 text-orange-700 border-orange-200",
+      "Resolved": "bg-emerald-50 text-emerald-700 border-emerald-200",
+      "Closed": "bg-slate-100 text-slate-600 border-slate-200",
+      "Rejected": "bg-red-50 text-red-700 border-red-200"
     },
-    {
-      "step": 3,
-      "action": "Dashboard Implementation",
-      "details": "Build the 'Bento Grid' dashboard. Create 'StatCard' component. Use Recharts for simple line/bar charts (Attendance trends)."
-    },
-    {
-      "step": 4,
-      "action": "Feature Modules",
-      "details": "Implement 'Attendance', 'Leave Management', 'Star Rewards' using Shadcn Table and Card components. Customize them to match the 'Flat/Warm' aesthetic."
-    },
-    {
-      "step": 5,
-      "action": "Polish",
-      "details": "Add 'sonner' for toasts. Add 'framer-motion' for smooth page transitions. Ensure all buttons have active states."
+    "department_colors": {
+      "IT & System Support": "text-blue-600 bg-blue-50",
+      "HR Support": "text-rose-600 bg-rose-50",
+      "Finance & Accounts": "text-emerald-600 bg-emerald-50",
+      "Admin & Stationery": "text-orange-600 bg-orange-50",
+      "Compliance & Legal": "text-slate-600 bg-slate-100",
+      "Operations": "text-teal-600 bg-teal-50"
     }
-  ],
-  "universal_guidelines": [
-    "DO NOT use generic 'Inter' font for headings. Use 'Outfit'.",
-    "DO NOT use pure black (#000000). Use Slate-900 (#0f172a).",
-    "Ensure all containers have the specific warm white background #fffdf7.",
-    "Use 'data-testid' on all interactive elements.",
-    "Avoid 'card' look for everything. Some sections can just be text on the background if hierarchy permits.",
-    "For 'Star Rewards', use a gold/amber accent color to make it special."
+  },
+  "layout_strategies": {
+    "dashboard": "Use 'bento-grid' class. Mix col-span-4 (stats) and col-span-8 (charts).",
+    "ticket_list": "Use 'table-premium'. Row hover effects are mandatory. Status pills must be prominent.",
+    "ticket_detail": "Two-column layout: Left (70%) for conversation/timeline, Right (30%) for metadata/actions. Use 'sticky' positioning for the right sidebar.",
+    "form_modals": "Use 'glass' class for modal backgrounds. Inputs should have 'bg-white/50' to blend with the cream background."
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-[#063c88] text-white hover:bg-[#052d66] rounded-xl px-6 py-2.5 font-medium shadow-lg shadow-blue-900/10 transition-all active:scale-95",
+      "secondary": "bg-white text-[#063c88] border border-[#063c88]/20 hover:bg-blue-50 rounded-xl px-6 py-2.5 font-medium transition-all active:scale-95",
+      "ghost": "text-slate-600 hover:bg-slate-100 rounded-lg px-4 py-2 transition-all",
+      "destructive": "bg-red-50 text-red-600 hover:bg-red-100 rounded-xl px-6 py-2.5 font-medium"
+    },
+    "cards": {
+      "default": "card-premium p-6",
+      "interactive": "card-premium p-6 hover:shadow-xl cursor-pointer transition-all duration-300 hover:-translate-y-1",
+      "flat": "bg-white border border-slate-200 rounded-xl p-6"
+    },
+    "inputs": {
+      "default": "bg-white/50 border border-slate-200 rounded-lg px-4 py-2.5 focus:ring-2 focus:ring-[#063c88]/20 focus:border-[#063c88] outline-none transition-all placeholder:text-slate-400"
+    },
+    "badges": {
+      "base": "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border"
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "mapping": {
+      "IT & System Support": "Monitor",
+      "HR Support": "HeartHandshake",
+      "Finance & Accounts": "Banknote",
+      "Admin & Stationery": "Briefcase",
+      "Compliance & Legal": "Scale",
+      "Operations": "Activity",
+      "Attachment": "Paperclip",
+      "Time": "Clock",
+      "User": "UserCircle",
+      "Priority": "Flag"
+    }
+  },
+  "motion": {
+    "page_transition": "initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.3 }}",
+    "list_item": "initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.2, delay: index * 0.05 }}",
+    "hover_lift": "whileHover={{ y: -2 }} whileTap={{ scale: 0.98 }}"
+  },
+  "images": {
+    "login_bg": "https://images.unsplash.com/photo-1747726775186-3593369dcb49?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwzfHxvZmZpY2UlMjBhYnN0cmFjdCUyMG1pbmltYWxpc3R8ZW58MHx8fHwxNzcyMTExNzIzfDA&ixlib=rb-4.1.0&q=85",
+    "empty_state": "https://images.pexels.com/photos/19238352/pexels-photo-19238352.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "placeholder_avatar": "https://ui.shadcn.com/avatars/01.png"
+  },
+  "accessibility": {
+    "contrast": "Ensure text-slate-500 is used only on white/light backgrounds. Use text-slate-600 for better legibility.",
+    "focus": "All interactive elements must have visible focus rings (ring-2 ring-primary/20).",
+    "aria": "Use aria-label for icon-only buttons."
+  },
+  "instructions_to_main_agent": {
+    "step_1": "Update `index.css` to ensure all custom properties are active if not already.",
+    "step_2": "Create a `Layout` component that wraps the app with the Sidebar and Topbar.",
+    "step_3": "Implement the `TicketCard` component with the status pill logic.",
+    "step_4": "Build the `Dashboard` using the `bento-grid` class.",
+    "step_5": "Ensure the Ticket Creation Form uses the `glass` modal style.",
+    "step_6": "Integrate Cloudinary upload widget in the ticket form.",
+    "critical": "Do NOT use default ShadCN cards for the main dashboard widgets. Use the custom `stat-card` class defined in CSS."
+  },
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Don't make generic centered layouts.",
+    "Create depth through layered design elements.",
+    "Use glass-morphism effects with backdrop filters.",
+    "Every interaction needs micro-animations.",
+    "Use 2-3x more spacing than feels comfortable.",
+    "Use 'sonner' for toasts.",
+    "All interactive elements MUST include `data-testid` attribute."
   ]
 }
