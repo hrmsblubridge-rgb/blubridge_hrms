@@ -329,6 +329,8 @@ const EmployeeOnboarding = () => {
                 const statusConfig = STATUS_CONFIG[doc.status] || STATUS_CONFIG.not_uploaded;
                 const StatusIcon = statusConfig.icon;
                 const isUploading = uploading === doc.document_type;
+                const reqDoc = onboardingData?.required_documents?.find(r => r.type === doc.document_type);
+                const isRequired = reqDoc?.required;
 
                 return (
                   <div
@@ -354,7 +356,14 @@ const EmployeeOnboarding = () => {
                           }`} />
                         </div>
                         <div>
-                          <p className="font-medium text-slate-900">{doc.document_label}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium text-slate-900">{doc.document_label}</p>
+                            {isRequired && (
+                              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-4 border-red-300 text-red-600">
+                                Required
+                              </Badge>
+                            )}
+                          </div>
                           {doc.file_name && (
                             <p className="text-xs text-slate-500 truncate max-w-[200px]">
                               {doc.file_name}
