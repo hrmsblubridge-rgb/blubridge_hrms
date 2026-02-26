@@ -313,19 +313,25 @@ Build a complete Human Resource Management System (HRMS) with admin and employee
 │   ├── Team.js                # Team dashboard
 │   ├── Payroll.js             # Payroll management
 │   ├── Reports.js             # Report generation
-│   ├── Verification.js        # NEW: HR onboarding verification
-│   ├── Tickets.js             # NEW: Support tickets
-│   ├── AuditLogs.js           # NEW: Activity audit logs
+│   ├── Verification.js        # HR onboarding verification
+│   ├── Tickets.js             # Legacy support tickets
+│   ├── IssueTickets.js        # NEW: Comprehensive issue ticket system (Admin)
+│   ├── AuditLogs.js           # Activity audit logs
+│   ├── Holidays.js            # Holiday management
+│   ├── Policies.js            # Company policies
 │   ├── AdminProfile.js        # Admin profile
 │   ├── ChangePassword.js      # Password change
 │   ├── EmployeeDashboard.js
 │   ├── EmployeeAttendance.js
 │   ├── EmployeeLeave.js
+│   ├── EmployeeHolidays.js    # Employee holiday view
+│   ├── EmployeeEducationExperience.js # Education & experience
+│   ├── EmployeeIssueTickets.js # NEW: Employee support tickets
 │   ├── EmployeeProfile.js
-│   └── EmployeeOnboarding.js  # NEW: Employee document upload
+│   └── EmployeeOnboarding.js  # Employee document upload
 └── index.css                  # Global premium styles
 ```
 
 ## Test Credentials
 - **Admin**: admin / admin
-- **Employee (needs onboarding)**: onboardtest / onbo@6655
+- **Employee**: testemployee / test@3210
