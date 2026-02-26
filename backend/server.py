@@ -918,6 +918,16 @@ async def generate_emp_id():
     count = await db.employees.count_documents({})
     return f"EMP{str(count + 1).zfill(4)}"
 
+async def generate_ticket_number():
+    """Generate unique ticket number: TKT-YYYYMMDD-XXX"""
+    today = get_ist_now().strftime("%Y%m%d")
+    # Count tickets created today
+    start_of_day = get_ist_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    count = await db.issue_tickets.count_documents({
+        "created_at": {"$gte": start_of_day.isoformat()}
+    })
+    return f"TKT-{today}-{str(count + 1).zfill(3)}"
+
 # ============== SHIFT & LOP CALCULATION HELPERS ==============
 
 def parse_time_12h_to_24h(time_str: str) -> str:
