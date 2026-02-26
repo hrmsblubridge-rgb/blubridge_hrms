@@ -16,14 +16,23 @@ const Login = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [seeding, setSeeding] = useState(false);
-  const { login, user } = useAuth();
+  const { login, user, needsOnboarding } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
+    // If user is already logged in, redirect appropriately
     if (user) {
-      navigate('/dashboard');
+      if (user.role === 'employee') {
+        if (needsOnboarding()) {
+          navigate('/employee/onboarding');
+        } else {
+          navigate('/employee/dashboard');
+        }
+      } else {
+        navigate('/dashboard');
+      }
     }
-  }, [user, navigate]);
+  }, [user, navigate, needsOnboarding]);
 
   useEffect(() => {
     const seedDb = async () => {
