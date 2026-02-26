@@ -114,7 +114,7 @@ const EmployeeOnboarding = () => {
         headers: { Authorization: `Bearer ${token}` }
       });
 
-      const { signature, timestamp, cloud_name, api_key, folder } = sigResponse.data;
+      const { signature, timestamp, cloud_name, api_key, folder, type } = sigResponse.data;
 
       // Upload to Cloudinary
       const formData = new FormData();
@@ -123,6 +123,7 @@ const EmployeeOnboarding = () => {
       formData.append('timestamp', timestamp);
       formData.append('api_key', api_key);
       formData.append('folder', folder);
+      if (type) formData.append('type', type);
 
       const uploadResponse = await axios.post(
         `https://api.cloudinary.com/v1_1/${cloud_name}/auto/upload`,
