@@ -11,7 +11,8 @@ import {
   X,
   Bell,
   ChevronDown,
-  KeyRound
+  KeyRound,
+  PartyPopper
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -26,6 +27,7 @@ const navItems = [
   { path: '/employee/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/employee/attendance', label: 'My Attendance', icon: CalendarCheck },
   { path: '/employee/leave', label: 'Leave', icon: CalendarDays },
+  { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper },
   { path: '/employee/profile', label: 'Profile', icon: User },
 ];
 
