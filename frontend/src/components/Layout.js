@@ -22,7 +22,8 @@ import {
   ClipboardCheck,
   Ticket,
   ScrollText,
-  PartyPopper
+  PartyPopper,
+  BookOpen
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -40,6 +41,7 @@ const navItems = [
   { path: '/attendance', label: 'Attendance', icon: CalendarCheck },
   { path: '/leave', label: 'Leave', icon: CalendarDays },
   { path: '/holidays', label: 'Holidays', icon: PartyPopper },
+  { path: '/policies', label: 'Policies', icon: BookOpen },
   { path: '/star-reward', label: 'Star Reward', icon: Star },
   { path: '/team', label: 'Team', icon: Users },
   { path: '/payroll', label: 'Payroll', icon: Wallet },
