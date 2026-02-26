@@ -170,6 +170,7 @@ function App() {
           <Route path="/employee/policies" element={<EmployeeRoute><Policies /></EmployeeRoute>} />
           <Route path="/employee/tickets" element={<EmployeeRoute><EmployeeIssueTickets /></EmployeeRoute>} />
           <Route path="/employee/documents" element={<EmployeeRoute><EmployeeDocuments /></EmployeeRoute>} />
+          <Route path="/employee/salary" element={<EmployeeRoute><EmployeeSalary /></EmployeeRoute>} />
           <Route path="/employee/profile" element={<EmployeeRoute><EmployeeProfile /></EmployeeRoute>} />
           
           {/* Fallback */}
