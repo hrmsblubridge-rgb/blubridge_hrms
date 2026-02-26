@@ -53,7 +53,16 @@ const Login = () => {
 
     if (result.success) {
       toast.success('Welcome to BluBridge HRMS');
-      navigate('/dashboard');
+      
+      // Check if employee needs onboarding
+      const userData = result.user;
+      if (userData?.role === 'employee' && userData?.onboarding_status !== 'approved' && !userData?.onboarding_completed) {
+        navigate('/employee/onboarding');
+      } else if (userData?.role === 'employee') {
+        navigate('/employee/dashboard');
+      } else {
+        navigate('/dashboard');
+      }
     } else {
       toast.error(result.error);
     }
