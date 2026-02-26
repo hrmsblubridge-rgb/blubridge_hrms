@@ -100,6 +100,11 @@ const Employees = () => {
   const [verifyingEducation, setVerifyingEducation] = useState(false);
   const [verifyingExperience, setVerifyingExperience] = useState(false);
   
+  // Documents state
+  const [documentsData, setDocumentsData] = useState(null);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
+  
   const [form, setForm] = useState({
     full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
     date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
