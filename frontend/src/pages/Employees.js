@@ -238,6 +238,8 @@ const Employees = () => {
     setViewTab('profile');
     setEduExpData(null);
     setDocumentsData(null);
+    setSalaryData(null);
+    setAdjustments([]);
     setShowViewDialog(true);
   };
   
