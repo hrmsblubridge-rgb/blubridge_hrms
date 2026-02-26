@@ -16,7 +16,8 @@ import {
   GraduationCap,
   BookOpen,
   MessageSquarePlus,
-  FileText
+  FileText,
+  Wallet
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -31,6 +32,7 @@ const navItems = [
   { path: '/employee/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/employee/attendance', label: 'My Attendance', icon: CalendarCheck },
   { path: '/employee/leave', label: 'Leave', icon: CalendarDays },
+  { path: '/employee/salary', label: 'My Salary', icon: Wallet },
   { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper },
   { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap },
   { path: '/employee/policies', label: 'Policies', icon: BookOpen },
