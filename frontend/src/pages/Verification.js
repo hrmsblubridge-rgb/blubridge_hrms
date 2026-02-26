@@ -509,13 +509,30 @@ const Verification = () => {
                           </Badge>
                           
                           {doc.file_url && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => window.open(doc.file_url, '_blank')}
-                            >
-                              <Eye className="w-4 h-4" />
-                            </Button>
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => window.open(doc.file_url, '_blank')}
+                                title="View document"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </Button>
+                              <a 
+                                href={doc.file_url} 
+                                download={doc.file_name || 'document'}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  title="Download document"
+                                >
+                                  <Download className="w-4 h-4" />
+                                </Button>
+                              </a>
+                            </>
                           )}
                           
                           {doc.status === 'uploaded' && (
