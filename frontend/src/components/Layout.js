@@ -47,7 +47,7 @@ const navItems = [
   { path: '/team', label: 'Team', icon: Users },
   { path: '/payroll', label: 'Payroll', icon: Wallet },
   { path: '/issue-tickets', label: 'Issue Tickets', icon: MessageSquarePlus },
-  { path: '/tickets', label: 'Legacy Tickets', icon: Ticket },
+  // { path: '/tickets', label: 'Legacy Tickets', icon: Ticket },
   { path: '/reports', label: 'Reports', icon: FileText },
   { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText },
 ];
@@ -151,7 +151,7 @@ const Layout = ({ children }) => {
                 <item.icon className="w-5 h-5" strokeWidth={isActive ? 2 : 1.5} />
                 <span>{item.label}</span>
                 {item.path === '/star-reward' && (
-                  <span className="ml-auto w-2 h-2 rounded-full bg-amber-400 animate-pulse-soft" />
+                  <span className="ml-auto w-2 h-2 rounded-full animate-pulse-soft" />
                 )}
               </NavLink>
             );
