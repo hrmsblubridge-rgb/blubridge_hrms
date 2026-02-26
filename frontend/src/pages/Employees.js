@@ -1536,8 +1536,118 @@ const Employees = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      
+      {/* Adjustment Modal */}
+      <Dialog open={showAdjustmentModal} onOpenChange={setShowAdjustmentModal}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Add Salary Adjustment</DialogTitle>
+            <DialogDescription>Add bonus, incentive, deduction or reimbursement</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Type</label>
+              <Select value={newAdjustment.adjustment_type} onValueChange={(v) => setNewAdjustment({...newAdjustment, adjustment_type: v})}>
+                <SelectTrigger className="rounded-lg">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="bonus">Bonus</SelectItem>
+                  <SelectItem value="incentive">Incentive</SelectItem>
+                  <SelectItem value="reimbursement">Reimbursement</SelectItem>
+                  <SelectItem value="deduction">Deduction</SelectItem>
+                  <SelectItem value="lop">Loss of Pay</SelectItem>
+                  <SelectItem value="advance_recovery">Advance Recovery</SelectItem>
+                  <SelectItem value="penalty">Penalty</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Description</label>
+              <Input
+                placeholder="e.g., Performance Bonus Q1"
+                value={newAdjustment.description}
+                onChange={(e) => setNewAdjustment({...newAdjustment, description: e.target.value})}
+                className="rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Amount (₹)</label>
+              <Input
+                type="number"
+                placeholder="Enter amount"
+                value={newAdjustment.amount}
+                onChange={(e) => setNewAdjustment({...newAdjustment, amount: e.target.value})}
+                className="rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Frequency</label>
+              <Select value={newAdjustment.frequency} onValueChange={(v) => setNewAdjustment({...newAdjustment, frequency: v})}>
+                <SelectTrigger className="rounded-lg">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="one_time">One Time</SelectItem>
+                  <SelectItem value="recurring">Recurring</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {newAdjustment.frequency === 'one_time' && (
+              <div>
+                <label className="text-sm font-medium text-slate-700 mb-1.5 block">Applicable Month</label>
+                <Input
+                  type="month"
+                  value={newAdjustment.applicable_month}
+                  onChange={(e) => setNewAdjustment({...newAdjustment, applicable_month: e.target.value})}
+                  className="rounded-lg"
+                />
+              </div>
+            )}
+            {newAdjustment.frequency === 'recurring' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium text-slate-700 mb-1.5 block">Start Month</label>
+                  <Input
+                    type="month"
+                    value={newAdjustment.start_month}
+                    onChange={(e) => setNewAdjustment({...newAdjustment, start_month: e.target.value})}
+                    className="rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-700 mb-1.5 block">End Month (Optional)</label>
+                  <Input
+                    type="month"
+                    value={newAdjustment.end_month}
+                    onChange={(e) => setNewAdjustment({...newAdjustment, end_month: e.target.value})}
+                    className="rounded-lg"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAdjustmentModal(false)} className="rounded-lg">Cancel</Button>
+            <Button onClick={handleCreateAdjustment} disabled={savingSalary} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg">
+              {savingSalary ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Add Adjustment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
+
+// Salary Item Component
+const SalaryItem = ({ label, amount, isDeduction }) => (
+  <div className="p-3 flex justify-between items-center">
+    <span className="text-sm text-slate-600">{label}</span>
+    <span className={`text-sm font-medium ${isDeduction ? 'text-red-600' : 'text-slate-900'}`}>
+      {isDeduction && amount > 0 ? '-' : ''}₹{amount?.toLocaleString('en-IN') || '0'}
+    </span>
+  </div>
+);
 
 export default Employees;
