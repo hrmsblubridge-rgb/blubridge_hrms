@@ -21,7 +21,13 @@ import {
   Mail,
   Phone,
   MapPin,
-  Calendar
+  Calendar,
+  GraduationCap,
+  Building2,
+  Award,
+  Shield,
+  CheckCircle,
+  Loader2
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
