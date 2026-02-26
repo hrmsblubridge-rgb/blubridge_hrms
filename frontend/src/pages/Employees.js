@@ -897,41 +897,175 @@ const Employees = () => {
 
       {/* View Dialog */}
       <Dialog open={showViewDialog} onOpenChange={setShowViewDialog}>
-        <DialogContent className="bg-[#fffdf7] max-w-2xl max-h-[80vh] overflow-y-auto rounded-2xl">
+        <DialogContent className="bg-[#fffdf7] max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl">
           <DialogHeader>
-            <DialogTitle style={{ fontFamily: 'Outfit' }}>Employee Profile</DialogTitle>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Employee Details</DialogTitle>
             <DialogDescription>{selectedEmployee?.emp_id}</DialogDescription>
           </DialogHeader>
           {selectedEmployee && (
-            <div className="space-y-6 py-4">
-              <div className="flex items-center gap-4 pb-6 border-b border-slate-100">
-                <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-lg">
-                  <span className="text-white text-3xl font-bold">{selectedEmployee.full_name?.charAt(0)?.toUpperCase()}</span>
+            <div className="space-y-4">
+              {/* Header */}
+              <div className="flex items-center gap-4 pb-4 border-b border-slate-100">
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-lg">
+                  <span className="text-white text-2xl font-bold">{selectedEmployee.full_name?.charAt(0)?.toUpperCase()}</span>
                 </div>
                 <div>
-                  <h3 className="text-xl font-bold text-slate-900">{selectedEmployee.full_name}</h3>
-                  <p className="text-slate-500">{selectedEmployee.designation} • {selectedEmployee.tier_level}</p>
-                  <Badge className={`${getStatusBadge(selectedEmployee.employee_status)} mt-2`}>{selectedEmployee.employee_status}</Badge>
+                  <h3 className="text-lg font-bold text-slate-900">{selectedEmployee.full_name}</h3>
+                  <p className="text-sm text-slate-500">{selectedEmployee.designation} • {selectedEmployee.tier_level}</p>
+                  <Badge className={`${getStatusBadge(selectedEmployee.employee_status)} mt-1`}>{selectedEmployee.employee_status}</Badge>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-4">
-                  <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide">Personal</h4>
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-3"><Mail className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.official_email}</span></div>
-                    <div className="flex items-center gap-3"><Phone className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.phone_number || '-'}</span></div>
-                    <div className="flex items-center gap-3"><Calendar className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">DOB: {selectedEmployee.date_of_birth || '-'}</span></div>
+              
+              {/* Tabs */}
+              <Tabs value={viewTab} onValueChange={(v) => { 
+                setViewTab(v); 
+                if (v === 'education' && !eduExpData && selectedEmployee.id) {
+                  fetchEduExp(selectedEmployee.id);
+                }
+              }}>
+                <TabsList className="grid w-full grid-cols-2 bg-slate-100 rounded-lg p-1">
+                  <TabsTrigger value="profile" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">Profile</TabsTrigger>
+                  <TabsTrigger value="education" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">Education & Experience</TabsTrigger>
+                </TabsList>
+                
+                {/* Profile Tab */}
+                <TabsContent value="profile" className="mt-4">
+                  <div className="grid grid-cols-2 gap-6">
+                    <div className="space-y-4">
+                      <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide">Personal</h4>
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3"><Mail className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.official_email}</span></div>
+                        <div className="flex items-center gap-3"><Phone className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.phone_number || '-'}</span></div>
+                        <div className="flex items-center gap-3"><Calendar className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">DOB: {selectedEmployee.date_of_birth || '-'}</span></div>
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide">Employment</h4>
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3"><Briefcase className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Joined: {selectedEmployee.date_of_joining}</span></div>
+                        <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.department} / {selectedEmployee.team}</span></div>
+                        <div className="flex items-center gap-3"><MapPin className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.work_location}</span></div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-                <div className="space-y-4">
-                  <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide">Employment</h4>
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-3"><Briefcase className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Joined: {selectedEmployee.date_of_joining}</span></div>
-                    <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.department} / {selectedEmployee.team}</span></div>
-                    <div className="flex items-center gap-3"><MapPin className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.work_location}</span></div>
-                  </div>
-                </div>
-              </div>
+                </TabsContent>
+                
+                {/* Education & Experience Tab */}
+                <TabsContent value="education" className="mt-4">
+                  {loadingEduExp ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+                    </div>
+                  ) : eduExpData ? (
+                    <div className="space-y-6">
+                      {/* Education Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <GraduationCap className="w-5 h-5 text-blue-600" />
+                            <h4 className="font-semibold text-slate-900">Education</h4>
+                          </div>
+                          {eduExpData.education_verified ? (
+                            <Badge className="bg-emerald-100 text-emerald-700">
+                              <Shield className="w-3 h-3 mr-1" />Verified
+                            </Badge>
+                          ) : eduExpData.education?.length > 0 && (
+                            <Button 
+                              size="sm" 
+                              onClick={() => handleVerifyEducation(selectedEmployee.id)}
+                              disabled={verifyingEducation}
+                              data-testid="verify-education-btn"
+                            >
+                              {verifyingEducation ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <CheckCircle className="w-4 h-4 mr-1" />}
+                              Verify
+                            </Button>
+                          )}
+                        </div>
+                        {eduExpData.education?.length > 0 ? (
+                          <div className="space-y-2">
+                            {eduExpData.education.map((edu, idx) => (
+                              <div key={idx} className="p-3 bg-white rounded-lg border border-slate-200">
+                                <div className="flex items-start gap-3">
+                                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center mt-0.5">
+                                    <Award className="w-4 h-4 text-blue-600" />
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium text-slate-900">{edu.level}</span>
+                                      <Badge variant="outline" className="text-xs">{edu.year_of_passing}</Badge>
+                                    </div>
+                                    <p className="text-sm text-slate-700">{edu.institution}</p>
+                                    <p className="text-xs text-slate-500">{edu.board_university} • {edu.percentage_cgpa}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500 py-4 text-center">No education details added</p>
+                        )}
+                      </div>
+                      
+                      {/* Experience Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Briefcase className="w-5 h-5 text-emerald-600" />
+                            <h4 className="font-semibold text-slate-900">Work Experience</h4>
+                          </div>
+                          {eduExpData.experience_verified ? (
+                            <Badge className="bg-emerald-100 text-emerald-700">
+                              <Shield className="w-3 h-3 mr-1" />Verified
+                            </Badge>
+                          ) : eduExpData.experience?.length > 0 && (
+                            <Button 
+                              size="sm" 
+                              onClick={() => handleVerifyExperience(selectedEmployee.id)}
+                              disabled={verifyingExperience}
+                              data-testid="verify-experience-btn"
+                            >
+                              {verifyingExperience ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <CheckCircle className="w-4 h-4 mr-1" />}
+                              Verify
+                            </Button>
+                          )}
+                        </div>
+                        {eduExpData.experience?.length > 0 ? (
+                          <div className="space-y-2">
+                            {eduExpData.experience.map((exp, idx) => (
+                              <div key={idx} className="p-3 bg-white rounded-lg border border-slate-200">
+                                <div className="flex items-start gap-3">
+                                  <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center mt-0.5">
+                                    <Building2 className="w-4 h-4 text-emerald-600" />
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium text-slate-900">{exp.designation}</span>
+                                      {exp.is_current && <Badge className="bg-emerald-100 text-emerald-700 text-xs">Current</Badge>}
+                                    </div>
+                                    <p className="text-sm text-slate-700">{exp.company_name}</p>
+                                    <p className="text-xs text-slate-500">
+                                      {exp.start_date} - {exp.is_current ? 'Present' : exp.end_date}
+                                    </p>
+                                    {exp.responsibilities && (
+                                      <p className="text-xs text-slate-600 mt-1">{exp.responsibilities}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500 py-4 text-center">No work experience added</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-slate-500">
+                      <p>Click to load education and experience details</p>
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
             </div>
           )}
           <DialogFooter>
