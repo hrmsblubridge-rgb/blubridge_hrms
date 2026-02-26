@@ -12,12 +12,16 @@ import Reports from "./pages/Reports";
 import Payroll from "./pages/Payroll";
 import AdminProfile from "./pages/AdminProfile";
 import ChangePassword from "./pages/ChangePassword";
+import Verification from "./pages/Verification";
+import Tickets from "./pages/Tickets";
+import AuditLogs from "./pages/AuditLogs";
 import Layout from "./components/Layout";
 import EmployeeLayout from "./components/EmployeeLayout";
 import EmployeeDashboard from "./pages/EmployeeDashboard";
 import EmployeeAttendance from "./pages/EmployeeAttendance";
 import EmployeeLeave from "./pages/EmployeeLeave";
 import EmployeeProfile from "./pages/EmployeeProfile";
+import EmployeeOnboarding from "./pages/EmployeeOnboarding";
 import "./App.css";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
