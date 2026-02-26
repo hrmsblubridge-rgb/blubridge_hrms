@@ -62,6 +62,13 @@ const AdminRoute = ({ children }) => {
 };
 
 const EmployeeRoute = ({ children }) => {
+  const { user, needsOnboarding } = useAuth();
+  
+  // If employee needs onboarding, redirect there
+  if (user && user.role === 'employee' && needsOnboarding()) {
+    return <Navigate to="/employee/onboarding" replace />;
+  }
+  
   return (
     <ProtectedRoute allowedRoles={['employee']}>
       <EmployeeLayout>{children}</EmployeeLayout>
@@ -80,7 +87,7 @@ const OnboardingRoute = ({ children }) => {
 
 // Smart redirect based on role
 const RoleBasedRedirect = () => {
-  const { user, loading } = useAuth();
+  const { user, loading, needsOnboarding } = useAuth();
   
   if (loading) {
     return (
@@ -94,8 +101,11 @@ const RoleBasedRedirect = () => {
     return <Navigate to="/login" replace />;
   }
   
-  // Route based on role
+  // Route based on role and onboarding status
   if (user.role === 'employee') {
+    if (needsOnboarding()) {
+      return <Navigate to="/employee/onboarding" replace />;
+    }
     return <Navigate to="/employee/dashboard" replace />;
   }
   
