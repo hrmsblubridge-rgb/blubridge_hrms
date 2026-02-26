@@ -2918,13 +2918,13 @@ async def update_employee_shift(
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     return serialize_doc(employee)
 
-@api_router.put("/employees/{employee_id}/salary")
-async def update_employee_salary(
+@api_router.put("/employees/{employee_id}/monthly-salary")
+async def update_employee_monthly_salary_legacy(
     employee_id: str,
     monthly_salary: float = Query(..., ge=0),
     current_user: dict = Depends(get_current_user)
 ):
-    """Update employee's monthly salary"""
+    """Update employee's monthly salary (Legacy route)"""
     if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
