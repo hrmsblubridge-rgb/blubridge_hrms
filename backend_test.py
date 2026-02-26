@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import json
 
 class BluBridgeHRMSTester:
-    def __init__(self, base_url="https://hrms-biometric.preview.emergentagent.com/api"):
+    def __init__(self, base_url="https://people-platform-19.preview.emergentagent.com/api"):
         self.base_url = base_url
         self.token = None
         self.tests_run = 0
