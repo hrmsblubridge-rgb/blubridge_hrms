@@ -2,7 +2,36 @@
 
 ## Latest Updates (February 26, 2026)
 
-### Issue Ticket System - COMPLETED (NEW!)
+### Offer Letter Management - COMPLETED (NEW!)
+**100% Complete** - Admin can upload offer letters, employees can view/download
+
+#### Features
+- **Admin Side**: New "Documents" tab in Employee Details modal
+  - Upload offer letter (PDF, DOC, DOCX)
+  - View/Download existing offer letter
+  - Replace offer letter with new version
+  - Uses Cloudinary for file storage
+
+- **Employee Side**: New "My Documents" page (`/employee/documents`)
+  - Premium card design for Offer Letter
+  - View and Download buttons
+  - Empty state with helpful message to contact HR
+  - Navigation link in sidebar
+
+#### Backend APIs
+- `GET /api/employees/{id}/documents` - Admin get employee documents
+- `POST /api/employees/{id}/documents` - Admin upload document
+- `DELETE /api/employees/{id}/documents/{doc_id}` - Admin delete document
+- `GET /api/employee-profile/documents` - Employee get own documents
+
+#### Testing Status
+- **Testing Agent Iteration 21**: 100% Pass Rate
+- Backend: 10/10 tests passed
+- Frontend: 8/8 features verified
+
+---
+
+### Issue Ticket System - COMPLETED
 **100% Complete** - Comprehensive employee support ticket system with premium design
 
 #### Features
