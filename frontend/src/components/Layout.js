@@ -18,7 +18,10 @@ import {
   ChevronDown,
   Search,
   Bell,
-  Settings
+  Settings,
+  ClipboardCheck,
+  Ticket,
+  ScrollText
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -32,12 +35,15 @@ import {
 const navItems = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/employees', label: 'Employees', icon: UserCog },
+  { path: '/verification', label: 'Verification', icon: ClipboardCheck },
   { path: '/attendance', label: 'Attendance', icon: CalendarCheck },
   { path: '/leave', label: 'Leave', icon: CalendarDays },
   { path: '/star-reward', label: 'Star Reward', icon: Star },
   { path: '/team', label: 'Team', icon: Users },
   { path: '/payroll', label: 'Payroll', icon: Wallet },
+  { path: '/tickets', label: 'Tickets', icon: Ticket },
   { path: '/reports', label: 'Reports', icon: FileText },
+  { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText },
 ];
 
 const Layout = ({ children }) => {
