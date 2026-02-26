@@ -14,7 +14,8 @@ import {
   KeyRound,
   PartyPopper,
   GraduationCap,
-  BookOpen
+  BookOpen,
+  MessageSquarePlus
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
