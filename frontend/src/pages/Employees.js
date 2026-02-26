@@ -277,14 +277,23 @@ const Employees = () => {
     
     setUploadingDocument(true);
     try {
-      // Upload to Cloudinary
+      // Get signed upload params from backend
+      const sigResponse = await axios.get(`${API}/cloudinary/signature?folder=documents`, {
+        headers: getAuthHeaders()
+      });
+      const { signature, timestamp, cloud_name, api_key, folder } = sigResponse.data;
+      
+      // Upload to Cloudinary with signed params
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('upload_preset', 'blubridge_docs');
-      formData.append('folder', `blubridge/documents/${selectedEmployee.id}`);
+      formData.append('signature', signature);
+      formData.append('timestamp', timestamp);
+      formData.append('api_key', api_key);
+      formData.append('folder', folder);
+      formData.append('type', 'upload');
       
       const cloudinaryResponse = await axios.post(
-        'https://api.cloudinary.com/v1_1/djsvuh19j/auto/upload',
+        `https://api.cloudinary.com/v1_1/${cloud_name}/auto/upload`,
         formData
       );
       
