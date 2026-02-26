@@ -3034,6 +3034,470 @@ async def update_employee_leave(leave_id: str, data: EmployeeLeaveCreate, curren
     
     return {"message": "Leave request updated successfully"}
 
+# ============== ONBOARDING ROUTES ==============
+
+@api_router.get("/onboarding/stats")
+async def get_onboarding_stats(current_user: dict = Depends(get_current_user)):
+    """Get onboarding statistics for dashboard"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    total = await db.onboarding.count_documents({})
+    pending = await db.onboarding.count_documents({"status": OnboardingStatus.PENDING})
+    in_progress = await db.onboarding.count_documents({"status": OnboardingStatus.IN_PROGRESS})
+    under_review = await db.onboarding.count_documents({"status": OnboardingStatus.UNDER_REVIEW})
+    approved = await db.onboarding.count_documents({"status": OnboardingStatus.APPROVED})
+    rejected = await db.onboarding.count_documents({"status": OnboardingStatus.REJECTED})
+    
+    # Get pending document verifications
+    pending_verifications = await db.onboarding_documents.count_documents({"status": DocumentStatus.UPLOADED})
+    rejected_documents = await db.onboarding_documents.count_documents({"status": DocumentStatus.REJECTED})
+    
+    return {
+        "total_employees": total,
+        "pending": pending,
+        "in_progress": in_progress,
+        "under_review": under_review,
+        "approved": approved,
+        "rejected": rejected,
+        "pending_verifications": pending_verifications,
+        "rejected_documents": rejected_documents,
+        "completion_rate": round((approved / total * 100) if total > 0 else 0, 1)
+    }
+
+@api_router.get("/onboarding/list")
+async def get_onboarding_list(
+    status: Optional[str] = None,
+    department: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all onboarding records for HR review"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    query = {}
+    if status and status != "All":
+        query["status"] = status
+    if department and department != "All":
+        query["department"] = department
+    if search:
+        query["$or"] = [
+            {"emp_name": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}}
+        ]
+    
+    records = await db.onboarding.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [serialize_doc(r) for r in records]
+
+@api_router.get("/onboarding/employee/{employee_id}")
+async def get_employee_onboarding(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get onboarding status and documents for an employee"""
+    # Employees can only view their own, HR can view all
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Permission denied")
+    
+    onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not onboarding:
+        raise HTTPException(status_code=404, detail="Onboarding record not found")
+    
+    # Get all documents
+    documents = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(20)
+    
+    return {
+        "onboarding": serialize_doc(onboarding),
+        "documents": [serialize_doc(d) for d in documents],
+        "required_documents": REQUIRED_DOCUMENTS
+    }
+
+@api_router.get("/onboarding/my-status")
+async def get_my_onboarding_status(current_user: dict = Depends(get_current_user)):
+    """Get current user's onboarding status"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not onboarding:
+        # Create onboarding record if doesn't exist
+        employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        onboarding = OnboardingRecord(
+            employee_id=employee_id,
+            emp_id=employee.get("emp_id"),
+            emp_name=employee.get("full_name"),
+            department=employee.get("department"),
+            team=employee.get("team"),
+            designation=employee.get("designation")
+        )
+        doc = onboarding.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        doc['updated_at'] = doc['updated_at'].isoformat()
+        await db.onboarding.insert_one(doc.copy())
+        
+        # Create document placeholders
+        for req_doc in REQUIRED_DOCUMENTS:
+            doc_record = OnboardingDocument(
+                employee_id=employee_id,
+                document_type=req_doc["type"],
+                document_label=req_doc["label"]
+            )
+            doc_data = doc_record.model_dump()
+            doc_data['created_at'] = doc_data['created_at'].isoformat()
+            await db.onboarding_documents.insert_one(doc_data.copy())
+        
+        onboarding = doc
+    
+    # Get documents
+    documents = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(20)
+    
+    # Check if user is in onboarding flow
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    
+    return {
+        "onboarding": serialize_doc(onboarding) if isinstance(onboarding, dict) else onboarding,
+        "documents": [serialize_doc(d) for d in documents],
+        "required_documents": REQUIRED_DOCUMENTS,
+        "is_first_login": user.get("is_first_login", True),
+        "onboarding_completed": user.get("onboarding_status") == OnboardingStatus.APPROVED
+    }
+
+@api_router.post("/onboarding/upload-document")
+async def upload_onboarding_document(data: DocumentUpload, current_user: dict = Depends(get_current_user)):
+    """Upload a document for onboarding"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    # Find existing document record
+    doc_record = await db.onboarding_documents.find_one({
+        "employee_id": employee_id,
+        "document_type": data.document_type
+    }, {"_id": 0})
+    
+    if not doc_record:
+        raise HTTPException(status_code=404, detail="Document type not found")
+    
+    # Update document
+    update_data = {
+        "file_url": data.file_url,
+        "file_public_id": data.file_public_id,
+        "file_name": data.file_name,
+        "status": DocumentStatus.UPLOADED,
+        "uploaded_at": get_ist_now().isoformat()
+    }
+    
+    await db.onboarding_documents.update_one(
+        {"employee_id": employee_id, "document_type": data.document_type},
+        {"$set": update_data}
+    )
+    
+    # Update onboarding status to in_progress
+    await db.onboarding.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": get_ist_now().isoformat()}}
+    )
+    
+    await log_audit(current_user["id"], "upload_document", "onboarding", employee_id, f"Uploaded {data.document_type}")
+    
+    return {"message": "Document uploaded successfully"}
+
+@api_router.post("/onboarding/submit")
+async def submit_onboarding(current_user: dict = Depends(get_current_user)):
+    """Submit onboarding for HR review"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    # Check all required documents are uploaded
+    documents = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(20)
+    
+    required_types = [d["type"] for d in REQUIRED_DOCUMENTS if d["required"]]
+    uploaded_types = [d["document_type"] for d in documents if d.get("status") in [DocumentStatus.UPLOADED, DocumentStatus.VERIFIED]]
+    
+    missing = [t for t in required_types if t not in uploaded_types]
+    if missing:
+        missing_labels = [d["label"] for d in REQUIRED_DOCUMENTS if d["type"] in missing]
+        raise HTTPException(status_code=400, detail=f"Missing required documents: {', '.join(missing_labels)}")
+    
+    # Update onboarding status
+    await db.onboarding.update_one(
+        {"employee_id": employee_id},
+        {"$set": {
+            "status": OnboardingStatus.UNDER_REVIEW,
+            "submitted_at": get_ist_now().isoformat(),
+            "updated_at": get_ist_now().isoformat()
+        }}
+    )
+    
+    await log_audit(current_user["id"], "submit_onboarding", "onboarding", employee_id)
+    
+    return {"message": "Onboarding submitted for review"}
+
+@api_router.post("/onboarding/verify-document")
+async def verify_onboarding_document(data: DocumentVerification, current_user: dict = Depends(get_current_user)):
+    """HR verifies/rejects a document"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    doc = await db.onboarding_documents.find_one({"id": data.document_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    if data.status not in [DocumentStatus.VERIFIED, DocumentStatus.REJECTED]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    update_data = {
+        "status": data.status,
+        "verified_at": get_ist_now().isoformat(),
+        "verified_by": current_user["id"]
+    }
+    
+    if data.status == DocumentStatus.REJECTED:
+        update_data["rejection_reason"] = data.rejection_reason
+    
+    await db.onboarding_documents.update_one(
+        {"id": data.document_id},
+        {"$set": update_data}
+    )
+    
+    await log_audit(current_user["id"], f"verify_document_{data.status}", "onboarding", doc["employee_id"], data.document_type if hasattr(data, 'document_type') else None)
+    
+    return {"message": f"Document {data.status}"}
+
+@api_router.post("/onboarding/approve/{employee_id}")
+async def approve_onboarding(employee_id: str, data: OnboardingApproval, current_user: dict = Depends(get_current_user)):
+    """HR approves/rejects entire onboarding"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not onboarding:
+        raise HTTPException(status_code=404, detail="Onboarding record not found")
+    
+    if data.status not in [OnboardingStatus.APPROVED, OnboardingStatus.REJECTED]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    # Update onboarding record
+    update_data = {
+        "status": data.status,
+        "reviewed_at": get_ist_now().isoformat(),
+        "reviewed_by": current_user["id"],
+        "review_notes": data.review_notes,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.onboarding.update_one({"employee_id": employee_id}, {"$set": update_data})
+    
+    # Update employee's onboarding status
+    employee_update = {"onboarding_status": data.status, "updated_at": get_ist_now().isoformat()}
+    if data.status == OnboardingStatus.APPROVED:
+        employee_update["onboarding_completed_at"] = get_ist_now().isoformat()
+    
+    await db.employees.update_one({"id": employee_id}, {"$set": employee_update})
+    
+    # Update user's onboarding status
+    await db.users.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"onboarding_status": data.status, "is_first_login": False}}
+    )
+    
+    # Send notification email
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if employee:
+        status_text = "approved" if data.status == OnboardingStatus.APPROVED else "requires attention"
+        subject = f"Onboarding {status_text.title()} - {employee.get('full_name')}"
+        html = get_onboarding_status_email(
+            employee.get("full_name"),
+            data.status,
+            data.review_notes
+        )
+        asyncio.create_task(send_email_notification(employee.get("official_email"), subject, html))
+    
+    await log_audit(current_user["id"], f"approve_onboarding_{data.status}", "onboarding", employee_id, data.review_notes)
+    
+    return {"message": f"Onboarding {data.status}"}
+
+@api_router.post("/onboarding/request-reupload/{employee_id}")
+async def request_document_reupload(employee_id: str, document_type: str, reason: str, current_user: dict = Depends(get_current_user)):
+    """HR requests re-upload of a specific document"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    doc = await db.onboarding_documents.find_one({
+        "employee_id": employee_id,
+        "document_type": document_type
+    }, {"_id": 0})
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    await db.onboarding_documents.update_one(
+        {"employee_id": employee_id, "document_type": document_type},
+        {"$set": {
+            "status": DocumentStatus.REJECTED,
+            "rejection_reason": reason,
+            "verified_at": get_ist_now().isoformat(),
+            "verified_by": current_user["id"]
+        }}
+    )
+    
+    # Update onboarding status back to in_progress
+    await db.onboarding.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": get_ist_now().isoformat()}}
+    )
+    
+    return {"message": "Re-upload requested"}
+
+# ============== TICKET ROUTES ==============
+
+@api_router.get("/tickets")
+async def get_tickets(
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all tickets (HR) or own tickets (employee)"""
+    query = {}
+    
+    if current_user["role"] == UserRole.EMPLOYEE:
+        query["employee_id"] = current_user.get("employee_id")
+    
+    if status and status != "All":
+        query["status"] = status
+    if priority and priority != "All":
+        query["priority"] = priority
+    
+    tickets = await db.tickets.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [serialize_doc(t) for t in tickets]
+
+@api_router.post("/tickets")
+async def create_ticket(data: TicketCreate, current_user: dict = Depends(get_current_user)):
+    """Create a new support ticket"""
+    employee_id = current_user.get("employee_id")
+    employee = None
+    
+    if employee_id:
+        employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    
+    ticket = Ticket(
+        employee_id=employee_id or current_user["id"],
+        emp_name=employee.get("full_name") if employee else current_user.get("name"),
+        department=employee.get("department") if employee else current_user.get("department", "N/A"),
+        subject=data.subject,
+        description=data.description,
+        priority=data.priority
+    )
+    
+    doc = ticket.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    doc['updated_at'] = doc['updated_at'].isoformat()
+    await db.tickets.insert_one(doc.copy())
+    
+    await log_audit(current_user["id"], "create_ticket", "ticket", ticket.id)
+    
+    return serialize_doc(doc)
+
+@api_router.put("/tickets/{ticket_id}/status")
+async def update_ticket_status(ticket_id: str, status: str, resolution: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Update ticket status (HR only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    update_data = {
+        "status": status,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    if status in ["resolved", "closed"]:
+        update_data["resolved_at"] = get_ist_now().isoformat()
+        update_data["resolution"] = resolution
+    
+    await db.tickets.update_one({"id": ticket_id}, {"$set": update_data})
+    
+    return {"message": f"Ticket status updated to {status}"}
+
+@api_router.get("/tickets/stats")
+async def get_ticket_stats(current_user: dict = Depends(get_current_user)):
+    """Get ticket statistics"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    total = await db.tickets.count_documents({})
+    open_tickets = await db.tickets.count_documents({"status": "open"})
+    in_progress = await db.tickets.count_documents({"status": "in_progress"})
+    resolved = await db.tickets.count_documents({"status": "resolved"})
+    
+    return {
+        "total": total,
+        "open": open_tickets,
+        "in_progress": in_progress,
+        "resolved": resolved
+    }
+
+# ============== AUDIT LOG ROUTES ==============
+
+@api_router.get("/audit-logs")
+async def get_audit_logs(
+    resource: Optional[str] = None,
+    action: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get audit logs (admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    query = {}
+    if resource:
+        query["resource"] = resource
+    if action:
+        query["action"] = action
+    
+    logs = await db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+    
+    # Add user names
+    for log in logs:
+        user = await db.users.find_one({"id": log["user_id"]}, {"_id": 0, "name": 1})
+        log["user_name"] = user.get("name") if user else "Unknown"
+    
+    return [serialize_doc(l) for l in logs]
+
+# ============== EMAIL HELPERS FOR ONBOARDING ==============
+
+def get_onboarding_status_email(emp_name: str, status: str, notes: Optional[str] = None):
+    """Generate HTML email for onboarding status notification"""
+    status_color = "#10b981" if status == "approved" else "#f59e0b"
+    status_text = "Approved" if status == "approved" else "Requires Attention"
+    
+    message = "Congratulations! Your onboarding has been approved. You now have full access to the HRMS portal." if status == "approved" else "Your onboarding requires some attention. Please log in to the portal to review the feedback and make necessary updates."
+    
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #0b1f3b; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">BluBridge HRMS</h1>
+        </div>
+        <div style="background: #fffdf7; padding: 30px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 8px 8px;">
+            <h2 style="color: #0b1f3b; margin-top: 0;">Onboarding Status Update</h2>
+            <p style="color: #666;">Dear {emp_name},</p>
+            <p style="color: #666;">{message}</p>
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid {status_color};">
+                <p style="margin: 5px 0;"><strong>Status:</strong> <span style="color: {status_color};">{status_text}</span></p>
+                {f'<p style="margin: 5px 0;"><strong>Notes:</strong> {notes}</p>' if notes else ''}
+            </div>
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">This is an automated notification from BluBridge HRMS.</p>
+        </div>
+    </div>
+    """
+
 # ============== SEED DATA ==============
 
 @api_router.post("/seed")
