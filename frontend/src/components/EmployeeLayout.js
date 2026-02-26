@@ -12,7 +12,9 @@ import {
   Bell,
   ChevronDown,
   KeyRound,
-  PartyPopper
+  PartyPopper,
+  GraduationCap,
+  BookOpen
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -28,6 +30,8 @@ const navItems = [
   { path: '/employee/attendance', label: 'My Attendance', icon: CalendarCheck },
   { path: '/employee/leave', label: 'Leave', icon: CalendarDays },
   { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper },
+  { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap },
+  { path: '/employee/policies', label: 'Policies', icon: BookOpen },
   { path: '/employee/profile', label: 'Profile', icon: User },
 ];
 
