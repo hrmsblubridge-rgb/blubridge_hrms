@@ -458,14 +458,14 @@ const IssueTickets = () => {
               <div>
                 <label className="text-sm font-medium text-slate-700 mb-2 block">Create on behalf of (Optional)</label>
                 <Select 
-                  value={newTicket.employee_id} 
-                  onValueChange={(v) => setNewTicket({ ...newTicket, employee_id: v })}
+                  value={newTicket.employee_id || "self"} 
+                  onValueChange={(v) => setNewTicket({ ...newTicket, employee_id: v === "self" ? "" : v })}
                 >
                   <SelectTrigger data-testid="employee-select">
                     <SelectValue placeholder="Select employee (or leave blank for yourself)" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Myself</SelectItem>
+                    <SelectItem value="self">Myself</SelectItem>
                     {employees.map(emp => (
                       <SelectItem key={emp.id} value={emp.id}>
                         {emp.full_name} ({emp.emp_id})
