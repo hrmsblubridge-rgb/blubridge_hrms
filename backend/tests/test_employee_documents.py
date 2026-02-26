@@ -47,28 +47,7 @@ class TestEmployeeDocumentsAPI:
         
         yield
         
-        # Cleanup: Delete test documents
-        self._cleanup_test_documents()
-    
-    def _cleanup_test_documents(self):
-        """Delete documents with test file names"""
-        if hasattr(self, 'admin_token') and hasattr(self, 'employee_id'):
-            headers = {"Authorization": f"Bearer {self.admin_token}"}
-            try:
-                response = self.session.get(
-                    f"{BASE_URL}/api/employees/{self.employee_id}/documents",
-                    headers=headers
-                )
-                if response.status_code == 200:
-                    docs = response.json().get("documents", [])
-                    for doc in docs:
-                        if doc.get("file_name", "").startswith("TEST_"):
-                            self.session.delete(
-                                f"{BASE_URL}/api/employees/{self.employee_id}/documents/{doc['id']}",
-                                headers=headers
-                            )
-            except:
-                pass
+        # Note: Don't cleanup after each test - let tests share uploaded documents
     
     def test_1_admin_can_get_employee_documents_empty(self):
         """Test admin can get employee documents (initial state may be empty or have existing docs)"""
