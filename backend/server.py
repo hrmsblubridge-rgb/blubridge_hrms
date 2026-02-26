@@ -164,22 +164,26 @@ class DocumentStatus:
     REJECTED = "rejected"
 
 class DocumentType:
-    ID_PROOF = "id_proof"
-    ADDRESS_PROOF = "address_proof"
+    AADHAAR_CARD = "aadhaar_card"
+    PAN_CARD = "pan_card"
+    PASSPORT = "passport"
+    VOTER_ID = "voter_id"
     EDUCATION = "education"
     EXPERIENCE = "experience"
-    BANK_DETAILS = "bank_details"
-    PAN_CARD = "pan_card"
+    OFFER_LETTER = "offer_letter"
+    RELIEVING_LETTER = "relieving_letter"
     PHOTO = "photo"
 
 REQUIRED_DOCUMENTS = [
-    {"type": DocumentType.ID_PROOF, "label": "ID Proof (Aadhar/Passport)", "required": True},
-    {"type": DocumentType.ADDRESS_PROOF, "label": "Address Proof", "required": True},
+    {"type": DocumentType.AADHAAR_CARD, "label": "Aadhaar Card", "required": True},
     {"type": DocumentType.PAN_CARD, "label": "PAN Card", "required": True},
+    {"type": DocumentType.PASSPORT, "label": "Passport", "required": False},
+    {"type": DocumentType.VOTER_ID, "label": "Voter ID", "required": False},
     {"type": DocumentType.EDUCATION, "label": "Education Certificates", "required": True},
-    {"type": DocumentType.EXPERIENCE, "label": "Experience Letters", "required": False},
-    {"type": DocumentType.BANK_DETAILS, "label": "Bank Account Details", "required": True},
-    {"type": DocumentType.PHOTO, "label": "Passport Size Photo", "required": True},
+    {"type": DocumentType.EXPERIENCE, "label": "Experience Certificates", "required": False},
+    {"type": DocumentType.OFFER_LETTER, "label": "Offer / Appointment Letter", "required": False},
+    {"type": DocumentType.RELIEVING_LETTER, "label": "Relieving Letter", "required": False},
+    {"type": DocumentType.PHOTO, "label": "Passport-size Photograph", "required": True},
 ]
 
 # ============== MODELS ==============
