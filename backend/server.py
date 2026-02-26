@@ -256,6 +256,10 @@ class Employee(BaseModel):
     stars: int = 0
     unsafe_count: int = 0
     
+    # Onboarding fields
+    onboarding_status: str = OnboardingStatus.PENDING
+    onboarding_completed_at: Optional[datetime] = None
+    
     # Soft delete
     is_deleted: bool = False
     deleted_at: Optional[datetime] = None
