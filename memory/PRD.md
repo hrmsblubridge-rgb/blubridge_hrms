@@ -8,10 +8,23 @@
 #### The Flow
 1. HR creates employee → Employee receives login credentials via email
 2. First login → Employee redirected to onboarding page
-3. Employee uploads required documents (ID, Address, PAN, Education, Experience, Bank Details, Photo)
+3. Employee uploads required documents:
+   - Aadhaar Card (Required)
+   - PAN Card (Required)
+   - Passport
+   - Voter ID
+   - Education Certificates (Required)
+   - Experience Certificates
+   - Offer / Appointment Letter
+   - Relieving Letter
+   - Passport-size Photograph (Required)
 4. HR reviews documents in Verification page
 5. HR approves/rejects → Employee gets full HRMS access or action required
 6. Onboarding becomes view-only after approval (permanently locked)
+
+#### Cloudinary Integration
+- Cloud Name: djsvuh19j
+- Documents stored in: blubridge/documents/
 
 #### New Pages Created
 1. **Verification Page** (`/verification`) - HR reviews pending onboarding requests
