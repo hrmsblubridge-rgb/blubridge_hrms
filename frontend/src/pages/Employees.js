@@ -1129,6 +1129,104 @@ const Employees = () => {
                     </div>
                   )}
                 </TabsContent>
+                
+                {/* Documents Tab */}
+                <TabsContent value="documents" className="mt-4">
+                  {loadingDocuments ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {/* Offer Letter Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-5 h-5 text-blue-600" />
+                            <h4 className="font-semibold text-slate-900">Offer Letter</h4>
+                          </div>
+                        </div>
+                        
+                        {/* Existing Offer Letter */}
+                        {documentsData?.documents?.find(d => d.document_type === 'offer_letter') ? (
+                          <div className="p-4 bg-white rounded-xl border border-slate-200">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                                  <File className="w-5 h-5 text-blue-600" />
+                                </div>
+                                <div>
+                                  <p className="font-medium text-slate-900">
+                                    {documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_name || 'Offer Letter'}
+                                  </p>
+                                  <p className="text-xs text-slate-500">
+                                    Uploaded by {documentsData.documents.find(d => d.document_type === 'offer_letter')?.uploaded_by_name} • {new Date(documentsData.documents.find(d => d.document_type === 'offer_letter')?.uploaded_at).toLocaleDateString()}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <a 
+                                  href={documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                  data-testid="view-offer-letter-btn"
+                                >
+                                  <ExternalLink className="w-4 h-4" />
+                                  View
+                                </a>
+                                <a 
+                                  href={documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_url}
+                                  download
+                                  className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                                >
+                                  <Download className="w-4 h-4" />
+                                  Download
+                                </a>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 text-center">
+                            <p className="text-sm text-slate-500 mb-2">No offer letter uploaded yet</p>
+                          </div>
+                        )}
+                        
+                        {/* Upload Button */}
+                        {canEdit && (
+                          <div className="mt-3">
+                            <input
+                              type="file"
+                              id="offer-letter-upload"
+                              className="hidden"
+                              accept=".pdf,.doc,.docx"
+                              onChange={(e) => {
+                                if (e.target.files?.[0]) {
+                                  handleUploadOfferLetter(e.target.files[0]);
+                                }
+                              }}
+                            />
+                            <label
+                              htmlFor="offer-letter-upload"
+                              className={`flex items-center justify-center gap-2 w-full py-3 border-2 border-dashed border-blue-300 rounded-xl cursor-pointer hover:bg-blue-50 hover:border-blue-400 transition-colors ${uploadingDocument ? 'opacity-50 pointer-events-none' : ''}`}
+                              data-testid="upload-offer-letter-btn"
+                            >
+                              {uploadingDocument ? (
+                                <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                              ) : (
+                                <Upload className="w-5 h-5 text-blue-500" />
+                              )}
+                              <span className="text-sm font-medium text-blue-600">
+                                {uploadingDocument ? 'Uploading...' : documentsData?.documents?.find(d => d.document_type === 'offer_letter') ? 'Replace Offer Letter' : 'Upload Offer Letter'}
+                              </span>
+                            </label>
+                            <p className="text-xs text-slate-400 text-center mt-2">Supported: PDF, DOC, DOCX</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </TabsContent>
               </Tabs>
             </div>
           )}
