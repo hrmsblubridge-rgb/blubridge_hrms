@@ -179,11 +179,11 @@ const EmployeeOnboarding = () => {
   };
 
   const canSubmit = () => {
-    const requiredDocs = documents.filter(d => {
-      const reqDoc = onboardingData?.required_documents?.find(r => r.type === d.document_type);
-      return reqDoc?.required;
-    });
-    return requiredDocs.every(d => ['uploaded', 'verified'].includes(d.status));
+    const requiredTypes = requiredDocuments.filter(r => r.required).map(r => r.type);
+    const uploadedTypes = documents
+      .filter(d => ['uploaded', 'verified'].includes(d.status))
+      .map(d => d.document_type);
+    return requiredTypes.every(t => uploadedTypes.includes(t));
   };
 
   const isReadOnly = onboardingData?.status === 'approved' || onboardingData?.status === 'under_review';
