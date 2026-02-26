@@ -339,6 +339,87 @@ const Employees = () => {
     }
   };
   
+  // Fetch employee salary
+  const fetchSalary = async (employeeId) => {
+    setLoadingSalary(true);
+    try {
+      const [salaryRes, adjustmentsRes] = await Promise.all([
+        axios.get(`${API}/employees/${employeeId}/salary`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/employees/${employeeId}/salary/adjustments`, { headers: getAuthHeaders() })
+      ]);
+      setSalaryData(salaryRes.data.salary);
+      setAdjustments(adjustmentsRes.data.adjustments || []);
+    } catch (error) {
+      console.error('Error fetching salary:', error);
+      setSalaryData(null);
+    } finally {
+      setLoadingSalary(false);
+    }
+  };
+  
+  // Update salary CTC
+  const handleUpdateSalary = async (annualCtc) => {
+    if (!selectedEmployee) return;
+    setSavingSalary(true);
+    try {
+      await axios.put(`${API}/employees/${selectedEmployee.id}/salary`, 
+        { annual_ctc: parseFloat(annualCtc) },
+        { headers: getAuthHeaders() }
+      );
+      toast.success('Salary updated successfully');
+      fetchSalary(selectedEmployee.id);
+    } catch (error) {
+      toast.error('Failed to update salary');
+    } finally {
+      setSavingSalary(false);
+    }
+  };
+  
+  // Create salary adjustment
+  const handleCreateAdjustment = async () => {
+    if (!selectedEmployee || !newAdjustment.description || !newAdjustment.amount) {
+      toast.error('Please fill all required fields');
+      return;
+    }
+    setSavingSalary(true);
+    try {
+      await axios.post(`${API}/employees/${selectedEmployee.id}/salary/adjustments`, {
+        ...newAdjustment,
+        amount: parseFloat(newAdjustment.amount)
+      }, { headers: getAuthHeaders() });
+      toast.success('Adjustment created successfully');
+      setShowAdjustmentModal(false);
+      setNewAdjustment({
+        adjustment_type: 'bonus',
+        description: '',
+        amount: '',
+        frequency: 'one_time',
+        applicable_month: new Date().toISOString().slice(0, 7),
+        start_month: '',
+        end_month: ''
+      });
+      fetchSalary(selectedEmployee.id);
+    } catch (error) {
+      toast.error('Failed to create adjustment');
+    } finally {
+      setSavingSalary(false);
+    }
+  };
+  
+  // Delete adjustment
+  const handleDeleteAdjustment = async (adjustmentId) => {
+    if (!selectedEmployee) return;
+    try {
+      await axios.delete(`${API}/employees/${selectedEmployee.id}/salary/adjustments/${adjustmentId}`, 
+        { headers: getAuthHeaders() }
+      );
+      toast.success('Adjustment deleted');
+      fetchSalary(selectedEmployee.id);
+    } catch (error) {
+      toast.error('Failed to delete adjustment');
+    }
+  };
+  
   const handleDelete = (employee) => { setSelectedEmployee(employee); setShowDeleteDialog(true); };
 
   const validateForm = () => {
