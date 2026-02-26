@@ -1054,11 +1054,10 @@ async def get_cloudinary_signature(
         raise HTTPException(status_code=400, detail="Invalid folder path")
     
     timestamp = int(time.time())
-    # Include access_mode to make uploads publicly accessible
+    # Simple params for public upload
     params = {
         "timestamp": timestamp,
-        "folder": f"blubridge/{folder}",
-        "access_mode": "public"  # Make files publicly viewable
+        "folder": f"blubridge/{folder}"
     }
     
     signature = cloudinary.utils.api_sign_request(
@@ -1072,8 +1071,7 @@ async def get_cloudinary_signature(
         "cloud_name": os.environ.get("CLOUDINARY_CLOUD_NAME"),
         "api_key": os.environ.get("CLOUDINARY_API_KEY"),
         "folder": f"blubridge/{folder}",
-        "resource_type": resource_type,
-        "access_mode": "public"  # Return for frontend to include in upload
+        "resource_type": resource_type
     }
 
 @api_router.delete("/cloudinary/{public_id:path}")
