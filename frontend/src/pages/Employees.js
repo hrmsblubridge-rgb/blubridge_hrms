@@ -256,6 +256,56 @@ const Employees = () => {
     }
   };
   
+  // Fetch employee documents
+  const fetchDocuments = async (employeeId) => {
+    setLoadingDocuments(true);
+    try {
+      const response = await axios.get(`${API}/employees/${employeeId}/documents`, { headers: getAuthHeaders() });
+      setDocumentsData(response.data);
+    } catch (error) {
+      console.error('Error fetching documents:', error);
+      toast.error('Failed to load documents');
+    } finally {
+      setLoadingDocuments(false);
+    }
+  };
+  
+  // Upload offer letter
+  const handleUploadOfferLetter = async (file) => {
+    if (!selectedEmployee) return;
+    
+    setUploadingDocument(true);
+    try {
+      // Upload to Cloudinary
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('upload_preset', 'blubridge_docs');
+      formData.append('folder', `blubridge/documents/${selectedEmployee.id}`);
+      
+      const cloudinaryResponse = await axios.post(
+        'https://api.cloudinary.com/v1_1/djsvuh19j/auto/upload',
+        formData
+      );
+      
+      // Save document reference to backend
+      await axios.post(`${API}/employees/${selectedEmployee.id}/documents`, {
+        file_url: cloudinaryResponse.data.secure_url,
+        file_name: file.name,
+        file_type: file.type,
+        file_public_id: cloudinaryResponse.data.public_id,
+        document_type: 'offer_letter'
+      }, { headers: getAuthHeaders() });
+      
+      toast.success('Offer letter uploaded successfully');
+      fetchDocuments(selectedEmployee.id);
+    } catch (error) {
+      console.error('Upload error:', error);
+      toast.error('Failed to upload offer letter');
+    } finally {
+      setUploadingDocument(false);
+    }
+  };
+  
   const handleDelete = (employee) => { setSelectedEmployee(employee); setShowDeleteDialog(true); };
 
   const validateForm = () => {
