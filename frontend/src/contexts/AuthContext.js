@@ -38,7 +38,7 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('blubridge_token', newToken);
       setToken(newToken);
       setUser(userData);
-      return { success: true };
+      return { success: true, user: userData };
     } catch (error) {
       return { 
         success: false, 
@@ -53,12 +53,23 @@ export const AuthProvider = ({ children }) => {
     setUser(null);
   };
 
+  const updateUser = (updates) => {
+    setUser(prev => ({ ...prev, ...updates }));
+  };
+
   const getAuthHeaders = () => ({
     Authorization: `Bearer ${token}`
   });
 
+  // Check if user needs onboarding
+  const needsOnboarding = () => {
+    if (!user) return false;
+    if (user.role !== 'employee') return false;
+    return user.onboarding_status !== 'approved' && !user.onboarding_completed;
+  };
+
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, getAuthHeaders }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, getAuthHeaders, updateUser, needsOnboarding }}>
       {children}
     </AuthContext.Provider>
   );
