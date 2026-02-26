@@ -313,7 +313,8 @@ Build a complete Human Resource Management System (HRMS) with admin and employee
 13. ✅ Policies Module
 14. ✅ Education & Experience Module
 15. ✅ Holiday List Management
-16. ✅ **Issue Ticket System (NEW!)** - 6 categories, status workflow, feedback
+16. ✅ **Issue Ticket System** - 6 categories, status workflow, feedback
+17. ✅ **Offer Letter Management (NEW!)** - Admin upload, employee view/download
 
 ## Future Enhancements (Backlog)
 - P1: eSSL X990 Biometric Device Integration (research done, awaiting user decision)
