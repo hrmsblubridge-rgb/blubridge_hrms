@@ -4384,6 +4384,466 @@ async def get_audit_logs(
     
     return [serialize_doc(l) for l in logs]
 
+# ============== SALARY MANAGEMENT ROUTES ==============
+
+def calculate_salary_structure(annual_ctc: float) -> dict:
+    """Calculate salary breakdown from annual CTC"""
+    monthly_ctc = annual_ctc / 12
+    
+    # Basic: 40% of CTC
+    basic = round(monthly_ctc * 0.40, 2)
+    
+    # HRA: 50% of Basic
+    hra = round(basic * 0.50, 2)
+    
+    # DA: 10% of Basic
+    da = round(basic * 0.10, 2)
+    
+    # Fixed allowances
+    conveyance = 1600
+    medical_allowance = 1250
+    
+    # PF: 12% of Basic (capped at 15000 basic for PF calculation)
+    pf_basic = min(basic, 15000)
+    pf_employee = round(pf_basic * 0.12, 2)
+    pf_employer = round(pf_basic * 0.12, 2)
+    
+    # Calculate gross before special allowance
+    earnings_before_special = basic + hra + da + conveyance + medical_allowance
+    
+    # ESI: Only if gross < 21000 (0.75% employee, 3.25% employer)
+    gross_estimate = monthly_ctc - pf_employer  # Rough estimate
+    if gross_estimate < 21000:
+        esi_employee = round(gross_estimate * 0.0075, 2)
+        esi_employer = round(gross_estimate * 0.0325, 2)
+    else:
+        esi_employee = 0
+        esi_employer = 0
+    
+    # Professional Tax (standard 200, varies by state)
+    professional_tax = 200
+    
+    # Special Allowance: Remaining amount to match CTC
+    employer_contributions = pf_employer + esi_employer
+    total_deductions_estimate = pf_employee + esi_employee + professional_tax
+    special_allowance = round(monthly_ctc - earnings_before_special - employer_contributions, 2)
+    special_allowance = max(0, special_allowance)  # Can't be negative
+    
+    # Gross Salary
+    gross_salary = round(basic + hra + da + conveyance + medical_allowance + special_allowance, 2)
+    
+    # Total Deductions
+    total_deductions = round(pf_employee + esi_employee + professional_tax, 2)
+    
+    # Net Salary
+    net_salary = round(gross_salary - total_deductions, 2)
+    
+    return {
+        "annual_ctc": annual_ctc,
+        "monthly_ctc": round(monthly_ctc, 2),
+        "basic": basic,
+        "hra": hra,
+        "da": da,
+        "conveyance": conveyance,
+        "medical_allowance": medical_allowance,
+        "special_allowance": special_allowance,
+        "other_allowances": 0,
+        "gross_salary": gross_salary,
+        "pf_employee": pf_employee,
+        "pf_employer": pf_employer,
+        "esi_employee": esi_employee,
+        "esi_employer": esi_employer,
+        "professional_tax": professional_tax,
+        "tds": 0,
+        "other_deductions": 0,
+        "total_deductions": total_deductions,
+        "net_salary": net_salary
+    }
+
+@api_router.get("/employees/{employee_id}/salary")
+async def get_employee_salary(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get employee salary structure"""
+    # Check permissions
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get salary structure
+    salary = await db.salary_structures.find_one({"employee_id": employee_id}, {"_id": 0})
+    
+    if not salary:
+        # Create default salary structure from monthly_salary
+        monthly_salary = employee.get("monthly_salary", 0)
+        if monthly_salary > 0:
+            annual_ctc = monthly_salary * 12
+            salary_data = calculate_salary_structure(annual_ctc)
+            salary_data["id"] = str(uuid.uuid4())
+            salary_data["employee_id"] = employee_id
+            salary_data["effective_from"] = employee.get("date_of_joining", get_ist_today())
+            salary_data["created_at"] = get_ist_now().isoformat()
+            salary_data["updated_at"] = get_ist_now().isoformat()
+            await db.salary_structures.insert_one(salary_data.copy())
+            salary = salary_data
+        else:
+            return {"employee_id": employee_id, "salary": None, "message": "No salary configured"}
+    
+    return {
+        "employee_id": employee_id,
+        "employee_name": employee.get("full_name"),
+        "salary": serialize_doc(salary)
+    }
+
+@api_router.put("/employees/{employee_id}/salary")
+async def update_employee_salary(
+    employee_id: str, 
+    data: SalaryStructureUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update employee salary structure (Admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # If annual_ctc is provided, recalculate entire structure
+    if data.annual_ctc is not None:
+        salary_data = calculate_salary_structure(data.annual_ctc)
+        salary_data["updated_at"] = get_ist_now().isoformat()
+        
+        existing = await db.salary_structures.find_one({"employee_id": employee_id})
+        if existing:
+            await db.salary_structures.update_one(
+                {"employee_id": employee_id},
+                {"$set": salary_data}
+            )
+        else:
+            salary_data["id"] = str(uuid.uuid4())
+            salary_data["employee_id"] = employee_id
+            salary_data["effective_from"] = get_ist_today()
+            salary_data["created_at"] = get_ist_now().isoformat()
+            await db.salary_structures.insert_one(salary_data.copy())
+        
+        # Update employee's monthly_salary field
+        await db.employees.update_one(
+            {"id": employee_id},
+            {"$set": {"monthly_salary": salary_data["gross_salary"]}}
+        )
+        
+        await log_audit(current_user["id"], "update_salary", "salary", employee_id, f"Updated CTC to {data.annual_ctc}")
+        
+        return {"message": "Salary structure updated", "salary": salary_data}
+    
+    # Otherwise update individual components
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    if update_data:
+        update_data["updated_at"] = get_ist_now().isoformat()
+        
+        # Recalculate totals
+        existing = await db.salary_structures.find_one({"employee_id": employee_id}, {"_id": 0})
+        if existing:
+            merged = {**existing, **update_data}
+            
+            # Recalculate gross
+            gross = (merged.get("basic", 0) + merged.get("hra", 0) + merged.get("da", 0) + 
+                    merged.get("conveyance", 0) + merged.get("medical_allowance", 0) + 
+                    merged.get("special_allowance", 0) + merged.get("other_allowances", 0))
+            
+            # Recalculate deductions
+            total_deductions = (merged.get("pf_employee", 0) + merged.get("esi_employee", 0) + 
+                              merged.get("professional_tax", 0) + merged.get("tds", 0) + 
+                              merged.get("other_deductions", 0))
+            
+            update_data["gross_salary"] = round(gross, 2)
+            update_data["total_deductions"] = round(total_deductions, 2)
+            update_data["net_salary"] = round(gross - total_deductions, 2)
+            
+            await db.salary_structures.update_one(
+                {"employee_id": employee_id},
+                {"$set": update_data}
+            )
+            
+            await log_audit(current_user["id"], "update_salary_components", "salary", employee_id)
+            
+            return {"message": "Salary components updated"}
+    
+    return {"message": "No changes made"}
+
+@api_router.get("/employees/{employee_id}/salary/adjustments")
+async def get_salary_adjustments(
+    employee_id: str,
+    month: Optional[str] = None,  # Format: YYYY-MM
+    current_user: dict = Depends(get_current_user)
+):
+    """Get salary adjustments for an employee"""
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    query = {"employee_id": employee_id}
+    
+    if month:
+        # Get adjustments applicable for this month
+        query["$or"] = [
+            {"frequency": "one_time", "applicable_month": month},
+            {
+                "frequency": "recurring",
+                "is_active": True,
+                "$or": [
+                    {"start_month": {"$lte": month}, "end_month": {"$gte": month}},
+                    {"start_month": {"$lte": month}, "end_month": None}
+                ]
+            }
+        ]
+    
+    adjustments = await db.salary_adjustments.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    
+    return {"employee_id": employee_id, "adjustments": [serialize_doc(a) for a in adjustments]}
+
+@api_router.post("/employees/{employee_id}/salary/adjustments")
+async def create_salary_adjustment(
+    employee_id: str,
+    data: SalaryAdjustmentCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a salary adjustment (Admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Determine category based on type
+    earning_types = ["bonus", "incentive", "reimbursement"]
+    category = SalaryComponentType.EARNING if data.adjustment_type in earning_types else SalaryComponentType.DEDUCTION
+    
+    adjustment = SalaryAdjustment(
+        employee_id=employee_id,
+        adjustment_type=data.adjustment_type,
+        category=category,
+        description=data.description,
+        amount=data.amount,
+        frequency=data.frequency,
+        applicable_month=data.applicable_month if data.frequency == "one_time" else None,
+        start_month=data.start_month if data.frequency == "recurring" else None,
+        end_month=data.end_month if data.frequency == "recurring" else None,
+        created_by=current_user["id"],
+        created_by_name=current_user.get("name")
+    )
+    
+    doc = adjustment.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    doc["updated_at"] = doc["updated_at"].isoformat()
+    await db.salary_adjustments.insert_one(doc.copy())
+    
+    await log_audit(current_user["id"], "create_salary_adjustment", "salary_adjustment", adjustment.id, 
+                   f"{data.adjustment_type}: {data.amount} for {employee.get('full_name')}")
+    
+    return {"message": "Adjustment created", "adjustment": serialize_doc(doc)}
+
+@api_router.delete("/employees/{employee_id}/salary/adjustments/{adjustment_id}")
+async def delete_salary_adjustment(
+    employee_id: str,
+    adjustment_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a salary adjustment (Admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    result = await db.salary_adjustments.delete_one({"id": adjustment_id, "employee_id": employee_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Adjustment not found")
+    
+    await log_audit(current_user["id"], "delete_salary_adjustment", "salary_adjustment", adjustment_id)
+    
+    return {"message": "Adjustment deleted"}
+
+@api_router.put("/employees/{employee_id}/salary/adjustments/{adjustment_id}")
+async def update_salary_adjustment(
+    employee_id: str,
+    adjustment_id: str,
+    data: SalaryAdjustmentCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a salary adjustment (Admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    existing = await db.salary_adjustments.find_one({"id": adjustment_id, "employee_id": employee_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Adjustment not found")
+    
+    earning_types = ["bonus", "incentive", "reimbursement"]
+    category = SalaryComponentType.EARNING if data.adjustment_type in earning_types else SalaryComponentType.DEDUCTION
+    
+    update_data = {
+        "adjustment_type": data.adjustment_type,
+        "category": category,
+        "description": data.description,
+        "amount": data.amount,
+        "frequency": data.frequency,
+        "applicable_month": data.applicable_month if data.frequency == "one_time" else None,
+        "start_month": data.start_month if data.frequency == "recurring" else None,
+        "end_month": data.end_month if data.frequency == "recurring" else None,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.salary_adjustments.update_one({"id": adjustment_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "update_salary_adjustment", "salary_adjustment", adjustment_id)
+    
+    return {"message": "Adjustment updated"}
+
+@api_router.get("/employees/{employee_id}/payslip/{month}")
+async def get_payslip(
+    employee_id: str,
+    month: str,  # Format: YYYY-MM
+    current_user: dict = Depends(get_current_user)
+):
+    """Get payslip for a specific month"""
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get base salary structure
+    salary = await db.salary_structures.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not salary:
+        raise HTTPException(status_code=404, detail="Salary structure not found")
+    
+    # Get adjustments for this month
+    adjustments = await db.salary_adjustments.find({
+        "employee_id": employee_id,
+        "$or": [
+            {"frequency": "one_time", "applicable_month": month},
+            {
+                "frequency": "recurring",
+                "is_active": True,
+                "$or": [
+                    {"start_month": {"$lte": month}, "end_month": {"$gte": month}},
+                    {"start_month": {"$lte": month}, "end_month": None}
+                ]
+            }
+        ]
+    }, {"_id": 0}).to_list(50)
+    
+    # Calculate adjusted salary
+    total_earnings_adjustment = sum(a["amount"] for a in adjustments if a["category"] == "earning")
+    total_deductions_adjustment = sum(a["amount"] for a in adjustments if a["category"] == "deduction")
+    
+    adjusted_gross = salary["gross_salary"] + total_earnings_adjustment
+    adjusted_deductions = salary["total_deductions"] + total_deductions_adjustment
+    adjusted_net = adjusted_gross - adjusted_deductions
+    
+    # Get LOP days from attendance if available
+    lop_days = 0
+    attendance_records = await db.attendances.find({
+        "emp_id": employee.get("emp_id"),
+        "status": "LOP"
+    }, {"_id": 0}).to_list(31)
+    # Filter by month
+    for record in attendance_records:
+        if record.get("date", "").startswith(month.replace("-", "")[:6]) or month in record.get("date", ""):
+            lop_days += 1
+    
+    # Calculate LOP deduction
+    per_day_salary = salary["gross_salary"] / 30
+    lop_deduction = round(per_day_salary * lop_days, 2)
+    
+    payslip = {
+        "employee_id": employee_id,
+        "employee_name": employee.get("full_name"),
+        "emp_id": employee.get("emp_id"),
+        "designation": employee.get("designation"),
+        "department": employee.get("department"),
+        "month": month,
+        "pay_period": month,
+        
+        # Earnings
+        "basic": salary["basic"],
+        "hra": salary["hra"],
+        "da": salary["da"],
+        "conveyance": salary["conveyance"],
+        "medical_allowance": salary["medical_allowance"],
+        "special_allowance": salary["special_allowance"],
+        "other_allowances": salary.get("other_allowances", 0),
+        "earnings_adjustments": [a for a in adjustments if a["category"] == "earning"],
+        "total_earnings_adjustment": total_earnings_adjustment,
+        "gross_earnings": adjusted_gross,
+        
+        # Deductions
+        "pf_employee": salary["pf_employee"],
+        "esi_employee": salary["esi_employee"],
+        "professional_tax": salary["professional_tax"],
+        "tds": salary.get("tds", 0),
+        "other_deductions": salary.get("other_deductions", 0),
+        "deduction_adjustments": [a for a in adjustments if a["category"] == "deduction"],
+        "total_deductions_adjustment": total_deductions_adjustment,
+        "lop_days": lop_days,
+        "lop_deduction": lop_deduction,
+        "total_deductions": adjusted_deductions + lop_deduction,
+        
+        # Net Pay
+        "net_pay": round(adjusted_net - lop_deduction, 2),
+        
+        # Company info
+        "company_name": "BluBridge Technologies",
+        "company_address": "Coimbatore, Tamil Nadu, India"
+    }
+    
+    return payslip
+
+@api_router.get("/employee-profile/salary")
+async def get_my_salary(current_user: dict = Depends(get_current_user)):
+    """Get current employee's salary structure"""
+    if current_user["role"] != UserRole.EMPLOYEE:
+        raise HTTPException(status_code=403, detail="This endpoint is for employees only")
+    
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="Employee profile not found")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    salary = await db.salary_structures.find_one({"employee_id": employee_id}, {"_id": 0})
+    
+    if not salary and employee:
+        monthly_salary = employee.get("monthly_salary", 0)
+        if monthly_salary > 0:
+            annual_ctc = monthly_salary * 12
+            salary_data = calculate_salary_structure(annual_ctc)
+            salary_data["id"] = str(uuid.uuid4())
+            salary_data["employee_id"] = employee_id
+            salary_data["effective_from"] = employee.get("date_of_joining", get_ist_today())
+            salary_data["created_at"] = get_ist_now().isoformat()
+            salary_data["updated_at"] = get_ist_now().isoformat()
+            await db.salary_structures.insert_one(salary_data.copy())
+            salary = salary_data
+    
+    # Get current month adjustments
+    current_month = get_ist_now().strftime("%Y-%m")
+    adjustments = await db.salary_adjustments.find({
+        "employee_id": employee_id,
+        "$or": [
+            {"frequency": "one_time", "applicable_month": current_month},
+            {"frequency": "recurring", "is_active": True}
+        ]
+    }, {"_id": 0}).to_list(20)
+    
+    return {
+        "salary": serialize_doc(salary) if salary else None,
+        "adjustments": [serialize_doc(a) for a in adjustments]
+    }
+
 # ============== EMPLOYEE DOCUMENTS ROUTES ==============
 
 class EmployeeDocumentUpload(BaseModel):
