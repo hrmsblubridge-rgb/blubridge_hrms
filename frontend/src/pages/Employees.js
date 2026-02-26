@@ -214,6 +214,7 @@ const Employees = () => {
     setSelectedEmployee(employee); 
     setViewTab('profile');
     setEduExpData(null);
+    setDocumentsData(null);
     setShowViewDialog(true);
   };
   
