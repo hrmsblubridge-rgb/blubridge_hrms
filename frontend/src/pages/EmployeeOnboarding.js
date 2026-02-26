@@ -52,6 +52,7 @@ const EmployeeOnboarding = () => {
   
   const [onboardingData, setOnboardingData] = useState(null);
   const [documents, setDocuments] = useState([]);
+  const [requiredDocuments, setRequiredDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -68,6 +69,7 @@ const EmployeeOnboarding = () => {
       });
       setOnboardingData(response.data.onboarding);
       setDocuments(response.data.documents || []);
+      setRequiredDocuments(response.data.required_documents || []);
       
       // If already approved, redirect to dashboard
       if (response.data.onboarding_completed || response.data.onboarding?.status === 'approved') {
