@@ -4256,6 +4256,134 @@ async def get_audit_logs(
     
     return [serialize_doc(l) for l in logs]
 
+# ============== EMPLOYEE DOCUMENTS ROUTES ==============
+
+class EmployeeDocumentUpload(BaseModel):
+    file_url: str
+    file_name: str
+    file_type: str
+    file_public_id: Optional[str] = None
+    document_type: str = "offer_letter"  # offer_letter, appointment_letter, etc.
+
+@api_router.get("/employees/{employee_id}/documents")
+async def get_employee_documents(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get employee's official documents (Admin can view any, Employee can view own)"""
+    # Check permissions
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get documents from employee_documents collection
+    documents = await db.employee_documents.find(
+        {"employee_id": employee_id}, 
+        {"_id": 0}
+    ).to_list(50)
+    
+    return {
+        "employee_id": employee_id,
+        "employee_name": employee.get("full_name"),
+        "documents": [serialize_doc(d) for d in documents]
+    }
+
+@api_router.post("/employees/{employee_id}/documents")
+async def upload_employee_document(
+    employee_id: str, 
+    data: EmployeeDocumentUpload,
+    current_user: dict = Depends(get_current_user)
+):
+    """Upload official document for an employee (Admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Check if document of this type already exists
+    existing = await db.employee_documents.find_one({
+        "employee_id": employee_id,
+        "document_type": data.document_type
+    })
+    
+    doc = {
+        "id": str(uuid.uuid4()),
+        "employee_id": employee_id,
+        "document_type": data.document_type,
+        "file_url": data.file_url,
+        "file_name": data.file_name,
+        "file_type": data.file_type,
+        "file_public_id": data.file_public_id,
+        "uploaded_by": current_user["id"],
+        "uploaded_by_name": current_user.get("name"),
+        "uploaded_at": get_ist_now().isoformat(),
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    if existing:
+        # Update existing document
+        await db.employee_documents.update_one(
+            {"id": existing["id"]},
+            {"$set": {
+                "file_url": data.file_url,
+                "file_name": data.file_name,
+                "file_type": data.file_type,
+                "file_public_id": data.file_public_id,
+                "uploaded_by": current_user["id"],
+                "uploaded_by_name": current_user.get("name"),
+                "updated_at": get_ist_now().isoformat()
+            }}
+        )
+        doc["id"] = existing["id"]
+        await log_audit(current_user["id"], "update_employee_document", "employee_document", existing["id"], f"Updated {data.document_type} for {employee.get('full_name')}")
+    else:
+        # Insert new document
+        await db.employee_documents.insert_one(doc.copy())
+        await log_audit(current_user["id"], "upload_employee_document", "employee_document", doc["id"], f"Uploaded {data.document_type} for {employee.get('full_name')}")
+    
+    return {"message": f"Document uploaded successfully", "document": serialize_doc(doc)}
+
+@api_router.delete("/employees/{employee_id}/documents/{document_id}")
+async def delete_employee_document(
+    employee_id: str,
+    document_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete an employee document (Admin only)"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    document = await db.employee_documents.find_one({"id": document_id, "employee_id": employee_id})
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    await db.employee_documents.delete_one({"id": document_id})
+    await log_audit(current_user["id"], "delete_employee_document", "employee_document", document_id)
+    
+    return {"message": "Document deleted successfully"}
+
+@api_router.get("/employee-profile/documents")
+async def get_my_documents(current_user: dict = Depends(get_current_user)):
+    """Get current employee's official documents"""
+    if current_user["role"] != UserRole.EMPLOYEE:
+        raise HTTPException(status_code=403, detail="This endpoint is for employees only")
+    
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="Employee profile not found")
+    
+    documents = await db.employee_documents.find(
+        {"employee_id": employee_id}, 
+        {"_id": 0}
+    ).to_list(50)
+    
+    return {
+        "documents": [serialize_doc(d) for d in documents]
+    }
+
 # ============== POLICIES ROUTES ==============
 
 @api_router.get("/policies")
