@@ -133,6 +133,9 @@ function App() {
           <Route path="/team" element={<AdminRoute><Team /></AdminRoute>} />
           <Route path="/payroll" element={<AdminRoute><Payroll /></AdminRoute>} />
           <Route path="/reports" element={<AdminRoute><Reports /></AdminRoute>} />
+          <Route path="/verification" element={<AdminRoute><Verification /></AdminRoute>} />
+          <Route path="/tickets" element={<AdminRoute><Tickets /></AdminRoute>} />
+          <Route path="/audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
           <Route path="/admin-profile" element={<AdminRoute><AdminProfile /></AdminRoute>} />
           <Route path="/change-password" element={<AdminRoute><ChangePassword /></AdminRoute>} />
           
