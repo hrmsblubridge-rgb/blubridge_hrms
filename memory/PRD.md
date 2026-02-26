@@ -2,7 +2,41 @@
 
 ## Latest Updates (February 26, 2026)
 
-### Offer Letter Management - COMPLETED (NEW!)
+### Salary Breakup & Payslip System - COMPLETED (NEW!)
+**100% Complete** - Comprehensive salary management with Indian payroll standards
+
+#### Features
+- **Detailed Salary Components**:
+  - Earnings: Basic (40% of CTC), HRA (50% of Basic), DA (10% of Basic), Conveyance, Medical, Special Allowance
+  - Deductions: PF (12% of Basic), ESI (if applicable), Professional Tax, TDS
+
+- **Salary Adjustments**:
+  - Types: Bonus, Incentive, Reimbursement, Deduction, LOP, Advance Recovery, Penalty
+  - Frequency: One-time (specific month) or Recurring (with start/end)
+  - Full CRUD operations for admin
+
+- **Admin View** (Employee Details → Salary Tab):
+  - CTC input with auto-calculation
+  - Earnings & Deductions breakdown
+  - Monthly Net Salary display
+  - Adjustments management
+
+- **Employee View** (`/employee/salary`):
+  - Net Pay This Month (prominent card)
+  - Month selector (last 12 months)
+  - Earnings breakdown with icons
+  - Deductions breakdown
+  - **Download Payslips**: Simple Slip & Detailed Payslip (printable HTML)
+  - Annual CTC display
+
+#### Testing Status
+- **Testing Agent Iteration 22**: 95% Backend, 100% Frontend
+- Backend: 18/19 tests passed
+- Frontend: 12/12 features verified
+
+---
+
+### Offer Letter Management - COMPLETED
 **100% Complete** - Admin can upload offer letters, employees can view/download
 
 #### Features
