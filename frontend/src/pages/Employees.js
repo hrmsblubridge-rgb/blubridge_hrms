@@ -982,10 +982,14 @@ const Employees = () => {
                 if (v === 'education' && !eduExpData && selectedEmployee.id) {
                   fetchEduExp(selectedEmployee.id);
                 }
+                if (v === 'documents' && !documentsData && selectedEmployee.id) {
+                  fetchDocuments(selectedEmployee.id);
+                }
               }}>
-                <TabsList className="grid w-full grid-cols-2 bg-slate-100 rounded-lg p-1">
+                <TabsList className="grid w-full grid-cols-3 bg-slate-100 rounded-lg p-1">
                   <TabsTrigger value="profile" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">Profile</TabsTrigger>
-                  <TabsTrigger value="education" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">Education & Experience</TabsTrigger>
+                  <TabsTrigger value="education" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm">Education & Exp</TabsTrigger>
+                  <TabsTrigger value="documents" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm" data-testid="documents-tab">Documents</TabsTrigger>
                 </TabsList>
                 
                 {/* Profile Tab */}
