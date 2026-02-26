@@ -27,7 +27,11 @@ import {
   Award,
   Shield,
   CheckCircle,
-  Loader2
+  Loader2,
+  FileText,
+  Upload,
+  ExternalLink,
+  File
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
