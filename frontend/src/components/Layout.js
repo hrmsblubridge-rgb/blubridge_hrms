@@ -46,7 +46,8 @@ const navItems = [
   { path: '/star-reward', label: 'Star Reward', icon: Star },
   { path: '/team', label: 'Team', icon: Users },
   { path: '/payroll', label: 'Payroll', icon: Wallet },
-  { path: '/tickets', label: 'Tickets', icon: Ticket },
+  { path: '/issue-tickets', label: 'Issue Tickets', icon: MessageSquarePlus },
+  { path: '/tickets', label: 'Legacy Tickets', icon: Ticket },
   { path: '/reports', label: 'Reports', icon: FileText },
   { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText },
 ];
