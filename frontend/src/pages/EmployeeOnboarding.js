@@ -331,7 +331,7 @@ const EmployeeOnboarding = () => {
                 const statusConfig = STATUS_CONFIG[doc.status] || STATUS_CONFIG.not_uploaded;
                 const StatusIcon = statusConfig.icon;
                 const isUploading = uploading === doc.document_type;
-                const reqDoc = onboardingData?.required_documents?.find(r => r.type === doc.document_type);
+                const reqDoc = requiredDocuments.find(r => r.type === doc.document_type);
                 const isRequired = reqDoc?.required;
 
                 return (
