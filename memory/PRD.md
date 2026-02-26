@@ -160,9 +160,14 @@ Build a complete Human Resource Management System (HRMS) with admin and employee
 6. ✅ Team dashboard by departments
 7. ✅ Payroll with LOP calculations
 8. ✅ CSV export for reports
-9. ✅ Employee Leave Visualization (NEW)
+9. ✅ Employee Leave Visualization
+10. ✅ Employee Onboarding Flow (NEW)
+11. ✅ Support Tickets System (NEW)
+12. ✅ Audit Logs Tracking (NEW)
 
 ## Future Enhancements (Backlog)
+- P1: eSSL X990 Biometric Device Integration (research done, awaiting user decision)
+- P2: Backend Date Filtering Bug Fix (dates stored as "DD-MM-YYYY" strings)
 - P2: Email notifications for leave approvals
 - P3: Performance review module
 - P3: Document management
