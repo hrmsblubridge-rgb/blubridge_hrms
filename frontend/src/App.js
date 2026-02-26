@@ -148,6 +148,7 @@ function App() {
           <Route path="/payroll" element={<AdminRoute><Payroll /></AdminRoute>} />
           <Route path="/reports" element={<AdminRoute><Reports /></AdminRoute>} />
           <Route path="/holidays" element={<AdminRoute><Holidays /></AdminRoute>} />
+          <Route path="/policies" element={<AdminRoute><Policies /></AdminRoute>} />
           <Route path="/verification" element={<AdminRoute><Verification /></AdminRoute>} />
           <Route path="/tickets" element={<AdminRoute><Tickets /></AdminRoute>} />
           <Route path="/audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
