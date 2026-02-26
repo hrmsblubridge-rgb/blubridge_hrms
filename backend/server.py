@@ -453,6 +453,78 @@ class ShiftConfigCreate(BaseModel):
     login_time: Optional[str] = None  # For custom shifts
     logout_time: Optional[str] = None  # For custom shifts
 
+# ============== ONBOARDING MODELS ==============
+
+class OnboardingDocument(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    document_type: str
+    document_label: str
+    file_url: Optional[str] = None
+    file_public_id: Optional[str] = None
+    file_name: Optional[str] = None
+    status: str = DocumentStatus.NOT_UPLOADED
+    uploaded_at: Optional[datetime] = None
+    verified_at: Optional[datetime] = None
+    verified_by: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class OnboardingRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_id: str
+    emp_name: str
+    department: str
+    team: str
+    designation: str
+    status: str = OnboardingStatus.PENDING
+    documents: List[dict] = []  # List of document statuses
+    submitted_at: Optional[datetime] = None
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
+    review_notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class DocumentUpload(BaseModel):
+    document_type: str
+    file_url: str
+    file_public_id: Optional[str] = None
+    file_name: Optional[str] = None
+
+class DocumentVerification(BaseModel):
+    document_id: str
+    status: str  # "verified" or "rejected"
+    rejection_reason: Optional[str] = None
+
+class OnboardingApproval(BaseModel):
+    status: str  # "approved" or "rejected"
+    review_notes: Optional[str] = None
+
+class TicketCreate(BaseModel):
+    subject: str
+    description: str
+    priority: str = "medium"  # low, medium, high
+
+class Ticket(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    department: str
+    subject: str
+    description: str
+    priority: str = "medium"
+    status: str = "open"  # open, in_progress, resolved, closed
+    assigned_to: Optional[str] = None
+    resolution: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+    resolved_at: Optional[datetime] = None
+
 # ============== HELPERS ==============
 
 def hash_password(password: str) -> str:
