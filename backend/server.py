@@ -207,6 +207,186 @@ COMPANY_HOLIDAYS_2026 = [
     {"id": "h16", "name": "Christmas Day", "date": "2026-12-25", "day": "Friday", "type": "religious"},
 ]
 
+# ============== COMPANY POLICIES ==============
+
+COMPANY_POLICIES = [
+    {
+        "id": "policy_leave",
+        "name": "Leave Policy",
+        "category": "HR",
+        "version": "2.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "All Employees",
+        "content": {
+            "overview": "This policy outlines the leave entitlements and procedures for all employees at BluBridge.",
+            "sections": [
+                {
+                    "title": "Leave Types & Entitlements",
+                    "items": [
+                        {"type": "Casual Leave (CL)", "days": 12, "description": "For personal matters, can be taken in half-day increments"},
+                        {"type": "Sick Leave (SL)", "days": 10, "description": "For illness, medical certificate required for 3+ consecutive days"},
+                        {"type": "Earned Leave (EL)", "days": 18, "description": "Vacation leave, accrued monthly, can be carried forward (max 30 days)"},
+                        {"type": "Maternity Leave", "days": 182, "description": "For female employees, as per government regulations"},
+                        {"type": "Paternity Leave", "days": 10, "description": "For male employees on birth of child"},
+                        {"type": "Bereavement Leave", "days": 5, "description": "On death of immediate family member"}
+                    ]
+                },
+                {
+                    "title": "Leave Application Process",
+                    "items": [
+                        "Apply through HRMS portal at least 3 days in advance for planned leaves",
+                        "Emergency leaves must be notified to manager within 2 hours of shift start",
+                        "Manager approval required for all leaves",
+                        "HR approval required for leaves exceeding 5 consecutive days"
+                    ]
+                },
+                {
+                    "title": "Leave Restrictions",
+                    "items": [
+                        "No leave during probation period except sick leave",
+                        "Leave cannot be combined with public holidays without prior approval",
+                        "Unapproved absence will be marked as Loss of Pay (LOP)",
+                        "Maximum 3 casual leaves per month"
+                    ]
+                },
+                {
+                    "title": "Leave Encashment",
+                    "items": [
+                        "Unused Earned Leave can be encashed at year-end (max 10 days)",
+                        "Encashment calculated at basic salary rate",
+                        "Leave encashment processed in January salary"
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_it",
+        "name": "IT Team Policy",
+        "category": "Department",
+        "version": "1.5",
+        "effective_date": "2026-01-01",
+        "applicable_to": "Technology Department",
+        "content": {
+            "overview": "Guidelines and standards for the IT/Technology team at BluBridge.",
+            "sections": [
+                {
+                    "title": "Working Hours & Flexibility",
+                    "items": [
+                        "Core hours: 10:00 AM - 4:00 PM (mandatory presence)",
+                        "Flexible start: 8:00 AM - 10:00 AM",
+                        "Flexible end: 4:00 PM - 8:00 PM",
+                        "Work from home: Up to 2 days per week with manager approval",
+                        "On-call rotation: Monthly schedule published in advance"
+                    ]
+                },
+                {
+                    "title": "Code Standards & Practices",
+                    "items": [
+                        "All code must pass peer review before merge",
+                        "Minimum 80% test coverage for new features",
+                        "Follow company coding style guide (available on internal wiki)",
+                        "Documentation required for all public APIs",
+                        "Security review mandatory for authentication/payment features"
+                    ]
+                },
+                {
+                    "title": "Equipment & Resources",
+                    "items": [
+                        "Laptop upgrade cycle: Every 3 years",
+                        "Monitors: Dual monitor setup provided",
+                        "Software licenses: Request through IT portal",
+                        "Cloud resources: Require manager + finance approval",
+                        "Training budget: ₹50,000 per year per employee"
+                    ]
+                },
+                {
+                    "title": "Security Requirements",
+                    "items": [
+                        "Use company VPN for all remote work",
+                        "2FA mandatory for all company systems",
+                        "No production access from personal devices",
+                        "Report security incidents within 1 hour",
+                        "Password rotation: Every 90 days"
+                    ]
+                },
+                {
+                    "title": "Career Development",
+                    "items": [
+                        "Quarterly 1:1 with manager for career discussion",
+                        "Annual performance review with promotion consideration",
+                        "Conference attendance: 1 per year (company sponsored)",
+                        "Certification reimbursement: Up to ₹25,000 per certification"
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_research",
+        "name": "Research Unit Policy",
+        "category": "Department",
+        "version": "1.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "Research & Development Team",
+        "content": {
+            "overview": "Guidelines for the Research & Development unit focusing on innovation, intellectual property, and research standards.",
+            "sections": [
+                {
+                    "title": "Research Standards",
+                    "items": [
+                        "All research must follow ethical guidelines approved by Ethics Committee",
+                        "Data integrity: Maintain original data for minimum 5 years",
+                        "Peer review required before publication",
+                        "Regular progress presentations (bi-weekly)",
+                        "Collaboration with external institutions requires HR approval"
+                    ]
+                },
+                {
+                    "title": "Intellectual Property",
+                    "items": [
+                        "All inventions during employment are company property",
+                        "Patent filing assistance provided by legal team",
+                        "Inventor bonus: ₹1,00,000 for granted patents",
+                        "Publication rights: Company retains first right, employee credit given",
+                        "NDA required for all confidential research projects"
+                    ]
+                },
+                {
+                    "title": "Research Funding & Resources",
+                    "items": [
+                        "Annual research budget allocation based on project proposals",
+                        "Equipment requests: Submit through R&D portal",
+                        "Lab access: 24/7 with badge entry",
+                        "External collaboration budget: Up to ₹5,00,000 per project",
+                        "Conference travel: 2 international + 2 domestic per year"
+                    ]
+                },
+                {
+                    "title": "Project Management",
+                    "items": [
+                        "Quarterly milestone reviews mandatory",
+                        "Project documentation in central repository",
+                        "Status reports: Weekly to project lead, monthly to management",
+                        "Project handover documentation required on completion",
+                        "Knowledge sharing sessions: Monthly"
+                    ]
+                },
+                {
+                    "title": "Safety & Compliance",
+                    "items": [
+                        "Lab safety training: Annual renewal required",
+                        "Hazardous materials: Follow MSDS guidelines",
+                        "Equipment certification: Annual calibration",
+                        "Incident reporting: Immediate notification to safety officer",
+                        "Compliance audits: Quarterly internal reviews"
+                    ]
+                }
+            ]
+        }
+    }
+]
+
 # ============== MODELS ==============
 
 class User(BaseModel):
