@@ -715,26 +715,156 @@ class OnboardingApproval(BaseModel):
     status: str  # "approved" or "rejected"
     review_notes: Optional[str] = None
 
+# ============== ISSUE TICKET SYSTEM ENUMS & MODELS ==============
+
+class TicketCategory:
+    IT_SYSTEM = "IT & System Support"
+    HR_SUPPORT = "HR Support"
+    FINANCE = "Finance & Accounts"
+    ADMIN_STATIONERY = "Admin & Stationery"
+    COMPLIANCE = "Compliance & Legal"
+    OPERATIONS = "Operations"
+
+class TicketStatus:
+    OPEN = "Open"
+    IN_PROGRESS = "In Progress"
+    WAITING_APPROVAL = "Waiting for Approval"
+    ON_HOLD = "On Hold"
+    RESOLVED = "Resolved"
+    CLOSED = "Closed"
+    REJECTED = "Rejected"
+
+class TicketPriority:
+    HIGH = "High"
+    MEDIUM = "Medium"
+    LOW = "Low"
+
+# Department role mapping for ticket assignment
+TICKET_DEPARTMENT_ROLES = {
+    TicketCategory.IT_SYSTEM: "it_admin",
+    TicketCategory.HR_SUPPORT: "hr_admin",
+    TicketCategory.FINANCE: "finance_admin",
+    TicketCategory.ADMIN_STATIONERY: "admin_dept",
+    TicketCategory.COMPLIANCE: "compliance_officer",
+    TicketCategory.OPERATIONS: "operations_manager"
+}
+
+# Subcategories for each ticket category
+TICKET_SUBCATEGORIES = {
+    TicketCategory.IT_SYSTEM: [
+        "Login Issue", "Password Reset", "Email Not Working", "HRMS Access Issue",
+        "Software Installation", "System Slow / Hanging", "Printer Not Working",
+        "Network / Internet Issue", "Biometric Attendance Issue", "Other IT Issue"
+    ],
+    TicketCategory.HR_SUPPORT: [
+        "Salary Not Credited", "Payslip Request", "Leave Balance Issue",
+        "Leave Approval Delay", "Attendance Correction", "Joining Letter / Experience Letter",
+        "Promotion / Designation Change", "Policy Clarification", "Grievance Complaint", "Other HR Issue"
+    ],
+    TicketCategory.FINANCE: [
+        "Expense Reimbursement", "Claim Status", "Salary Calculation Issue",
+        "Bonus / Incentive Issue", "Tax / Form 16 Request", "Bank Detail Update", "Other Finance Issue"
+    ],
+    TicketCategory.ADMIN_STATIONERY: [
+        "Stationery Request", "ID Card Issue", "Access Card Issue", "Cabin / Seat Allocation",
+        "AC / Electricity Issue", "Office Cleanliness", "Furniture Request",
+        "Asset Allocation (Laptop, Mouse, Keyboard)", "Other Admin Issue"
+    ],
+    TicketCategory.COMPLIANCE: [
+        "Code of Conduct Violation", "Harassment Complaint", "Ethics Complaint",
+        "Data Privacy Issue", "Policy Violation Report", "Workplace Safety Concern", "Other Compliance Issue"
+    ],
+    TicketCategory.OPERATIONS: [
+        "Shift Change Request", "Work Location Change", "Project Allocation Issue",
+        "Client Escalation", "Workload Issue", "Other Operations Issue"
+    ]
+}
+
+class TicketStatusUpdate(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    status: str
+    updated_by: str
+    updated_by_name: str
+    notes: Optional[str] = None
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class TicketAttachment(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    file_url: str
+    file_name: str
+    file_type: str
+    file_public_id: Optional[str] = None
+    uploaded_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class TicketFeedback(BaseModel):
+    rating: int  # 1-5
+    comment: Optional[str] = None
+    submitted_at: datetime = Field(default_factory=lambda: get_ist_now())
+
 class TicketCreate(BaseModel):
+    category: str
+    subcategory: str
     subject: str
     description: str
-    priority: str = "medium"  # low, medium, high
+    priority: str = TicketPriority.MEDIUM
+    attachments: Optional[List[dict]] = None  # List of {file_url, file_name, file_type, file_public_id}
+    employee_id: Optional[str] = None  # For admin creating on behalf of employee
 
 class Ticket(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    ticket_number: str  # Auto-generated: TKT-YYYYMMDD-XXX
     employee_id: str
     emp_name: str
+    emp_email: Optional[str] = None
     department: str
+    team: Optional[str] = None
+    
+    # Ticket details
+    category: str
+    subcategory: str
     subject: str
     description: str
-    priority: str = "medium"
-    status: str = "open"  # open, in_progress, resolved, closed
-    assigned_to: Optional[str] = None
+    priority: str = TicketPriority.MEDIUM
+    status: str = TicketStatus.OPEN
+    
+    # Assignment
+    assigned_department: str  # Department role responsible
+    assigned_to: Optional[str] = None  # User ID of assigned admin
+    assigned_to_name: Optional[str] = None
+    
+    # Resolution
     resolution: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    resolved_by_name: Optional[str] = None
+    
+    # Attachments
+    attachments: List[dict] = []  # List of TicketAttachment
+    
+    # Status history
+    status_history: List[dict] = []  # List of TicketStatusUpdate
+    
+    # Feedback
+    feedback: Optional[dict] = None  # TicketFeedback
+    
+    # Metadata
+    created_by: Optional[str] = None  # If created by admin on behalf
+    created_by_name: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: get_ist_now())
     updated_at: datetime = Field(default_factory=lambda: get_ist_now())
-    resolved_at: Optional[datetime] = None
+
+class TicketStatusUpdateRequest(BaseModel):
+    status: str
+    notes: Optional[str] = None
+    resolution: Optional[str] = None
+
+class TicketFeedbackRequest(BaseModel):
+    rating: int
+    comment: Optional[str] = None
+
+class TicketAssignRequest(BaseModel):
+    assigned_to: str  # User ID
 
 # ============== HELPERS ==============
 
