@@ -23,7 +23,8 @@ import {
   Ticket,
   ScrollText,
   PartyPopper,
-  BookOpen
+  BookOpen,
+  MessageSquarePlus
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
