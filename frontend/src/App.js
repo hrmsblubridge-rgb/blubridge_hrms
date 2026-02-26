@@ -69,6 +69,15 @@ const EmployeeRoute = ({ children }) => {
   );
 };
 
+// Onboarding route - no layout, standalone page
+const OnboardingRoute = ({ children }) => {
+  return (
+    <ProtectedRoute allowedRoles={['employee']}>
+      {children}
+    </ProtectedRoute>
+  );
+};
+
 // Smart redirect based on role
 const RoleBasedRedirect = () => {
   const { user, loading } = useAuth();
