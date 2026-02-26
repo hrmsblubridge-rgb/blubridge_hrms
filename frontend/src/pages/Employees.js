@@ -90,6 +90,11 @@ const Employees = () => {
   const [showViewDialog, setShowViewDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [viewTab, setViewTab] = useState('profile');
+  const [eduExpData, setEduExpData] = useState(null);
+  const [loadingEduExp, setLoadingEduExp] = useState(false);
+  const [verifyingEducation, setVerifyingEducation] = useState(false);
+  const [verifyingExperience, setVerifyingExperience] = useState(false);
   
   const [form, setForm] = useState({
     full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
