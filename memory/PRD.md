@@ -278,9 +278,13 @@ Build a complete Human Resource Management System (HRMS) with admin and employee
 7. ✅ Payroll with LOP calculations
 8. ✅ CSV export for reports
 9. ✅ Employee Leave Visualization
-10. ✅ Employee Onboarding Flow (NEW)
-11. ✅ Support Tickets System (NEW)
-12. ✅ Audit Logs Tracking (NEW)
+10. ✅ Employee Onboarding Flow
+11. ✅ Support Tickets System (Legacy)
+12. ✅ Audit Logs Tracking
+13. ✅ Policies Module
+14. ✅ Education & Experience Module
+15. ✅ Holiday List Management
+16. ✅ **Issue Ticket System (NEW!)** - 6 categories, status workflow, feedback
 
 ## Future Enhancements (Backlog)
 - P1: eSSL X990 Biometric Device Integration (research done, awaiting user decision)
