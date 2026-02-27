@@ -4738,7 +4738,7 @@ async def get_payslip(
     month: str,  # Format: YYYY-MM
     current_user: dict = Depends(get_current_user)
 ):
-    """Get payslip for a specific month"""
+    """Get payslip for a specific month - Compensation & Benefits Structure format"""
     if current_user["role"] == UserRole.EMPLOYEE:
         if current_user.get("employee_id") != employee_id:
             raise HTTPException(status_code=403, detail="Access denied")
@@ -4772,9 +4772,8 @@ async def get_payslip(
     total_earnings_adjustment = sum(a["amount"] for a in adjustments if a["category"] == "earning")
     total_deductions_adjustment = sum(a["amount"] for a in adjustments if a["category"] == "deduction")
     
-    adjusted_gross = salary["gross_salary"] + total_earnings_adjustment
-    adjusted_deductions = salary["total_deductions"] + total_deductions_adjustment
-    adjusted_net = adjusted_gross - adjusted_deductions
+    adjusted_gross = salary.get("gross_salary", 0) + total_earnings_adjustment
+    adjusted_deductions = salary.get("total_deductions", 0) + total_deductions_adjustment
     
     # Get LOP days from attendance if available
     lop_days = 0
@@ -4782,14 +4781,16 @@ async def get_payslip(
         "emp_id": employee.get("emp_id"),
         "status": "LOP"
     }, {"_id": 0}).to_list(31)
-    # Filter by month
     for record in attendance_records:
         if record.get("date", "").startswith(month.replace("-", "")[:6]) or month in record.get("date", ""):
             lop_days += 1
     
     # Calculate LOP deduction
-    per_day_salary = salary["gross_salary"] / 30
+    per_day_salary = salary.get("gross_salary", 0) / 30
     lop_deduction = round(per_day_salary * lop_days, 2)
+    
+    # Net Pay
+    net_pay = round(adjusted_gross - adjusted_deductions - lop_deduction, 2)
     
     payslip = {
         "employee_id": employee_id,
@@ -4797,39 +4798,68 @@ async def get_payslip(
         "emp_id": employee.get("emp_id"),
         "designation": employee.get("designation"),
         "department": employee.get("department"),
+        "tier_level": employee.get("tier_level", "Tier 1"),
+        "date_of_joining": employee.get("date_of_joining"),
         "month": month,
         "pay_period": month,
         
-        # Earnings
-        "basic": salary["basic"],
-        "hra": salary["hra"],
-        "da": salary["da"],
-        "conveyance": salary["conveyance"],
-        "medical_allowance": salary["medical_allowance"],
-        "special_allowance": salary["special_allowance"],
-        "other_allowances": salary.get("other_allowances", 0),
-        "earnings_adjustments": [a for a in adjustments if a["category"] == "earning"],
-        "total_earnings_adjustment": total_earnings_adjustment,
-        "gross_earnings": adjusted_gross,
+        # Base Components (A)
+        "basic": salary.get("basic", 0),
+        "hra": salary.get("hra", 0),
+        "base_components_total": salary.get("base_components_total", salary.get("basic", 0) + salary.get("hra", 0)),
+        
+        # Basket of Allowances (B)
+        "lta": salary.get("lta", 0),
+        "phone_internet": salary.get("phone_internet", 0),
+        "bonus": salary.get("bonus", 0),
+        "stay_travel": salary.get("stay_travel", 0),
+        "special_allowance": salary.get("special_allowance", 0),
+        "food_reimbursement": salary.get("food_reimbursement", 0),
+        "medical_allowance": salary.get("medical_allowance", 0),
+        "conveyance": salary.get("conveyance", 0),
+        "basket_allowances_total": salary.get("basket_allowances_total", 0),
+        
+        # Retirement Benefits (C)
+        "pf_employer": salary.get("pf_employer", 0),
+        "gratuity": salary.get("gratuity", 0),
+        "retirement_benefits_total": salary.get("retirement_benefits_total", 0),
+        
+        # Compensation Totals
+        "fixed_compensation": salary.get("fixed_compensation", 0),
+        "variable_compensation": salary.get("variable_compensation", 0),
+        "gross_salary": adjusted_gross,
+        "annual_ctc": salary.get("annual_ctc", 0),
+        "monthly_ctc": salary.get("monthly_ctc", 0),
         
         # Deductions
-        "pf_employee": salary["pf_employee"],
-        "esi_employee": salary["esi_employee"],
-        "professional_tax": salary["professional_tax"],
+        "pf_employee": salary.get("pf_employee", 0),
+        "esi_employee": salary.get("esi_employee", 0),
+        "professional_tax": salary.get("professional_tax", 0),
         "tds": salary.get("tds", 0),
         "other_deductions": salary.get("other_deductions", 0),
-        "deduction_adjustments": [a for a in adjustments if a["category"] == "deduction"],
-        "total_deductions_adjustment": total_deductions_adjustment,
-        "lop_days": lop_days,
-        "lop_deduction": lop_deduction,
         "total_deductions": adjusted_deductions + lop_deduction,
         
+        # Adjustments
+        "earnings_adjustments": [a for a in adjustments if a["category"] == "earning"],
+        "deduction_adjustments": [a for a in adjustments if a["category"] == "deduction"],
+        "total_earnings_adjustment": total_earnings_adjustment,
+        "total_deductions_adjustment": total_deductions_adjustment,
+        
+        # LOP
+        "lop_days": lop_days,
+        "lop_deduction": lop_deduction,
+        
         # Net Pay
-        "net_pay": round(adjusted_net - lop_deduction, 2),
+        "net_pay": net_pay,
         
         # Company info
-        "company_name": "BluBridge Technologies",
-        "company_address": "Coimbatore, Tamil Nadu, India"
+        "company_name": "BluBridge Technologies Pvt Ltd",
+        "company_address": "Chennai, Tamil Nadu, India",
+        
+        # Insurance Coverage
+        "medical_insurance": 300000,
+        "accident_insurance": "1x CTC (Min ₹5 Lakhs)",
+        "life_insurance": 500000
     }
     
     return payslip
