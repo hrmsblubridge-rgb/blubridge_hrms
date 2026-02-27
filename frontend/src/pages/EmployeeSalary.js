@@ -142,7 +142,16 @@ const EmployeeSalary = () => {
       <head>
         <title>Compensation & Benefits Structure - ${payslip.employee_name}</title>
         <style>
-          @page { size: A4; margin: 15mm; }
+          @page { 
+            size: A4; 
+            margin: 10mm;
+          }
+          @media print {
+            html, body {
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }
+          }
           * { margin: 0; padding: 0; box-sizing: border-box; }
           body { 
             font-family: 'Segoe UI', Arial, sans-serif; 
@@ -151,7 +160,7 @@ const EmployeeSalary = () => {
             font-size: 11px;
             line-height: 1.4;
           }
-          .container { max-width: 210mm; margin: 0 auto; padding: 20px; }
+          .container { max-width: 210mm; margin: 0 auto; padding: 15px; }
           
           /* Header */
           .header { 
