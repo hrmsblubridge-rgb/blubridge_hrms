@@ -49,6 +49,7 @@ const EmployeeSalary = () => {
   const [payslip, setPayslip] = useState(null);
   const [loading, setLoading] = useState(true);
   const [loadingPayslip, setLoadingPayslip] = useState(false);
+  const [generatingPDF, setGeneratingPDF] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
