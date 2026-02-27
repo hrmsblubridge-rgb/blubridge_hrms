@@ -120,31 +120,397 @@ const EmployeeSalary = () => {
     }).format(amount || 0);
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     if (!payslip) return;
     
-    const content = generateCompensationPDF();
-    const printWindow = window.open('', '_blank', 'width=800,height=600');
-    printWindow.document.write(content);
-    printWindow.document.close();
+    setGeneratingPDF(true);
+    toast.info('Generating PDF...');
     
-    // Add instruction for user
-    const style = printWindow.document.createElement('style');
-    style.textContent = `
-      @media print {
-        @page {
-          margin: 10mm;
-        }
-      }
-    `;
-    printWindow.document.head.appendChild(style);
-    
-    // Trigger print after content loads
-    printWindow.onload = function() {
-      setTimeout(() => {
-        printWindow.print();
-      }, 300);
-    };
+    try {
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+      const margin = 15;
+      let yPos = margin;
+      
+      const monthYear = new Date(payslip.month + '-01').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+      
+      // Helper function to add text
+      const addText = (text, x, y, options = {}) => {
+        pdf.setFontSize(options.size || 10);
+        pdf.setFont('helvetica', options.bold ? 'bold' : 'normal');
+        pdf.setTextColor(options.color || '#1a1a2e');
+        pdf.text(text, x, y);
+      };
+      
+      // Helper function to format currency
+      const fmtCurrency = (amt) => '₹' + new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(amt || 0);
+      
+      // Header Background
+      pdf.setFillColor(6, 60, 136);
+      pdf.rect(0, 0, pageWidth, 40, 'F');
+      
+      // Header Text
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(18);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('Compensation & Benefits Structure', margin, 18);
+      pdf.setFontSize(11);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text(`Payslip for ${monthYear}`, margin, 26);
+      pdf.setFontSize(9);
+      pdf.text(`${payslip.company_name} | ${payslip.company_address}`, margin, 34);
+      
+      yPos = 50;
+      
+      // Employee Info Box
+      pdf.setFillColor(248, 249, 252);
+      pdf.setDrawColor(229, 231, 235);
+      pdf.roundedRect(margin, yPos, pageWidth - 2 * margin, 22, 2, 2, 'FD');
+      
+      pdf.setTextColor(107, 114, 128);
+      pdf.setFontSize(8);
+      pdf.text('EMPLOYEE NAME', margin + 5, yPos + 6);
+      pdf.text('EMPLOYEE ID', margin + 50, yPos + 6);
+      pdf.text('DESIGNATION', margin + 95, yPos + 6);
+      pdf.text('TIER', margin + 140, yPos + 6);
+      
+      pdf.setTextColor(31, 41, 55);
+      pdf.setFontSize(10);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(payslip.employee_name || '', margin + 5, yPos + 14);
+      pdf.text(payslip.emp_id || '', margin + 50, yPos + 14);
+      pdf.text(payslip.designation || '', margin + 95, yPos + 14);
+      pdf.text(payslip.tier_level || 'Tier 1', margin + 140, yPos + 14);
+      
+      yPos += 30;
+      
+      // Section A: Base Components
+      pdf.setFillColor(241, 245, 249);
+      pdf.roundedRect(margin, yPos, pageWidth - 2 * margin, 8, 1, 1, 'F');
+      pdf.setFillColor(6, 60, 136);
+      pdf.roundedRect(margin + 2, yPos + 1.5, 8, 5, 1, 1, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(8);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('A', margin + 4.5, yPos + 5);
+      pdf.setTextColor(51, 65, 85);
+      pdf.setFontSize(9);
+      pdf.text('Base Components', margin + 14, yPos + 5.5);
+      
+      yPos += 12;
+      
+      // Table Header
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(margin, yPos, pageWidth - 2 * margin, 6, 'F');
+      pdf.setTextColor(100, 116, 139);
+      pdf.setFontSize(8);
+      pdf.text('Component', margin + 3, yPos + 4);
+      pdf.text('Monthly (₹)', pageWidth - margin - 25, yPos + 4);
+      
+      yPos += 8;
+      
+      // Base Components Data
+      const baseComponents = [
+        { label: 'Basic', amount: payslip.basic },
+        { label: 'House Rent Allowance (HRA)', amount: payslip.hra },
+      ];
+      
+      baseComponents.forEach(item => {
+        pdf.setTextColor(55, 65, 81);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(9);
+        pdf.text(item.label, margin + 3, yPos + 4);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(fmtCurrency(item.amount), pageWidth - margin - 25, yPos + 4);
+        yPos += 7;
+      });
+      
+      // Subtotal A
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(margin, yPos, pageWidth - 2 * margin, 7, 'F');
+      pdf.setTextColor(31, 41, 55);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(9);
+      pdf.text('Base Components Total (A)', margin + 3, yPos + 5);
+      pdf.text(fmtCurrency(payslip.base_components_total || (payslip.basic + payslip.hra)), pageWidth - margin - 25, yPos + 5);
+      
+      yPos += 14;
+      
+      // Section B: Basket of Allowances
+      pdf.setFillColor(241, 245, 249);
+      pdf.roundedRect(margin, yPos, pageWidth - 2 * margin, 8, 1, 1, 'F');
+      pdf.setFillColor(6, 60, 136);
+      pdf.roundedRect(margin + 2, yPos + 1.5, 8, 5, 1, 1, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(8);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('B', margin + 4.5, yPos + 5);
+      pdf.setTextColor(51, 65, 85);
+      pdf.setFontSize(9);
+      pdf.text('Basket of Allowances', margin + 14, yPos + 5.5);
+      
+      yPos += 12;
+      
+      // Table Header
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(margin, yPos, pageWidth - 2 * margin, 6, 'F');
+      pdf.setTextColor(100, 116, 139);
+      pdf.setFontSize(8);
+      pdf.text('Component', margin + 3, yPos + 4);
+      pdf.text('Monthly (₹)', pageWidth - margin - 25, yPos + 4);
+      
+      yPos += 8;
+      
+      // Allowances Data
+      const allowances = [
+        { label: 'Leave Travel Allowance (LTA)', amount: payslip.lta },
+        { label: 'Phone & Internet', amount: payslip.phone_internet },
+        { label: 'Performance Bonus', amount: payslip.bonus },
+        { label: 'Stay & Travel', amount: payslip.stay_travel },
+        { label: 'Special Allowance', amount: payslip.special_allowance },
+        { label: 'Food Reimbursement', amount: payslip.food_reimbursement },
+        { label: 'Medical Allowance', amount: payslip.medical_allowance },
+        { label: 'Conveyance', amount: payslip.conveyance },
+      ];
+      
+      allowances.forEach(item => {
+        pdf.setTextColor(55, 65, 81);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(9);
+        pdf.text(item.label, margin + 3, yPos + 4);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(fmtCurrency(item.amount), pageWidth - margin - 25, yPos + 4);
+        yPos += 6;
+      });
+      
+      // Subtotal B
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(margin, yPos, pageWidth - 2 * margin, 7, 'F');
+      pdf.setTextColor(31, 41, 55);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(9);
+      pdf.text('Basket Allowances Total (B)', margin + 3, yPos + 5);
+      pdf.text(fmtCurrency(payslip.basket_allowances_total), pageWidth - margin - 25, yPos + 5);
+      
+      yPos += 14;
+      
+      // Section C: Retirement Benefits
+      pdf.setFillColor(241, 245, 249);
+      pdf.roundedRect(margin, yPos, pageWidth - 2 * margin, 8, 1, 1, 'F');
+      pdf.setFillColor(6, 60, 136);
+      pdf.roundedRect(margin + 2, yPos + 1.5, 8, 5, 1, 1, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(8);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('C', margin + 4.5, yPos + 5);
+      pdf.setTextColor(51, 65, 85);
+      pdf.setFontSize(9);
+      pdf.text('Retirement Benefits', margin + 14, yPos + 5.5);
+      
+      yPos += 12;
+      
+      // Table Header
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(margin, yPos, pageWidth - 2 * margin, 6, 'F');
+      pdf.setTextColor(100, 116, 139);
+      pdf.setFontSize(8);
+      pdf.text('Component', margin + 3, yPos + 4);
+      pdf.text('Monthly (₹)', pageWidth - margin - 25, yPos + 4);
+      
+      yPos += 8;
+      
+      // Retirement Data
+      const retirement = [
+        { label: "PF Company's Contribution", amount: payslip.pf_employer },
+        { label: 'Gratuity', amount: payslip.gratuity },
+      ];
+      
+      retirement.forEach(item => {
+        pdf.setTextColor(55, 65, 81);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(9);
+        pdf.text(item.label, margin + 3, yPos + 4);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(fmtCurrency(item.amount), pageWidth - margin - 25, yPos + 4);
+        yPos += 7;
+      });
+      
+      // Subtotal C
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(margin, yPos, pageWidth - 2 * margin, 7, 'F');
+      pdf.setTextColor(31, 41, 55);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(9);
+      pdf.text('Retirement Benefits Total (C)', margin + 3, yPos + 5);
+      pdf.text(fmtCurrency(payslip.retirement_benefits_total), pageWidth - margin - 25, yPos + 5);
+      
+      yPos += 14;
+      
+      // Summary Cards
+      const cardWidth = (pageWidth - 2 * margin - 10) / 3;
+      
+      // Fixed Compensation Card
+      pdf.setFillColor(224, 242, 254);
+      pdf.roundedRect(margin, yPos, cardWidth, 20, 2, 2, 'F');
+      pdf.setTextColor(3, 105, 161);
+      pdf.setFontSize(7);
+      pdf.text('FIXED COMPENSATION (A+B+C)', margin + 3, yPos + 6);
+      pdf.setFontSize(12);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(fmtCurrency(payslip.fixed_compensation), margin + 3, yPos + 14);
+      
+      // Variable Compensation Card
+      pdf.setFillColor(254, 243, 199);
+      pdf.roundedRect(margin + cardWidth + 5, yPos, cardWidth, 20, 2, 2, 'F');
+      pdf.setTextColor(146, 64, 14);
+      pdf.setFontSize(7);
+      pdf.text('VARIABLE COMPENSATION', margin + cardWidth + 8, yPos + 6);
+      pdf.setFontSize(12);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(fmtCurrency(payslip.variable_compensation), margin + cardWidth + 8, yPos + 14);
+      
+      // CTC Card
+      pdf.setFillColor(6, 60, 136);
+      pdf.roundedRect(margin + 2 * cardWidth + 10, yPos, cardWidth, 20, 2, 2, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(7);
+      pdf.text('COST TO COMPANY (CTC)', margin + 2 * cardWidth + 13, yPos + 6);
+      pdf.setFontSize(12);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text(fmtCurrency(payslip.monthly_ctc), margin + 2 * cardWidth + 13, yPos + 14);
+      
+      yPos += 28;
+      
+      // Section D: Deductions
+      pdf.setFillColor(241, 245, 249);
+      pdf.roundedRect(margin, yPos, pageWidth - 2 * margin, 8, 1, 1, 'F');
+      pdf.setFillColor(220, 38, 38);
+      pdf.roundedRect(margin + 2, yPos + 1.5, 8, 5, 1, 1, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(8);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('D', margin + 4.5, yPos + 5);
+      pdf.setTextColor(51, 65, 85);
+      pdf.setFontSize(9);
+      pdf.text('Deductions', margin + 14, yPos + 5.5);
+      
+      yPos += 12;
+      
+      // Table Header
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(margin, yPos, pageWidth - 2 * margin, 6, 'F');
+      pdf.setTextColor(100, 116, 139);
+      pdf.setFontSize(8);
+      pdf.text('Component', margin + 3, yPos + 4);
+      pdf.text('Monthly (₹)', pageWidth - margin - 25, yPos + 4);
+      
+      yPos += 8;
+      
+      // Deductions Data
+      const deductions = [
+        { label: 'Provident Fund (Employee)', amount: payslip.pf_employee },
+      ];
+      if (payslip.esi_employee > 0) deductions.push({ label: 'ESI (Employee)', amount: payslip.esi_employee });
+      deductions.push({ label: 'Professional Tax', amount: payslip.professional_tax });
+      if (payslip.tds > 0) deductions.push({ label: 'TDS', amount: payslip.tds });
+      if (payslip.lop_days > 0) deductions.push({ label: `Loss of Pay (${payslip.lop_days} days)`, amount: payslip.lop_deduction });
+      
+      deductions.forEach(item => {
+        pdf.setTextColor(55, 65, 81);
+        pdf.setFont('helvetica', 'normal');
+        pdf.setFontSize(9);
+        pdf.text(item.label, margin + 3, yPos + 4);
+        pdf.setFont('helvetica', 'bold');
+        pdf.text(fmtCurrency(item.amount), pageWidth - margin - 25, yPos + 4);
+        yPos += 7;
+      });
+      
+      // Subtotal D
+      pdf.setFillColor(248, 250, 252);
+      pdf.rect(margin, yPos, pageWidth - 2 * margin, 7, 'F');
+      pdf.setTextColor(31, 41, 55);
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(9);
+      pdf.text('Total Deductions (D)', margin + 3, yPos + 5);
+      pdf.text(fmtCurrency(payslip.total_deductions), pageWidth - margin - 25, yPos + 5);
+      
+      yPos += 14;
+      
+      // Net Pay
+      pdf.setFillColor(6, 60, 136);
+      pdf.roundedRect(margin, yPos, pageWidth - 2 * margin, 12, 2, 2, 'F');
+      pdf.setTextColor(255, 255, 255);
+      pdf.setFontSize(11);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('NET PAY (Take Home)', margin + 5, yPos + 8);
+      pdf.setFontSize(13);
+      pdf.text(fmtCurrency(payslip.net_pay), pageWidth - margin - 30, yPos + 8);
+      
+      yPos += 20;
+      
+      // Insurance Section
+      pdf.setFillColor(240, 253, 244);
+      pdf.setDrawColor(134, 239, 172);
+      pdf.roundedRect(margin, yPos, pageWidth - 2 * margin, 30, 2, 2, 'FD');
+      
+      pdf.setTextColor(22, 101, 52);
+      pdf.setFontSize(10);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('Insurance Coverage', margin + 5, yPos + 8);
+      
+      const insWidth = (pageWidth - 2 * margin - 20) / 3;
+      yPos += 12;
+      
+      // Medical Insurance
+      pdf.setTextColor(75, 85, 99);
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('MEDICAL INSURANCE', margin + 10, yPos + 4);
+      pdf.setTextColor(22, 101, 52);
+      pdf.setFontSize(11);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('₹3,00,000', margin + 10, yPos + 11);
+      
+      // Accident Insurance
+      pdf.setTextColor(75, 85, 99);
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('ACCIDENT INSURANCE', margin + insWidth + 15, yPos + 4);
+      pdf.setTextColor(22, 101, 52);
+      pdf.setFontSize(11);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('1x CTC', margin + insWidth + 15, yPos + 11);
+      
+      // Life Insurance
+      pdf.setTextColor(75, 85, 99);
+      pdf.setFontSize(7);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('LIFE INSURANCE', margin + 2 * insWidth + 20, yPos + 4);
+      pdf.setTextColor(22, 101, 52);
+      pdf.setFontSize(11);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('₹5,00,000', margin + 2 * insWidth + 20, yPos + 11);
+      
+      yPos += 25;
+      
+      // Footer
+      pdf.setTextColor(156, 163, 175);
+      pdf.setFontSize(8);
+      pdf.setFont('helvetica', 'normal');
+      pdf.text('This is a computer-generated payslip and does not require a signature.', pageWidth / 2, yPos, { align: 'center' });
+      pdf.text(`Generated on ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} | ${payslip.company_name}`, pageWidth / 2, yPos + 5, { align: 'center' });
+      
+      // Save PDF
+      pdf.save(`Payslip_${payslip.emp_id}_${payslip.month}.pdf`);
+      toast.success('PDF downloaded successfully!');
+      
+    } catch (error) {
+      console.error('PDF generation error:', error);
+      toast.error('Failed to generate PDF');
+    } finally {
+      setGeneratingPDF(false);
+    }
   };
 
   const generateCompensationPDF = () => {
