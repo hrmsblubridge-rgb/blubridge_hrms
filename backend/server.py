@@ -4387,35 +4387,52 @@ async def get_audit_logs(
 # ============== SALARY MANAGEMENT ROUTES ==============
 
 def calculate_salary_structure(annual_ctc: float) -> dict:
-    """Calculate salary breakdown from annual CTC"""
+    """Calculate salary breakdown from annual CTC based on professional structure"""
     monthly_ctc = annual_ctc / 12
     
-    # Basic: 40% of CTC
-    basic = round(monthly_ctc * 0.40, 2)
+    # Base Components (A) - approximately 45% of CTC
+    basic = round(monthly_ctc * 0.30, 2)  # 30% of Monthly CTC
+    hra = round(basic * 0.50, 2)  # 50% of Basic
     
-    # HRA: 50% of Basic
-    hra = round(basic * 0.50, 2)
+    # Basket of Allowances (B) - approximately 30% of CTC
+    lta = round(basic * 0.0567, 2)  # Leave Travel Assistance
+    phone_internet = round(1100, 2)  # Fixed
+    bonus = round(basic * 0.10, 2)  # Performance Bonus
+    stay_travel = round(basic * 0.30, 2)  # Stay and Travel
+    special_allowance = round(monthly_ctc * 0.12, 2)  # Special Allowance
+    food_reimbursement = round(1210, 2)  # Fixed
+    medical_allowance = round(1250, 2)  # Fixed
+    conveyance = round(1600, 2)  # Fixed
     
-    # DA: 10% of Basic
-    da = round(basic * 0.10, 2)
-    
-    # Fixed allowances
-    conveyance = 1600
-    medical_allowance = 1250
-    
-    # PF: 12% of Basic (capped at 15000 basic for PF calculation)
+    # Retirement Benefits (C)
     pf_basic = min(basic, 15000)
-    pf_employee = round(pf_basic * 0.12, 2)
-    pf_employer = round(pf_basic * 0.12, 2)
-    
-    # Calculate gross before special allowance
-    earnings_before_special = basic + hra + da + conveyance + medical_allowance
+    pf_employee = round(pf_basic * 0.12, 2)  # Employee PF contribution
+    pf_employer = round(pf_basic * 0.12, 2)  # Employer PF contribution
+    gratuity = round(basic * 0.0481, 2)  # 4.81% of Basic (as per Gratuity Act)
     
     # ESI: Only if gross < 21000 (0.75% employee, 3.25% employer)
-    gross_estimate = monthly_ctc - pf_employer  # Rough estimate
-    if gross_estimate < 21000:
-        esi_employee = round(gross_estimate * 0.0075, 2)
-        esi_employer = round(gross_estimate * 0.0325, 2)
+    base_components = basic + hra
+    basket_allowances = lta + phone_internet + bonus + stay_travel + special_allowance + food_reimbursement + medical_allowance + conveyance
+    retirement_benefits = pf_employer + gratuity
+    
+    fixed_compensation = base_components + basket_allowances + retirement_benefits
+    
+    # Variable Compensation (typically 20% of Fixed)
+    variable_compensation = round(monthly_ctc * 0.20, 2)
+    
+    # Adjust special allowance to match CTC
+    current_total = base_components + basket_allowances + retirement_benefits + variable_compensation
+    if current_total < monthly_ctc:
+        special_allowance = round(special_allowance + (monthly_ctc - current_total), 2)
+        basket_allowances = lta + phone_internet + bonus + stay_travel + special_allowance + food_reimbursement + medical_allowance + conveyance
+        fixed_compensation = base_components + basket_allowances + retirement_benefits
+    
+    gross_salary = base_components + basket_allowances
+    
+    # ESI
+    if gross_salary < 21000:
+        esi_employee = round(gross_salary * 0.0075, 2)
+        esi_employer = round(gross_salary * 0.0325, 2)
     else:
         esi_employee = 0
         esi_employer = 0
@@ -4423,40 +4440,54 @@ def calculate_salary_structure(annual_ctc: float) -> dict:
     # Professional Tax (standard 200, varies by state)
     professional_tax = 200
     
-    # Special Allowance: Remaining amount to match CTC
-    employer_contributions = pf_employer + esi_employer
-    total_deductions_estimate = pf_employee + esi_employee + professional_tax
-    special_allowance = round(monthly_ctc - earnings_before_special - employer_contributions, 2)
-    special_allowance = max(0, special_allowance)  # Can't be negative
-    
-    # Gross Salary
-    gross_salary = round(basic + hra + da + conveyance + medical_allowance + special_allowance, 2)
-    
-    # Total Deductions
+    # Total Deductions (Employee side)
     total_deductions = round(pf_employee + esi_employee + professional_tax, 2)
     
-    # Net Salary
+    # Net Salary (Take Home)
     net_salary = round(gross_salary - total_deductions, 2)
     
     return {
         "annual_ctc": annual_ctc,
         "monthly_ctc": round(monthly_ctc, 2),
+        
+        # Base Components (A)
         "basic": basic,
         "hra": hra,
-        "da": da,
-        "conveyance": conveyance,
-        "medical_allowance": medical_allowance,
+        "base_components_total": round(base_components, 2),
+        
+        # Basket of Allowances (B)
+        "lta": lta,
+        "phone_internet": phone_internet,
+        "bonus": bonus,
+        "stay_travel": stay_travel,
         "special_allowance": special_allowance,
+        "food_reimbursement": food_reimbursement,
+        "medical_allowance": medical_allowance,
+        "conveyance": conveyance,
+        "basket_allowances_total": round(basket_allowances, 2),
+        "da": 0,  # Keep for backward compatibility
         "other_allowances": 0,
-        "gross_salary": gross_salary,
-        "pf_employee": pf_employee,
+        
+        # Retirement Benefits (C)
         "pf_employer": pf_employer,
+        "gratuity": gratuity,
+        "retirement_benefits_total": round(retirement_benefits, 2),
+        
+        # Totals
+        "fixed_compensation": round(fixed_compensation, 2),
+        "variable_compensation": round(variable_compensation, 2),
+        "gross_salary": round(gross_salary, 2),
+        
+        # Deductions
+        "pf_employee": pf_employee,
         "esi_employee": esi_employee,
         "esi_employer": esi_employer,
         "professional_tax": professional_tax,
         "tds": 0,
         "other_deductions": 0,
         "total_deductions": total_deductions,
+        
+        # Net
         "net_salary": net_salary
     }
 
