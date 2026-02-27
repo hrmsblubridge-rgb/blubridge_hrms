@@ -1,38 +1,40 @@
 # BluBridge HRMS - Product Requirements Document
 
-## Latest Updates (February 26, 2026)
+## Latest Updates (February 27, 2026)
 
-### Salary Breakup & Payslip System - COMPLETED (NEW!)
-**100% Complete** - Comprehensive salary management with Indian payroll standards
+### Salary Breakup & Payslip System - REDESIGNED (Premium)
+**100% Complete** - Professional "Compensation & Benefits Structure" format matching corporate standards
 
-#### Features
-- **Detailed Salary Components**:
-  - Earnings: Basic (40% of CTC), HRA (50% of Basic), DA (10% of Basic), Conveyance, Medical, Special Allowance
-  - Deductions: PF (12% of Basic), ESI (if applicable), Professional Tax, TDS
+#### Premium Payslip Design Features
+- **Sections A-D Format** matching corporate payslip standards:
+  - **(A) Base Components**: Basic, HRA
+  - **(B) Basket of Allowances**: LTA, Phone & Internet, Performance Bonus, Stay & Travel, Special Allowance, Food Reimbursement, Medical, Conveyance
+  - **(C) Retirement Benefits**: PF (Employer Contribution), Gratuity
+  - **(D) Deductions**: PF (Employee), ESI, Professional Tax, TDS, LOP
 
-- **Salary Adjustments**:
-  - Types: Bonus, Incentive, Reimbursement, Deduction, LOP, Advance Recovery, Penalty
-  - Frequency: One-time (specific month) or Recurring (with start/end)
-  - Full CRUD operations for admin
+- **Summary Display**:
+  - Fixed Compensation (A+B+C)
+  - Variable Compensation (Performance Based)
+  - Net Take Home (After Deductions)
 
-- **Admin View** (Employee Details → Salary Tab):
-  - CTC input with auto-calculation
-  - Earnings & Deductions breakdown
-  - Monthly Net Salary display
-  - Adjustments management
+- **Insurance Coverage Section**:
+  - Medical Insurance: ₹3,00,000
+  - Accident Insurance: 1x CTC (Min ₹5 Lakhs)
+  - Life Insurance: ₹5,00,000
 
-- **Employee View** (`/employee/salary`):
-  - Net Pay This Month (prominent card)
-  - Month selector (last 12 months)
-  - Earnings breakdown with icons
-  - Deductions breakdown
-  - **Download Payslips**: Simple Slip & Detailed Payslip (printable HTML)
-  - Annual CTC display
+- **PDF Download**: Professional printable PDF with company branding (Chennai location)
+
+#### Employee View (`/employee/salary`)
+- Premium gradient header with Monthly Net Pay
+- Annual & Monthly CTC display
+- 4 structured component cards with icons
+- 3 summary cards (Fixed, Variable, Net)
+- Insurance coverage section
+- Important notes section
 
 #### Testing Status
-- **Testing Agent Iteration 22**: 95% Backend, 100% Frontend
-- Backend: 18/19 tests passed
-- Frontend: 12/12 features verified
+- Backend and Frontend fully functional
+- PDF generation with print dialog
 
 ---
 
