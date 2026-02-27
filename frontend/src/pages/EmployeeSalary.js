@@ -976,16 +976,16 @@ const EmployeeSalary = () => {
           </Select>
           <Button 
             onClick={handleDownloadPDF}
-            disabled={!payslip || loadingPayslip}
+            disabled={!payslip || loadingPayslip || generatingPDF}
             className="bg-[#063c88] hover:bg-[#052d66] rounded-xl shadow-lg shadow-blue-900/20"
             data-testid="download-payslip-btn"
           >
-            {loadingPayslip ? (
+            {(loadingPayslip || generatingPDF) ? (
               <Loader2 className="w-4 h-4 animate-spin mr-2" />
             ) : (
               <Download className="w-4 h-4 mr-2" />
             )}
-            Download PDF
+            {generatingPDF ? 'Generating...' : 'Download PDF'}
           </Button>
         </div>
       </div>
