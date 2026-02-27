@@ -121,14 +121,27 @@ const EmployeeSalary = () => {
     if (!payslip) return;
     
     const content = generateCompensationPDF();
-    const printWindow = window.open('', '_blank');
+    const printWindow = window.open('', '_blank', 'width=800,height=600');
     printWindow.document.write(content);
     printWindow.document.close();
     
+    // Add instruction for user
+    const style = printWindow.document.createElement('style');
+    style.textContent = `
+      @media print {
+        @page {
+          margin: 10mm;
+        }
+      }
+    `;
+    printWindow.document.head.appendChild(style);
+    
     // Trigger print after content loads
-    setTimeout(() => {
-      printWindow.print();
-    }, 500);
+    printWindow.onload = function() {
+      setTimeout(() => {
+        printWindow.print();
+      }, 300);
+    };
   };
 
   const generateCompensationPDF = () => {
