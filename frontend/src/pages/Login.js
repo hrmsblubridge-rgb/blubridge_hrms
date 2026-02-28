@@ -81,16 +81,7 @@ const Login = () => {
     <div className="min-h-screen bg-[#e8e4dc] flex flex-col items-center justify-center px-4 py-8">
       {/* Logo at Top */}
       <div className="mb-12 animate-fade-in">
-        <svg viewBox="0 0 180 32" className="h-8 w-auto" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <text x="0" y="24" fontFamily="Outfit, sans-serif" fontSize="24" fontWeight="700" fill="#1a1a2e" letterSpacing="-0.5">
-            BLU
-          </text>
-          <rect x="47" y="4" width="24" height="24" rx="4" fill="#063c88"/>
-          <text x="52" y="23" fontFamily="Outfit, sans-serif" fontSize="18" fontWeight="700" fill="white">B</text>
-          <text x="74" y="24" fontFamily="Outfit, sans-serif" fontSize="24" fontWeight="300" fill="#1a1a2e" letterSpacing="-0.5">
-            RIDGE
-          </text>
-        </svg>
+        <img src="/logo-black.png" alt="BluBridge" className="h-8 w-auto" />
       </div>
 
       {/* Login Card - Clean & Premium */}
