@@ -212,7 +212,7 @@ const EmployeeOnboarding = () => {
       <header className="bg-[#fffdf7]/90 backdrop-blur-xl border-b border-black/5 sticky top-0 z-30">
         <div className="max-w-5xl mx-auto px-4 lg:px-8 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <img src="/logo-black.png" alt="BluBridge" className="h-8" />
+            <img src="/logo-black.png" alt="BluBridge" className="" />
             <Badge variant="secondary" className="bg-blue-50 text-blue-700">
               Onboarding
             </Badge>

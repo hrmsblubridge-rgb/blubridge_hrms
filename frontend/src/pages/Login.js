@@ -81,7 +81,7 @@ const Login = () => {
     <div className="min-h-screen bg-[#e8e4dc] flex flex-col items-center justify-center px-4 py-8">
       {/* Logo at Top */}
       <div className="mb-12 animate-fade-in">
-        <img src="/logo-black.png" alt="BluBridge" className="h-8 w-auto" />
+        <img src="/logo-black.png" alt="BluBridge" className="w-auto" />
       </div>
 
       {/* Login Card - Clean & Premium */}
