@@ -43,18 +43,24 @@ Premium Employee Issue Ticket System, Offer Letter Management, Salary Management
 - **POST /api/attendance/import-biometric:** Secure endpoint accepting JSON array of biometric punches from external device sync service
 - **Employee Mapping:** Maps `deviceUserId` → `Employee.biometric_id`, reports unmapped IDs
 - **Punch Grouping:** Groups all punches per employee per day, computes IN (earliest) and OUT (latest) times
-- **Upsert Logic:** Merges chunked data — IN = MIN(existing, new), OUT = MAX(existing, new) — ensures idempotent chunked imports
+- **Upsert Logic:** Atomic `update_one` with `upsert=True` — IN = MIN(existing, new), OUT = MAX(existing, new) — race-condition safe
+- **Unique Index:** MongoDB compound unique index on `(employee_id, date)` prevents duplicates at DB level
 - **Attendance Status:** Calculates LOP, late login, total hours using existing shift rules
 - **Audit Trail:** Stores raw punch logs in `biometric_punch_logs` collection for debugging
 - **Response:** Returns `{totalRecords, processed, skipped, unmapped, unmappedDeviceUserIds}`
-- **Performance:** Handles 500+ records per batch, tested with 50+ records
+
+### Phase 5b - Attendance Dedup & Date Filtering Fix (Complete - Feb 2026)
+- **Duplicate Prevention:** Added unique compound index on `(employee_id, date)`, enforced at startup
+- **Data Cleanup:** One-time migration script merged existing duplicates (MIN IN, MAX OUT)
+- **Atomic Upsert:** Biometric import uses `$setOnInsert` + `$set` with `upsert=True` (no race conditions)
+- **Date Filtering Fix:** GET /api/attendance now parses DD-MM-YYYY to integer for proper chronological comparison instead of broken string `$gte`/`$lte`
+- **Sorting Fix:** Results sorted by actual date order (not lexicographic string order)
 - **Backend:** Updated Employee/EmployeeCreate/EmployeeUpdate models, uniqueness validation, search support, GET /api/employees/import-template, POST /api/employees/bulk-import
 - **Frontend:** Updated form state, Add/Edit dialogs, employee list table columns, View dialog profile tab, Bulk Import dialog with file upload, template download, and results display
 
 ## Pending Issues
 1. **Cloudinary PDF Viewing (P1 - BLOCKED):** Admin can't view PDFs in browser (401), needs Cloudinary account setting change
 2. **Username collision (P2):** Silent failure when employee email username already exists in users collection
-3. **Backend date filtering (P2, recurring):** Attendance dates stored as DD-MM-YYYY strings, need migration to ISODate
 
 ## Upcoming Tasks
 - **Biometric Device Integration (P1):** eSSL X990 device research and integration plan
