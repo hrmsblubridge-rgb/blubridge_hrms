@@ -38,7 +38,12 @@ import {
   TrendingDown,
   PiggyBank,
   Receipt,
-  Banknote
+  Banknote,
+  FileSpreadsheet,
+  AlertCircle,
+  X,
+  Fingerprint,
+  Hash
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -128,12 +133,19 @@ const Employees = () => {
   });
   const [savingSalary, setSavingSalary] = useState(false);
   
+  // Bulk import state
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  
   const [form, setForm] = useState({
     full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
     date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
     reporting_manager_id: '', department: '', team: '', work_location: 'Office',
     leave_policy: 'Standard', shift_type: 'General', custom_login_time: '', custom_logout_time: '',
-    monthly_salary: 0, attendance_tracking_enabled: true, user_role: 'employee', login_enabled: true
+    monthly_salary: 0, attendance_tracking_enabled: true, user_role: 'employee', login_enabled: true,
+    custom_employee_id: '', biometric_id: ''
   });
   
   const [config, setConfig] = useState({
@@ -209,7 +221,8 @@ const Employees = () => {
       date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
       reporting_manager_id: '', department: '', team: '', work_location: 'Office',
       leave_policy: 'Standard', shift_type: 'General', custom_login_time: '', custom_logout_time: '',
-      monthly_salary: 0, attendance_tracking_enabled: true, user_role: 'employee', login_enabled: true
+      monthly_salary: 0, attendance_tracking_enabled: true, user_role: 'employee', login_enabled: true,
+      custom_employee_id: '', biometric_id: ''
     });
   };
 
@@ -228,7 +241,9 @@ const Employees = () => {
       shift_type: employee.shift_type || 'General', custom_login_time: employee.custom_login_time || '',
       custom_logout_time: employee.custom_logout_time || '', monthly_salary: employee.monthly_salary || 0,
       attendance_tracking_enabled: employee.attendance_tracking_enabled ?? true,
-      user_role: employee.user_role || 'employee', login_enabled: employee.login_enabled ?? true
+      user_role: employee.user_role || 'employee', login_enabled: employee.login_enabled ?? true,
+      custom_employee_id: employee.custom_employee_id || '',
+      biometric_id: employee.biometric_id || ''
     });
     setShowEditSheet(true);
   };
@@ -424,13 +439,15 @@ const Employees = () => {
   
   const handleDelete = (employee) => { setSelectedEmployee(employee); setShowDeleteDialog(true); };
 
-  const validateForm = () => {
+  const validateForm = (isEdit = false) => {
     if (!form.full_name.trim()) { toast.error('Full name is required'); return false; }
     if (!form.official_email.trim()) { toast.error('Email is required'); return false; }
     if (!form.date_of_joining) { toast.error('Date of joining is required'); return false; }
     if (!form.department) { toast.error('Department is required'); return false; }
     if (!form.team) { toast.error('Team is required'); return false; }
     if (!form.designation.trim()) { toast.error('Designation is required'); return false; }
+    if (!form.custom_employee_id.trim()) { toast.error('Employee ID is required'); return false; }
+    if (!form.biometric_id.trim()) { toast.error('Biometric ID is required'); return false; }
     return true;
   };
 
@@ -475,8 +492,8 @@ const Employees = () => {
   };
 
   const handleExportCSV = () => {
-    const headers = ['Emp ID', 'Name', 'Email', 'Department', 'Team', 'Designation', 'Status', 'Employment Type', 'Work Location'];
-    const rows = employees.map(e => [e.emp_id, e.full_name, e.official_email, e.department, e.team, e.designation, e.employee_status, e.employment_type, e.work_location]);
+    const headers = ['Emp ID', 'Employee ID', 'Biometric ID', 'Name', 'Email', 'Department', 'Team', 'Designation', 'Status', 'Employment Type', 'Work Location'];
+    const rows = employees.map(e => [e.emp_id, e.custom_employee_id || '', e.biometric_id || '', e.full_name, e.official_email, e.department, e.team, e.designation, e.employee_status, e.employment_type, e.work_location]);
     const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -485,6 +502,50 @@ const Employees = () => {
     a.download = `employees-${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
     toast.success('CSV exported');
+  };
+
+  // Bulk Import handlers
+  const handleDownloadTemplate = async () => {
+    try {
+      const response = await axios.get(`${API}/employees/import-template`, {
+        headers: getAuthHeaders(),
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'employee_import_template.xlsx';
+      a.click();
+      window.URL.revokeObjectURL(url);
+      toast.success('Template downloaded');
+    } catch (error) {
+      toast.error('Failed to download template');
+    }
+  };
+
+  const handleBulkImport = async () => {
+    if (!importFile) { toast.error('Please select a file'); return; }
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', importFile);
+      const response = await axios.post(`${API}/employees/bulk-import`, formData, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' }
+      });
+      setImportResult(response.data);
+      if (response.data.success > 0) {
+        toast.success(`${response.data.success} employees imported successfully`);
+        fetchData();
+      }
+      if (response.data.failed > 0) {
+        toast.error(`${response.data.failed} records failed`);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to import employees');
+    } finally {
+      setImporting(false);
+    }
   };
 
   const getStatusBadge = (status) => {
@@ -509,10 +570,16 @@ const Employees = () => {
           </div>
         </div>
         {canEdit && (
-          <Button onClick={handleAdd} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-lg shadow-[#063c88]/20" data-testid="add-employee-btn">
-            <Plus className="w-4 h-4 mr-2" />
-            Add Employee
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={() => { setImportFile(null); setImportResult(null); setShowBulkImport(true); }} variant="outline" className="rounded-xl border-[#063c88] text-[#063c88] hover:bg-[#063c88]/5" data-testid="bulk-import-btn">
+              <FileSpreadsheet className="w-4 h-4 mr-2" />
+              Bulk Import
+            </Button>
+            <Button onClick={handleAdd} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-lg shadow-[#063c88]/20" data-testid="add-employee-btn">
+              <Plus className="w-4 h-4 mr-2" />
+              Add Employee
+            </Button>
+          </div>
         )}
       </div>
 
@@ -594,12 +661,13 @@ const Employees = () => {
               <table className="table-premium w-full">
                 <thead>
                   <tr>
-                    <th className="whitespace-nowrap">Emp ID</th>
+                    <th className="whitespace-nowrap">Employee ID</th>
                     <th className="whitespace-nowrap">Name</th>
                     <th className="whitespace-nowrap hidden md:table-cell">Email</th>
                     <th className="whitespace-nowrap hidden lg:table-cell">Department</th>
                     <th className="whitespace-nowrap hidden lg:table-cell">Team</th>
                     <th className="whitespace-nowrap hidden xl:table-cell">Designation</th>
+                    <th className="whitespace-nowrap hidden xl:table-cell">Biometric ID</th>
                     <th className="whitespace-nowrap">Status</th>
                     <th className="whitespace-nowrap">Actions</th>
                   </tr>
@@ -607,12 +675,12 @@ const Employees = () => {
                 <tbody>
                   {employees.length === 0 ? (
                     <tr>
-                      <td colSpan="8" className="text-center py-12 text-slate-500">No employees found</td>
+                      <td colSpan="9" className="text-center py-12 text-slate-500">No employees found</td>
                     </tr>
                   ) : (
                     employees.map((emp) => (
                       <tr key={emp.id}>
-                        <td className="font-semibold text-[#063c88] whitespace-nowrap">{emp.emp_id}</td>
+                        <td className="font-semibold text-[#063c88] whitespace-nowrap">{emp.custom_employee_id || emp.emp_id}</td>
                         <td>
                           <div className="flex items-center gap-2">
                             <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center flex-shrink-0">
@@ -630,6 +698,9 @@ const Employees = () => {
                         </td>
                         <td className="text-slate-600 hidden xl:table-cell">
                           <span className="truncate max-w-[100px] block" title={emp.designation}>{emp.designation}</span>
+                        </td>
+                        <td className="text-slate-600 hidden xl:table-cell whitespace-nowrap">
+                          <span className="text-xs font-mono">{emp.biometric_id || '-'}</span>
                         </td>
                         <td><Badge className={getStatusBadge(emp.employee_status)}>{emp.employee_status}</Badge></td>
                         <td>
@@ -726,9 +797,15 @@ const Employees = () => {
               <TabsContent value="employment" className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
+                    <Label className="text-sm font-medium text-slate-700">Employee ID <span className="text-red-500">*</span></Label>
+                    <Input value={form.custom_employee_id} onChange={(e) => setForm(prev => ({ ...prev, custom_employee_id: e.target.value }))} placeholder="e.g., EID-001" className="mt-1.5 rounded-lg" data-testid="input-custom-employee-id" />
+                  </div>
+                  <div>
                     <Label className="text-sm font-medium text-slate-700">Date of Joining</Label>
                     <Input type="date" value={form.date_of_joining} onChange={(e) => setForm(prev => ({ ...prev, date_of_joining: e.target.value }))} className="mt-1.5 rounded-lg" data-testid="input-doj" />
                   </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Employment Type</Label>
                     <Select value={form.employment_type} onValueChange={(val) => setForm(prev => ({ ...prev, employment_type: val }))}>
@@ -850,6 +927,10 @@ const Employees = () => {
                         {config.userRoles.map(r => <SelectItem key={r} value={r}>{r.replace('_', ' ').toUpperCase()}</SelectItem>)}
                       </SelectContent>
                     </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Biometric ID <span className="text-red-500">*</span></Label>
+                    <Input value={form.biometric_id} onChange={(e) => setForm(prev => ({ ...prev, biometric_id: e.target.value }))} placeholder="e.g., BIO-001" className="mt-1.5 rounded-lg" data-testid="input-biometric-id" />
                   </div>
                 </div>
                 <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
@@ -927,9 +1008,15 @@ const Employees = () => {
               <TabsContent value="employment" className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
+                    <Label className="text-sm font-medium text-slate-700">Employee ID <span className="text-red-500">*</span></Label>
+                    <Input value={form.custom_employee_id} onChange={(e) => setForm(prev => ({ ...prev, custom_employee_id: e.target.value }))} placeholder="e.g., EID-001" className="mt-1.5 rounded-lg" data-testid="input-custom-employee-id" />
+                  </div>
+                  <div>
                     <Label className="text-sm font-medium text-slate-700">Date of Joining</Label>
                     <Input type="date" value={form.date_of_joining} onChange={(e) => setForm(prev => ({ ...prev, date_of_joining: e.target.value }))} className="mt-1.5 rounded-lg" data-testid="input-doj" />
                   </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Employment Type</Label>
                     <Select value={form.employment_type} onValueChange={(val) => setForm(prev => ({ ...prev, employment_type: val }))}>
@@ -1052,6 +1139,10 @@ const Employees = () => {
                       </SelectContent>
                     </Select>
                   </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Biometric ID <span className="text-red-500">*</span></Label>
+                    <Input value={form.biometric_id} onChange={(e) => setForm(prev => ({ ...prev, biometric_id: e.target.value }))} placeholder="e.g., BIO-001" className="mt-1.5 rounded-lg" data-testid="edit-input-biometric-id" />
+                  </div>
                 </div>
                 <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
                   <div>
@@ -1125,6 +1216,8 @@ const Employees = () => {
                     <div className="space-y-4">
                       <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide">Employment</h4>
                       <div className="space-y-3">
+                        <div className="flex items-center gap-3"><Hash className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Employee ID: {selectedEmployee.custom_employee_id || '-'}</span></div>
+                        <div className="flex items-center gap-3"><Fingerprint className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Biometric ID: {selectedEmployee.biometric_id || '-'}</span></div>
                         <div className="flex items-center gap-3"><Briefcase className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Joined: {selectedEmployee.date_of_joining}</span></div>
                         <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.department} / {selectedEmployee.team}</span></div>
                         <div className="flex items-center gap-3"><MapPin className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.work_location}</span></div>
@@ -1632,6 +1725,97 @@ const Employees = () => {
             <Button onClick={handleCreateAdjustment} disabled={savingSalary} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg">
               {savingSalary ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
               Add Adjustment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Import Dialog */}
+      <Dialog open={showBulkImport} onOpenChange={(open) => { if (!open) { setImportFile(null); setImportResult(null); } setShowBulkImport(open); }}>
+        <DialogContent className="bg-[#fffdf7] max-w-xl max-h-[85vh] overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Bulk Import Employees</DialogTitle>
+            <DialogDescription>Upload an Excel or CSV file to import multiple employees at once</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-5 py-4">
+            {/* Download Template */}
+            <div className="flex items-center justify-between p-4 bg-blue-50 rounded-xl border border-blue-100">
+              <div>
+                <p className="font-medium text-slate-900 text-sm">Sample Template</p>
+                <p className="text-xs text-slate-500">Download the template to fill in employee data</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={handleDownloadTemplate} className="rounded-lg border-[#063c88] text-[#063c88]" data-testid="download-template-btn">
+                <Download className="w-4 h-4 mr-1" /> Template
+              </Button>
+            </div>
+
+            {/* File Upload */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium text-slate-700">Upload File (.xlsx or .csv)</Label>
+              <div className="relative">
+                <input
+                  type="file"
+                  accept=".xlsx,.csv"
+                  onChange={(e) => { setImportFile(e.target.files[0]); setImportResult(null); }}
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-[#063c88] file:text-white hover:file:bg-[#052d66] cursor-pointer border border-slate-200 rounded-lg"
+                  data-testid="import-file-input"
+                />
+              </div>
+              {importFile && (
+                <p className="text-xs text-slate-500 flex items-center gap-1">
+                  <FileSpreadsheet className="w-3 h-3" /> {importFile.name} ({(importFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+
+            {/* Import Results */}
+            {importResult && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="text-center p-3 bg-slate-100 rounded-lg">
+                    <p className="text-lg font-bold text-slate-900">{importResult.total}</p>
+                    <p className="text-xs text-slate-500">Total Records</p>
+                  </div>
+                  <div className="text-center p-3 bg-emerald-50 rounded-lg">
+                    <p className="text-lg font-bold text-emerald-600">{importResult.success}</p>
+                    <p className="text-xs text-emerald-600">Successful</p>
+                  </div>
+                  <div className="text-center p-3 bg-red-50 rounded-lg">
+                    <p className="text-lg font-bold text-red-600">{importResult.failed}</p>
+                    <p className="text-xs text-red-600">Failed</p>
+                  </div>
+                </div>
+
+                {importResult.errors?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-red-600 flex items-center gap-1">
+                      <AlertCircle className="w-4 h-4" /> Error Report
+                    </p>
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 border border-red-100 rounded-lg p-3 bg-red-50/50">
+                      {importResult.errors.map((err, idx) => (
+                        <div key={idx} className="text-xs bg-white p-2 rounded border border-red-100" data-testid={`import-error-${idx}`}>
+                          <span className="font-medium text-slate-700">Row {err.row} ({err.name}):</span>
+                          <ul className="mt-0.5 ml-3 list-disc text-red-600">
+                            {err.errors.map((e, i) => <li key={i}>{e}</li>)}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex gap-2 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => setShowBulkImport(false)} className="rounded-lg">Close</Button>
+            <Button
+              onClick={handleBulkImport}
+              disabled={!importFile || importing}
+              className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg"
+              data-testid="import-submit-btn"
+            >
+              {importing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
+              {importing ? 'Importing...' : 'Import Employees'}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -1,5 +1,6 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File as FastAPIFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -18,6 +19,9 @@ import cloudinary.utils
 import cloudinary.uploader
 import resend
 import time
+import io
+import csv
+import openpyxl
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -427,6 +431,7 @@ class Employee(BaseModel):
     date_of_birth: Optional[str] = None
     
     # Employment Information
+    custom_employee_id: Optional[str] = None  # Admin-defined Employee ID
     date_of_joining: str
     employment_type: str = EmploymentType.FULL_TIME
     employee_status: str = EmployeeStatus.ACTIVE
@@ -455,6 +460,7 @@ class Employee(BaseModel):
     # System Access
     user_role: str = UserRole.EMPLOYEE
     login_enabled: bool = True
+    biometric_id: Optional[str] = None  # For biometric device mapping
     
     # Legacy fields for compatibility
     avatar: Optional[str] = None
@@ -482,6 +488,7 @@ class EmployeeCreate(BaseModel):
     date_of_birth: Optional[str] = None
     
     # Employment Information
+    custom_employee_id: Optional[str] = None  # Admin-defined Employee ID
     date_of_joining: str
     employment_type: str = EmploymentType.FULL_TIME
     designation: str
@@ -509,6 +516,7 @@ class EmployeeCreate(BaseModel):
     # System Access
     user_role: str = UserRole.EMPLOYEE
     login_enabled: bool = True
+    biometric_id: Optional[str] = None  # For biometric device mapping
 
 class EmployeeUpdate(BaseModel):
     # Personal Information
@@ -519,6 +527,7 @@ class EmployeeUpdate(BaseModel):
     date_of_birth: Optional[str] = None
     
     # Employment Information
+    custom_employee_id: Optional[str] = None
     date_of_joining: Optional[str] = None
     employment_type: Optional[str] = None
     employee_status: Optional[str] = None
@@ -547,6 +556,7 @@ class EmployeeUpdate(BaseModel):
     # System Access
     user_role: Optional[str] = None
     login_enabled: Optional[bool] = None
+    biometric_id: Optional[str] = None
 
 class Attendance(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1688,7 +1698,9 @@ async def get_employees(
             {"full_name": {"$regex": search, "$options": "i"}},
             {"official_email": {"$regex": search, "$options": "i"}},
             {"emp_id": {"$regex": search, "$options": "i"}},
-            {"designation": {"$regex": search, "$options": "i"}}
+            {"designation": {"$regex": search, "$options": "i"}},
+            {"custom_employee_id": {"$regex": search, "$options": "i"}},
+            {"biometric_id": {"$regex": search, "$options": "i"}}
         ]
     
     skip = (page - 1) * limit
@@ -1713,7 +1725,7 @@ async def get_employees(
 async def get_all_employees(current_user: dict = Depends(get_current_user)):
     """Get all active employees (for dropdowns)"""
     query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
-    employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1}).to_list(1000)
+    employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1, "custom_employee_id": 1, "biometric_id": 1}).to_list(1000)
     return employees
 
 @api_router.get("/employees/stats")
@@ -1755,6 +1767,327 @@ async def get_employee_stats(current_user: dict = Depends(get_current_user)):
         "by_work_location": by_location
     }
 
+# ============== BULK IMPORT ENDPOINTS ==============
+
+IMPORT_TEMPLATE_COLUMNS = [
+    "Employee Name", "Employee ID", "Biometric ID", "Email", "Phone",
+    "Gender", "Date of Birth", "Date of Joining", "Department", "Team",
+    "Designation", "Employment Type", "Tier Level", "Work Location",
+    "Shift Type", "Monthly Salary", "User Role"
+]
+
+@api_router.get("/employees/import-template")
+async def get_import_template(current_user: dict = Depends(get_current_user)):
+    """Download sample Excel template for bulk employee import"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Employee Import"
+    
+    # Header row
+    for col_idx, header in enumerate(IMPORT_TEMPLATE_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = openpyxl.styles.Font(bold=True)
+        cell.fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+        cell.font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    
+    # Sample row
+    sample_data = [
+        "John Doe", "EID-001", "BIO-001", "john.doe@company.com", "9876543210",
+        "Male", "1990-01-15", "2026-01-01", "Technology", "Backend",
+        "Software Engineer", "Full-time", "Mid", "Office",
+        "General", "50000", "employee"
+    ]
+    for col_idx, val in enumerate(sample_data, 1):
+        ws.cell(row=2, column=col_idx, value=val)
+    
+    # Auto-adjust column widths
+    for col_idx in range(1, len(IMPORT_TEMPLATE_COLUMNS) + 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
+    
+    # Add instructions sheet
+    ws2 = wb.create_sheet("Instructions")
+    instructions = [
+        ["Field", "Required", "Notes"],
+        ["Employee Name", "Yes", "Full name of the employee"],
+        ["Employee ID", "Yes", "Unique alphanumeric ID (e.g., EID-001)"],
+        ["Biometric ID", "Yes", "Unique ID for biometric device mapping"],
+        ["Email", "Yes", "Must be unique, used for login credentials"],
+        ["Phone", "No", "10-digit phone number"],
+        ["Gender", "No", "Male / Female / Other"],
+        ["Date of Birth", "No", "Format: YYYY-MM-DD"],
+        ["Date of Joining", "Yes", "Format: YYYY-MM-DD"],
+        ["Department", "Yes", "Must match existing department"],
+        ["Team", "Yes", "Must match existing team"],
+        ["Designation", "Yes", "Job title"],
+        ["Employment Type", "No", "Full-time / Part-time / Contract / Intern (default: Full-time)"],
+        ["Tier Level", "No", "Junior / Mid / Senior / Lead (default: Mid)"],
+        ["Work Location", "No", "Remote / Office / Hybrid (default: Office)"],
+        ["Shift Type", "No", "General / Morning / Evening / Night / Flexible (default: General)"],
+        ["Monthly Salary", "No", "Numeric value in INR (default: 0)"],
+        ["User Role", "No", "employee / admin / hr_manager / team_lead (default: employee)"]
+    ]
+    for row_idx, row_data in enumerate(instructions, 1):
+        for col_idx, val in enumerate(row_data, 1):
+            cell = ws2.cell(row=row_idx, column=col_idx, value=val)
+            if row_idx == 1:
+                cell.font = openpyxl.styles.Font(bold=True)
+    for col_idx in range(1, 4):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 25
+    
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=employee_import_template.xlsx"}
+    )
+
+@api_router.post("/employees/bulk-import")
+async def bulk_import_employees(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk import employees from CSV or Excel file"""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    # Read file content
+    content = await file.read()
+    filename = file.filename.lower() if file.filename else ""
+    
+    rows = []
+    if filename.endswith('.csv'):
+        # Parse CSV
+        try:
+            text_content = content.decode('utf-8-sig')  # Handle BOM
+            reader = csv.DictReader(io.StringIO(text_content))
+            for row in reader:
+                rows.append(row)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+    elif filename.endswith('.xlsx') or filename.endswith('.xls'):
+        # Parse Excel
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+            ws = wb.active
+            headers = [cell.value for cell in ws[1]]
+            for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                if all(cell is None for cell in row):
+                    continue
+                row_dict = {}
+                for col_idx, header in enumerate(headers):
+                    if header and col_idx < len(row):
+                        row_dict[header] = row[col_idx]
+                if row_dict:
+                    rows.append(row_dict)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {str(e)}")
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file format. Please upload .csv or .xlsx file")
+    
+    if not rows:
+        raise HTTPException(status_code=400, detail="No data rows found in file")
+    
+    # Get all departments and teams for validation
+    departments = await db.departments.find({}, {"_id": 0, "name": 1}).to_list(100)
+    dept_names = {d["name"].lower(): d["name"] for d in departments}
+    
+    teams = await db.teams.find({}, {"_id": 0, "name": 1, "department": 1}).to_list(500)
+    team_map = {t["name"].lower(): {"name": t["name"], "department": t["department"]} for t in teams}
+    
+    # Get existing employee IDs and biometric IDs for uniqueness check
+    existing_employees = await db.employees.find(
+        {"is_deleted": {"$ne": True}},
+        {"_id": 0, "official_email": 1, "custom_employee_id": 1, "biometric_id": 1}
+    ).to_list(10000)
+    
+    existing_emails = {e.get("official_email", "").lower() for e in existing_employees if e.get("official_email")}
+    existing_emp_ids = {e.get("custom_employee_id", "").lower() for e in existing_employees if e.get("custom_employee_id")}
+    existing_bio_ids = {e.get("biometric_id", "").lower() for e in existing_employees if e.get("biometric_id")}
+    
+    # Track IDs in current batch for duplicates within file
+    batch_emails = set()
+    batch_emp_ids = set()
+    batch_bio_ids = set()
+    
+    results = {
+        "total": len(rows),
+        "success": 0,
+        "failed": 0,
+        "errors": []
+    }
+    
+    # Column name mapping (flexible)
+    def get_value(row, *keys):
+        for key in keys:
+            for row_key in row.keys():
+                if row_key and row_key.strip().lower() == key.lower():
+                    return row.get(row_key)
+        return None
+    
+    for idx, row in enumerate(rows, start=2):
+        row_errors = []
+        
+        # Extract values with flexible column names
+        full_name = get_value(row, "Employee Name", "Full Name", "Name")
+        custom_employee_id = get_value(row, "Employee ID", "Custom Employee ID", "Emp ID")
+        biometric_id = get_value(row, "Biometric ID", "Bio ID", "Biometric")
+        email = get_value(row, "Email", "Official Email", "Email Address")
+        phone = get_value(row, "Phone", "Phone Number", "Contact")
+        gender = get_value(row, "Gender")
+        dob = get_value(row, "Date of Birth", "DOB", "Birth Date")
+        doj = get_value(row, "Date of Joining", "DOJ", "Joining Date", "Start Date")
+        department = get_value(row, "Department", "Dept")
+        team = get_value(row, "Team")
+        designation = get_value(row, "Designation", "Title", "Job Title", "Position")
+        employment_type = get_value(row, "Employment Type", "Type") or "Full-time"
+        tier_level = get_value(row, "Tier Level", "Tier", "Level") or "Mid"
+        work_location = get_value(row, "Work Location", "Location") or "Office"
+        shift_type = get_value(row, "Shift Type", "Shift") or "General"
+        monthly_salary = get_value(row, "Monthly Salary", "Salary")
+        user_role = get_value(row, "User Role", "Role") or "employee"
+        
+        # Convert values
+        full_name = str(full_name).strip() if full_name else ""
+        custom_employee_id = str(custom_employee_id).strip() if custom_employee_id else ""
+        biometric_id = str(biometric_id).strip() if biometric_id else ""
+        email = str(email).strip() if email else ""
+        phone = str(phone).strip() if phone else None
+        gender = str(gender).strip() if gender else None
+        dob = str(dob).strip() if dob else None
+        doj = str(doj).strip() if doj else ""
+        department = str(department).strip() if department else ""
+        team = str(team).strip() if team else ""
+        designation = str(designation).strip() if designation else ""
+        
+        try:
+            monthly_salary = float(monthly_salary) if monthly_salary else 0.0
+        except:
+            monthly_salary = 0.0
+        
+        # Validate required fields
+        if not full_name:
+            row_errors.append("Employee Name is required")
+        if not custom_employee_id:
+            row_errors.append("Employee ID is required")
+        if not biometric_id:
+            row_errors.append("Biometric ID is required")
+        if not email:
+            row_errors.append("Email is required")
+        if not doj:
+            row_errors.append("Date of Joining is required")
+        if not department:
+            row_errors.append("Department is required")
+        if not team:
+            row_errors.append("Team is required")
+        if not designation:
+            row_errors.append("Designation is required")
+        
+        # Validate department exists
+        if department and department.lower() not in dept_names:
+            row_errors.append(f"Department '{department}' not found")
+        else:
+            department = dept_names.get(department.lower(), department)
+        
+        # Validate team exists
+        if team and team.lower() not in team_map:
+            row_errors.append(f"Team '{team}' not found")
+        else:
+            team = team_map.get(team.lower(), {}).get("name", team)
+        
+        # Check for duplicate email
+        if email:
+            email_lower = email.lower()
+            if email_lower in existing_emails:
+                row_errors.append(f"Email '{email}' already exists")
+            elif email_lower in batch_emails:
+                row_errors.append(f"Duplicate email '{email}' in file")
+            else:
+                batch_emails.add(email_lower)
+        
+        # Check for duplicate Employee ID
+        if custom_employee_id:
+            emp_id_lower = custom_employee_id.lower()
+            if emp_id_lower in existing_emp_ids:
+                row_errors.append(f"Employee ID '{custom_employee_id}' already exists")
+            elif emp_id_lower in batch_emp_ids:
+                row_errors.append(f"Duplicate Employee ID '{custom_employee_id}' in file")
+            else:
+                batch_emp_ids.add(emp_id_lower)
+        
+        # Check for duplicate Biometric ID
+        if biometric_id:
+            bio_id_lower = biometric_id.lower()
+            if bio_id_lower in existing_bio_ids:
+                row_errors.append(f"Biometric ID '{biometric_id}' already exists")
+            elif bio_id_lower in batch_bio_ids:
+                row_errors.append(f"Duplicate Biometric ID '{biometric_id}' in file")
+            else:
+                batch_bio_ids.add(bio_id_lower)
+        
+        if row_errors:
+            results["failed"] += 1
+            results["errors"].append({
+                "row": idx,
+                "employee_name": full_name or f"Row {idx}",
+                "errors": row_errors
+            })
+            continue
+        
+        # Create employee
+        try:
+            emp_id = await generate_emp_id()
+            
+            employee = Employee(
+                emp_id=emp_id,
+                full_name=full_name,
+                official_email=email,
+                phone_number=phone,
+                gender=gender,
+                date_of_birth=dob,
+                custom_employee_id=custom_employee_id,
+                date_of_joining=doj,
+                employment_type=employment_type,
+                designation=designation,
+                tier_level=tier_level,
+                department=department,
+                team=team,
+                work_location=work_location,
+                shift_type=shift_type,
+                monthly_salary=monthly_salary,
+                user_role=user_role.lower() if user_role else "employee",
+                login_enabled=True,
+                biometric_id=biometric_id
+            )
+            
+            emp_doc = employee.model_dump()
+            emp_doc['created_at'] = emp_doc['created_at'].isoformat()
+            emp_doc['updated_at'] = emp_doc['updated_at'].isoformat()
+            
+            await db.employees.insert_one(emp_doc.copy())
+            
+            # Add to existing sets to prevent duplicates in same batch
+            existing_emails.add(email.lower())
+            existing_emp_ids.add(custom_employee_id.lower())
+            existing_bio_ids.add(biometric_id.lower())
+            
+            results["success"] += 1
+            
+        except Exception as e:
+            results["failed"] += 1
+            results["errors"].append({
+                "row": idx,
+                "employee_name": full_name,
+                "errors": [str(e)]
+            })
+    
+    return results
+
 @api_router.get("/employees/{employee_id}")
 async def get_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
     employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
@@ -1779,6 +2112,18 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     if existing_active:
         raise HTTPException(status_code=400, detail="Employee with this email already exists")
     
+    # Validate uniqueness of custom_employee_id
+    if data.custom_employee_id:
+        existing_cid = await db.employees.find_one({"custom_employee_id": data.custom_employee_id, "is_deleted": {"$ne": True}})
+        if existing_cid:
+            raise HTTPException(status_code=400, detail=f"Employee ID '{data.custom_employee_id}' already exists")
+    
+    # Validate uniqueness of biometric_id
+    if data.biometric_id:
+        existing_bio = await db.employees.find_one({"biometric_id": data.biometric_id, "is_deleted": {"$ne": True}})
+        if existing_bio:
+            raise HTTPException(status_code=400, detail=f"Biometric ID '{data.biometric_id}' already exists")
+    
     # Check if there's a deleted employee with same email - reactivate instead
     existing_deleted = await db.employees.find_one({"official_email": data.official_email, "is_deleted": True})
     
@@ -1790,7 +2135,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         phone_part = str(uuid.uuid4())[:4]
     temp_password = f"{name_part}@{phone_part}"
     
-    frontend_url = os.environ.get('FRONTEND_URL', 'https://employee-hub-244.preview.emergentagent.com')
+    frontend_url = os.environ.get('FRONTEND_URL', 'https://employee-onboard-5.preview.emergentagent.com')
     login_url = f"{frontend_url}/login"
     
     if existing_deleted:
@@ -1819,6 +2164,8 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
             "attendance_tracking_enabled": data.attendance_tracking_enabled,
             "user_role": data.user_role,
             "login_enabled": data.login_enabled,
+            "custom_employee_id": data.custom_employee_id,
+            "biometric_id": data.biometric_id,
             "updated_at": get_ist_now().isoformat()
         }
         
@@ -1892,6 +2239,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         phone_number=data.phone_number,
         gender=data.gender,
         date_of_birth=data.date_of_birth,
+        custom_employee_id=data.custom_employee_id,
         date_of_joining=data.date_of_joining,
         employment_type=data.employment_type,
         designation=data.designation,
@@ -1904,7 +2252,8 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         shift_type=data.shift_type,
         attendance_tracking_enabled=data.attendance_tracking_enabled,
         user_role=data.user_role,
-        login_enabled=data.login_enabled
+        login_enabled=data.login_enabled,
+        biometric_id=data.biometric_id
     )
     
     doc = employee.model_dump()
@@ -1994,6 +2343,18 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
         dup = await db.employees.find_one({"official_email": data.official_email, "id": {"$ne": employee_id}, "is_deleted": {"$ne": True}})
         if dup:
             raise HTTPException(status_code=400, detail="Employee with this email already exists")
+    
+    # Check uniqueness of custom_employee_id if changing
+    if data.custom_employee_id and data.custom_employee_id != existing.get("custom_employee_id"):
+        dup_cid = await db.employees.find_one({"custom_employee_id": data.custom_employee_id, "id": {"$ne": employee_id}, "is_deleted": {"$ne": True}})
+        if dup_cid:
+            raise HTTPException(status_code=400, detail=f"Employee ID '{data.custom_employee_id}' already exists")
+    
+    # Check uniqueness of biometric_id if changing
+    if data.biometric_id and data.biometric_id != existing.get("biometric_id"):
+        dup_bio = await db.employees.find_one({"biometric_id": data.biometric_id, "id": {"$ne": employee_id}, "is_deleted": {"$ne": True}})
+        if dup_bio:
+            raise HTTPException(status_code=400, detail=f"Biometric ID '{data.biometric_id}' already exists")
     
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
     if not update_data:
