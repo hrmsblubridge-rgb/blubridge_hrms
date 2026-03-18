@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File as FastAPIFile
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File as FastAPIFile, Body
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -2683,6 +2683,256 @@ async def check_out(employee_id: str, current_user: dict = Depends(get_current_u
     
     updated = await db.attendance.find_one({"employee_id": employee_id, "date": today}, {"_id": 0})
     return serialize_doc(updated)
+
+# ============== BIOMETRIC ATTENDANCE IMPORT ==============
+
+@api_router.post("/attendance/import-biometric")
+async def import_biometric_attendance(
+    records: list = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Ingest biometric attendance data from external device sync service."""
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    if not records or not isinstance(records, list):
+        raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array")
+    
+    total_records = len(records)
+    processed = 0
+    skipped = 0
+    unmapped = 0
+    unmapped_ids = set()
+    
+    # Pre-fetch all employees with biometric_id for mapping
+    emp_cursor = db.employees.find(
+        {"biometric_id": {"$ne": None}, "is_deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "biometric_id": 1, "full_name": 1, "team": 1, "department": 1, "shift_type": 1,
+         "custom_login_time": 1, "custom_logout_time": 1, "custom_total_hours": 1}
+    )
+    bio_map = {}
+    async for emp in emp_cursor:
+        if emp.get("biometric_id"):
+            bio_map[str(emp["biometric_id"])] = emp
+    
+    # Group valid punches: { (employee_id, date_str) : [datetime, ...] }
+    grouped = {}
+    device_ips = {}
+    raw_logs = []
+    
+    for rec in records:
+        if not isinstance(rec, dict):
+            skipped += 1
+            continue
+        
+        device_user_id = rec.get("deviceUserId")
+        record_time = rec.get("recordTime")
+        device_ip = rec.get("ip", "")
+        
+        if not device_user_id or not record_time:
+            skipped += 1
+            continue
+        
+        device_user_id = str(device_user_id).strip()
+        
+        # Map to employee
+        employee = bio_map.get(device_user_id)
+        if not employee:
+            unmapped += 1
+            unmapped_ids.add(device_user_id)
+            raw_logs.append({
+                "deviceUserId": device_user_id,
+                "recordTime": record_time,
+                "ip": device_ip,
+                "status": "unmapped"
+            })
+            continue
+        
+        # Parse recordTime
+        try:
+            if isinstance(record_time, str):
+                # Handle ISO format with or without timezone
+                punch_dt = datetime.fromisoformat(record_time.replace("Z", "+00:00"))
+            else:
+                skipped += 1
+                continue
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+        
+        # Convert to IST
+        punch_ist = punch_dt.astimezone(IST)
+        date_str = punch_ist.strftime("%d-%m-%Y")
+        emp_id = employee["id"]
+        
+        key = (emp_id, date_str)
+        if key not in grouped:
+            grouped[key] = {"punches": [], "employee": employee, "ip": device_ip}
+        grouped[key]["punches"].append(punch_ist)
+        if device_ip:
+            grouped[key]["ip"] = device_ip
+        
+        raw_logs.append({
+            "deviceUserId": device_user_id,
+            "recordTime": record_time,
+            "ip": device_ip,
+            "employee_id": emp_id,
+            "date": date_str,
+            "status": "mapped"
+        })
+    
+    # Store raw punch log for audit
+    if raw_logs:
+        await db.biometric_punch_logs.insert_one({
+            "_id": str(uuid.uuid4()),
+            "imported_at": get_ist_now().isoformat(),
+            "imported_by": current_user["id"],
+            "total_punches": len(raw_logs),
+            "logs": raw_logs
+        })
+    
+    # Process grouped punches - bulk upsert attendance
+    bulk_ops = []
+    for (emp_id, date_str), data in grouped.items():
+        punches = sorted(data["punches"])
+        employee = data["employee"]
+        device_ip = data["ip"]
+        
+        in_time = punches[0]
+        out_time = punches[-1] if len(punches) > 1 else None
+        
+        in_24h = in_time.strftime("%H:%M")
+        in_12h = in_time.strftime("%I:%M %p")
+        out_24h = out_time.strftime("%H:%M") if out_time else None
+        out_12h = out_time.strftime("%I:%M %p") if out_time else None
+        
+        # Calculate total hours
+        total_hours_decimal = 0.0
+        total_hours_str = None
+        status = AttendanceStatus.LOGIN
+        
+        if out_time and out_time != in_time:
+            diff = (out_time - in_time).total_seconds() / 3600
+            total_hours_decimal = round(diff, 2)
+            total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            status = AttendanceStatus.PRESENT
+        
+        # Calculate LOP based on shift
+        shift_timings = get_shift_timings(employee)
+        is_lop = False
+        lop_reason = None
+        
+        if shift_timings and out_24h:
+            status_result = calculate_attendance_status(in_24h, out_24h, shift_timings)
+            status = status_result.get("status", status)
+            is_lop = status_result.get("is_lop", False)
+            lop_reason = status_result.get("lop_reason")
+            if status_result.get("total_hours_decimal"):
+                total_hours_decimal = status_result["total_hours_decimal"]
+                total_hours_str = calculate_total_hours_str(total_hours_decimal)
+        elif shift_timings and not out_24h:
+            # Only check-in, check if late
+            expected_login = shift_timings.get("login_time")
+            if expected_login:
+                expected_mins = parse_time_24h_to_minutes(expected_login)
+                actual_mins = parse_time_24h_to_minutes(in_24h)
+                if actual_mins > expected_mins:
+                    late_mins = actual_mins - expected_mins
+                    is_lop = True
+                    lop_reason = f"Late login by {late_mins} minute(s). Expected: {expected_login}, Actual: {in_24h}"
+                    status = AttendanceStatus.LOSS_OF_PAY
+        
+        # Check existing attendance for this employee+date
+        existing = await db.attendance.find_one(
+            {"employee_id": emp_id, "date": date_str},
+            {"_id": 0}
+        )
+        
+        if existing:
+            # UPSERT: merge with existing record
+            update_fields = {"source": "biometric", "device_ip": device_ip}
+            
+            # MIN(existing_in, new_in)
+            existing_in_24h = existing.get("check_in_24h")
+            if existing_in_24h and in_24h:
+                if parse_time_24h_to_minutes(in_24h) < parse_time_24h_to_minutes(existing_in_24h):
+                    update_fields["check_in"] = in_12h
+                    update_fields["check_in_24h"] = in_24h
+            elif in_24h and not existing_in_24h:
+                update_fields["check_in"] = in_12h
+                update_fields["check_in_24h"] = in_24h
+            
+            # MAX(existing_out, new_out)
+            existing_out_24h = existing.get("check_out_24h")
+            if out_24h:
+                if not existing_out_24h or parse_time_24h_to_minutes(out_24h) > parse_time_24h_to_minutes(existing_out_24h):
+                    update_fields["check_out"] = out_12h
+                    update_fields["check_out_24h"] = out_24h
+            
+            # Recalculate total hours with merged times
+            final_in = update_fields.get("check_in_24h", existing_in_24h)
+            final_out = update_fields.get("check_out_24h", existing_out_24h)
+            if final_in and final_out:
+                in_mins = parse_time_24h_to_minutes(final_in)
+                out_mins = parse_time_24h_to_minutes(final_out)
+                if out_mins > in_mins:
+                    merged_hours = (out_mins - in_mins) / 60
+                    update_fields["total_hours_decimal"] = round(merged_hours, 2)
+                    update_fields["total_hours_str"] = calculate_total_hours_str(merged_hours)
+                    # Recalculate status with merged times
+                    if shift_timings:
+                        merged_result = calculate_attendance_status(final_in, final_out, shift_timings)
+                        update_fields["status"] = merged_result.get("status", AttendanceStatus.PRESENT)
+                        update_fields["is_lop"] = merged_result.get("is_lop", False)
+                        update_fields["lop_reason"] = merged_result.get("lop_reason")
+                    else:
+                        update_fields["status"] = AttendanceStatus.PRESENT
+            
+            await db.attendance.update_one(
+                {"employee_id": emp_id, "date": date_str},
+                {"$set": update_fields}
+            )
+            processed += 1
+        else:
+            # INSERT new attendance record
+            attendance_doc = {
+                "id": str(uuid.uuid4()),
+                "employee_id": emp_id,
+                "emp_name": employee["full_name"],
+                "team": employee.get("team", ""),
+                "department": employee.get("department", ""),
+                "date": date_str,
+                "check_in": in_12h,
+                "check_in_24h": in_24h,
+                "check_out": out_12h,
+                "check_out_24h": out_24h,
+                "total_hours": total_hours_str,
+                "total_hours_decimal": total_hours_decimal,
+                "status": status,
+                "is_lop": is_lop,
+                "lop_reason": lop_reason,
+                "shift_type": employee.get("shift_type", "General"),
+                "expected_login": shift_timings.get("login_time") if shift_timings else None,
+                "expected_logout": shift_timings.get("logout_time") if shift_timings else None,
+                "source": "biometric",
+                "device_ip": device_ip,
+                "created_at": get_ist_now().isoformat()
+            }
+            await db.attendance.insert_one(attendance_doc.copy())
+            processed += 1
+    
+    await log_audit(
+        current_user["id"], "biometric_import", "attendance", None,
+        f"Biometric import: {processed} processed, {skipped} skipped, {unmapped} unmapped out of {total_records}"
+    )
+    
+    return {
+        "totalRecords": total_records,
+        "processed": processed,
+        "skipped": skipped,
+        "unmapped": unmapped,
+        "unmappedDeviceUserIds": list(unmapped_ids) if unmapped_ids else []
+    }
 
 @api_router.get("/attendance/stats")
 async def get_attendance_stats(
