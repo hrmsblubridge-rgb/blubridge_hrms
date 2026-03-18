@@ -1930,6 +1930,42 @@ async def bulk_import_employees(
                     return row.get(row_key)
         return None
     
+    def parse_date(val):
+        """Parse date from various formats to YYYY-MM-DD. Handles Excel numeric/datetime dates too."""
+        if val is None or str(val).strip() == "" or str(val).strip().lower() == "none":
+            return None
+        
+        # Handle Python datetime objects (openpyxl may return these directly)
+        if isinstance(val, datetime):
+            return val.strftime("%Y-%m-%d")
+        
+        # Handle Excel numeric date serial (float/int)
+        if isinstance(val, (int, float)):
+            try:
+                from datetime import datetime as dt_cls, timedelta as td_cls
+                excel_epoch = dt_cls(1899, 12, 30)
+                return (excel_epoch + td_cls(days=int(val))).strftime("%Y-%m-%d")
+            except Exception:
+                return None
+        
+        raw = str(val).strip()
+        # If already ISO YYYY-MM-DD
+        if len(raw) == 10 and raw[4] == '-' and raw[7] == '-':
+            try:
+                datetime.strptime(raw, "%Y-%m-%d")
+                return raw
+            except ValueError:
+                pass
+        
+        # MM/DD/YYYY (primary), then other formats
+        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        
+        return "__INVALID__"
+    
     for idx, row in enumerate(rows, start=2):
         row_errors = []
         
@@ -1959,8 +1995,20 @@ async def bulk_import_employees(
         email = str(email).strip() if email else ""
         phone = str(phone).strip() if phone else None
         gender = str(gender).strip() if gender else None
-        dob = str(dob).strip() if dob else None
-        doj = str(doj).strip() if doj else ""
+        
+        # Parse dates BEFORE string conversion (preserves datetime/numeric types from Excel)
+        parsed_dob = parse_date(dob)
+        if dob is not None and parsed_dob == "__INVALID__":
+            row_errors.append(f"Invalid Date Format for Date of Birth: '{dob}'")
+            parsed_dob = None
+        dob = parsed_dob
+        
+        parsed_doj = parse_date(doj)
+        if doj is not None and parsed_doj == "__INVALID__":
+            row_errors.append(f"Invalid Date Format for Date of Joining: '{doj}'")
+            parsed_doj = ""
+        doj = parsed_doj if parsed_doj else ""
+        
         department = str(department).strip() if department else ""
         team = str(team).strip() if team else ""
         designation = str(designation).strip() if designation else ""
