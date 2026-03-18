@@ -2542,17 +2542,35 @@ async def get_attendance(
         query["team"] = team
     if department and department != "All":
         query["department"] = department
-    if from_date:
-        query["date"] = {"$gte": from_date}
-    if to_date:
-        if "date" in query:
-            query["date"]["$lte"] = to_date
-        else:
-            query["date"] = {"$lte": to_date}
     if status and status != "All":
         query["status"] = status
     
-    attendance = await db.attendance.find(query, {"_id": 0}).sort("date", -1).to_list(1000)
+    attendance = await db.attendance.find(query, {"_id": 0}).sort("date", -1).to_list(5000)
+    
+    # Filter by date range in Python (DD-MM-YYYY strings don't sort lexicographically)
+    if from_date or to_date:
+        def parse_ddmmyyyy(ds):
+            try:
+                parts = ds.split("-")
+                return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+            except:
+                return 0
+        
+        from_val = parse_ddmmyyyy(from_date) if from_date else 0
+        to_val = parse_ddmmyyyy(to_date) if to_date else 99999999
+        
+        attendance = [a for a in attendance if from_val <= parse_ddmmyyyy(a.get("date", "")) <= to_val]
+    
+    # Sort by date descending (proper chronological order)
+    def date_sort_key(a):
+        try:
+            parts = a.get("date", "01-01-1970").split("-")
+            return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+        except:
+            return 0
+    
+    attendance.sort(key=date_sort_key, reverse=True)
+    
     return [serialize_doc(a) for a in attendance]
 
 @api_router.post("/attendance/check-in")
@@ -2791,8 +2809,7 @@ async def import_biometric_attendance(
             "logs": raw_logs
         })
     
-    # Process grouped punches - bulk upsert attendance
-    bulk_ops = []
+    # Process grouped punches - atomic upsert per employee+date
     for (emp_id, date_str), data in grouped.items():
         punches = sorted(data["punches"])
         employee = data["employee"]
@@ -2806,102 +2823,79 @@ async def import_biometric_attendance(
         out_24h = out_time.strftime("%H:%M") if out_time else None
         out_12h = out_time.strftime("%I:%M %p") if out_time else None
         
-        # Calculate total hours
+        # Check existing record for this employee+date
+        existing = await db.attendance.find_one(
+            {"employee_id": emp_id, "date": date_str},
+            {"_id": 0, "check_in_24h": 1, "check_out_24h": 1}
+        )
+        
+        # Merge: MIN for in, MAX for out
+        if existing:
+            existing_in = existing.get("check_in_24h")
+            existing_out = existing.get("check_out_24h")
+            
+            if existing_in:
+                if parse_time_24h_to_minutes(in_24h) > parse_time_24h_to_minutes(existing_in):
+                    in_24h = existing_in
+                    in_12h = None  # Will recalc below
+            
+            if out_24h and existing_out:
+                if parse_time_24h_to_minutes(out_24h) < parse_time_24h_to_minutes(existing_out):
+                    out_24h = existing_out
+                    out_12h = None
+            elif existing_out and not out_24h:
+                out_24h = existing_out
+                out_12h = None
+        
+        # Recalculate 12h from final 24h values
+        if in_24h and not in_12h:
+            t = datetime.strptime(in_24h, "%H:%M")
+            in_12h = t.strftime("%I:%M %p")
+        if out_24h and not out_12h:
+            t = datetime.strptime(out_24h, "%H:%M")
+            out_12h = t.strftime("%I:%M %p")
+        
+        # Calculate total hours and status
         total_hours_decimal = 0.0
         total_hours_str = None
         status = AttendanceStatus.LOGIN
-        
-        if out_time and out_time != in_time:
-            diff = (out_time - in_time).total_seconds() / 3600
-            total_hours_decimal = round(diff, 2)
-            total_hours_str = calculate_total_hours_str(total_hours_decimal)
-            status = AttendanceStatus.PRESENT
-        
-        # Calculate LOP based on shift
-        shift_timings = get_shift_timings(employee)
         is_lop = False
         lop_reason = None
         
-        if shift_timings and out_24h:
-            status_result = calculate_attendance_status(in_24h, out_24h, shift_timings)
-            status = status_result.get("status", status)
-            is_lop = status_result.get("is_lop", False)
-            lop_reason = status_result.get("lop_reason")
-            if status_result.get("total_hours_decimal"):
-                total_hours_decimal = status_result["total_hours_decimal"]
+        shift_timings = get_shift_timings(employee)
+        
+        if in_24h and out_24h:
+            in_mins = parse_time_24h_to_minutes(in_24h)
+            out_mins = parse_time_24h_to_minutes(out_24h)
+            if out_mins > in_mins:
+                total_hours_decimal = round((out_mins - in_mins) / 60, 2)
                 total_hours_str = calculate_total_hours_str(total_hours_decimal)
-        elif shift_timings and not out_24h:
-            # Only check-in, check if late
-            expected_login = shift_timings.get("login_time")
-            if expected_login:
-                expected_mins = parse_time_24h_to_minutes(expected_login)
-                actual_mins = parse_time_24h_to_minutes(in_24h)
-                if actual_mins > expected_mins:
-                    late_mins = actual_mins - expected_mins
-                    is_lop = True
-                    lop_reason = f"Late login by {late_mins} minute(s). Expected: {expected_login}, Actual: {in_24h}"
-                    status = AttendanceStatus.LOSS_OF_PAY
+            status = AttendanceStatus.PRESENT
+            
+            if shift_timings:
+                status_result = calculate_attendance_status(in_24h, out_24h, shift_timings)
+                status = status_result.get("status", status)
+                is_lop = status_result.get("is_lop", False)
+                lop_reason = status_result.get("lop_reason")
+                if status_result.get("total_hours_decimal"):
+                    total_hours_decimal = status_result["total_hours_decimal"]
+                    total_hours_str = calculate_total_hours_str(total_hours_decimal)
+        elif in_24h and not out_24h:
+            # Single punch - no out time
+            if shift_timings:
+                expected_login = shift_timings.get("login_time")
+                if expected_login:
+                    expected_mins = parse_time_24h_to_minutes(expected_login)
+                    actual_mins = parse_time_24h_to_minutes(in_24h)
+                    if actual_mins > expected_mins:
+                        late_mins = actual_mins - expected_mins
+                        is_lop = True
+                        lop_reason = f"Late login by {late_mins} minute(s). Expected: {expected_login}, Actual: {in_24h}"
+                        status = AttendanceStatus.LOSS_OF_PAY
         
-        # Check existing attendance for this employee+date
-        existing = await db.attendance.find_one(
-            {"employee_id": emp_id, "date": date_str},
-            {"_id": 0}
-        )
-        
-        if existing:
-            # UPSERT: merge with existing record
-            update_fields = {"source": "biometric", "device_ip": device_ip}
-            
-            # MIN(existing_in, new_in)
-            existing_in_24h = existing.get("check_in_24h")
-            if existing_in_24h and in_24h:
-                if parse_time_24h_to_minutes(in_24h) < parse_time_24h_to_minutes(existing_in_24h):
-                    update_fields["check_in"] = in_12h
-                    update_fields["check_in_24h"] = in_24h
-            elif in_24h and not existing_in_24h:
-                update_fields["check_in"] = in_12h
-                update_fields["check_in_24h"] = in_24h
-            
-            # MAX(existing_out, new_out)
-            existing_out_24h = existing.get("check_out_24h")
-            if out_24h:
-                if not existing_out_24h or parse_time_24h_to_minutes(out_24h) > parse_time_24h_to_minutes(existing_out_24h):
-                    update_fields["check_out"] = out_12h
-                    update_fields["check_out_24h"] = out_24h
-            
-            # Recalculate total hours with merged times
-            final_in = update_fields.get("check_in_24h", existing_in_24h)
-            final_out = update_fields.get("check_out_24h", existing_out_24h)
-            if final_in and final_out:
-                in_mins = parse_time_24h_to_minutes(final_in)
-                out_mins = parse_time_24h_to_minutes(final_out)
-                if out_mins > in_mins:
-                    merged_hours = (out_mins - in_mins) / 60
-                    update_fields["total_hours_decimal"] = round(merged_hours, 2)
-                    update_fields["total_hours_str"] = calculate_total_hours_str(merged_hours)
-                    # Recalculate status with merged times
-                    if shift_timings:
-                        merged_result = calculate_attendance_status(final_in, final_out, shift_timings)
-                        update_fields["status"] = merged_result.get("status", AttendanceStatus.PRESENT)
-                        update_fields["is_lop"] = merged_result.get("is_lop", False)
-                        update_fields["lop_reason"] = merged_result.get("lop_reason")
-                    else:
-                        update_fields["status"] = AttendanceStatus.PRESENT
-            
-            await db.attendance.update_one(
-                {"employee_id": emp_id, "date": date_str},
-                {"$set": update_fields}
-            )
-            processed += 1
-        else:
-            # INSERT new attendance record
-            attendance_doc = {
-                "id": str(uuid.uuid4()),
-                "employee_id": emp_id,
-                "emp_name": employee["full_name"],
-                "team": employee.get("team", ""),
-                "department": employee.get("department", ""),
-                "date": date_str,
+        # Atomic upsert: update_one with upsert=True prevents duplicates
+        update_doc = {
+            "$set": {
                 "check_in": in_12h,
                 "check_in_24h": in_24h,
                 "check_out": out_12h,
@@ -2911,15 +2905,29 @@ async def import_biometric_attendance(
                 "status": status,
                 "is_lop": is_lop,
                 "lop_reason": lop_reason,
+                "source": "biometric",
+                "device_ip": device_ip,
+            },
+            "$setOnInsert": {
+                "id": str(uuid.uuid4()),
+                "employee_id": emp_id,
+                "emp_name": employee["full_name"],
+                "team": employee.get("team", ""),
+                "department": employee.get("department", ""),
+                "date": date_str,
                 "shift_type": employee.get("shift_type", "General"),
                 "expected_login": shift_timings.get("login_time") if shift_timings else None,
                 "expected_logout": shift_timings.get("logout_time") if shift_timings else None,
-                "source": "biometric",
-                "device_ip": device_ip,
                 "created_at": get_ist_now().isoformat()
             }
-            await db.attendance.insert_one(attendance_doc.copy())
-            processed += 1
+        }
+        
+        await db.attendance.update_one(
+            {"employee_id": emp_id, "date": date_str},
+            update_doc,
+            upsert=True
+        )
+        processed += 1
     
     await log_audit(
         current_user["id"], "biometric_import", "attendance", None,
@@ -6202,6 +6210,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def ensure_indexes():
+    try:
+        await db.attendance.create_index(
+            [("employee_id", 1), ("date", 1)],
+            unique=True,
+            name="unique_employee_date"
+        )
+    except Exception:
+        pass  # Index already exists
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
