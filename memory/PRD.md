@@ -55,6 +55,12 @@ Premium Employee Issue Ticket System, Offer Letter Management, Salary Management
 - **Atomic Upsert:** Biometric import uses `$setOnInsert` + `$set` with `upsert=True` (no race conditions)
 - **Date Filtering Fix:** GET /api/attendance now parses DD-MM-YYYY to integer for proper chronological comparison instead of broken string `$gte`/`$lte`
 - **Sorting Fix:** Results sorted by actual date order (not lexicographic string order)
+
+### Phase 6 - Infrastructure Migration (Complete - Mar 2026)
+- **MongoDB Atlas:** Migrated from local MongoDB to Atlas cluster (mongodb+srv://...cluster0.jcz3bbd.mongodb.net) with connection pooling (maxPool=50, minPool=5), retry writes/reads, 10s timeout
+- **Admin Seeding:** Idempotent admin user creation on startup (username: admin, password: admin, role: super_admin)
+- **Cloudinary Update:** Updated to new Cloudinary account (cloud: drtqmenn4)
+- **All credentials stored in .env** — no hardcoded secrets in code
 - **Backend:** Updated Employee/EmployeeCreate/EmployeeUpdate models, uniqueness validation, search support, GET /api/employees/import-template, POST /api/employees/bulk-import
 - **Frontend:** Updated form state, Add/Edit dialogs, employee list table columns, View dialog profile tab, Bulk Import dialog with file upload, template download, and results display
 

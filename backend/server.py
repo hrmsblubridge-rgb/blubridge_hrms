@@ -39,7 +39,15 @@ def get_ist_today():
 
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
+client = AsyncIOMotorClient(
+    mongo_url,
+    serverSelectionTimeoutMS=10000,
+    connectTimeoutMS=10000,
+    retryWrites=True,
+    retryReads=True,
+    maxPoolSize=50,
+    minPoolSize=5
+)
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
@@ -6221,7 +6229,29 @@ async def ensure_indexes():
             name="unique_employee_date"
         )
     except Exception:
-        pass  # Index already exists
+        pass
+    
+    # Seed default admin user if not exists
+    try:
+        existing_admin = await db.users.find_one({"username": "admin"})
+        if not existing_admin:
+            admin_user = User(
+                username="admin",
+                email="admin@blubridge.com",
+                password_hash=hash_password("admin"),
+                name="System Admin",
+                role=UserRole.SUPER_ADMIN,
+                is_first_login=False,
+                onboarding_status="completed"
+            )
+            admin_doc = admin_user.model_dump()
+            admin_doc['created_at'] = admin_doc['created_at'].isoformat()
+            await db.users.insert_one(admin_doc.copy())
+            print("Default admin user seeded successfully")
+        else:
+            print("Admin user already exists, skipping seed")
+    except Exception as e:
+        print(f"Admin seeding check: {e}")
 
 
 @app.on_event("shutdown")
