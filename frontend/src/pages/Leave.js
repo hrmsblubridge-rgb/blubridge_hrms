@@ -130,7 +130,7 @@ const Leave = () => {
   const historyLeaves = sortedLeaves.filter(l => l.status !== 'pending');
   const SortIcon = ({ field }) => sortField !== field ? null : sortOrder === 'asc' ? <ChevronUp className="w-4 h-4 inline ml-1" /> : <ChevronDown className="w-4 h-4 inline ml-1" />;
   const getStatusBadge = (status) => ({ 'pending': 'badge-warning', 'approved': 'badge-success', 'rejected': 'badge-error' }[status] || 'badge-neutral');
-  const canApprove = ['admin', 'hr_manager', 'team_lead'].includes(user?.role);
+  const canApprove = ['super_admin', 'admin', 'hr_manager', 'team_lead'].includes(user?.role);
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="leave-page">

@@ -553,7 +553,7 @@ const Employees = () => {
     return styles[status] || 'badge-neutral';
   };
 
-  const canEdit = ['admin', 'hr_manager'].includes(user?.role);
+  const canEdit = ['super_admin', 'admin', 'hr_manager'].includes(user?.role);
   const filteredTeams = form.department ? teams.filter(t => t.department === form.department) : teams;
 
   return (

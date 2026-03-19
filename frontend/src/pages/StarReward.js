@@ -179,7 +179,7 @@ const StarReward = () => {
     }
   };
 
-  const canAddStars = ['admin', 'hr_manager', 'team_lead'].includes(user?.role);
+  const canAddStars = ['super_admin', 'admin', 'hr_manager', 'team_lead'].includes(user?.role);
   const filteredEmployees = useMemo(() => employees.filter(e => !filters.search || e.name.toLowerCase().includes(filters.search.toLowerCase()) || e.email.toLowerCase().includes(filters.search.toLowerCase())), [employees, filters.search]);
   const paginatedEmployees = useMemo(() => { const start = (currentPage - 1) * tableFilters.pageSize; return filteredEmployees.slice(start, start + tableFilters.pageSize); }, [filteredEmployees, currentPage, tableFilters.pageSize]);
   const totalPages = Math.ceil(filteredEmployees.length / tableFilters.pageSize);
