@@ -1901,12 +1901,27 @@ async def bulk_import_employees(
     if not rows:
         raise HTTPException(status_code=400, detail="No data rows found in file")
     
-    # Get all departments and teams for validation
-    departments = await db.departments.find({}, {"_id": 0, "name": 1}).to_list(100)
-    dept_names = {d["name"].lower(): d["name"] for d in departments}
+    # Static allowed values (matching frontend dropdowns)
+    VALID_DEPARTMENTS = {"research unit", "support staff", "business & product"}
+    VALID_TEAMS = {"data", "parallelism", "quantization", "compiler", "tensor & ops", "hardware", "administation", "it", "product team", "unknown"}
+    VALID_DESIGNATIONS = {"ai research scientist", "ai research - intern", "research", "front office", "junior admin", "junior system admin", "business & product - product team", "system engineer"}
     
-    teams = await db.teams.find({}, {"_id": 0, "name": 1, "department": 1}).to_list(500)
-    team_map = {t["name"].lower(): {"name": t["name"], "department": t["department"]} for t in teams}
+    # Canonical name mapping (lowercase -> proper case)
+    DEPT_CANONICAL = {d.lower(): d for d in ["Research Unit", "Support Staff", "Business & Product"]}
+    TEAM_CANONICAL = {t.lower(): t for t in ["Data", "Parallelism", "Quantization", "Compiler", "Tensor & Ops", "Hardware", "Administation", "IT", "Product Team", "Unknown"]}
+    DESIG_CANONICAL = {d.lower(): d for d in ["AI Research scientist", "AI Research - Intern", "Research", "Front Office", "Junior Admin", "Junior System admin", "Business & Product - Product Team", "System Engineer"]}
+    
+    # Ensure department and team records exist in DB (auto-create if missing)
+    existing_depts = {d["name"].lower() for d in await db.departments.find({}, {"_id": 0, "name": 1}).to_list(100)}
+    existing_teams = {t["name"].lower() for t in await db.teams.find({}, {"_id": 0, "name": 1}).to_list(500)}
+    
+    for dept_lower, dept_name in DEPT_CANONICAL.items():
+        if dept_lower not in existing_depts:
+            await db.departments.insert_one({"id": str(uuid.uuid4()), "name": dept_name, "description": "", "head_id": None, "member_count": 0, "created_at": get_ist_now().isoformat()})
+    
+    for team_lower, team_name in TEAM_CANONICAL.items():
+        if team_lower not in existing_teams:
+            await db.teams.insert_one({"id": str(uuid.uuid4()), "name": team_name, "department": "", "description": "", "lead_id": None, "member_count": 0, "created_at": get_ist_now().isoformat()})
     
     # Get existing employee IDs and biometric IDs for uniqueness check
     existing_employees = await db.employees.find(
@@ -2044,17 +2059,40 @@ async def bulk_import_employees(
         if not designation:
             row_errors.append("Designation is required")
         
-        # Validate department exists
-        if department and department.lower() not in dept_names:
-            row_errors.append(f"Department '{department}' not found")
-        else:
-            department = dept_names.get(department.lower(), department)
+        # Validate department (case-insensitive, static list)
+        if department:
+            dept_lower = department.lower().strip()
+            if dept_lower in DEPT_CANONICAL:
+                department = DEPT_CANONICAL[dept_lower]
+            # Accept as-is if not in static list (no rejection)
         
-        # Validate team exists
-        if team and team.lower() not in team_map:
-            row_errors.append(f"Team '{team}' not found")
-        else:
-            team = team_map.get(team.lower(), {}).get("name", team)
+        # Validate team (case-insensitive, static list)
+        if team:
+            team_lower = team.lower().strip()
+            if team_lower in TEAM_CANONICAL:
+                team = TEAM_CANONICAL[team_lower]
+        
+        # Normalize designation (case-insensitive)
+        if designation:
+            desig_lower = designation.lower().strip()
+            if desig_lower in DESIG_CANONICAL:
+                designation = DESIG_CANONICAL[desig_lower]
+        
+        # Normalize employment type (flexible matching)
+        emp_type_map = {"full time": "Full-time", "full-time": "Full-time", "fulltime": "Full-time",
+                        "part time": "Part-time", "part-time": "Part-time", "parttime": "Part-time",
+                        "contract": "Contract", "intern": "Intern", "internship": "Intern"}
+        employment_type = emp_type_map.get(str(employment_type).lower().strip(), employment_type)
+        
+        # Normalize tier level
+        tier_map = {"junior": "Junior", "mid": "Mid", "senior": "Senior", "lead": "Lead"}
+        tier_level = tier_map.get(str(tier_level).lower().strip(), tier_level)
+        
+        # Normalize user role
+        user_role = str(user_role).lower().strip()
+        role_map = {"employee": "employee", "admin": "admin", "hr_manager": "hr_manager",
+                    "team_lead": "team_lead", "super_admin": "super_admin"}
+        user_role = role_map.get(user_role, "employee")
         
         # Check for duplicate email
         if email:
