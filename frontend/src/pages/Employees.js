@@ -85,6 +85,11 @@ const Employees = () => {
   const [stats, setStats] = useState(null);
   const [teams, setTeams] = useState([]);
   const [departments, setDepartments] = useState([]);
+
+  // Fixed dropdown values
+  const FIXED_DEPARTMENTS = ['Research Unit', 'Support Staff', 'Business & Product'];
+  const FIXED_TEAMS = ['Data', 'Parallelism', 'Quantization', 'Compiler', 'Tensor & Ops', 'Hardware', 'Administation', 'IT', 'Product Team', 'Unknown'];
+  const FIXED_DESIGNATIONS = ['AI Research scientist', 'AI Research - Intern', 'Research', 'Front Office', 'Junior Admin', 'Junior System admin', 'Business & Product - Product Team', 'System Engineer'];
   const [allEmployees, setAllEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, pages: 0 });
@@ -609,7 +614,7 @@ const Employees = () => {
               <SelectTrigger className="rounded-lg" data-testid="filter-department"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
-                {departments.map(dept => <SelectItem key={dept.id} value={dept.name}>{dept.name}</SelectItem>)}
+                {FIXED_DEPARTMENTS.map(dept => <SelectItem key={dept} value={dept}>{dept}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -619,7 +624,7 @@ const Employees = () => {
               <SelectTrigger className="rounded-lg" data-testid="filter-team"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
-                {teams.map(team => <SelectItem key={team.id} value={team.name}>{team.name}</SelectItem>)}
+                {FIXED_TEAMS.map(team => <SelectItem key={team} value={team}>{team}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -819,7 +824,12 @@ const Employees = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Designation <span className="text-red-500">*</span></Label>
-                    <Input value={form.designation} onChange={(e) => setForm(prev => ({ ...prev, designation: e.target.value }))} placeholder="Job title" className="mt-1.5 rounded-lg" data-testid="input-designation" />
+                    <Select value={form.designation} onValueChange={(val) => setForm(prev => ({ ...prev, designation: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="input-designation"><SelectValue placeholder="Select Designation" /></SelectTrigger>
+                      <SelectContent>
+                        {FIXED_DESIGNATIONS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Tier Level</Label>
@@ -857,18 +867,18 @@ const Employees = () => {
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Department <span className="text-red-500">*</span></Label>
                     <Select value={form.department} onValueChange={(val) => setForm(prev => ({ ...prev, department: val, team: '' }))}>
-                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select department" /></SelectTrigger>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Department" /></SelectTrigger>
                       <SelectContent>
-                        {departments.map(d => <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>)}
+                        {FIXED_DEPARTMENTS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Team <span className="text-red-500">*</span></Label>
-                    <Select value={form.team} onValueChange={(val) => setForm(prev => ({ ...prev, team: val }))} disabled={!form.department}>
-                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select team" /></SelectTrigger>
+                    <Select value={form.team} onValueChange={(val) => setForm(prev => ({ ...prev, team: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Team" /></SelectTrigger>
                       <SelectContent>
-                        {filteredTeams.map(t => <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>)}
+                        {FIXED_TEAMS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1030,7 +1040,12 @@ const Employees = () => {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Designation <span className="text-red-500">*</span></Label>
-                    <Input value={form.designation} onChange={(e) => setForm(prev => ({ ...prev, designation: e.target.value }))} placeholder="Job title" className="mt-1.5 rounded-lg" data-testid="input-designation" />
+                    <Select value={form.designation} onValueChange={(val) => setForm(prev => ({ ...prev, designation: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="input-designation"><SelectValue placeholder="Select Designation" /></SelectTrigger>
+                      <SelectContent>
+                        {FIXED_DESIGNATIONS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
                   </div>
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Tier Level</Label>
@@ -1068,18 +1083,18 @@ const Employees = () => {
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Department <span className="text-red-500">*</span></Label>
                     <Select value={form.department} onValueChange={(val) => setForm(prev => ({ ...prev, department: val, team: '' }))}>
-                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select department" /></SelectTrigger>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Department" /></SelectTrigger>
                       <SelectContent>
-                        {departments.map(d => <SelectItem key={d.id} value={d.name}>{d.name}</SelectItem>)}
+                        {FIXED_DEPARTMENTS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Team <span className="text-red-500">*</span></Label>
-                    <Select value={form.team} onValueChange={(val) => setForm(prev => ({ ...prev, team: val }))} disabled={!form.department}>
-                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select team" /></SelectTrigger>
+                    <Select value={form.team} onValueChange={(val) => setForm(prev => ({ ...prev, team: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Team" /></SelectTrigger>
                       <SelectContent>
-                        {filteredTeams.map(t => <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>)}
+                        {FIXED_TEAMS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
