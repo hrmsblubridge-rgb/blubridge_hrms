@@ -20,7 +20,7 @@ const EmployeeLeave = () => {
   const [loading, setLoading] = useState(true);
   const [showApplyDialog, setShowApplyDialog] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
-  const [form, setForm] = useState({ leave_type: 'Sick', leave_date: '', duration: 'Full Day', reason: '' });
+  const [form, setForm] = useState({ leave_type: 'Sick', start_date: '', end_date: '', reason: '' });
 
   const fetchData = useCallback(async () => {
     try {
@@ -46,7 +46,7 @@ const EmployeeLeave = () => {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const handleApplyLeave = async () => {
-    if (!form.leave_type || !form.leave_date || !form.duration || !form.reason) {
+    if (!form.leave_type || !form.start_date || !form.end_date || !form.reason) {
       toast.error('Please fill all fields');
       return;
     }
@@ -54,15 +54,16 @@ const EmployeeLeave = () => {
       toast.error('Reason must be at least 10 characters');
       return;
     }
-    // Convert date from YYYY-MM-DD (input) to DD-MM-YYYY (backend)
-    const [y, m, d] = form.leave_date.split('-');
-    const payload = { ...form, leave_date: `${d}-${m}-${y}` };
+    if (form.end_date < form.start_date) {
+      toast.error('End date cannot be before start date');
+      return;
+    }
     try {
       setFormLoading(true);
-      await axios.post(`${API}/employee/leaves/apply`, payload, { headers: getAuthHeaders() });
+      await axios.post(`${API}/employee/leaves/apply`, form, { headers: getAuthHeaders() });
       toast.success('Leave application submitted');
       setShowApplyDialog(false);
-      setForm({ leave_type: 'Sick', leave_date: '', duration: 'Full Day', reason: '' });
+      setForm({ leave_type: 'Sick', start_date: '', end_date: '', reason: '' });
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to apply leave');
@@ -209,19 +210,12 @@ const EmployeeLeave = () => {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label className="text-sm font-medium text-slate-700">Leave Date</Label>
-                <Input type="date" value={form.leave_date} onChange={(e) => setForm({ ...form, leave_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="leave-date-input" />
+                <Label className="text-sm font-medium text-slate-700">Start Date</Label>
+                <Input type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="start-date-input" />
               </div>
               <div>
-                <Label className="text-sm font-medium text-slate-700">Duration</Label>
-                <Select value={form.duration} onValueChange={(v) => setForm({ ...form, duration: v })}>
-                  <SelectTrigger className="mt-1.5 rounded-lg" data-testid="duration-select"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="Full Day">Full Day</SelectItem>
-                    <SelectItem value="First Half">First Half</SelectItem>
-                    <SelectItem value="Second Half">Second Half</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label className="text-sm font-medium text-slate-700">End Date</Label>
+                <Input type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="end-date-input" />
               </div>
             </div>
             <div>

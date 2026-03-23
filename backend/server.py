@@ -3705,9 +3705,9 @@ async def get_user_roles():
 # ============== EMPLOYEE PORTAL MODELS ==============
 
 class EmployeeLeaveCreate(BaseModel):
-    leave_type: str  # Sick, Emergency, Preplanned
-    leave_date: str  # dd-mm-yyyy
-    duration: str  # First Half, Second Half, Full Day
+    leave_type: str  # Sick, Emergency, Preplanned, Casual, Annual
+    start_date: str  # YYYY-MM-DD
+    end_date: str  # YYYY-MM-DD
     reason: str
     supporting_document_url: Optional[str] = None
     supporting_document_name: Optional[str] = None
@@ -4160,17 +4160,24 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     if not data.reason or len(data.reason.strip()) < 10:
         raise HTTPException(status_code=400, detail="Reason must be at least 10 characters")
     
-    # Parse and validate leave date
+    # Parse and validate leave dates
     try:
-        leave_dt = datetime.strptime(data.leave_date, "%d-%m-%Y")
-        start_date = leave_dt.strftime("%Y-%m-%d")
-        end_date = start_date  # Single day leave
+        start_dt = datetime.strptime(data.start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(data.end_date, "%Y-%m-%d")
+        start_date = data.start_date
+        end_date = data.end_date
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use dd-mm-yyyy")
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    
+    if end_dt < start_dt:
+        raise HTTPException(status_code=400, detail="End date cannot be before start date")
     
     # Validate not in past
-    if leave_dt.date() < get_ist_now().date():
+    if start_dt.date() < get_ist_now().date():
         raise HTTPException(status_code=400, detail="Cannot apply leave for past dates")
+    
+    duration_days = (end_dt - start_dt).days + 1
+    duration = f"{duration_days} day{'s' if duration_days > 1 else ''}"
     
     # Create leave request
     leave = LeaveRequest(
@@ -4181,7 +4188,7 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
         leave_type=data.leave_type,
         start_date=start_date,
         end_date=end_date,
-        duration=data.duration,
+        duration=duration,
         reason=data.reason,
         status="pending"
     )
