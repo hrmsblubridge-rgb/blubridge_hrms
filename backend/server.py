@@ -2165,6 +2165,40 @@ async def bulk_import_employees(
             
             await db.employees.insert_one(emp_doc.copy())
             
+            # Create user account for login
+            username = email.split('@')[0]
+            name_part = full_name.replace(' ', '').lower()[:4]
+            phone_part = str(phone)[-4:] if phone and len(str(phone)) >= 4 else str(uuid.uuid4())[:4]
+            temp_password = f"{name_part}@{phone_part}"
+            
+            existing_user = await db.users.find_one({"username": username})
+            if not existing_user:
+                new_user = User(
+                    username=username,
+                    email=email,
+                    password_hash=hash_password(temp_password),
+                    name=full_name,
+                    role=user_role.lower() if user_role else "employee",
+                    employee_id=employee.id,
+                    department=department,
+                    team=team
+                )
+                user_doc = new_user.model_dump()
+                user_doc['created_at'] = user_doc['created_at'].isoformat()
+                await db.users.insert_one(user_doc.copy())
+            
+            # Send welcome email with credentials (non-blocking)
+            asyncio.create_task(
+                send_welcome_email(
+                    emp_name=full_name,
+                    emp_id=emp_id,
+                    email=email,
+                    username=username,
+                    password=temp_password,
+                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://employee-onboard-5.preview.emergentagent.com')}/login"
+                )
+            )
+            
             # Add to existing sets to prevent duplicates in same batch
             existing_emails.add(email.lower())
             existing_emp_ids.add(custom_employee_id.lower())
