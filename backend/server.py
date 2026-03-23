@@ -2229,7 +2229,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         phone_part = str(uuid.uuid4())[:4]
     temp_password = f"{name_part}@{phone_part}"
     
-    frontend_url = os.environ.get('FRONTEND_URL', 'https://employee-onboard-5.preview.emergentagent.com')
+    frontend_url = os.environ.get('FRONTEND_URL', 'https://blubrg.com')
     login_url = f"{frontend_url}/login"
     
     if existing_deleted:
