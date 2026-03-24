@@ -1,102 +1,60 @@
-# BluBridge HRMS - Product Requirements Document
+# HRMS Application - Product Requirements Document
 
 ## Original Problem Statement
-Premium Employee Issue Ticket System, Offer Letter Management, Salary Management, Payslip PDF, Login Page Redesign, Application Branding, and now Employee Management enhancements with custom Employee ID, Biometric ID, and Bulk Employee Import.
+Build and enhance a premium HRMS web application with modules for employee onboarding, attendance tracking, leave management, payroll, teams, tickets, and more.
 
-## Core Architecture
-- **Frontend:** React + Tailwind CSS + Shadcn UI (port 3000)
-- **Backend:** Python FastAPI monolith (port 8001)
-- **Database:** MongoDB
-- **File Storage:** Cloudinary
-- **PDF Generation:** jsPDF + html2canvas
+## Tech Stack
+- **Frontend**: React, Tailwind CSS, Shadcn UI
+- **Backend**: Python, FastAPI, openpyxl
+- **Database**: MongoDB Atlas
+- **File Storage**: Cloudinary API
+- **Emails**: Resend API
+
+## Code Architecture
+```
+/app
+├── backend/
+│   ├── .env
+│   ├── requirements.txt
+│   └── server.py         # Monolithic FastAPI app (>6300 lines)
+├── frontend/
+│   ├── public/
+│   └── src/
+│       ├── pages/
+│       │   ├── Attendance.js    # With pagination
+│       │   ├── Employees.js     # With bulk import
+│       │   ├── EmployeeLeave.js # Start/End date
+│       │   ├── Team.js
+│       │   └── Dashboard.js
+│       └── App.js
+└── server/                # DEPRECATED: Old Node.js backend
+```
 
 ## What's Been Implemented
-
-### Phase 1 - Core HRMS (Complete)
-- Employee onboarding & management
-- Admin verification workflow
-- Holidays & policies management
-- Education module
-- Attendance tracking
-- Leave management
-- Star rewards system
-- Team management
-- Payroll module
-
-### Phase 2 - Premium Features (Complete)
-- Issue Ticket System (full CRUD, categories, priorities)
-- Offer Letter Management (Cloudinary uploads)
-- Salary Management System (CTC breakdown, components)
-- Payslip PDF download (clean, no browser headers)
-
-### Phase 3 - UI/Branding (Complete)
-- Login page redesign (centered premium layout)
-- Meta title: "BluBridge HRMS - Complete HR System"
-- Global favicon
-
-### Phase 4 - Employee Management Enhancements (Complete - Feb 2026)
-- **Custom Employee ID field:** Added to Employee creation/edit forms (Employment section), unique, required, displayed in employee list table, view dialog, and searchable
-- **Biometric ID field:** Added to Employee creation/edit forms (System section), unique, required, for external biometric device mapping, displayed in list and view
-- **Bulk Employee Import:** Excel (.xlsx) and CSV upload support, flexible column name mapping, comprehensive validation (required fields, uniqueness), batch processing with detailed error reporting (row-by-row), downloadable sample template with instructions sheet, date parsing (MM/DD/YYYY, YYYY-MM-DD, DD-MM-YYYY, Excel numeric/datetime)
-
-### Phase 5 - Biometric Attendance Ingestion (Complete - Feb 2026)
-- **POST /api/attendance/import-biometric:** Secure endpoint accepting JSON array of biometric punches from external device sync service
-- **Employee Mapping:** Maps `deviceUserId` → `Employee.biometric_id`, reports unmapped IDs
-- **Punch Grouping:** Groups all punches per employee per day, computes IN (earliest) and OUT (latest) times
-- **Upsert Logic:** Atomic `update_one` with `upsert=True` — IN = MIN(existing, new), OUT = MAX(existing, new) — race-condition safe
-- **Unique Index:** MongoDB compound unique index on `(employee_id, date)` prevents duplicates at DB level
-- **Attendance Status:** Calculates LOP, late login, total hours using existing shift rules
-- **Audit Trail:** Stores raw punch logs in `biometric_punch_logs` collection for debugging
-- **Response:** Returns `{totalRecords, processed, skipped, unmapped, unmappedDeviceUserIds}`
-
-### Phase 5b - Attendance Dedup & Date Filtering Fix (Complete - Feb 2026)
-- **Duplicate Prevention:** Added unique compound index on `(employee_id, date)`, enforced at startup
-- **Data Cleanup:** One-time migration script merged existing duplicates (MIN IN, MAX OUT)
-- **Atomic Upsert:** Biometric import uses `$setOnInsert` + `$set` with `upsert=True` (no race conditions)
-- **Date Filtering Fix:** GET /api/attendance now parses DD-MM-YYYY to integer for proper chronological comparison instead of broken string `$gte`/`$lte`
-- **Sorting Fix:** Results sorted by actual date order (not lexicographic string order)
-
-### Phase 6 - Infrastructure Migration (Complete - Mar 2026)
-- **MongoDB Atlas:** Migrated from local MongoDB to Atlas cluster (mongodb+srv://...cluster0.jcz3bbd.mongodb.net) with connection pooling (maxPool=50, minPool=5), retry writes/reads, 10s timeout
-- **Admin Seeding:** Idempotent admin user creation on startup (username: admin, password: admin, role: super_admin)
-- **Cloudinary Update:** Updated to new Cloudinary account (cloud: drtqmenn4)
-- **All credentials stored in .env** — no hardcoded secrets in code
-- **Backend:** Updated Employee/EmployeeCreate/EmployeeUpdate models, uniqueness validation, search support, GET /api/employees/import-template, POST /api/employees/bulk-import
-- **Frontend:** Updated form state, Add/Edit dialogs, employee list table columns, View dialog profile tab, Bulk Import dialog with file upload, template download, and results display
+- Custom Employee ID & Biometric ID fields
+- Bulk Employee Import via Excel/CSV with welcome emails
+- Biometric Attendance Ingestion API (atomic upserts)
+- MongoDB Atlas migration with admin seeding
+- Strict fixed dropdowns for Department/Team/Designation
+- Leave Application: Start Date / End Date
+- Team Member Count display fix
+- **Attendance Module Pagination** (client-side, 10/25/50 rows per page, resets on filter change) - Mar 24, 2026
 
 ## Pending Issues
-1. **Cloudinary PDF Viewing (P1 - BLOCKED):** Admin can't view PDFs in browser (401), needs Cloudinary account setting change
-2. **Username collision (P2):** Silent failure when employee email username already exists in users collection
+- **P1**: Cloudinary PDF Viewing (blocked on user Cloudinary settings)
+- **P2**: Username collision on employee creation (silent failure)
 
-## Upcoming Tasks
-- **Biometric Device Integration (P1):** eSSL X990 device research and integration plan
-- **Refactor Backend (P2):** Decompose server.py into routers/models/services
-- **Delete deprecated Node.js backend (P2):** Remove /app/server directory
+## Backlog / Upcoming Tasks
+- **P1**: Biometric Sync Dashboard (UI for sync history, unmapped devices)
+- **P2**: Leave Balance Tracking endpoint (`GET /api/employee/leave-balance`)
+- **P2**: Backend refactoring (decompose server.py into routers/models/services)
+- **P2**: Delete deprecated Node.js backend (`/app/server`)
+
+## Key Credentials
+- Admin: `admin` / `admin` (role: super_admin)
 
 ## Key API Endpoints
-- POST /api/auth/login
-- GET/POST /api/employees
-- GET/PUT/DELETE /api/employees/{employee_id}
-- GET /api/employees/import-template (downloads .xlsx template)
-- POST /api/employees/bulk-import (multipart file upload)
-- POST /api/attendance/import-biometric (JSON array of biometric punches)
-- GET/POST /api/tickets
-- GET/POST /api/employees/{employee_id}/documents
-- GET/POST /api/employees/{employee_id}/salary
-
-## Key DB Schema
-- **employees:** { emp_id (auto), custom_employee_id (admin-set), biometric_id, full_name, official_email, department, team, designation, ... }
-- **users:** { email, password, role, employee_id, ... }
-- **tickets:** { ticket_id, employee_id, category, status, priority, ... }
-- **salaries:** { employee_id, annual_ctc, components, adjustments }
-- **attendances:** { employee_id, date (DD-MM-YYYY), check_in, check_out, check_in_24h, check_out_24h, status, source ("biometric"|null), device_ip }
-- **biometric_punch_logs:** { imported_at, imported_by, total_punches, logs: [{deviceUserId, recordTime, ip, status, employee_id, date}] }
-
-## 3rd Party Integrations
-- Cloudinary (file uploads)
-- jsPDF & html2canvas (PDF generation)
-- openpyxl (Excel parsing for bulk import)
-
-## Test Credentials
-- **Admin:** admin / admin
-- **Employee:** test.employee2@blubridge.com / password
+- `POST /api/employees/bulk-import`
+- `POST /api/attendance/import-biometric`
+- `POST /api/employee/leaves/apply`
+- `GET /api/attendance` (with date/filter params)
