@@ -2195,7 +2195,7 @@ async def bulk_import_employees(
                     email=email,
                     username=username,
                     password=temp_password,
-                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://employee-onboard-5.preview.emergentagent.com')}/login"
+                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://hrms-preview-9.preview.emergentagent.com')}/login"
                 )
             )
             

@@ -8,6 +8,8 @@ import {
   Filter,
   ChevronUp,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   LogIn,
   LogOut as LogOutIcon,
@@ -35,6 +37,10 @@ const Attendance = () => {
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showLeaveDetail, setShowLeaveDetail] = useState(false);
   
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(10);
+
   // Default: today's date (original behavior)
   const [filters, setFilters] = useState({
     empName: '',
@@ -101,6 +107,7 @@ const Attendance = () => {
         }
       });
       setAttendance(response.data);
+      setCurrentPage(1);
       toast.info('Filters reset');
     } catch (error) {
       toast.error('Failed to reset');
@@ -124,6 +131,7 @@ const Attendance = () => {
         }
       });
       setAttendance(response.data);
+      setCurrentPage(1);
       toast.success('Filter applied');
     } catch (error) {
       toast.error('Failed to filter');
@@ -146,6 +154,14 @@ const Attendance = () => {
     const bVal = b[sortField] || '';
     return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
   });
+
+  // Pagination computed values
+  const totalRecords = sortedAttendance.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / rowsPerPage));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const startIndex = (safeCurrentPage - 1) * rowsPerPage;
+  const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
+  const paginatedAttendance = sortedAttendance.slice(startIndex, endIndex);
 
   const getSortIcon = (field) => {
     if (sortField !== field) return null;
@@ -296,6 +312,7 @@ const Attendance = () => {
             <div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" />
           </div>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="table-premium">
               <thead>
@@ -311,7 +328,7 @@ const Attendance = () => {
                 </tr>
               </thead>
               <tbody>
-                {sortedAttendance.length === 0 ? (
+                {paginatedAttendance.length === 0 ? (
                   <tr>
                     <td colSpan="8" className="text-center py-12 text-slate-500">
                       <CalendarCheck className="w-10 h-10 mx-auto mb-2 text-slate-300" />
@@ -319,7 +336,7 @@ const Attendance = () => {
                     </td>
                   </tr>
                 ) : (
-                  sortedAttendance.map((record, index) => (
+                  paginatedAttendance.map((record, index) => (
                     <tr key={record.id || index} className={`${record.is_lop ? 'bg-red-50/50' : ''} group`}>
                       <td>
                         <button 
@@ -371,6 +388,37 @@ const Attendance = () => {
               </tbody>
             </table>
           </div>
+          {/* Pagination Controls */}
+          {totalRecords > 0 && (
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50" data-testid="attendance-pagination">
+              <div className="flex items-center gap-4">
+                <p className="text-sm text-slate-500" data-testid="pagination-info">
+                  Showing {startIndex + 1}–{endIndex} of {totalRecords} records
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="text-sm text-slate-500">Rows per page:</label>
+                  <Select value={String(rowsPerPage)} onValueChange={(v) => { setRowsPerPage(Number(v)); setCurrentPage(1); }}>
+                    <SelectTrigger className="w-[70px] h-8 rounded-lg text-sm" data-testid="rows-per-page-select"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="10">10</SelectItem>
+                      <SelectItem value="25">25</SelectItem>
+                      <SelectItem value="50">50</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" disabled={safeCurrentPage <= 1} onClick={() => setCurrentPage(prev => prev - 1)} className="rounded-lg" data-testid="attendance-prev-page">
+                  <ChevronLeft className="w-4 h-4" />
+                </Button>
+                <span className="text-sm text-slate-600 px-3" data-testid="pagination-page-info">Page {safeCurrentPage} of {totalPages}</span>
+                <Button size="sm" variant="outline" disabled={safeCurrentPage >= totalPages} onClick={() => setCurrentPage(prev => prev + 1)} className="rounded-lg" data-testid="attendance-next-page">
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+          </>
         )}
       </div>
 
