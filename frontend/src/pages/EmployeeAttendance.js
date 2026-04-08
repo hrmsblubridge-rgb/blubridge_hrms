@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarCheck, Clock, LogIn, LogOut as LogOutIcon, AlertCircle } from 'lucide-react';
+import { CalendarCheck, Clock, LogIn, LogOut as LogOutIcon, AlertCircle, Filter, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Badge } from '../components/ui/badge';
 import { DatePicker } from '../components/ui/date-picker';
 import { Button } from '../components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -13,39 +14,57 @@ const EmployeeAttendance = () => {
   const { getAuthHeaders } = useAuth();
   const [attendance, setAttendance] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({
-    fromDate: new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0],
-    toDate: new Date().toISOString().split('T')[0]
-  });
+  const [period, setPeriod] = useState('this_month');
+  const [statusFilter, setStatusFilter] = useState('All');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const rowsPerPage = 10;
 
   const fetchAttendance = useCallback(async () => {
     try {
       setLoading(true);
-      const fromDate = filters.fromDate ? new Date(filters.fromDate).toLocaleDateString('en-GB').split('/').join('-') : undefined;
-      const toDate = filters.toDate ? new Date(filters.toDate).toLocaleDateString('en-GB').split('/').join('-') : undefined;
-      const response = await axios.get(`${API}/employee/attendance`, { headers: getAuthHeaders(), params: { from_date: fromDate, to_date: toDate } });
+      const params = { duration: period, status_filter: statusFilter };
+      if (period === 'custom' && customFrom && customTo) {
+        params.from_date = new Date(customFrom).toLocaleDateString('en-GB').split('/').join('-');
+        params.to_date = new Date(customTo).toLocaleDateString('en-GB').split('/').join('-');
+      }
+      const response = await axios.get(`${API}/employee/attendance`, { headers: getAuthHeaders(), params });
       setAttendance(response.data);
+      setCurrentPage(1);
     } catch (error) {
       toast.error('Failed to load attendance');
     } finally {
       setLoading(false);
     }
-  }, [getAuthHeaders, filters.fromDate, filters.toDate]);
+  }, [getAuthHeaders, period, statusFilter, customFrom, customTo]);
 
   useEffect(() => { fetchAttendance(); }, [fetchAttendance]);
 
   const getStatusBadge = (status, isLop) => {
     if (isLop || status === 'Loss of Pay') return 'badge-error font-bold';
-    const styles = { 'Login': 'badge-success', 'Completed': 'badge-info', 'Present': 'badge-success', 'Not Logged': 'badge-neutral', 'Early Out': 'badge-error', 'Late Login': 'badge-warning', 'Leave': 'bg-purple-50 text-purple-700 border border-purple-200/50' };
+    const styles = { 'Login': 'badge-success', 'Completed': 'badge-info', 'Present': 'badge-success', 'Not Logged': 'badge-neutral', 'Early Out': 'badge-error', 'Late Login': 'badge-warning', 'Late': 'badge-warning', 'Leave': 'bg-purple-50 text-purple-700 border border-purple-200/50', 'Absent': 'badge-error', 'Sunday': 'bg-slate-100 text-slate-500 border border-slate-200/50', 'NA': 'bg-slate-50 text-slate-400 border border-slate-200/50' };
+    // Handle leave type variants like "Sick Leave", "Casual Leave"
+    if (status && status.includes('Leave')) return 'bg-purple-50 text-purple-700 border border-purple-200/50';
     return styles[status] || 'badge-neutral';
   };
 
   const stats = {
-    present: attendance.filter(a => a.status === 'Present' || a.status === 'Completed').length,
-    late: attendance.filter(a => a.status === 'Late Login').length,
-    absent: attendance.filter(a => a.status === 'Not Logged' || a.is_lop).length,
-    leave: attendance.filter(a => a.status === 'Leave').length,
+    present: attendance.filter(a => ['Present', 'Completed', 'Login'].includes(a.status)).length,
+    late: attendance.filter(a => a.status === 'Late Login' || a.status === 'Late').length,
+    absent: attendance.filter(a => a.status === 'Absent' || a.status === 'Not Logged' || a.is_lop).length,
+    leave: attendance.filter(a => a.status === 'Leave' || (a.status && a.status.includes('Leave'))).length,
   };
+
+  // Pagination computed
+  const totalRecords = attendance.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / rowsPerPage));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const startIndex = (safeCurrentPage - 1) * rowsPerPage;
+  const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
+  const paginatedAttendance = attendance.slice(startIndex, endIndex);
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="employee-attendance-page">
@@ -86,15 +105,46 @@ const EmployeeAttendance = () => {
       <div className="card-flat p-6">
         <div className="flex flex-wrap items-end gap-4">
           <div>
-            <label className="text-sm text-slate-600 mb-1.5 block font-medium">From Date</label>
-            <DatePicker value={filters.fromDate} onChange={(val) => setFilters({ ...filters, fromDate: val })} placeholder="Select date" data-testid="filter-from" />
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">Period</label>
+            <Select value={period} onValueChange={(v) => setPeriod(v)}>
+              <SelectTrigger className="w-[160px] rounded-lg" data-testid="filter-period"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="this_week">This Week</SelectItem>
+                <SelectItem value="last_week">Last Week</SelectItem>
+                <SelectItem value="this_month">This Month</SelectItem>
+                <SelectItem value="last_month">Last Month</SelectItem>
+                <SelectItem value="custom">Custom Range</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
+          {period === 'custom' && (
+            <>
+              <div>
+                <label className="text-sm text-slate-600 mb-1.5 block font-medium">From Date</label>
+                <DatePicker value={customFrom} onChange={(val) => setCustomFrom(val)} placeholder="Select date" data-testid="filter-from" />
+              </div>
+              <div>
+                <label className="text-sm text-slate-600 mb-1.5 block font-medium">To Date</label>
+                <DatePicker value={customTo} onChange={(val) => setCustomTo(val)} placeholder="Select date" data-testid="filter-to" />
+              </div>
+            </>
+          )}
           <div>
-            <label className="text-sm text-slate-600 mb-1.5 block font-medium">To Date</label>
-            <DatePicker value={filters.toDate} onChange={(val) => setFilters({ ...filters, toDate: val })} placeholder="Select date" data-testid="filter-to" />
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">Status</label>
+            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v)}>
+              <SelectTrigger className="w-[140px] rounded-lg" data-testid="filter-status"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All Status</SelectItem>
+                <SelectItem value="Present">Present</SelectItem>
+                <SelectItem value="Late">Late</SelectItem>
+                <SelectItem value="Early Out">Early Out</SelectItem>
+                <SelectItem value="Absent">Absent</SelectItem>
+                <SelectItem value="Sunday">Sunday</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           <Button onClick={fetchAttendance} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="apply-filter-btn">
-            Apply
+            <Filter className="w-4 h-4 mr-2" /> Apply
           </Button>
         </div>
       </div>
@@ -106,6 +156,7 @@ const EmployeeAttendance = () => {
             <div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" />
           </div>
         ) : (
+          <>
           <div className="overflow-x-auto">
             <table className="table-premium">
               <thead>
@@ -119,15 +170,15 @@ const EmployeeAttendance = () => {
                 </tr>
               </thead>
               <tbody>
-                {attendance.length === 0 ? (
+                {paginatedAttendance.length === 0 ? (
                   <tr><td colSpan="6" className="text-center py-12 text-slate-500">No attendance records found</td></tr>
                 ) : (
-                  attendance.map((record, index) => (
+                  paginatedAttendance.map((record, index) => (
                     <tr key={index} className={record.is_lop ? 'bg-red-50/50' : ''}>
                       <td className="font-medium text-slate-900">{record.date}</td>
                       <td className="text-slate-600">{record.day}</td>
-                      <td className="text-slate-600">{record.check_in || '-'}</td>
-                      <td className="text-slate-600">{record.check_out || '-'}</td>
+                      <td className="text-slate-600">{record.login || record.check_in || '-'}</td>
+                      <td className="text-slate-600">{record.logout || record.check_out || '-'}</td>
                       <td className="text-slate-600">{record.total_hours || '-'}</td>
                       <td><Badge className={getStatusBadge(record.status, record.is_lop)}>{record.is_lop ? 'Loss of Pay' : record.status}</Badge></td>
                     </tr>
@@ -136,6 +187,23 @@ const EmployeeAttendance = () => {
               </tbody>
             </table>
           </div>
+          {totalRecords > 0 && (
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50" data-testid="emp-attendance-pagination">
+              <p className="text-sm text-slate-500" data-testid="emp-pagination-info">
+                Showing {startIndex + 1}–{endIndex} of {totalRecords} records
+              </p>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" disabled={safeCurrentPage <= 1} onClick={() => setCurrentPage(prev => prev - 1)} className="rounded-lg" data-testid="emp-attendance-prev-page">
+                  <ChevronLeft className="w-4 h-4" />
+                </Button>
+                <span className="text-sm text-slate-600 px-3">Page {safeCurrentPage} of {totalPages}</span>
+                <Button size="sm" variant="outline" disabled={safeCurrentPage >= totalPages} onClick={() => setCurrentPage(prev => prev + 1)} className="rounded-lg" data-testid="emp-attendance-next-page">
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+          </>
         )}
       </div>
     </div>

@@ -596,22 +596,117 @@ class LeaveRequest(BaseModel):
     team: str
     department: str
     leave_type: str
+    leave_split: str = "Full Day"  # Full Day, First Half, Second Half
     start_date: str
     end_date: str
     duration: str
     reason: Optional[str] = None
+    supporting_document_url: Optional[str] = None
+    supporting_document_name: Optional[str] = None
     status: str = "pending"
+    is_lop: Optional[bool] = None  # Set by admin on approval: True=LOP, False=No LOP
+    lop_remark: Optional[str] = None
     approved_by: Optional[str] = None
+    applied_by_admin: Optional[bool] = False
     created_at: datetime = Field(default_factory=lambda: get_ist_now())
 
 class LeaveRequestCreate(BaseModel):
     employee_id: str
     leave_type: str
+    leave_split: str = "Full Day"
     start_date: str
     end_date: str
     reason: Optional[str] = None
+    supporting_document_url: Optional[str] = None
+    supporting_document_name: Optional[str] = None
+    is_lop: Optional[bool] = None
+    auto_approve: Optional[bool] = False
 
-class StarReward(BaseModel):
+# ============== LATE REQUEST / EARLY OUT / MISSED PUNCH MODELS ==============
+
+class LateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    team: str
+    department: str
+    date: str  # YYYY-MM-DD
+    expected_time: Optional[str] = None
+    actual_time: Optional[str] = None
+    reason: str
+    status: str = "pending"  # pending, approved, rejected
+    is_lop: Optional[bool] = None
+    lop_remark: Optional[str] = None
+    approved_by: Optional[str] = None
+    applied_by_admin: Optional[bool] = False
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class LateRequestCreate(BaseModel):
+    employee_id: Optional[str] = None  # For admin applying on behalf
+    date: str
+    expected_time: Optional[str] = None
+    actual_time: Optional[str] = None
+    reason: str
+    is_lop: Optional[bool] = None
+    auto_approve: Optional[bool] = False
+
+class EarlyOutRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    team: str
+    department: str
+    date: str
+    expected_time: Optional[str] = None
+    actual_time: Optional[str] = None
+    reason: str
+    status: str = "pending"
+    is_lop: Optional[bool] = None
+    lop_remark: Optional[str] = None
+    approved_by: Optional[str] = None
+    applied_by_admin: Optional[bool] = False
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class EarlyOutRequestCreate(BaseModel):
+    employee_id: Optional[str] = None
+    date: str
+    expected_time: Optional[str] = None
+    actual_time: Optional[str] = None
+    reason: str
+    is_lop: Optional[bool] = None
+    auto_approve: Optional[bool] = False
+
+class MissedPunchRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    team: str
+    department: str
+    date: str
+    punch_type: str  # Check-in, Check-out, Both
+    check_in_time: Optional[str] = None
+    check_out_time: Optional[str] = None
+    reason: str
+    status: str = "pending"
+    approved_by: Optional[str] = None
+    applied_by_admin: Optional[bool] = False
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class MissedPunchCreate(BaseModel):
+    employee_id: Optional[str] = None
+    date: str
+    punch_type: str  # Check-in, Check-out, Both
+    check_in_time: Optional[str] = None
+    check_out_time: Optional[str] = None
+    reason: str
+    auto_approve: Optional[bool] = False
+
+class RequestApproveBody(BaseModel):
+    is_lop: Optional[bool] = None
+    lop_remark: Optional[str] = None
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     employee_id: str
@@ -3040,40 +3135,33 @@ async def get_attendance_stats(
         "attendance_tracking_enabled": True
     })
     
-    # Build date query
+    # Helper to parse DD-MM-YYYY to sortable integer
+    def parse_ddmmyyyy(ds):
+        try:
+            parts = ds.split("-")
+            return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+        except:
+            return 0
+    
+    # For date range, fetch all and filter in Python (DD-MM-YYYY strings don't sort lexicographically in MongoDB)
     if from_date and to_date:
-        date_query = {"date": {"$gte": from_date, "$lte": to_date}}
+        all_records = await db.attendance.find({}, {"_id": 0}).to_list(10000)
+        from_val = parse_ddmmyyyy(from_date)
+        to_val = parse_ddmmyyyy(to_date)
+        filtered = [a for a in all_records if from_val <= parse_ddmmyyyy(a.get("date", "")) <= to_val]
+    elif date:
+        filtered = await db.attendance.find({"date": date}, {"_id": 0}).to_list(10000)
     else:
-        date_query = {"date": date}
+        filtered = []
     
-    # Count all logged in (including Late Login, Early Out, Present, Loss of Pay since they also logged in)
-    logged_in = await db.attendance.count_documents({
-        **date_query, 
-        "status": {"$in": ["Login", "Completed", "Late Login", "Early Out", "Present", "Loss of Pay"]}
-    })
+    # Count stats from filtered records
+    logged_in = sum(1 for a in filtered if a.get("status") in ["Login", "Completed", "Late Login", "Early Out", "Present", "Loss of Pay"])
     not_logged = total_employees - logged_in
-    
-    # Count early out (can overlap with late login)
-    early_out = await db.attendance.count_documents({**date_query, "status": "Early Out"})
-    
-    # Count late login (can overlap with early out)
-    late_login = await db.attendance.count_documents({**date_query, "status": "Late Login"})
-    
-    # Count Loss of Pay
-    lop_count = await db.attendance.count_documents({**date_query, "is_lop": True})
-    
-    # Count completed (logged out)
-    logout = await db.attendance.count_documents({
-        **date_query, 
-        "status": {"$in": ["Completed", "Early Out", "Present", "Loss of Pay"]}
-    })
-    
-    # Count present (no LOP)
-    present = await db.attendance.count_documents({
-        **date_query, 
-        "status": {"$in": ["Present", "Completed"]},
-        "is_lop": {"$ne": True}
-    })
+    early_out = sum(1 for a in filtered if a.get("status") == "Early Out")
+    late_login = sum(1 for a in filtered if a.get("status") == "Late Login")
+    lop_count = sum(1 for a in filtered if a.get("is_lop") == True)
+    logout = sum(1 for a in filtered if a.get("status") in ["Completed", "Early Out", "Present", "Loss of Pay"])
+    present = sum(1 for a in filtered if a.get("status") in ["Present", "Completed"] and not a.get("is_lop"))
     
     return {
         "total_employees": total_employees,
@@ -3129,7 +3217,15 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
     
     start = datetime.strptime(data.start_date, "%Y-%m-%d")
     end = datetime.strptime(data.end_date, "%Y-%m-%d")
-    duration = (end - start).days + 1
+    
+    # Calculate duration based on leave_split
+    if data.leave_split in ["First Half", "Second Half"]:
+        duration_str = "0.5 day(s)"
+    else:
+        duration = (end - start).days + 1
+        duration_str = f"{duration} day(s)"
+    
+    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
     
     leave = LeaveRequest(
         employee_id=data.employee_id,
@@ -3137,10 +3233,17 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
         team=employee["team"],
         department=employee["department"],
         leave_type=data.leave_type,
+        leave_split=data.leave_split,
         start_date=data.start_date,
         end_date=data.end_date,
-        duration=f"{duration} day(s)",
-        reason=data.reason
+        duration=duration_str,
+        reason=data.reason,
+        supporting_document_url=data.supporting_document_url,
+        supporting_document_name=data.supporting_document_name,
+        applied_by_admin=is_admin,
+        status="approved" if (data.auto_approve and is_admin) else "pending",
+        is_lop=data.is_lop if (data.auto_approve and is_admin) else None,
+        approved_by=current_user["id"] if (data.auto_approve and is_admin) else None
     )
     doc = leave.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
@@ -3149,8 +3252,12 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
     await log_audit(current_user["id"], "create", "leave", leave.id)
     return serialize_doc(doc)
 
+class LeaveApproveRequest(BaseModel):
+    is_lop: Optional[bool] = None  # True=LOP, False=No LOP
+    lop_remark: Optional[str] = None
+
 @api_router.put("/leaves/{leave_id}/approve")
-async def approve_leave(leave_id: str, current_user: dict = Depends(get_current_user)):
+async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = None, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
@@ -3158,9 +3265,19 @@ async def approve_leave(leave_id: str, current_user: dict = Depends(get_current_
     if not leave:
         raise HTTPException(status_code=404, detail="Leave request not found")
     
+    update_fields = {
+        "status": "approved",
+        "approved_by": current_user["id"],
+        "approved_at": get_ist_now().isoformat()
+    }
+    if data and data.is_lop is not None:
+        update_fields["is_lop"] = data.is_lop
+    if data and data.lop_remark:
+        update_fields["lop_remark"] = data.lop_remark
+    
     result = await db.leaves.update_one(
         {"id": leave_id},
-        {"$set": {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}}
+        {"$set": update_fields}
     )
     
     await log_audit(current_user["id"], "approve", "leave", leave_id)
@@ -3740,6 +3857,7 @@ async def get_user_roles():
 
 class EmployeeLeaveCreate(BaseModel):
     leave_type: str  # Sick, Emergency, Preplanned, Casual, Annual
+    leave_split: str = "Full Day"  # Full Day, First Half, Second Half
     start_date: str  # YYYY-MM-DD
     end_date: str  # YYYY-MM-DD
     reason: str
@@ -4010,6 +4128,8 @@ async def employee_clock_out(current_user: dict = Depends(get_current_user)):
 @api_router.get("/employee/attendance")
 async def get_employee_attendance(
     duration: Optional[str] = "this_week",  # this_week, last_week, this_month, last_month, custom
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     status_filter: Optional[str] = "All",
@@ -4022,8 +4142,21 @@ async def get_employee_attendance(
     employee_id = current_user["employee_id"]
     now = get_ist_now()
     
+    # If from_date/to_date are provided, treat as custom date range
+    custom_from = from_date or start_date
+    custom_to = to_date or end_date
+    if custom_from and custom_to:
+        duration = "custom"
+    
     # Calculate date range based on duration
-    if duration == "this_week":
+    if duration == "custom" and custom_from and custom_to:
+        try:
+            start = datetime.strptime(custom_from, "%d-%m-%Y")
+            end = datetime.strptime(custom_to, "%d-%m-%Y")
+        except:
+            start = now - timedelta(days=now.weekday())
+            end = start + timedelta(days=6)
+    elif duration == "this_week":
         # Monday to Sunday of current week
         start = now - timedelta(days=now.weekday())
         end = start + timedelta(days=6)
@@ -4040,9 +4173,6 @@ async def get_employee_attendance(
         first_this_month = now.replace(day=1)
         end = first_this_month - timedelta(days=1)
         start = end.replace(day=1)
-    elif duration == "custom" and start_date and end_date:
-        start = datetime.strptime(start_date, "%d-%m-%Y")
-        end = datetime.strptime(end_date, "%d-%m-%Y")
     else:
         # Default to this week
         start = now - timedelta(days=now.weekday())
@@ -4210,8 +4340,12 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     if start_dt.date() < get_ist_now().date():
         raise HTTPException(status_code=400, detail="Cannot apply leave for past dates")
     
-    duration_days = (end_dt - start_dt).days + 1
-    duration = f"{duration_days} day{'s' if duration_days > 1 else ''}"
+    # Calculate duration based on leave_split
+    if data.leave_split in ["First Half", "Second Half"]:
+        duration = "0.5 day(s)"
+    else:
+        duration_days = (end_dt - start_dt).days + 1
+        duration = f"{duration_days} day{'s' if duration_days > 1 else ''}"
     
     # Create leave request
     leave = LeaveRequest(
@@ -4220,20 +4354,18 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
         team=employee["team"],
         department=employee["department"],
         leave_type=data.leave_type,
+        leave_split=data.leave_split,
         start_date=start_date,
         end_date=end_date,
         duration=duration,
         reason=data.reason,
+        supporting_document_url=data.supporting_document_url,
+        supporting_document_name=data.supporting_document_name,
         status="pending"
     )
     
     doc = leave.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
-    
-    # Add supporting document info if provided
-    if data.supporting_document_url:
-        doc['supporting_document_url'] = data.supporting_document_url
-        doc['supporting_document_name'] = data.supporting_document_name
     
     await db.leaves.insert_one(doc.copy())
     
@@ -4249,49 +4381,36 @@ async def update_employee_leave(leave_id: str, data: EmployeeLeaveCreate, curren
     
     employee_id = current_user["employee_id"]
     
-    # Find the leave request
     leave = await db.leaves.find_one({"id": leave_id, "employee_id": employee_id}, {"_id": 0})
     if not leave:
         raise HTTPException(status_code=404, detail="Leave request not found")
     
-    # Can only edit pending requests
     if leave.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Can only edit pending leave requests")
     
-    # Validate reason length
     if not data.reason or len(data.reason.strip()) < 10:
         raise HTTPException(status_code=400, detail="Reason must be at least 10 characters")
     
-    # Parse and validate leave date
-    try:
-        leave_dt = datetime.strptime(data.leave_date, "%d-%m-%Y")
-        start_date = leave_dt.strftime("%Y-%m-%d")
-        end_date = start_date
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid date format. Use dd-mm-yyyy")
+    start_dt = datetime.strptime(data.start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(data.end_date, "%Y-%m-%d")
     
-    # Validate not in past
-    if leave_dt.date() < get_ist_now().date():
-        raise HTTPException(status_code=400, detail="Cannot set leave date in the past")
+    if data.leave_split in ["First Half", "Second Half"]:
+        duration_str = "0.5 day(s)"
+    else:
+        duration_str = f"{(end_dt - start_dt).days + 1} day(s)"
     
-    # Update the leave request
     update_data = {
         "leave_type": data.leave_type,
-        "start_date": start_date,
-        "end_date": end_date,
-        "duration": data.duration,
-        "reason": data.reason
+        "leave_split": data.leave_split,
+        "start_date": data.start_date,
+        "end_date": data.end_date,
+        "duration": duration_str,
+        "reason": data.reason,
+        "supporting_document_url": data.supporting_document_url,
+        "supporting_document_name": data.supporting_document_name
     }
     
-    if data.supporting_document_url:
-        update_data["supporting_document_url"] = data.supporting_document_url
-        update_data["supporting_document_name"] = data.supporting_document_name
-    
-    await db.leaves.update_one(
-        {"id": leave_id},
-        {"$set": update_data}
-    )
-    
+    await db.leaves.update_one({"id": leave_id}, {"$set": update_data})
     await log_audit(current_user["id"], "update_leave", "leave", leave_id)
     
     return {"message": "Leave request updated successfully"}
@@ -6026,20 +6145,21 @@ async def get_holidays(
         # Seed default holidays for 2026 if not present
         if year == 2026:
             for h in COMPANY_HOLIDAYS_2026:
-                # Check if already exists
-                existing = await db.holidays.find_one({"id": h["id"], "year": 2026})
-                if not existing:
-                    holiday_doc = {
-                        "id": h["id"],
-                        "name": h["name"],
-                        "date": h["date"],
-                        "day": h["day"],
-                        "type": h["type"],
-                        "note": h.get("note"),
-                        "year": 2026,
-                        "created_at": get_ist_now().isoformat()
-                    }
-                    await db.holidays.insert_one(holiday_doc.copy())
+                holiday_doc = {
+                    "id": h["id"],
+                    "name": h["name"],
+                    "date": h["date"],
+                    "day": h["day"],
+                    "type": h["type"],
+                    "note": h.get("note"),
+                    "year": 2026,
+                    "created_at": get_ist_now().isoformat()
+                }
+                await db.holidays.update_one(
+                    {"id": h["id"], "year": 2026},
+                    {"$setOnInsert": holiday_doc},
+                    upsert=True
+                )
             holidays = await db.holidays.find({"year": year}, {"_id": 0}).sort("date", 1).to_list(50)
     
     # Calculate stats
@@ -6286,6 +6406,251 @@ async def seed_database():
     
     return {"message": "Database seeded successfully"}
 
+# ============== LATE REQUEST ROUTES ==============
+
+async def _resolve_employee(data_employee_id, current_user):
+    """Helper to resolve employee for admin-applied or self-applied requests"""
+    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
+    if data_employee_id and is_admin:
+        emp = await db.employees.find_one({"id": data_employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        return emp, is_admin
+    elif current_user.get("employee_id"):
+        emp = await db.employees.find_one({"id": current_user["employee_id"], "is_deleted": {"$ne": True}}, {"_id": 0})
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee profile not found")
+        return emp, is_admin
+    raise HTTPException(status_code=400, detail="Employee ID required")
+
+@api_router.get("/late-requests")
+async def get_late_requests(
+    status: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
+    if not is_admin:
+        query["employee_id"] = current_user.get("employee_id", "")
+    if status and status != "All":
+        query["status"] = status
+    if employee_name:
+        query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+    records = await db.late_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [serialize_doc(r) for r in records]
+
+@api_router.post("/late-requests")
+async def create_late_request(data: LateRequestCreate, current_user: dict = Depends(get_current_user)):
+    emp, is_admin = await _resolve_employee(data.employee_id, current_user)
+    req = LateRequest(
+        employee_id=emp["id"],
+        emp_name=emp["full_name"],
+        team=emp["team"],
+        department=emp["department"],
+        date=data.date,
+        expected_time=data.expected_time,
+        actual_time=data.actual_time,
+        reason=data.reason,
+        applied_by_admin=is_admin,
+        status="approved" if (data.auto_approve and is_admin) else "pending",
+        is_lop=data.is_lop if (data.auto_approve and is_admin) else None,
+        approved_by=current_user["id"] if (data.auto_approve and is_admin) else None
+    )
+    doc = req.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.late_requests.insert_one(doc.copy())
+    return serialize_doc(doc)
+
+@api_router.put("/late-requests/{request_id}/approve")
+async def approve_late_request(request_id: str, data: Optional[RequestApproveBody] = None, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    update = {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
+    if data and data.is_lop is not None:
+        update["is_lop"] = data.is_lop
+    if data and data.lop_remark:
+        update["lop_remark"] = data.lop_remark
+    result = await db.late_requests.update_one({"id": request_id}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/late-requests/{request_id}/reject")
+async def reject_late_request(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    result = await db.late_requests.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/late-requests/{request_id}")
+async def edit_late_request(request_id: str, data: LateRequestCreate, current_user: dict = Depends(get_current_user)):
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if rec["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    await db.late_requests.update_one({"id": request_id}, {"$set": {"date": data.date, "reason": data.reason, "expected_time": data.expected_time, "actual_time": data.actual_time}})
+    updated = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(updated)
+
+# ============== EARLY OUT REQUEST ROUTES ==============
+
+@api_router.get("/early-out-requests")
+async def get_early_out_requests(
+    status: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
+    if not is_admin:
+        query["employee_id"] = current_user.get("employee_id", "")
+    if status and status != "All":
+        query["status"] = status
+    if employee_name:
+        query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+    records = await db.early_out_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [serialize_doc(r) for r in records]
+
+@api_router.post("/early-out-requests")
+async def create_early_out_request(data: EarlyOutRequestCreate, current_user: dict = Depends(get_current_user)):
+    emp, is_admin = await _resolve_employee(data.employee_id, current_user)
+    req = EarlyOutRequest(
+        employee_id=emp["id"],
+        emp_name=emp["full_name"],
+        team=emp["team"],
+        department=emp["department"],
+        date=data.date,
+        expected_time=data.expected_time,
+        actual_time=data.actual_time,
+        reason=data.reason,
+        applied_by_admin=is_admin,
+        status="approved" if (data.auto_approve and is_admin) else "pending",
+        is_lop=data.is_lop if (data.auto_approve and is_admin) else None,
+        approved_by=current_user["id"] if (data.auto_approve and is_admin) else None
+    )
+    doc = req.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.early_out_requests.insert_one(doc.copy())
+    return serialize_doc(doc)
+
+@api_router.put("/early-out-requests/{request_id}/approve")
+async def approve_early_out_request(request_id: str, data: Optional[RequestApproveBody] = None, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    update = {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
+    if data and data.is_lop is not None:
+        update["is_lop"] = data.is_lop
+    if data and data.lop_remark:
+        update["lop_remark"] = data.lop_remark
+    result = await db.early_out_requests.update_one({"id": request_id}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/early-out-requests/{request_id}/reject")
+async def reject_early_out_request(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    result = await db.early_out_requests.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/early-out-requests/{request_id}")
+async def edit_early_out_request(request_id: str, data: EarlyOutRequestCreate, current_user: dict = Depends(get_current_user)):
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if rec["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    await db.early_out_requests.update_one({"id": request_id}, {"$set": {"date": data.date, "reason": data.reason, "expected_time": data.expected_time, "actual_time": data.actual_time}})
+    updated = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(updated)
+
+# ============== MISSED PUNCH REQUEST ROUTES ==============
+
+@api_router.get("/missed-punches")
+async def get_missed_punches(
+    status: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
+    if not is_admin:
+        query["employee_id"] = current_user.get("employee_id", "")
+    if status and status != "All":
+        query["status"] = status
+    if employee_name:
+        query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+    records = await db.missed_punches.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [serialize_doc(r) for r in records]
+
+@api_router.post("/missed-punches")
+async def create_missed_punch(data: MissedPunchCreate, current_user: dict = Depends(get_current_user)):
+    emp, is_admin = await _resolve_employee(data.employee_id, current_user)
+    req = MissedPunchRequest(
+        employee_id=emp["id"],
+        emp_name=emp["full_name"],
+        team=emp["team"],
+        department=emp["department"],
+        date=data.date,
+        punch_type=data.punch_type,
+        check_in_time=data.check_in_time,
+        check_out_time=data.check_out_time,
+        reason=data.reason,
+        applied_by_admin=is_admin,
+        status="approved" if (data.auto_approve and is_admin) else "pending",
+        approved_by=current_user["id"] if (data.auto_approve and is_admin) else None
+    )
+    doc = req.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.missed_punches.insert_one(doc.copy())
+    return serialize_doc(doc)
+
+@api_router.put("/missed-punches/{request_id}/approve")
+async def approve_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    result = await db.missed_punches.update_one({"id": request_id}, {"$set": {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/missed-punches/{request_id}/reject")
+async def reject_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    result = await db.missed_punches.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/missed-punches/{request_id}")
+async def edit_missed_punch(request_id: str, data: MissedPunchCreate, current_user: dict = Depends(get_current_user)):
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if rec["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    await db.missed_punches.update_one({"id": request_id}, {"$set": {
+        "date": data.date, "punch_type": data.punch_type,
+        "check_in_time": data.check_in_time, "check_out_time": data.check_out_time,
+        "reason": data.reason
+    }})
+    updated = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(updated)
+
 # Include router
 app.include_router(api_router)
 
@@ -6306,6 +6671,27 @@ async def ensure_indexes():
             [("employee_id", 1), ("date", 1)],
             unique=True,
             name="unique_employee_date"
+        )
+    except Exception:
+        pass
+    
+    # Holiday dedup: remove duplicate holidays and create unique index
+    try:
+        # Remove duplicates by keeping only the first document per (id, year)
+        pipeline = [
+            {"$group": {"_id": {"id": "$id", "year": "$year"}, "docs": {"$push": "$_id"}, "count": {"$sum": 1}}},
+            {"$match": {"count": {"$gt": 1}}}
+        ]
+        async for group in db.holidays.aggregate(pipeline):
+            # Keep first, delete rest
+            ids_to_delete = group["docs"][1:]
+            if ids_to_delete:
+                await db.holidays.delete_many({"_id": {"$in": ids_to_delete}})
+        
+        await db.holidays.create_index(
+            [("id", 1), ("year", 1)],
+            unique=True,
+            name="unique_holiday_id_year"
         )
     except Exception:
         pass

@@ -3,11 +3,13 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle } from 'lucide-react';
+import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle, Plus } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Badge } from '../components/ui/badge';
+import { Textarea } from '../components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
@@ -28,6 +30,11 @@ const Leave = () => {
   const [showApproveDialog, setShowApproveDialog] = useState(false);
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+  const [lopChoice, setLopChoice] = useState('no_lop');
+  const [lopRemark, setLopRemark] = useState('');
+  const [showApplyDialog, setShowApplyDialog] = useState(false);
+  const [employees, setEmployees] = useState([]);
+  const [applyForm, setApplyForm] = useState({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false });
   const [filters, setFilters] = useState({ empName: '', team: 'All', fromDate: '', toDate: '', leaveType: 'All', status: 'All' });
 
   useEffect(() => {
@@ -40,12 +47,14 @@ const Leave = () => {
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      const [leavesRes, teamsRes] = await Promise.all([
+      const [leavesRes, teamsRes, empRes] = await Promise.all([
         axios.get(`${API}/leaves`, { headers: getAuthHeaders() }),
-        axios.get(`${API}/teams`, { headers: getAuthHeaders() })
+        axios.get(`${API}/teams`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/employees/all`, { headers: getAuthHeaders() })
       ]);
       setLeaves(leavesRes.data);
       setTeams(teamsRes.data);
+      setEmployees(empRes.data);
     } catch (error) {
       toast.error('Failed to load leave data');
     } finally {
@@ -80,14 +89,14 @@ const Leave = () => {
 
   const handleReset = () => { setFilters({ empName: '', team: 'All', fromDate: '', toDate: '', leaveType: 'All', status: 'All' }); fetchData(); toast.info('Filters reset'); };
   const handleViewLeave = (leave) => { setSelectedLeave(leave); setShowDetailSheet(true); };
-  const openApproveDialog = (leave) => { setSelectedLeave(leave); setShowApproveDialog(true); };
+  const openApproveDialog = (leave) => { setSelectedLeave(leave); setLopChoice('no_lop'); setLopRemark(''); setShowApproveDialog(true); };
   const openRejectDialog = (leave) => { setSelectedLeave(leave); setShowRejectDialog(true); };
 
   const confirmApprove = async () => {
     if (!selectedLeave) return;
     setActionLoading(true);
     try {
-      await axios.put(`${API}/leaves/${selectedLeave.id}/approve`, {}, { headers: getAuthHeaders() });
+      await axios.put(`${API}/leaves/${selectedLeave.id}/approve`, { is_lop: lopChoice === 'lop', lop_remark: lopRemark || null }, { headers: getAuthHeaders() });
       toast.success('Leave approved successfully!');
       setShowApproveDialog(false);
       setShowDetailSheet(false);
@@ -97,6 +106,17 @@ const Leave = () => {
     } finally {
       setActionLoading(false);
     }
+  };
+
+  const handleApplyForEmployee = async () => {
+    if (!applyForm.employee_id || !applyForm.start_date || !applyForm.end_date || !applyForm.reason || applyForm.reason.trim().length < 10) { toast.error('Fill all fields (reason min 10 chars)'); return; }
+    setActionLoading(true);
+    try {
+      await axios.post(`${API}/leaves`, applyForm, { headers: getAuthHeaders() });
+      toast.success(applyForm.auto_approve ? 'Leave applied & approved' : 'Leave applied for employee');
+      setShowApplyDialog(false); setApplyForm({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false }); fetchData();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+    finally { setActionLoading(false); }
   };
 
   const confirmReject = async () => {
@@ -135,14 +155,19 @@ const Leave = () => {
   return (
     <div className="space-y-6 animate-fade-in" data-testid="leave-page">
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-xl bg-[#063c88] flex items-center justify-center">
-          <CalendarDays className="w-5 h-5 text-white" />
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[#063c88] flex items-center justify-center">
+            <CalendarDays className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Leave Management</h1>
+            <p className="text-sm text-slate-500">Manage employee leave requests</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Leave Management</h1>
-          <p className="text-sm text-slate-500">Manage employee leave requests</p>
-        </div>
+        <Button onClick={() => setShowApplyDialog(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-leave-btn">
+          <Plus className="w-4 h-4 mr-2" /> Apply for Employee
+        </Button>
       </div>
 
       {/* Quick Stats */}
@@ -390,27 +415,43 @@ const Leave = () => {
         </SheetContent>
       </Sheet>
 
-      {/* Approve Dialog */}
+      {/* Approve Dialog with LOP */}
       <Dialog open={showApproveDialog} onOpenChange={setShowApproveDialog}>
         <DialogContent className="bg-[#fffdf7] rounded-2xl">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2" style={{ fontFamily: 'Outfit' }}>
               <Check className="w-5 h-5 text-emerald-500" /> Approve Leave
             </DialogTitle>
-            <DialogDescription>Confirm leave approval</DialogDescription>
+            <DialogDescription>Confirm leave approval and set LOP status</DialogDescription>
           </DialogHeader>
           {selectedLeave && (
-            <div className="py-4 space-y-2">
-              <p><span className="text-slate-500">Employee:</span> <span className="font-medium">{selectedLeave.emp_name}</span></p>
-              <p><span className="text-slate-500">Type:</span> <span className="font-medium">{selectedLeave.leave_type}</span></p>
-              <p><span className="text-slate-500">Duration:</span> <span className="font-medium">{selectedLeave.duration}</span></p>
+            <div className="py-4 space-y-4">
+              <div className="space-y-2">
+                <p><span className="text-slate-500">Employee:</span> <span className="font-medium">{selectedLeave.emp_name}</span></p>
+                <p><span className="text-slate-500">Type:</span> <span className="font-medium">{selectedLeave.leave_type}</span></p>
+                <p><span className="text-slate-500">Duration:</span> <span className="font-medium">{selectedLeave.duration}</span></p>
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-slate-700">LOP Status</Label>
+                <Select value={lopChoice} onValueChange={setLopChoice}>
+                  <SelectTrigger className="mt-1.5 rounded-lg" data-testid="approve-lop-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="no_lop">No LOP</SelectItem>
+                    <SelectItem value="lop">LOP (Loss of Pay)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-slate-700">Remark (optional)</Label>
+                <Input value={lopRemark} onChange={e => setLopRemark(e.target.value)} className="mt-1.5 rounded-lg" placeholder="Optional remark..." />
+              </div>
             </div>
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowApproveDialog(false)} disabled={actionLoading} className="rounded-lg">Cancel</Button>
             <Button onClick={confirmApprove} disabled={actionLoading} className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg">
               {actionLoading ? <div className="w-4 h-4 mr-2 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4 mr-2" />}
-              Confirm
+              Confirm Approve
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -438,6 +479,62 @@ const Leave = () => {
               {actionLoading ? <div className="w-4 h-4 mr-2 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <X className="w-4 h-4 mr-2" />}
               Reject
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Apply Leave for Employee Dialog */}
+      <Dialog open={showApplyDialog} onOpenChange={setShowApplyDialog}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Apply Leave for Employee</DialogTitle>
+            <DialogDescription>Submit leave on behalf of an employee</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <Label>Employee</Label>
+              <Select value={applyForm.employee_id} onValueChange={v => setApplyForm({ ...applyForm, employee_id: v })}>
+                <SelectTrigger className="mt-1.5 rounded-lg" data-testid="admin-leave-select-employee"><SelectValue placeholder="Select employee" /></SelectTrigger>
+                <SelectContent>{employees.map(e => <SelectItem key={e.id} value={e.id}>{e.full_name} ({e.team})</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div><Label>Leave Type</Label>
+                <Select value={applyForm.leave_type} onValueChange={v => setApplyForm({ ...applyForm, leave_type: v })}>
+                  <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Sick">Sick Leave</SelectItem>
+                    <SelectItem value="Casual">Casual Leave</SelectItem>
+                    <SelectItem value="Annual">Annual Leave</SelectItem>
+                    <SelectItem value="Emergency">Emergency</SelectItem>
+                    <SelectItem value="Preplanned">Preplanned</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div><Label>Leave Split</Label>
+                <Select value={applyForm.leave_split} onValueChange={v => setApplyForm({ ...applyForm, leave_split: v })}>
+                  <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Full Day">Full Day</SelectItem>
+                    <SelectItem value="First Half">First Half</SelectItem>
+                    <SelectItem value="Second Half">Second Half</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div><Label>Start Date</Label><Input type="date" value={applyForm.start_date} onChange={e => setApplyForm({ ...applyForm, start_date: e.target.value })} className="mt-1.5 rounded-lg" /></div>
+              <div><Label>End Date</Label><Input type="date" value={applyForm.end_date} onChange={e => setApplyForm({ ...applyForm, end_date: e.target.value })} className="mt-1.5 rounded-lg" /></div>
+            </div>
+            <div><Label>Reason (min 10 chars)</Label><Textarea value={applyForm.reason} onChange={e => setApplyForm({ ...applyForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Reason for leave..." /></div>
+            <div className="flex items-center gap-4 pt-2">
+              <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={applyForm.auto_approve} onChange={e => setApplyForm({ ...applyForm, auto_approve: e.target.checked })} className="rounded" /><span className="text-sm text-slate-700">Auto-approve & set LOP status</span></label>
+              {applyForm.auto_approve && <Select value={applyForm.is_lop === true ? 'lop' : 'no_lop'} onValueChange={v => setApplyForm({ ...applyForm, is_lop: v === 'lop' })}><SelectTrigger className="w-[140px] rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="no_lop">No LOP</SelectItem><SelectItem value="lop">LOP</SelectItem></SelectContent></Select>}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowApplyDialog(false)} className="rounded-lg">Cancel</Button>
+            <Button onClick={handleApplyForEmployee} disabled={actionLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg">{actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Submit'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

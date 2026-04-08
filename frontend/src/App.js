@@ -30,6 +30,12 @@ import EmployeeDocuments from "./pages/EmployeeDocuments";
 import EmployeeSalary from "./pages/EmployeeSalary";
 import EmployeeProfile from "./pages/EmployeeProfile";
 import EmployeeOnboarding from "./pages/EmployeeOnboarding";
+import EmployeeLateRequest from "./pages/EmployeeLateRequest";
+import EmployeeEarlyOut from "./pages/EmployeeEarlyOut";
+import EmployeeMissedPunch from "./pages/EmployeeMissedPunch";
+import AdminLateRequests from "./pages/AdminLateRequests";
+import AdminEarlyOut from "./pages/AdminEarlyOut";
+import AdminMissedPunch from "./pages/AdminMissedPunch";
 import "./App.css";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -157,6 +163,9 @@ function App() {
           <Route path="/tickets" element={<AdminRoute><Tickets /></AdminRoute>} />
           <Route path="/issue-tickets" element={<AdminRoute><IssueTickets /></AdminRoute>} />
           <Route path="/audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
+          <Route path="/late-requests" element={<AdminRoute><AdminLateRequests /></AdminRoute>} />
+          <Route path="/early-out-requests" element={<AdminRoute><AdminEarlyOut /></AdminRoute>} />
+          <Route path="/missed-punches" element={<AdminRoute><AdminMissedPunch /></AdminRoute>} />
           <Route path="/admin-profile" element={<AdminRoute><AdminProfile /></AdminRoute>} />
           <Route path="/change-password" element={<AdminRoute><ChangePassword /></AdminRoute>} />
           
@@ -171,6 +180,9 @@ function App() {
           <Route path="/employee/tickets" element={<EmployeeRoute><EmployeeIssueTickets /></EmployeeRoute>} />
           <Route path="/employee/documents" element={<EmployeeRoute><EmployeeDocuments /></EmployeeRoute>} />
           <Route path="/employee/salary" element={<EmployeeRoute><EmployeeSalary /></EmployeeRoute>} />
+          <Route path="/employee/late-request" element={<EmployeeRoute><EmployeeLateRequest /></EmployeeRoute>} />
+          <Route path="/employee/early-out" element={<EmployeeRoute><EmployeeEarlyOut /></EmployeeRoute>} />
+          <Route path="/employee/missed-punch" element={<EmployeeRoute><EmployeeMissedPunch /></EmployeeRoute>} />
           <Route path="/employee/profile" element={<EmployeeRoute><EmployeeProfile /></EmployeeRoute>} />
           
           {/* Fallback */}

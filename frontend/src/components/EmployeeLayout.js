@@ -17,7 +17,10 @@ import {
   BookOpen,
   MessageSquarePlus,
   FileText,
-  Wallet
+  Wallet,
+  Clock,
+  LogOut as LogOutIcon,
+  Fingerprint
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -32,6 +35,9 @@ const navItems = [
   { path: '/employee/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/employee/attendance', label: 'My Attendance', icon: CalendarCheck },
   { path: '/employee/leave', label: 'Leave', icon: CalendarDays },
+  { path: '/employee/late-request', label: 'Late Request', icon: Clock },
+  { path: '/employee/early-out', label: 'Early Out', icon: LogOutIcon },
+  { path: '/employee/missed-punch', label: 'Missed Punch', icon: Fingerprint },
   { path: '/employee/salary', label: 'My Salary', icon: Wallet },
   { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper },
   { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap },

@@ -24,7 +24,10 @@ import {
   ScrollText,
   PartyPopper,
   BookOpen,
-  MessageSquarePlus
+  MessageSquarePlus,
+  Clock,
+  LogOut as LogOutIcon,
+  Fingerprint
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -41,6 +44,9 @@ const navItems = [
   { path: '/verification', label: 'Verification', icon: ClipboardCheck },
   { path: '/attendance', label: 'Attendance', icon: CalendarCheck },
   { path: '/leave', label: 'Leave', icon: CalendarDays },
+  { path: '/late-requests', label: 'Late Requests', icon: Clock },
+  { path: '/early-out-requests', label: 'Early Out', icon: LogOutIcon },
+  { path: '/missed-punches', label: 'Missed Punch', icon: Fingerprint },
   { path: '/holidays', label: 'Holidays', icon: PartyPopper },
   { path: '/policies', label: 'Policies', icon: BookOpen },
   { path: '/star-reward', label: 'Star Reward', icon: Star },

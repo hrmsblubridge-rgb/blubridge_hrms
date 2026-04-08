@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarDays, Plus, Clock, CheckCircle2, XCircle } from 'lucide-react';
+import { CalendarDays, Plus, Clock, CheckCircle2, XCircle, Edit2, Paperclip, Upload } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -20,7 +20,10 @@ const EmployeeLeave = () => {
   const [loading, setLoading] = useState(true);
   const [showApplyDialog, setShowApplyDialog] = useState(false);
   const [formLoading, setFormLoading] = useState(false);
-  const [form, setForm] = useState({ leave_type: 'Sick', start_date: '', end_date: '', reason: '' });
+  const [editingId, setEditingId] = useState(null);
+  const [docFile, setDocFile] = useState(null);
+  const [docUploading, setDocUploading] = useState(false);
+  const [form, setForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' });
 
   const fetchData = useCallback(async () => {
     try {
@@ -45,6 +48,19 @@ const EmployeeLeave = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  const handleDocUpload = async (file) => {
+    if (!file) return;
+    setDocUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await axios.post(`${API}/upload`, fd, { headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' } });
+      setForm(prev => ({ ...prev, supporting_document_url: res.data.url || res.data.secure_url, supporting_document_name: file.name }));
+      toast.success('Document uploaded');
+    } catch { toast.error('Upload failed'); }
+    finally { setDocUploading(false); }
+  };
+
   const handleApplyLeave = async () => {
     if (!form.leave_type || !form.start_date || !form.end_date || !form.reason) {
       toast.error('Please fill all fields');
@@ -60,16 +76,29 @@ const EmployeeLeave = () => {
     }
     try {
       setFormLoading(true);
-      await axios.post(`${API}/employee/leaves/apply`, form, { headers: getAuthHeaders() });
-      toast.success('Leave application submitted');
+      if (editingId) {
+        await axios.put(`${API}/employee/leaves/${editingId}`, form, { headers: getAuthHeaders() });
+        toast.success('Leave updated');
+      } else {
+        await axios.post(`${API}/employee/leaves/apply`, form, { headers: getAuthHeaders() });
+        toast.success('Leave application submitted');
+      }
       setShowApplyDialog(false);
-      setForm({ leave_type: 'Sick', start_date: '', end_date: '', reason: '' });
+      setEditingId(null);
+      setDocFile(null);
+      setForm({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' });
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to apply leave');
     } finally {
       setFormLoading(false);
     }
+  };
+
+  const handleEdit = (leave) => {
+    setEditingId(leave.id);
+    setForm({ leave_type: leave.leave_type, leave_split: leave.leave_split || 'Full Day', start_date: leave.start_date, end_date: leave.end_date, reason: leave.reason, supporting_document_url: leave.supporting_document_url || '', supporting_document_name: leave.supporting_document_name || '' });
+    setShowApplyDialog(true);
   };
 
   const getStatusBadge = (status) => ({ 'pending': 'badge-warning', 'approved': 'badge-success', 'rejected': 'badge-error' }[status] || 'badge-neutral');
@@ -93,7 +122,7 @@ const EmployeeLeave = () => {
             <p className="text-sm text-slate-500">Apply for leave and track requests</p>
           </div>
         </div>
-        <Button onClick={() => setShowApplyDialog(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-lg shadow-[#063c88]/20" data-testid="apply-leave-btn">
+        <Button onClick={() => { setEditingId(null); setDocFile(null); setForm({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' }); setShowApplyDialog(true); }} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-lg shadow-[#063c88]/20" data-testid="apply-leave-btn">
           <Plus className="w-4 h-4 mr-2" /> Apply Leave
         </Button>
       </div>
@@ -159,25 +188,33 @@ const EmployeeLeave = () => {
               <thead>
                 <tr>
                   <th>Type</th>
+                  <th>Split</th>
                   <th>Start Date</th>
                   <th>End Date</th>
                   <th>Duration</th>
                   <th>Reason</th>
+                  <th>Document</th>
                   <th>Status</th>
+                  <th>LOP</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {leaves.length === 0 ? (
-                  <tr><td colSpan="6" className="text-center py-12 text-slate-500">No leave records found</td></tr>
+                  <tr><td colSpan="10" className="text-center py-12 text-slate-500">No leave records found</td></tr>
                 ) : (
                   leaves.map((leave, index) => (
                     <tr key={index}>
                       <td className="font-medium text-slate-900">{leave.leave_type}</td>
+                      <td className="text-slate-600">{leave.leave_split || 'Full Day'}</td>
                       <td className="text-slate-600">{leave.start_date}</td>
                       <td className="text-slate-600">{leave.end_date}</td>
                       <td className="text-slate-600">{leave.duration}</td>
                       <td className="text-slate-600 max-w-[200px] truncate">{leave.reason}</td>
+                      <td>{leave.supporting_document_url ? <a href={leave.supporting_document_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline text-xs flex items-center gap-1"><Paperclip className="w-3 h-3" />{leave.supporting_document_name || 'View'}</a> : '-'}</td>
                       <td><Badge className={getStatusBadge(leave.status)}>{leave.status}</Badge></td>
+                      <td>{leave.is_lop === true ? <Badge className="badge-error">LOP</Badge> : leave.is_lop === false ? <Badge className="badge-success">No LOP</Badge> : '-'}</td>
+                      <td>{leave.status === 'pending' && <Button size="sm" variant="outline" onClick={() => handleEdit(leave)} className="rounded-lg" data-testid={`edit-leave-${leave.id}`}><Edit2 className="w-3 h-3" /></Button>}</td>
                     </tr>
                   ))
                 )}
@@ -189,24 +226,37 @@ const EmployeeLeave = () => {
 
       {/* Apply Leave Dialog */}
       <Dialog open={showApplyDialog} onOpenChange={setShowApplyDialog}>
-        <DialogContent className="bg-[#fffdf7] rounded-2xl">
+        <DialogContent className="bg-[#fffdf7] rounded-2xl sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle style={{ fontFamily: 'Outfit' }}>Apply for Leave</DialogTitle>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>{editingId ? 'Edit' : 'Apply for'} Leave</DialogTitle>
             <DialogDescription>Submit a new leave request</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            <div>
-              <Label className="text-sm font-medium text-slate-700">Leave Type</Label>
-              <Select value={form.leave_type} onValueChange={(v) => setForm({ ...form, leave_type: v })}>
-                <SelectTrigger className="mt-1.5 rounded-lg" data-testid="leave-type-select"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Sick">Sick Leave</SelectItem>
-                  <SelectItem value="Casual">Casual Leave</SelectItem>
-                  <SelectItem value="Annual">Annual Leave</SelectItem>
-                  <SelectItem value="Emergency">Emergency</SelectItem>
-                  <SelectItem value="Preplanned">Preplanned</SelectItem>
-                </SelectContent>
-              </Select>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="text-sm font-medium text-slate-700">Leave Type</Label>
+                <Select value={form.leave_type} onValueChange={(v) => setForm({ ...form, leave_type: v })}>
+                  <SelectTrigger className="mt-1.5 rounded-lg" data-testid="leave-type-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Sick">Sick Leave</SelectItem>
+                    <SelectItem value="Casual">Casual Leave</SelectItem>
+                    <SelectItem value="Annual">Annual Leave</SelectItem>
+                    <SelectItem value="Emergency">Emergency</SelectItem>
+                    <SelectItem value="Preplanned">Preplanned</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-slate-700">Leave Split</Label>
+                <Select value={form.leave_split} onValueChange={(v) => setForm({ ...form, leave_split: v })}>
+                  <SelectTrigger className="mt-1.5 rounded-lg" data-testid="leave-split-select"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Full Day">Full Day</SelectItem>
+                    <SelectItem value="First Half">First Half</SelectItem>
+                    <SelectItem value="Second Half">Second Half</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
@@ -221,6 +271,17 @@ const EmployeeLeave = () => {
             <div>
               <Label className="text-sm font-medium text-slate-700">Reason (min 10 characters)</Label>
               <Textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Enter reason for leave..." data-testid="reason-textarea" />
+            </div>
+            <div>
+              <Label className="text-sm font-medium text-slate-700">Supporting Document (optional)</Label>
+              <div className="mt-1.5 flex items-center gap-3">
+                <label className="flex items-center gap-2 px-4 py-2 rounded-lg border border-dashed border-slate-300 cursor-pointer hover:bg-slate-50 transition-colors">
+                  <Upload className="w-4 h-4 text-slate-500" />
+                  <span className="text-sm text-slate-600">{docUploading ? 'Uploading...' : form.supporting_document_name || 'Choose file'}</span>
+                  <input type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" onChange={(e) => { const f = e.target.files?.[0]; if (f) { setDocFile(f); handleDocUpload(f); } }} disabled={docUploading} />
+                </label>
+                {form.supporting_document_name && <span className="text-xs text-emerald-600 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Uploaded</span>}
+              </div>
             </div>
           </div>
           <DialogFooter>
