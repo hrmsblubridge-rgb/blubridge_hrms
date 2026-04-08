@@ -1,7 +1,7 @@
 # HRMS Application - Product Requirements Document
 
 ## Original Problem Statement
-Build and enhance a premium HRMS web application with modules for employee onboarding, attendance tracking, leave management, payroll, teams, tickets, and more.
+Build and enhance a premium enterprise-grade HRMS web application with role-based access control, onboarding workflow, and notification system. The system must be scalable, modular, and production-ready with modules for employee onboarding, attendance tracking, leave management, payroll, teams, tickets, and more.
 
 ## Tech Stack
 - **Frontend**: React, Tailwind CSS, Shadcn UI
@@ -20,26 +20,65 @@ Build and enhance a premium HRMS web application with modules for employee onboa
 ├── frontend/
 │   ├── src/
 │   │   ├── pages/
-│   │   │   ├── Attendance.js          # Admin attendance (with pagination)
-│   │   │   ├── EmployeeAttendance.js  # Employee attendance (period/status filters, pagination)
-│   │   │   ├── Leave.js              # Admin leave (LOP approval, apply for employee)
-│   │   │   ├── EmployeeLeave.js      # Employee leave (split, doc upload, edit)
-│   │   │   ├── AdminLateRequests.js   # Admin late request management
-│   │   │   ├── AdminEarlyOut.js       # Admin early out management
-│   │   │   ├── AdminMissedPunch.js    # Admin missed punch management
-│   │   │   ├── EmployeeLateRequest.js # Employee late request
-│   │   │   ├── EmployeeEarlyOut.js    # Employee early out
-│   │   │   ├── EmployeeMissedPunch.js # Employee missed punch
-│   │   │   ├── Dashboard.js           # Admin dashboard
-│   │   │   ├── Employees.js           # Employee CRUD + bulk import
-│   │   │   ├── Holidays.js            # Holiday management (deduped)
-│   │   │   └── Team.js
+│   │   │   ├── Dashboard.js
+│   │   │   ├── Employees.js
+│   │   │   ├── Attendance.js / EmployeeAttendance.js
+│   │   │   ├── Leave.js / EmployeeLeave.js
+│   │   │   ├── AdminLateRequests.js / EmployeeLateRequest.js
+│   │   │   ├── AdminEarlyOut.js / EmployeeEarlyOut.js
+│   │   │   ├── AdminMissedPunch.js / EmployeeMissedPunch.js
+│   │   │   ├── RoleManagement.js (NEW)
+│   │   │   ├── Holidays.js / Policies.js
+│   │   │   ├── StarReward.js / Team.js
+│   │   │   ├── Payroll.js / Reports.js
+│   │   │   ├── AuditLogs.js / Verification.js
+│   │   │   └── Employee*.js (portal pages)
 │   │   ├── components/
-│   │   │   ├── Layout.js             # Admin sidebar (updated)
-│   │   │   └── EmployeeLayout.js     # Employee sidebar (updated)
-│   │   └── App.js                     # All routes
-└── server/                            # DEPRECATED
+│   │   │   ├── Layout.js (role-based nav)
+│   │   │   ├── EmployeeLayout.js
+│   │   │   └── NotificationBell.js (NEW)
+│   │   ├── contexts/
+│   │   │   └── AuthContext.js
+│   │   └── App.js (role-based routing)
+└── server/ (DEPRECATED)
 ```
+
+## RBAC System (Implemented Apr 8, 2026)
+
+### Roles & Access Matrix
+| Module | HR Team | System Admin | Office Admin | Employee |
+|--------|---------|-------------|-------------|----------|
+| Dashboard | Full | View | View | Employee Portal |
+| Employees | Full CRUD | View Only | View Only | Self-Service |
+| Attendance | Full + Approve | View | View | Self-Service |
+| Leave | Full + Approve | View | View | Apply/Edit |
+| Late/Early/Missed | Full + Approve | View | View | Apply/Edit |
+| Holidays | Full CRUD | - | View | View |
+| Policies | Full CRUD | - | - | View |
+| Star Reward | Full | - | - | - |
+| Team | Full | - | - | - |
+| Payroll | Full | - | - | View |
+| Issue Tickets | Full | - | - | Submit |
+| Reports | Full + Export | - | - | - |
+| Role Management | Full | View | - | - |
+| Audit Logs | View | View | - | - |
+
+### Credentials
+- HR: `admin` / `pass123`
+- System Admin: `sysadmin` / `pass123`
+- Office Admin: `offadmin` / `pass123`
+- Employee: `user` / `user`
+
+## Notification System (Implemented Apr 8, 2026)
+- In-app notification bell with dropdown
+- Unread count badge with polling (30s interval)
+- Mark as read (single/all)
+- Delete notifications
+- Triggers:
+  - Employee created → HR notified
+  - Leave request submitted → HR notified
+  - Leave approved/rejected → Employee notified
+  - Role changed → User notified
 
 ## What's Been Implemented
 
@@ -53,57 +92,67 @@ Build and enhance a premium HRMS web application with modules for employee onboa
 - Team Member Count display fix
 - Attendance Module Pagination
 
-### Phase 2 (Apr 8, 2026) - Current Session
+### Phase 2 (Apr 8, 2026)
 **Bug Fixes:**
 - Holiday duplicate entries fixed (upsert + unique index + dedup on startup)
-- Dashboard attendance stats fixed (Python-side DD-MM-YYYY filtering instead of broken MongoDB string comparison)
-- Employee attendance date filter fixed (from_date/to_date params now properly handled)
+- Dashboard attendance stats fixed
+- Employee attendance date filter fixed
 
 **Leave Module Enhancements:**
-- Leave Split: Full Day / First Half / Second Half (backend + both frontends)
+- Leave Split: Full Day / First Half / Second Half
 - Document upload on leave application form
-- Edit pending leave requests (employee side)
+- Edit pending leave requests
 - LOP/No_LOP selection on admin approval
-- Admin: Apply leave for employee with optional auto-approve + LOP
+- Admin: Apply leave for employee
 
 **3 New Modules (Late Request, Early Out, Missed Punch):**
-- Full backend CRUD + approve/reject APIs for all 3 modules
-- Employee-side pages: Apply form + data view + edit pending
-- Admin-side pages: Manage, approve/reject with LOP, apply for employee
-- Missed Punch: Conditional fields based on punch type (Check-in/Check-out/Both)
-- All modules added to sidebar navigation for both roles
-- All routes wired in App.js
+- Full CRUD + approve/reject APIs
+- Employee + Admin pages with LOP support
 
-**Employee Attendance Enhancement:**
-- Period quick-filters (This Week, Last Week, This Month, Last Month, Custom Range)
-- Status filter dropdown
-- Pagination controls
+### Phase 3 (Apr 8, 2026) - Current Session
+**RBAC Overhaul:**
+- 4 roles: HR, System Admin, Office Admin, Employee
+- Permission-based middleware (ADMIN_ROLES, ALL_ADMIN_ROLES, SYSTEM_ROLES)
+- Role migration from old roles on startup
+- Role-based sidebar navigation filtering
+- Conditional UI elements (edit/approve/delete buttons)
+
+**Notification System:**
+- Notification model + CRUD endpoints
+- NotificationBell component with unread badge
+- Notification triggers for key actions
+- Integrated in Layout + EmployeeLayout
+
+**Role Management UI:**
+- Permission matrix view
+- User roles table with search/filter
+- Edit role dialog (HR only)
+- Role count overview cards
 
 ## Pending Issues
-- **P1**: Cloudinary PDF Viewing (blocked on user Cloudinary settings)
+- **P1**: Cloudinary PDF Viewing (blocked on user settings)
 - **P2**: Username collision on employee creation
 
 ## Backlog / Future Tasks
-- **P1**: Biometric Sync Dashboard (UI for sync history, unmapped devices)
-- **P2**: Leave Balance Tracking endpoint (`GET /api/employee/leave-balance`)
-- **P2**: Backend refactoring (decompose server.py into routers/models/services)
-- **P2**: Delete deprecated Node.js backend (`/app/server`)
-- **P3**: Leave History redesign (ref: blubridge.ai style)
+- **P1**: Biometric Sync Dashboard
+- **P2**: Leave Balance Tracking endpoint
+- **P2**: Backend refactoring (decompose server.py ~7000 lines)
+- **P2**: Delete deprecated Node.js backend
+- **P2**: Onboarding & Induction Workflow (5-step process with induction scheduling)
+- **P2**: Reports & Analytics with PDF/Excel export
+- **P3**: WebSocket real-time notifications
+- **P3**: Rate limiting & API hardening
 
 ## Key DB Collections
-- `employees`, `users`, `attendance`, `leaves`, `holidays`
-- `late_requests`, `early_out_requests`, `missed_punches` (NEW)
-- `biometric_punch_logs`
+- `users`, `employees`, `attendance`, `leaves`, `holidays`
+- `late_requests`, `early_out_requests`, `missed_punches`
+- `notifications` (NEW), `audit_logs`
+- `biometric_punch_logs`, `departments`, `teams`
 
-## Key API Endpoints
-- `POST /api/late-requests` / `GET /api/late-requests`
-- `PUT /api/late-requests/{id}/approve` / `PUT /api/late-requests/{id}/reject`
-- `POST /api/early-out-requests` / `GET /api/early-out-requests`
-- `PUT /api/early-out-requests/{id}/approve` / `PUT /api/early-out-requests/{id}/reject`
-- `POST /api/missed-punches` / `GET /api/missed-punches`
-- `PUT /api/missed-punches/{id}/approve` / `PUT /api/missed-punches/{id}/reject`
-- `POST /api/leaves` (with leave_split, auto_approve, is_lop)
-- `PUT /api/leaves/{id}/approve` (with is_lop, lop_remark)
-
-## Credentials
-- Admin: `admin` / `admin` (role: super_admin)
+## Key API Endpoints (New)
+- `GET/PUT/DELETE /api/notifications` - Notification CRUD
+- `GET /api/notifications/unread-count` - Unread count
+- `PUT /api/notifications/mark-all-read` - Mark all read
+- `GET /api/roles/users` - List users with roles
+- `PUT /api/roles/users/{id}/role` - Update user role
+- `GET /api/roles/permissions` - Permission matrix
