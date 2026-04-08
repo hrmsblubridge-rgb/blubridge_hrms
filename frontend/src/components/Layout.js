@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import NotificationBell from './NotificationBell';
+import axios from 'axios';
 import { 
   LayoutDashboard, 
   CalendarCheck, 
@@ -61,11 +62,29 @@ const allNavItems = [
 ];
 
 const Layout = ({ children }) => {
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [headerSearch, setHeaderSearch] = useState('');
+  const [verificationCount, setVerificationCount] = useState(0);
+
+  const fetchVerificationCount = useCallback(async () => {
+    if (user?.role !== 'hr') return;
+    try {
+      const res = await axios.get(
+        `${process.env.REACT_APP_BACKEND_URL}/api/verification/pending-count`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setVerificationCount(res.data.count || 0);
+    } catch {}
+  }, [token, user?.role]);
+
+  useEffect(() => {
+    fetchVerificationCount();
+    const interval = setInterval(fetchVerificationCount, 60000);
+    return () => clearInterval(interval);
+  }, [fetchVerificationCount]);
 
   // Filter nav items based on user role
   const navItems = allNavItems.filter(item => item.roles.includes(user?.role));
@@ -167,6 +186,11 @@ const Layout = ({ children }) => {
               >
                 <item.icon className="w-5 h-5" strokeWidth={isActive ? 2 : 1.5} />
                 <span>{item.label}</span>
+                {item.path === '/verification' && verificationCount > 0 && (
+                  <span className="ml-auto min-w-[20px] h-5 flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full px-1.5" data-testid="verification-badge">
+                    {verificationCount}
+                  </span>
+                )}
                 {item.path === '/star-reward' && (
                   <span className="ml-auto w-2 h-2 rounded-full animate-pulse-soft" />
                 )}

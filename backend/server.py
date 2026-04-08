@@ -4542,6 +4542,16 @@ async def get_onboarding_stats(current_user: dict = Depends(get_current_user)):
         "completion_rate": round((approved / total * 100) if total > 0 else 0, 1)
     }
 
+@api_router.get("/verification/pending-count")
+async def get_verification_pending_count(current_user: dict = Depends(get_current_user)):
+    """Lightweight endpoint for sidebar badge - returns count of pending verifications"""
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    under_review = await db.onboarding.count_documents({"status": OnboardingStatus.UNDER_REVIEW})
+    pending = await db.onboarding.count_documents({"status": OnboardingStatus.PENDING})
+    in_progress = await db.onboarding.count_documents({"status": OnboardingStatus.IN_PROGRESS})
+    return {"count": under_review + pending + in_progress}
+
 @api_router.get("/onboarding/list")
 async def get_onboarding_list(
     status: Optional[str] = None,
