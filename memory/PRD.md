@@ -79,6 +79,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
   - Leave request submitted → HR notified
   - Leave approved/rejected → Employee notified
   - Role changed → User notified
+  - Employee created → Office Admin notified for operational setup
+  - All checklist items completed → HR notified
+
+## Operational Checklist (Implemented Apr 8, 2026)
+Office Admin tracks workplace readiness per employee with 8 checklist items across 5 categories:
+- **Infrastructure**: Workstation Ready (desk, chair, system/laptop)
+- **Stationery**: Stationery & Supplies Issued, ID Card Issued
+- **Access**: Attendance Device Configured, Access Card / Entry Permissions
+- **IT**: System Access Created & Verified, Role-based Access Confirmed
+- **Coordination**: HR Coordination for Joining Readiness
+
+Status flow: Pending → In Progress → Completed
+Auto-created on employee creation + backfilled for existing employees on startup.
 
 ## What's Been Implemented
 
