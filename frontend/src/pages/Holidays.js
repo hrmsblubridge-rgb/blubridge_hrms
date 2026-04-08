@@ -95,7 +95,7 @@ const Holidays = () => {
   });
   const [processing, setProcessing] = useState(false);
 
-  const isAdmin = ['super_admin', 'admin', 'hr_manager'].includes(user?.role);
+  const isAdmin = ['hr'].includes(user?.role);
 
   useEffect(() => {
     fetchHolidays();

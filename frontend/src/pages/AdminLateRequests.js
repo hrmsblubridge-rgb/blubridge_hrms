@@ -16,7 +16,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/s
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const AdminLateRequests = () => {
-  const { getAuthHeaders } = useAuth();
+  const { getAuthHeaders, user } = useAuth();
+  const isHR = user?.role === 'hr';
   const [requests, setRequests] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -116,7 +117,7 @@ const AdminLateRequests = () => {
           <div className="w-10 h-10 rounded-xl bg-[#063c88] flex items-center justify-center"><Clock className="w-5 h-5 text-white" /></div>
           <div><h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Late Requests</h1><p className="text-sm text-slate-500">Manage employee late login requests</p></div>
         </div>
-        <Button onClick={() => setShowApply(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-late-btn"><Plus className="w-4 h-4 mr-2" /> Apply for Employee</Button>
+        {isHR && <Button onClick={() => setShowApply(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-late-btn"><Plus className="w-4 h-4 mr-2" /> Apply for Employee</Button>}
       </div>
 
       <div className="card-flat p-4"><div className="relative max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" /><Input placeholder="Search employee..." value={searchName} onChange={e => setSearchName(e.target.value)} className="pl-10 rounded-lg" /></div></div>
@@ -129,7 +130,7 @@ const AdminLateRequests = () => {
               <TabsTrigger value="history" className="px-6 py-4 rounded-none data-[state=active]:bg-[#063c88] data-[state=active]:text-white">History ({filteredHistory.length})</TabsTrigger>
             </TabsList>
           </div>
-          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(filteredPending, true)}</TabsContent>
+          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(filteredPending, isHR)}</TabsContent>
           <TabsContent value="history" className="mt-0">{renderTable(filteredHistory, false)}</TabsContent>
         </Tabs>
       </div>
@@ -141,7 +142,7 @@ const AdminLateRequests = () => {
             {[{ l: 'Employee', v: selected.emp_name }, { l: 'Team', v: selected.team }, { l: 'Date', v: selected.date }, { l: 'Expected Time', v: selected.expected_time || '-' }, { l: 'Actual Time', v: selected.actual_time || '-' }, { l: 'Reason', v: selected.reason }].map((item, i) => (
               <div key={i} className="flex justify-between py-2 border-b border-dashed border-slate-200"><span className="text-slate-500 text-sm">{item.l}</span><span className="font-medium text-slate-900 text-right max-w-[60%]">{item.v}</span></div>
             ))}
-            {selected.status === 'pending' && <div className="flex gap-3 pt-4">
+            {selected.status === 'pending' && isHR && <div className="flex gap-3 pt-4">
               <Button onClick={() => { setLopChoice('no_lop'); setLopRemark(''); setShowApprove(true); }} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg"><Check className="w-4 h-4 mr-2" /> Approve</Button>
               <Button onClick={() => setShowReject(true)} className="flex-1 bg-red-500 hover:bg-red-600 text-white rounded-lg"><X className="w-4 h-4 mr-2" /> Reject</Button>
             </div>}

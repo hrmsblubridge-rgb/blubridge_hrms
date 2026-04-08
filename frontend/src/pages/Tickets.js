@@ -77,7 +77,7 @@ const Tickets = () => {
   const [resolution, setResolution] = useState('');
   const [processingAction, setProcessingAction] = useState(null);
 
-  const isAdmin = ['super_admin', 'admin', 'hr_manager'].includes(user?.role);
+  const isAdmin = ['hr'].includes(user?.role);
 
   useEffect(() => {
     fetchData();

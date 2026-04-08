@@ -79,11 +79,30 @@ logger = logging.getLogger(__name__)
 # ============== ENUMS ==============
 
 class UserRole:
-    SUPER_ADMIN = "super_admin"
-    ADMIN = "admin"
-    HR_MANAGER = "hr_manager"
-    TEAM_LEAD = "team_lead"
+    HR = "hr"
+    SYSTEM_ADMIN = "system_admin"
+    OFFICE_ADMIN = "office_admin"
     EMPLOYEE = "employee"
+
+# Role permission groups for authorization checks
+ADMIN_ROLES = ["hr"]  # Full write/approve/delete access
+ALL_ADMIN_ROLES = ["hr", "system_admin", "office_admin"]  # View access to admin pages
+SYSTEM_ROLES = ["hr", "system_admin"]  # System management (audit logs, roles, settings)
+
+def require_admin(user):
+    """Check if user has full admin (HR) access"""
+    if user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient permissions. HR access required.")
+
+def require_any_admin(user):
+    """Check if user has any admin role (view access)"""
+    if user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient permissions. Admin access required.")
+
+def require_system_admin(user):
+    """Check if user has system admin access"""
+    if user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient permissions. System admin access required.")
 
 class EmploymentType:
     FULL_TIME = "Full-time"
@@ -749,6 +768,19 @@ class AuditLog(BaseModel):
     details: Optional[str] = None
     timestamp: datetime = Field(default_factory=lambda: get_ist_now())
 
+# ============== NOTIFICATION MODEL ==============
+
+class Notification(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str  # recipient user id
+    title: str
+    message: str
+    type: str = "info"  # info, warning, success, action
+    link: Optional[str] = None  # frontend route to navigate to
+    read: bool = False
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
 # ============== PAYROLL MODEL ==============
 
 class PayrollRecord(BaseModel):
@@ -1140,6 +1172,28 @@ async def log_audit(user_id: str, action: str, resource: str, resource_id: str =
     doc = log.model_dump()
     doc['timestamp'] = doc['timestamp'].isoformat()
     await db.audit_logs.insert_one(doc.copy())
+
+async def create_notification(user_ids: list, title: str, message: str, notif_type: str = "info", link: str = None):
+    """Create notifications for multiple users"""
+    for uid in user_ids:
+        notif = Notification(user_id=uid, title=title, message=message, type=notif_type, link=link)
+        doc = notif.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.notifications.insert_one(doc.copy())
+
+async def notify_role(role: str, title: str, message: str, notif_type: str = "info", link: str = None):
+    """Send notification to all users with a specific role"""
+    users = await db.users.find({"role": role, "is_active": True}, {"_id": 0, "id": 1}).to_list(1000)
+    user_ids = [u["id"] for u in users]
+    if user_ids:
+        await create_notification(user_ids, title, message, notif_type, link)
+
+async def notify_roles(roles: list, title: str, message: str, notif_type: str = "info", link: str = None):
+    """Send notification to all users with any of the specified roles"""
+    users = await db.users.find({"role": {"$in": roles}, "is_active": True}, {"_id": 0, "id": 1}).to_list(1000)
+    user_ids = [u["id"] for u in users]
+    if user_ids:
+        await create_notification(user_ids, title, message, notif_type, link)
 
 def serialize_doc(doc: dict) -> dict:
     if not doc:
@@ -1664,7 +1718,7 @@ async def delete_cloudinary_asset(
     current_user: dict = Depends(get_current_user)
 ):
     """Delete asset from Cloudinary"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     try:
@@ -1882,7 +1936,7 @@ IMPORT_TEMPLATE_COLUMNS = [
 @api_router.get("/employees/import-template")
 async def get_import_template(current_user: dict = Depends(get_current_user)):
     """Download sample Excel template for bulk employee import"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     wb = openpyxl.Workbook()
@@ -1930,7 +1984,7 @@ async def get_import_template(current_user: dict = Depends(get_current_user)):
         ["Work Location", "No", "Remote / Office / Hybrid (default: Office)"],
         ["Shift Type", "No", "General / Morning / Evening / Night / Flexible (default: General)"],
         ["Monthly Salary", "No", "Numeric value in INR (default: 0)"],
-        ["User Role", "No", "employee / admin / hr_manager / team_lead (default: employee)"]
+        ["User Role", "No", "employee / hr / system_admin / office_admin (default: employee)"]
     ]
     for row_idx, row_data in enumerate(instructions, 1):
         for col_idx, val in enumerate(row_data, 1):
@@ -1956,7 +2010,7 @@ async def bulk_import_employees(
     current_user: dict = Depends(get_current_user)
 ):
     """Bulk import employees from CSV or Excel file"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     # Read file content
@@ -2185,8 +2239,8 @@ async def bulk_import_employees(
         
         # Normalize user role
         user_role = str(user_role).lower().strip()
-        role_map = {"employee": "employee", "admin": "admin", "hr_manager": "hr_manager",
-                    "team_lead": "team_lead", "super_admin": "super_admin"}
+        role_map = {"employee": "employee", "hr": "hr", "system_admin": "system_admin",
+                    "office_admin": "office_admin"}
         user_role = role_map.get(user_role, "employee")
         
         # Check for duplicate email
@@ -2327,7 +2381,7 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
 
 @api_router.post("/employees")
 async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     # Check for duplicate email among active employees
@@ -2550,11 +2604,20 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         result['temp_password'] = temp_password
         result['username'] = username
     
+    # Notify HR about new employee onboarding
+    asyncio.create_task(notify_role(
+        UserRole.HR,
+        "New Employee Onboarded",
+        f"{data.full_name} has been added to the system. Start verification & induction.",
+        "action",
+        "/verification"
+    ))
+    
     return result
 
 @api_router.put("/employees/{employee_id}")
 async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
@@ -2604,7 +2667,7 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
 @api_router.delete("/employees/{employee_id}")
 async def deactivate_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Soft delete - deactivates employee"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
@@ -2638,7 +2701,7 @@ async def deactivate_employee(employee_id: str, current_user: dict = Depends(get
 @api_router.put("/employees/{employee_id}/restore")
 async def restore_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Restore soft-deleted employee"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     existing = await db.employees.find_one({"id": employee_id, "is_deleted": True}, {"_id": 0})
@@ -2669,7 +2732,7 @@ class AvatarUpdate(BaseModel):
 @api_router.put("/employees/{employee_id}/avatar")
 async def update_employee_avatar(employee_id: str, data: AvatarUpdate, current_user: dict = Depends(get_current_user)):
     """Update employee avatar/photo"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
@@ -2885,7 +2948,7 @@ async def import_biometric_attendance(
     current_user: dict = Depends(get_current_user)
 ):
     """Ingest biometric attendance data from external device sync service."""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     if not records or not isinstance(records, list):
@@ -3225,7 +3288,7 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
         duration = (end - start).days + 1
         duration_str = f"{duration} day(s)"
     
-    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
     
     leave = LeaveRequest(
         employee_id=data.employee_id,
@@ -3258,7 +3321,7 @@ class LeaveApproveRequest(BaseModel):
 
 @api_router.put("/leaves/{leave_id}/approve")
 async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = None, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
@@ -3298,11 +3361,23 @@ async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = Non
             email_html
         ))
     leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    
+    # Notify employee about leave approval
+    emp_user = await db.users.find_one({"employee_id": leave.get("employee_id")}, {"_id": 0})
+    if emp_user:
+        asyncio.create_task(create_notification(
+            [emp_user["id"]],
+            "Leave Approved",
+            f"Your {leave.get('leave_type', '')} leave request has been approved.",
+            "success",
+            "/employee/leave"
+        ))
+    
     return serialize_doc(leave)
 
 @api_router.put("/leaves/{leave_id}/reject")
 async def reject_leave(leave_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
@@ -3333,6 +3408,18 @@ async def reject_leave(leave_id: str, current_user: dict = Depends(get_current_u
         ))
     
     leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    
+    # Notify employee about leave rejection
+    emp_user = await db.users.find_one({"employee_id": leave.get("employee_id")}, {"_id": 0})
+    if emp_user:
+        asyncio.create_task(create_notification(
+            [emp_user["id"]],
+            "Leave Rejected",
+            f"Your {leave.get('leave_type', '')} leave request has been rejected.",
+            "warning",
+            "/employee/leave"
+        ))
+    
     return serialize_doc(leave)
 
 # ============== STAR REWARDS ROUTES ==============
@@ -3368,7 +3455,7 @@ async def get_star_rewards(
 
 @api_router.post("/star-rewards")
 async def add_star_reward(data: StarRewardCreate, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     employee = await db.employees.find_one({"id": data.employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
@@ -3630,7 +3717,7 @@ async def get_payroll_data(
     current_user: dict = Depends(get_current_user)
 ):
     """Get payroll data for all employees for a given month"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
@@ -3668,7 +3755,7 @@ async def get_payroll_summary(
     current_user: dict = Depends(get_current_user)
 ):
     """Get payroll summary for a month"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
@@ -3741,7 +3828,7 @@ async def update_employee_shift(
     current_user: dict = Depends(get_current_user)
 ):
     """Update employee's shift configuration"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
@@ -3789,7 +3876,7 @@ async def update_employee_monthly_salary_legacy(
     current_user: dict = Depends(get_current_user)
 ):
     """Update employee's monthly salary (Legacy route)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
@@ -3817,7 +3904,7 @@ async def get_audit_logs(
     resource: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
-    if current_user["role"] != UserRole.ADMIN:
+    if current_user["role"] not in SYSTEM_ROLES:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     query = {}
@@ -3851,7 +3938,7 @@ async def get_work_locations():
 
 @api_router.get("/config/user-roles")
 async def get_user_roles():
-    return [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD, UserRole.EMPLOYEE]
+    return [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN, UserRole.EMPLOYEE]
 
 # ============== EMPLOYEE PORTAL MODELS ==============
 
@@ -4371,6 +4458,15 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     
     await log_audit(current_user["id"], "apply_leave", "leave", leave.id)
     
+    # Notify HR about leave request
+    asyncio.create_task(notify_role(
+        UserRole.HR,
+        "New Leave Request",
+        f"{emp.get('full_name', 'Employee')} has submitted a {data.leave_type} leave request ({data.start_date} to {data.end_date}).",
+        "action",
+        "/leave"
+    ))
+    
     return {"message": "Leave request submitted successfully", "leave_id": leave.id}
 
 @api_router.put("/employee/leaves/{leave_id}")
@@ -4420,7 +4516,7 @@ async def update_employee_leave(leave_id: str, data: EmployeeLeaveCreate, curren
 @api_router.get("/onboarding/stats")
 async def get_onboarding_stats(current_user: dict = Depends(get_current_user)):
     """Get onboarding statistics for dashboard"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     total = await db.onboarding.count_documents({})
@@ -4454,7 +4550,7 @@ async def get_onboarding_list(
     current_user: dict = Depends(get_current_user)
 ):
     """Get all onboarding records for HR review"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     query = {}
@@ -4621,7 +4717,7 @@ async def submit_onboarding(current_user: dict = Depends(get_current_user)):
 @api_router.post("/onboarding/verify-document")
 async def verify_onboarding_document(data: DocumentVerification, current_user: dict = Depends(get_current_user)):
     """HR verifies/rejects a document"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     doc = await db.onboarding_documents.find_one({"id": data.document_id}, {"_id": 0})
@@ -4652,7 +4748,7 @@ async def verify_onboarding_document(data: DocumentVerification, current_user: d
 @api_router.post("/onboarding/approve/{employee_id}")
 async def approve_onboarding(employee_id: str, data: OnboardingApproval, current_user: dict = Depends(get_current_user)):
     """HR approves/rejects entire onboarding"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
@@ -4705,7 +4801,7 @@ async def approve_onboarding(employee_id: str, data: OnboardingApproval, current
 @api_router.post("/onboarding/request-reupload/{employee_id}")
 async def request_document_reupload(employee_id: str, document_type: str, reason: str, current_user: dict = Depends(get_current_user)):
     """HR requests re-upload of a specific document"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     doc = await db.onboarding_documents.find_one({
@@ -4771,7 +4867,7 @@ async def get_issue_tickets(
     # Department admins see tickets assigned to their department
     elif user_role in ["it_admin", "hr_admin", "finance_admin", "admin_dept", "compliance_officer", "operations_manager"]:
         query["assigned_department"] = user_role
-    # Super admin, admin, hr_manager can see all tickets
+    # HR, system_admin, office_admin can see all tickets
     
     # Apply filters
     if status and status != "All":
@@ -4896,7 +4992,7 @@ async def create_issue_ticket(data: TicketCreate, current_user: dict = Depends(g
         employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     
     # If admin creating on behalf of employee
-    if data.employee_id and current_user.get("role") in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if data.employee_id and current_user.get("role") in [UserRole.HR]:
         created_by = current_user["id"]
         created_by_name = current_user.get("name")
     
@@ -5025,7 +5121,7 @@ async def assign_issue_ticket(
     current_user: dict = Depends(get_current_user)
 ):
     """Assign ticket to a specific user"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, 
+    if current_user["role"] not in [UserRole.HR, 
                                     "it_admin", "hr_admin", "finance_admin", "admin_dept", 
                                     "compliance_officer", "operations_manager"]:
         raise HTTPException(status_code=403, detail="Permission denied")
@@ -5191,7 +5287,7 @@ async def create_ticket_legacy(data: dict, current_user: dict = Depends(get_curr
 @api_router.put("/tickets/{ticket_id}/status")
 async def update_ticket_status(ticket_id: str, status: str, resolution: Optional[str] = None, current_user: dict = Depends(get_current_user)):
     """Update ticket status (HR only) - Legacy endpoint"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
@@ -5214,7 +5310,7 @@ async def update_ticket_status(ticket_id: str, status: str, resolution: Optional
 @api_router.get("/tickets/stats")
 async def get_ticket_stats(current_user: dict = Depends(get_current_user)):
     """Get ticket statistics - Legacy endpoint"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     total = await db.tickets.count_documents({})
@@ -5239,7 +5335,7 @@ async def get_audit_logs(
     current_user: dict = Depends(get_current_user)
 ):
     """Get audit logs (admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN]:
+    if current_user["role"] not in SYSTEM_ROLES:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     query = {}
@@ -5408,7 +5504,7 @@ async def update_employee_salary(
     current_user: dict = Depends(get_current_user)
 ):
     """Update employee salary structure (Admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
@@ -5516,7 +5612,7 @@ async def create_salary_adjustment(
     current_user: dict = Depends(get_current_user)
 ):
     """Create a salary adjustment (Admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
@@ -5558,7 +5654,7 @@ async def delete_salary_adjustment(
     current_user: dict = Depends(get_current_user)
 ):
     """Delete a salary adjustment (Admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     result = await db.salary_adjustments.delete_one({"id": adjustment_id, "employee_id": employee_id})
@@ -5577,7 +5673,7 @@ async def update_salary_adjustment(
     current_user: dict = Depends(get_current_user)
 ):
     """Update a salary adjustment (Admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     existing = await db.salary_adjustments.find_one({"id": adjustment_id, "employee_id": employee_id})
@@ -5818,7 +5914,7 @@ async def upload_employee_document(
     current_user: dict = Depends(get_current_user)
 ):
     """Upload official document for an employee (Admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
@@ -5875,7 +5971,7 @@ async def delete_employee_document(
     current_user: dict = Depends(get_current_user)
 ):
     """Delete an employee document (Admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     document = await db.employee_documents.find_one({"id": document_id, "employee_id": employee_id})
@@ -5938,7 +6034,7 @@ async def get_policy(policy_id: str, current_user: dict = Depends(get_current_us
 @api_router.put("/policies/{policy_id}")
 async def update_policy(policy_id: str, data: dict, current_user: dict = Depends(get_current_user)):
     """Update a policy (admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN]:
+    if current_user["role"] not in ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
@@ -6027,7 +6123,7 @@ async def update_my_education_experience(
 @api_router.get("/employees/{employee_id}/education-experience")
 async def get_employee_education_experience(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Get employee's education and experience (admin view)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         # Employees can only view their own
         if current_user.get("employee_id") != employee_id:
             raise HTTPException(status_code=403, detail="Permission denied")
@@ -6048,7 +6144,7 @@ async def get_employee_education_experience(employee_id: str, current_user: dict
 @api_router.post("/employees/{employee_id}/verify-education")
 async def verify_employee_education(employee_id: str, current_user: dict = Depends(get_current_user)):
     """HR verifies employee's education details"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
@@ -6070,7 +6166,7 @@ async def verify_employee_education(employee_id: str, current_user: dict = Depen
 @api_router.post("/employees/{employee_id}/verify-experience")
 async def verify_employee_experience(employee_id: str, current_user: dict = Depends(get_current_user)):
     """HR verifies employee's experience details"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
@@ -6196,7 +6292,7 @@ async def get_upcoming_holidays(
 @api_router.post("/holidays")
 async def create_holiday(data: HolidayCreate, current_user: dict = Depends(get_current_user)):
     """Create a new holiday (admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     # Parse year from date
@@ -6221,7 +6317,7 @@ async def create_holiday(data: HolidayCreate, current_user: dict = Depends(get_c
 @api_router.put("/holidays/{holiday_id}")
 async def update_holiday(holiday_id: str, data: HolidayUpdate, current_user: dict = Depends(get_current_user)):
     """Update a holiday (admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     holiday = await db.holidays.find_one({"id": holiday_id}, {"_id": 0})
@@ -6241,7 +6337,7 @@ async def update_holiday(holiday_id: str, data: HolidayUpdate, current_user: dic
 @api_router.delete("/holidays/{holiday_id}")
 async def delete_holiday(holiday_id: str, current_user: dict = Depends(get_current_user)):
     """Delete a holiday (admin only)"""
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
     result = await db.holidays.delete_one({"id": holiday_id})
@@ -6280,16 +6376,48 @@ async def seed_database():
                 await db.users.insert_one(doc.copy())
         return {"message": "Database already seeded"}
     
-    # Create admin user
-    admin = User(
+    # Create HR admin user
+    hr_admin = User(
         username="admin",
         email="admin@blubridge.com",
-        password_hash=hash_password("admin"),
-        name="System Admin",
-        role=UserRole.ADMIN,
-        department="Administration"
+        password_hash=hash_password("pass123"),
+        name="HR Admin",
+        role=UserRole.HR,
+        department="Human Resources",
+        is_first_login=False,
+        onboarding_status="completed"
     )
-    doc = admin.model_dump()
+    doc = hr_admin.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.users.insert_one(doc.copy())
+    
+    # Create System Admin user
+    sys_admin = User(
+        username="sysadmin",
+        email="sysadmin@blubridge.com",
+        password_hash=hash_password("pass123"),
+        name="System Admin",
+        role=UserRole.SYSTEM_ADMIN,
+        department="IT",
+        is_first_login=False,
+        onboarding_status="completed"
+    )
+    doc = sys_admin.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.users.insert_one(doc.copy())
+    
+    # Create Office Admin user
+    off_admin = User(
+        username="offadmin",
+        email="offadmin@blubridge.com",
+        password_hash=hash_password("pass123"),
+        name="Office Admin",
+        role=UserRole.OFFICE_ADMIN,
+        department="Administration",
+        is_first_login=False,
+        onboarding_status="completed"
+    )
+    doc = off_admin.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     await db.users.insert_one(doc.copy())
     
@@ -6406,21 +6534,163 @@ async def seed_database():
     
     return {"message": "Database seeded successfully"}
 
+# ============== NOTIFICATION ROUTES ==============
+
+@api_router.get("/notifications")
+async def get_notifications(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get notifications for current user"""
+    notifications = await db.notifications.find(
+        {"user_id": current_user["id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(limit)
+    return [serialize_doc(n) for n in notifications]
+
+@api_router.get("/notifications/unread-count")
+async def get_unread_notification_count(current_user: dict = Depends(get_current_user)):
+    """Get count of unread notifications"""
+    count = await db.notifications.count_documents({"user_id": current_user["id"], "read": False})
+    return {"count": count}
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, current_user: dict = Depends(get_current_user)):
+    """Mark a single notification as read"""
+    result = await db.notifications.update_one(
+        {"id": notification_id, "user_id": current_user["id"]},
+        {"$set": {"read": True}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "Notification marked as read"}
+
+@api_router.put("/notifications/mark-all-read")
+async def mark_all_notifications_read(current_user: dict = Depends(get_current_user)):
+    """Mark all notifications as read for current user"""
+    await db.notifications.update_many(
+        {"user_id": current_user["id"], "read": False},
+        {"$set": {"read": True}}
+    )
+    return {"message": "All notifications marked as read"}
+
+@api_router.delete("/notifications/{notification_id}")
+async def delete_notification(notification_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a notification"""
+    result = await db.notifications.delete_one({"id": notification_id, "user_id": current_user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "Notification deleted"}
+
+# ============== ROLE MANAGEMENT ROUTES ==============
+
+@api_router.get("/roles/users")
+async def get_all_users_with_roles(
+    role: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all users with their roles (system admin + HR)"""
+    if current_user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    query = {}
+    if role:
+        query["role"] = role
+    users = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(1000)
+    return [serialize_doc(u) for u in users]
+
+@api_router.put("/roles/users/{user_id}/role")
+async def update_user_role(
+    user_id: str,
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a user's role (system admin only)"""
+    if current_user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    new_role = data.get("role")
+    if new_role not in [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN, UserRole.EMPLOYEE]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    
+    target_user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    old_role = target_user.get("role")
+    await db.users.update_one({"id": user_id}, {"$set": {"role": new_role}})
+    
+    await log_audit(current_user["id"], "update_role", "user", user_id, f"Role changed from {old_role} to {new_role}")
+    
+    # Notify user about role change
+    role_labels = {"hr": "HR Team", "system_admin": "System Admin", "office_admin": "Office Admin", "employee": "Employee"}
+    asyncio.create_task(create_notification(
+        [user_id],
+        "Role Updated",
+        f"Your role has been changed to {role_labels.get(new_role, new_role)}. Your access permissions have been updated.",
+        "info",
+        "/dashboard"
+    ))
+    
+    return {"message": f"User role updated to {new_role}"}
+
+@api_router.get("/roles/permissions")
+async def get_role_permissions(current_user: dict = Depends(get_current_user)):
+    """Get the permission matrix for all roles"""
+    if current_user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    return {
+        "hr": {
+            "label": "HR Team",
+            "description": "Full control over all HR modules",
+            "permissions": [
+                "employees.full", "attendance.full", "leave.full", "payroll.full",
+                "holidays.full", "policies.full", "star_reward.full", "team.full",
+                "tickets.full", "reports.full", "audit_logs.view", "verification.full",
+                "late_requests.full", "early_out.full", "missed_punch.full", "onboarding.full"
+            ]
+        },
+        "system_admin": {
+            "label": "System Admin",
+            "description": "System control + limited HRMS view access",
+            "permissions": [
+                "employees.view", "attendance.view", "leave.view",
+                "roles.manage", "audit_logs.view", "notifications.view"
+            ]
+        },
+        "office_admin": {
+            "label": "Office Admin",
+            "description": "View employee data + limited operational access",
+            "permissions": [
+                "employees.view", "attendance.view", "leave.view",
+                "holidays.view", "notifications.view"
+            ]
+        },
+        "employee": {
+            "label": "Employee",
+            "description": "Self-service employee portal",
+            "permissions": [
+                "self.attendance", "self.leave", "self.documents",
+                "self.salary", "self.profile", "self.tickets"
+            ]
+        }
+    }
+
 # ============== LATE REQUEST ROUTES ==============
 
 async def _resolve_employee(data_employee_id, current_user):
     """Helper to resolve employee for admin-applied or self-applied requests"""
-    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
-    if data_employee_id and is_admin:
+    is_hr = current_user["role"] == UserRole.HR
+    if data_employee_id and is_hr:
         emp = await db.employees.find_one({"id": data_employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
         if not emp:
             raise HTTPException(status_code=404, detail="Employee not found")
-        return emp, is_admin
+        return emp, is_hr
     elif current_user.get("employee_id"):
         emp = await db.employees.find_one({"id": current_user["employee_id"], "is_deleted": {"$ne": True}}, {"_id": 0})
         if not emp:
             raise HTTPException(status_code=404, detail="Employee profile not found")
-        return emp, is_admin
+        return emp, is_hr
     raise HTTPException(status_code=400, detail="Employee ID required")
 
 @api_router.get("/late-requests")
@@ -6430,7 +6700,7 @@ async def get_late_requests(
     current_user: dict = Depends(get_current_user)
 ):
     query = {}
-    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
     if not is_admin:
         query["employee_id"] = current_user.get("employee_id", "")
     if status and status != "All":
@@ -6464,7 +6734,7 @@ async def create_late_request(data: LateRequestCreate, current_user: dict = Depe
 
 @api_router.put("/late-requests/{request_id}/approve")
 async def approve_late_request(request_id: str, data: Optional[RequestApproveBody] = None, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     update = {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
     if data and data.is_lop is not None:
@@ -6479,7 +6749,7 @@ async def approve_late_request(request_id: str, data: Optional[RequestApproveBod
 
 @api_router.put("/late-requests/{request_id}/reject")
 async def reject_late_request(request_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     result = await db.late_requests.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
     if result.matched_count == 0:
@@ -6507,7 +6777,7 @@ async def get_early_out_requests(
     current_user: dict = Depends(get_current_user)
 ):
     query = {}
-    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
     if not is_admin:
         query["employee_id"] = current_user.get("employee_id", "")
     if status and status != "All":
@@ -6541,7 +6811,7 @@ async def create_early_out_request(data: EarlyOutRequestCreate, current_user: di
 
 @api_router.put("/early-out-requests/{request_id}/approve")
 async def approve_early_out_request(request_id: str, data: Optional[RequestApproveBody] = None, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     update = {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
     if data and data.is_lop is not None:
@@ -6556,7 +6826,7 @@ async def approve_early_out_request(request_id: str, data: Optional[RequestAppro
 
 @api_router.put("/early-out-requests/{request_id}/reject")
 async def reject_early_out_request(request_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     result = await db.early_out_requests.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
     if result.matched_count == 0:
@@ -6584,7 +6854,7 @@ async def get_missed_punches(
     current_user: dict = Depends(get_current_user)
 ):
     query = {}
-    is_admin = current_user["role"] in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
     if not is_admin:
         query["employee_id"] = current_user.get("employee_id", "")
     if status and status != "All":
@@ -6618,7 +6888,7 @@ async def create_missed_punch(data: MissedPunchCreate, current_user: dict = Depe
 
 @api_router.put("/missed-punches/{request_id}/approve")
 async def approve_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     result = await db.missed_punches.update_one({"id": request_id}, {"$set": {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}})
     if result.matched_count == 0:
@@ -6628,7 +6898,7 @@ async def approve_missed_punch(request_id: str, current_user: dict = Depends(get
 
 @api_router.put("/missed-punches/{request_id}/reject")
 async def reject_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in [UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.HR_MANAGER, UserRole.TEAM_LEAD]:
+    if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     result = await db.missed_punches.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
     if result.matched_count == 0:
@@ -6696,25 +6966,74 @@ async def ensure_indexes():
     except Exception:
         pass
     
-    # Seed default admin user if not exists
+    # Seed default admin users if not exists + migrate old roles
     try:
+        # Migrate old roles to new role system
+        await db.users.update_many({"role": {"$in": ["super_admin", "admin", "hr_manager"]}}, {"$set": {"role": "hr"}})
+        await db.users.update_many({"role": "team_lead"}, {"$set": {"role": "hr"}})
+        
         existing_admin = await db.users.find_one({"username": "admin"})
         if not existing_admin:
             admin_user = User(
                 username="admin",
                 email="admin@blubridge.com",
-                password_hash=hash_password("admin"),
-                name="System Admin",
-                role=UserRole.SUPER_ADMIN,
+                password_hash=hash_password("pass123"),
+                name="HR Admin",
+                role=UserRole.HR,
                 is_first_login=False,
                 onboarding_status="completed"
             )
             admin_doc = admin_user.model_dump()
             admin_doc['created_at'] = admin_doc['created_at'].isoformat()
             await db.users.insert_one(admin_doc.copy())
-            print("Default admin user seeded successfully")
+            print("Default HR admin user seeded successfully")
         else:
-            print("Admin user already exists, skipping seed")
+            # Update existing admin to HR role with new password
+            await db.users.update_one(
+                {"username": "admin"},
+                {"$set": {"role": "hr", "name": "HR Admin", "password_hash": hash_password("pass123")}}
+            )
+            print("Admin user updated to HR role")
+        
+        # Create system_admin user if not exists
+        existing_sysadmin = await db.users.find_one({"username": "sysadmin"})
+        if not existing_sysadmin:
+            sys_admin = User(
+                username="sysadmin",
+                email="sysadmin@blubridge.com",
+                password_hash=hash_password("pass123"),
+                name="System Admin",
+                role=UserRole.SYSTEM_ADMIN,
+                is_first_login=False,
+                onboarding_status="completed"
+            )
+            sys_doc = sys_admin.model_dump()
+            sys_doc['created_at'] = sys_doc['created_at'].isoformat()
+            await db.users.insert_one(sys_doc.copy())
+            print("System admin user seeded successfully")
+        
+        # Create office_admin user if not exists
+        existing_offadmin = await db.users.find_one({"username": "offadmin"})
+        if not existing_offadmin:
+            off_admin = User(
+                username="offadmin",
+                email="offadmin@blubridge.com",
+                password_hash=hash_password("pass123"),
+                name="Office Admin",
+                role=UserRole.OFFICE_ADMIN,
+                is_first_login=False,
+                onboarding_status="completed"
+            )
+            off_doc = off_admin.model_dump()
+            off_doc['created_at'] = off_doc['created_at'].isoformat()
+            await db.users.insert_one(off_doc.copy())
+            print("Office admin user seeded successfully")
+        
+        # Create notifications index
+        await db.notifications.create_index([("user_id", 1), ("read", 1)])
+        await db.notifications.create_index([("created_at", -1)])
+        
+        print("Admin users seeded/migrated successfully")
     except Exception as e:
         print(f"Admin seeding check: {e}")
 

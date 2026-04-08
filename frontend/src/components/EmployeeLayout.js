@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import NotificationBell from './NotificationBell';
 import { 
   LayoutDashboard, 
   CalendarCheck, 
@@ -9,7 +10,6 @@ import {
   LogOut,
   Menu,
   X,
-  Bell,
   ChevronDown,
   KeyRound,
   PartyPopper,
@@ -174,9 +174,7 @@ const EmployeeLayout = ({ children }) => {
             {/* Right: Actions */}
             <div className="flex items-center gap-2">
               {/* Notifications */}
-              <button className="relative p-2.5 hover:bg-slate-100 rounded-xl transition-colors">
-                <Bell className="w-5 h-5 text-slate-600" strokeWidth={1.5} />
-              </button>
+              <NotificationBell />
 
               {/* Profile Dropdown */}
               <DropdownMenu>

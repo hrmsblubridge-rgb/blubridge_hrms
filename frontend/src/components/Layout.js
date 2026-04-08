@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import NotificationBell from './NotificationBell';
 import { 
   LayoutDashboard, 
   CalendarCheck, 
@@ -17,7 +18,6 @@ import {
   KeyRound,
   ChevronDown,
   Search,
-  Bell,
   Settings,
   ClipboardCheck,
   Ticket,
@@ -27,7 +27,8 @@ import {
   MessageSquarePlus,
   Clock,
   LogOut as LogOutIcon,
-  Fingerprint
+  Fingerprint,
+  Shield
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -38,24 +39,25 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 
-const navItems = [
-  { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/employees', label: 'Employees', icon: UserCog },
-  { path: '/verification', label: 'Verification', icon: ClipboardCheck },
-  { path: '/attendance', label: 'Attendance', icon: CalendarCheck },
-  { path: '/leave', label: 'Leave', icon: CalendarDays },
-  { path: '/late-requests', label: 'Late Requests', icon: Clock },
-  { path: '/early-out-requests', label: 'Early Out', icon: LogOutIcon },
-  { path: '/missed-punches', label: 'Missed Punch', icon: Fingerprint },
-  { path: '/holidays', label: 'Holidays', icon: PartyPopper },
-  { path: '/policies', label: 'Policies', icon: BookOpen },
-  { path: '/star-reward', label: 'Star Reward', icon: Star },
-  { path: '/team', label: 'Team', icon: Users },
-  { path: '/payroll', label: 'Payroll', icon: Wallet },
-  { path: '/issue-tickets', label: 'Issue Tickets', icon: MessageSquarePlus },
-  // { path: '/tickets', label: 'Legacy Tickets', icon: Ticket },
-  { path: '/reports', label: 'Reports', icon: FileText },
-  { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText },
+// Define nav items with role-based access
+const allNavItems = [
+  { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/employees', label: 'Employees', icon: UserCog, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/verification', label: 'Verification', icon: ClipboardCheck, roles: ['hr'] },
+  { path: '/attendance', label: 'Attendance', icon: CalendarCheck, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/leave', label: 'Leave', icon: CalendarDays, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/late-requests', label: 'Late Requests', icon: Clock, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/early-out-requests', label: 'Early Out', icon: LogOutIcon, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/missed-punches', label: 'Missed Punch', icon: Fingerprint, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/holidays', label: 'Holidays', icon: PartyPopper, roles: ['hr', 'office_admin'] },
+  { path: '/policies', label: 'Policies', icon: BookOpen, roles: ['hr'] },
+  { path: '/star-reward', label: 'Star Reward', icon: Star, roles: ['hr'] },
+  { path: '/team', label: 'Team', icon: Users, roles: ['hr'] },
+  { path: '/payroll', label: 'Payroll', icon: Wallet, roles: ['hr'] },
+  { path: '/issue-tickets', label: 'Issue Tickets', icon: MessageSquarePlus, roles: ['hr'] },
+  { path: '/reports', label: 'Reports', icon: FileText, roles: ['hr'] },
+  { path: '/role-management', label: 'Role Management', icon: Shield, roles: ['hr', 'system_admin'] },
+  { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText, roles: ['hr', 'system_admin'] },
 ];
 
 const Layout = ({ children }) => {
@@ -65,13 +67,22 @@ const Layout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [headerSearch, setHeaderSearch] = useState('');
 
+  // Filter nav items based on user role
+  const navItems = allNavItems.filter(item => item.roles.includes(user?.role));
+
+  const roleLabels = {
+    hr: 'HR Team',
+    system_admin: 'System Admin',
+    office_admin: 'Office Admin',
+  };
+
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
 
   const getPageTitle = () => {
-    const current = navItems.find(item => location.pathname === item.path);
+    const current = allNavItems.find(item => location.pathname === item.path);
     return current?.label || 'Dashboard';
   };
 
@@ -174,7 +185,7 @@ const Layout = ({ children }) => {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-slate-900 truncate">{user?.name}</p>
-              <p className="text-xs text-slate-500 capitalize">{user?.role?.replace('_', ' ')}</p>
+              <p className="text-xs text-slate-500 capitalize">{roleLabels[user?.role] || user?.role?.replace('_', ' ')}</p>
             </div>
           </div>
           <Button
@@ -232,10 +243,7 @@ const Layout = ({ children }) => {
               </div>
 
               {/* Notifications */}
-              <button className="relative p-2.5 hover:bg-slate-100 rounded-xl transition-colors">
-                <Bell className="w-5 h-5 text-slate-600" strokeWidth={1.5} />
-                <span className="absolute top-2 right-2 w-2 h-2 bg-red-500 rounded-full" />
-              </button>
+              <NotificationBell />
 
               {/* Profile Dropdown */}
               <DropdownMenu>
@@ -255,7 +263,7 @@ const Layout = ({ children }) => {
                 <DropdownMenuContent align="end" className="w-56 bg-white/95 backdrop-blur-xl border border-slate-200 shadow-xl rounded-xl p-1">
                   <div className="px-3 py-2 border-b border-slate-100 mb-1">
                     <p className="text-sm font-semibold text-slate-900">{user?.name}</p>
-                    <p className="text-xs text-slate-500 capitalize">{user?.role?.replace('_', ' ')}</p>
+                    <p className="text-xs text-slate-500 capitalize">{roleLabels[user?.role] || user?.role?.replace('_', ' ')}</p>
                   </div>
                   <DropdownMenuItem 
                     onClick={() => navigate('/admin-profile')}

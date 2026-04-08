@@ -61,7 +61,7 @@ const Policies = () => {
   const [loading, setLoading] = useState(true);
   const [selectedPolicy, setSelectedPolicy] = useState(null);
 
-  const isAdmin = ['super_admin', 'admin'].includes(user?.role);
+  const isAdmin = ['hr'].includes(user?.role);
 
   useEffect(() => {
     fetchPolicies();

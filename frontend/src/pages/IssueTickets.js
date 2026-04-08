@@ -116,7 +116,7 @@ const IssueTickets = () => {
   const [processing, setProcessing] = useState(false);
   const [statusUpdate, setStatusUpdate] = useState({ status: '', notes: '', resolution: '' });
 
-  const isAdmin = ['super_admin', 'admin', 'hr_manager'].includes(user?.role);
+  const isAdmin = ['hr'].includes(user?.role);
 
   const fetchData = useCallback(async () => {
     try {

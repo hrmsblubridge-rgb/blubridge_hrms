@@ -36,6 +36,7 @@ import EmployeeMissedPunch from "./pages/EmployeeMissedPunch";
 import AdminLateRequests from "./pages/AdminLateRequests";
 import AdminEarlyOut from "./pages/AdminEarlyOut";
 import AdminMissedPunch from "./pages/AdminMissedPunch";
+import RoleManagement from "./pages/RoleManagement";
 import "./App.css";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -67,9 +68,8 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
 };
 
 const AdminRoute = ({ children }) => {
-  const { user } = useAuth();
   return (
-    <ProtectedRoute allowedRoles={['super_admin', 'admin', 'hr_manager', 'team_lead']}>
+    <ProtectedRoute allowedRoles={['hr', 'system_admin', 'office_admin']}>
       <Layout>{children}</Layout>
     </ProtectedRoute>
   );
@@ -123,6 +123,7 @@ const RoleBasedRedirect = () => {
     return <Navigate to="/employee/dashboard" replace />;
   }
   
+  // All admin roles go to dashboard
   return <Navigate to="/dashboard" replace />;
 };
 
@@ -163,6 +164,7 @@ function App() {
           <Route path="/tickets" element={<AdminRoute><Tickets /></AdminRoute>} />
           <Route path="/issue-tickets" element={<AdminRoute><IssueTickets /></AdminRoute>} />
           <Route path="/audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
+          <Route path="/role-management" element={<AdminRoute><RoleManagement /></AdminRoute>} />
           <Route path="/late-requests" element={<AdminRoute><AdminLateRequests /></AdminRoute>} />
           <Route path="/early-out-requests" element={<AdminRoute><AdminEarlyOut /></AdminRoute>} />
           <Route path="/missed-punches" element={<AdminRoute><AdminMissedPunch /></AdminRoute>} />
