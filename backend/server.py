@@ -6007,18 +6007,32 @@ async def get_my_documents(current_user: dict = Depends(get_current_user)):
 @api_router.get("/policies")
 async def get_policies(current_user: dict = Depends(get_current_user)):
     """Get all company policies"""
-    # Check if policies exist in database
+    # Check if policies exist in database - dedup first
+    # Remove duplicates keeping only first per id
+    pipeline = [
+        {"$group": {"_id": "$id", "docs": {"$push": "$_id"}, "count": {"$sum": 1}}},
+        {"$match": {"count": {"$gt": 1}}}
+    ]
+    async for group in db.policies.aggregate(pipeline):
+        ids_to_delete = group["docs"][1:]
+        if ids_to_delete:
+            await db.policies.delete_many({"_id": {"$in": ids_to_delete}})
+    
     policies = await db.policies.find({}, {"_id": 0}).to_list(20)
     
     if not policies:
-        # Seed default policies
+        # Seed default policies using upsert to prevent duplicates
         for policy in COMPANY_POLICIES:
             policy_doc = {
                 **policy,
                 "created_at": get_ist_now().isoformat(),
                 "updated_at": get_ist_now().isoformat()
             }
-            await db.policies.insert_one(policy_doc.copy())
+            await db.policies.update_one(
+                {"id": policy["id"]},
+                {"$setOnInsert": policy_doc},
+                upsert=True
+            )
         policies = await db.policies.find({}, {"_id": 0}).to_list(20)
     
     return [serialize_doc(p) for p in policies]
