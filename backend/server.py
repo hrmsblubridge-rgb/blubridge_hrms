@@ -781,6 +781,40 @@ class Notification(BaseModel):
     read: bool = False
     created_at: datetime = Field(default_factory=lambda: get_ist_now())
 
+# ============== OPERATIONAL CHECKLIST MODEL ==============
+
+OPERATIONAL_CHECKLIST_ITEMS = [
+    {"key": "workstation_setup", "label": "Workstation Ready (desk, chair, system/laptop)", "category": "Infrastructure"},
+    {"key": "stationery_issued", "label": "Stationery & Supplies Issued (notebooks, pens)", "category": "Stationery"},
+    {"key": "id_card_issued", "label": "ID Card Issued", "category": "Stationery"},
+    {"key": "attendance_configured", "label": "Attendance Device Configured (biometric/login)", "category": "Access"},
+    {"key": "access_card_setup", "label": "Access Card / Entry Permissions Issued", "category": "Access"},
+    {"key": "system_access_verified", "label": "System Access Created & Verified", "category": "IT"},
+    {"key": "role_access_confirmed", "label": "Role-based Access Confirmed", "category": "IT"},
+    {"key": "hr_coordination_complete", "label": "HR Coordination for Joining Readiness", "category": "Coordination"},
+]
+
+class ChecklistItem(BaseModel):
+    key: str
+    label: str
+    category: str
+    completed: bool = False
+    completed_by: Optional[str] = None
+    completed_at: Optional[str] = None
+    notes: Optional[str] = None
+
+class OperationalChecklist(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    department: Optional[str] = None
+    designation: Optional[str] = None
+    items: List[dict] = []
+    status: str = "pending"  # pending, in_progress, completed
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
 # ============== PAYROLL MODEL ==============
 
 class PayrollRecord(BaseModel):
@@ -2599,6 +2633,19 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         doc_data['created_at'] = doc_data['created_at'].isoformat()
         await db.onboarding_documents.insert_one(doc_data.copy())
     
+    # Create operational checklist for Office Admin
+    checklist = OperationalChecklist(
+        employee_id=employee.id,
+        emp_name=data.full_name,
+        department=data.department,
+        designation=data.designation,
+        items=[item.copy() for item in OPERATIONAL_CHECKLIST_ITEMS]
+    )
+    checklist_doc = checklist.model_dump()
+    checklist_doc['created_at'] = checklist_doc['created_at'].isoformat()
+    checklist_doc['updated_at'] = checklist_doc['updated_at'].isoformat()
+    await db.operational_checklists.insert_one(checklist_doc.copy())
+    
     result = serialize_doc(doc)
     if data.login_enabled:
         result['temp_password'] = temp_password
@@ -2611,6 +2658,15 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         f"{data.full_name} has been added to the system. Start verification & induction.",
         "action",
         "/verification"
+    ))
+    
+    # Notify Office Admin about operational setup needed
+    asyncio.create_task(notify_role(
+        UserRole.OFFICE_ADMIN,
+        "Operational Setup Required",
+        f"New employee {data.full_name} joining. Prepare workstation, ID card, stationery & access setup.",
+        "action",
+        "/operational-checklist"
     ))
     
     return result
@@ -6700,6 +6756,132 @@ async def get_role_permissions(current_user: dict = Depends(get_current_user)):
         }
     }
 
+# ============== OPERATIONAL CHECKLIST ROUTES ==============
+
+OFFICE_ADMIN_ROLES = ["hr", "office_admin"]
+
+@api_router.get("/operational-checklists")
+async def get_operational_checklists(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all operational checklists (Office Admin + HR)"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    query = {}
+    if status and status != "all":
+        query["status"] = status
+    if search:
+        query["$or"] = [
+            {"emp_name": {"$regex": search, "$options": "i"}},
+            {"employee_id": {"$regex": search, "$options": "i"}}
+        ]
+    
+    checklists = await db.operational_checklists.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [serialize_doc(c) for c in checklists]
+
+@api_router.get("/operational-checklists/stats")
+async def get_operational_checklist_stats(current_user: dict = Depends(get_current_user)):
+    """Get stats for operational checklists"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    total = await db.operational_checklists.count_documents({})
+    pending = await db.operational_checklists.count_documents({"status": "pending"})
+    in_progress = await db.operational_checklists.count_documents({"status": "in_progress"})
+    completed = await db.operational_checklists.count_documents({"status": "completed"})
+    
+    return {
+        "total": total,
+        "pending": pending,
+        "in_progress": in_progress,
+        "completed": completed
+    }
+
+@api_router.get("/operational-checklists/pending-count")
+async def get_operational_checklist_pending_count(current_user: dict = Depends(get_current_user)):
+    """Lightweight count for sidebar badge"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    pending = await db.operational_checklists.count_documents({"status": {"$ne": "completed"}})
+    return {"count": pending}
+
+@api_router.get("/operational-checklists/{employee_id}")
+async def get_operational_checklist(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get checklist for a specific employee"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    checklist = await db.operational_checklists.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    return serialize_doc(checklist)
+
+@api_router.put("/operational-checklists/{employee_id}/item/{item_key}")
+async def update_checklist_item(
+    employee_id: str,
+    item_key: str,
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Toggle a checklist item completed/uncompleted"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    checklist = await db.operational_checklists.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    
+    completed = data.get("completed", False)
+    notes = data.get("notes", "")
+    now = get_ist_now().isoformat()
+    
+    items = checklist.get("items", [])
+    found = False
+    for item in items:
+        if item["key"] == item_key:
+            item["completed"] = completed
+            item["completed_by"] = current_user.get("name", current_user.get("username")) if completed else None
+            item["completed_at"] = now if completed else None
+            item["notes"] = notes
+            found = True
+            break
+    
+    if not found:
+        raise HTTPException(status_code=404, detail="Checklist item not found")
+    
+    # Compute overall status
+    total_items = len(items)
+    completed_count = sum(1 for i in items if i.get("completed"))
+    if completed_count == 0:
+        new_status = "pending"
+    elif completed_count == total_items:
+        new_status = "completed"
+    else:
+        new_status = "in_progress"
+    
+    await db.operational_checklists.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"items": items, "status": new_status, "updated_at": now}}
+    )
+    
+    # If fully completed, notify HR
+    if new_status == "completed":
+        asyncio.create_task(notify_role(
+            UserRole.HR,
+            "Operational Setup Complete",
+            f"All operational items for {checklist.get('emp_name', 'employee')} have been completed by {current_user.get('name', 'Office Admin')}.",
+            "success",
+            "/verification"
+        ))
+    
+    await log_audit(current_user["id"], "update_checklist_item", "operational_checklist", employee_id, f"Item {item_key} {'completed' if completed else 'unchecked'}")
+    
+    updated = await db.operational_checklists.find_one({"employee_id": employee_id}, {"_id": 0})
+    return serialize_doc(updated)
+
 # ============== LATE REQUEST ROUTES ==============
 
 async def _resolve_employee(data_employee_id, current_user):
@@ -7056,6 +7238,27 @@ async def ensure_indexes():
         # Create notifications index
         await db.notifications.create_index([("user_id", 1), ("read", 1)])
         await db.notifications.create_index([("created_at", -1)])
+        
+        # Create operational checklists index + backfill for existing employees
+        await db.operational_checklists.create_index([("employee_id", 1)], unique=True)
+        existing_emps = await db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "department": 1, "designation": 1}).to_list(1000)
+        for emp in existing_emps:
+            exists = await db.operational_checklists.find_one({"employee_id": emp["id"]})
+            if not exists:
+                cl = OperationalChecklist(
+                    employee_id=emp["id"],
+                    emp_name=emp.get("full_name", ""),
+                    department=emp.get("department"),
+                    designation=emp.get("designation"),
+                    items=[item.copy() for item in OPERATIONAL_CHECKLIST_ITEMS]
+                )
+                cl_doc = cl.model_dump()
+                cl_doc['created_at'] = cl_doc['created_at'].isoformat()
+                cl_doc['updated_at'] = cl_doc['updated_at'].isoformat()
+                try:
+                    await db.operational_checklists.insert_one(cl_doc.copy())
+                except Exception:
+                    pass
         
         print("Admin users seeded/migrated successfully")
     except Exception as e:

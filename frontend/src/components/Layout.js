@@ -21,6 +21,7 @@ import {
   Search,
   Settings,
   ClipboardCheck,
+  ClipboardList,
   Ticket,
   ScrollText,
   PartyPopper,
@@ -45,6 +46,7 @@ const allNavItems = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/employees', label: 'Employees', icon: UserCog, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/verification', label: 'Verification', icon: ClipboardCheck, roles: ['hr'] },
+  { path: '/operational-checklist', label: 'Operational Setup', icon: ClipboardList, roles: ['hr', 'office_admin'] },
   { path: '/attendance', label: 'Attendance', icon: CalendarCheck, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/leave', label: 'Leave', icon: CalendarDays, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/late-requests', label: 'Late Requests', icon: Clock, roles: ['hr', 'system_admin', 'office_admin'] },
@@ -68,6 +70,7 @@ const Layout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [headerSearch, setHeaderSearch] = useState('');
   const [verificationCount, setVerificationCount] = useState(0);
+  const [opChecklistCount, setOpChecklistCount] = useState(0);
 
   const fetchVerificationCount = useCallback(async () => {
     if (user?.role !== 'hr') return;
@@ -80,11 +83,26 @@ const Layout = ({ children }) => {
     } catch {}
   }, [token, user?.role]);
 
+  const fetchOpChecklistCount = useCallback(async () => {
+    if (!['hr', 'office_admin'].includes(user?.role)) return;
+    try {
+      const res = await axios.get(
+        `${process.env.REACT_APP_BACKEND_URL}/api/operational-checklists/pending-count`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setOpChecklistCount(res.data.count || 0);
+    } catch {}
+  }, [token, user?.role]);
+
   useEffect(() => {
     fetchVerificationCount();
-    const interval = setInterval(fetchVerificationCount, 60000);
+    fetchOpChecklistCount();
+    const interval = setInterval(() => {
+      fetchVerificationCount();
+      fetchOpChecklistCount();
+    }, 60000);
     return () => clearInterval(interval);
-  }, [fetchVerificationCount]);
+  }, [fetchVerificationCount, fetchOpChecklistCount]);
 
   // Filter nav items based on user role
   const navItems = allNavItems.filter(item => item.roles.includes(user?.role));
@@ -189,6 +207,11 @@ const Layout = ({ children }) => {
                 {item.path === '/verification' && verificationCount > 0 && (
                   <span className="ml-auto min-w-[20px] h-5 flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full px-1.5" data-testid="verification-badge">
                     {verificationCount}
+                  </span>
+                )}
+                {item.path === '/operational-checklist' && opChecklistCount > 0 && (
+                  <span className="ml-auto min-w-[20px] h-5 flex items-center justify-center bg-orange-500 text-white text-[10px] font-bold rounded-full px-1.5" data-testid="op-checklist-badge">
+                    {opChecklistCount}
                   </span>
                 )}
                 {item.path === '/star-reward' && (
