@@ -23,7 +23,13 @@ const EmployeeMissedPunch = () => {
   const [form, setForm] = useState({ date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '' });
 
   const fetchData = useCallback(async () => {
-    try { setLoading(true); const res = await axios.get(`${API}/missed-punches`, { headers: getAuthHeaders() }); setRequests(res.data); }
+    try {
+      setLoading(true);
+      const res = await axios.get(`${API}/missed-punches`, { headers: getAuthHeaders() });
+      // Handle both old (array) and new (paginated) response
+      const items = Array.isArray(res.data) ? res.data : (res.data.data || []);
+      setRequests(items);
+    }
     catch { toast.error('Failed to load missed punch requests'); }
     finally { setLoading(false); }
   }, [getAuthHeaders]);
@@ -72,8 +78,8 @@ const EmployeeMissedPunch = () => {
                   <tr key={r.id}>
                     <td className="font-medium text-slate-900">{r.date}</td>
                     <td className="text-slate-600">{r.punch_type}</td>
-                    <td className="text-slate-600">{r.check_in_time || '-'}</td>
-                    <td className="text-slate-600">{r.check_out_time || '-'}</td>
+                    <td className="text-slate-600">{r.check_in_time ? (r.check_in_time.includes('T') ? new Date(r.check_in_time).toLocaleString('en-IN', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:true}) : r.check_in_time) : '-'}</td>
+                    <td className="text-slate-600">{r.check_out_time ? (r.check_out_time.includes('T') ? new Date(r.check_out_time).toLocaleString('en-IN', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:true}) : r.check_out_time) : '-'}</td>
                     <td className="text-slate-600 max-w-[200px] truncate">{r.reason}</td>
                     <td><Badge className={getStatusBadge(r.status)}>{r.status}</Badge></td>
                     <td>{r.status === 'pending' && <Button size="sm" variant="outline" onClick={() => handleEdit(r)} className="rounded-lg"><Edit2 className="w-3 h-3" /></Button>}</td>
@@ -102,10 +108,10 @@ const EmployeeMissedPunch = () => {
               </Select>
             </div>
             {(form.punch_type === 'Check-in' || form.punch_type === 'Both') && (
-              <div><Label>Check-In Time</Label><Input type="time" value={form.check_in_time} onChange={e => setForm({ ...form, check_in_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
+              <div><Label>Check-In Date & Time</Label><Input type="datetime-local" value={form.check_in_time} onChange={e => setForm({ ...form, check_in_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="check-in-datetime" /></div>
             )}
             {(form.punch_type === 'Check-out' || form.punch_type === 'Both') && (
-              <div><Label>Check-Out Time</Label><Input type="time" value={form.check_out_time} onChange={e => setForm({ ...form, check_out_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
+              <div><Label>Check-Out Date & Time</Label><Input type="datetime-local" value={form.check_out_time} onChange={e => setForm({ ...form, check_out_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="check-out-datetime" /></div>
             )}
             <div><Label>Reason</Label><Textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Reason for missed punch..." /></div>
           </div>

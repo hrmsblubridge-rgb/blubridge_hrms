@@ -235,7 +235,7 @@ const EmployeeLeave = () => {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label className="text-sm font-medium text-slate-700">Leave Type</Label>
-                <Select value={form.leave_type} onValueChange={(v) => setForm({ ...form, leave_type: v })}>
+                <Select value={form.leave_type} onValueChange={(v) => setForm({ ...form, leave_type: v, start_date: '', end_date: '' })}>
                   <SelectTrigger className="mt-1.5 rounded-lg" data-testid="leave-type-select"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="Sick">Sick Leave</SelectItem>
@@ -245,6 +245,10 @@ const EmployeeLeave = () => {
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
                   </SelectContent>
                 </Select>
+                {/* Leave rule hints */}
+                {form.leave_type === 'Sick' && <p className="text-[11px] text-amber-600 mt-1">Sick leave: past & current dates only</p>}
+                {form.leave_type === 'Casual' && <p className="text-[11px] text-blue-600 mt-1">Casual leave: min 4 working days in advance (excl. Sundays)</p>}
+                {form.leave_type === 'Emergency' && <p className="text-[11px] text-emerald-600 mt-1">Emergency leave: no date restrictions</p>}
               </div>
               <div>
                 <Label className="text-sm font-medium text-slate-700">Leave Split</Label>
@@ -261,11 +265,27 @@ const EmployeeLeave = () => {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <Label className="text-sm font-medium text-slate-700">Start Date</Label>
-                <Input type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="start-date-input" />
+                <Input
+                  type="date"
+                  value={form.start_date}
+                  onChange={(e) => setForm({ ...form, start_date: e.target.value })}
+                  max={form.leave_type === 'Sick' ? new Date().toISOString().split('T')[0] : undefined}
+                  min={form.leave_type === 'Casual' ? (() => { let d = new Date(); let days = 0; while (days < 4) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0) days++; } return d.toISOString().split('T')[0]; })() : undefined}
+                  className="mt-1.5 rounded-lg"
+                  data-testid="start-date-input"
+                />
               </div>
               <div>
                 <Label className="text-sm font-medium text-slate-700">End Date</Label>
-                <Input type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="end-date-input" />
+                <Input
+                  type="date"
+                  value={form.end_date}
+                  onChange={(e) => setForm({ ...form, end_date: e.target.value })}
+                  min={form.start_date || undefined}
+                  max={form.leave_type === 'Sick' ? new Date().toISOString().split('T')[0] : undefined}
+                  className="mt-1.5 rounded-lg"
+                  data-testid="end-date-input"
+                />
               </div>
             </div>
             <div>

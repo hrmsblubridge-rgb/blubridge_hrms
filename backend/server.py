@@ -3337,6 +3337,23 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
     start = datetime.strptime(data.start_date, "%Y-%m-%d")
     end = datetime.strptime(data.end_date, "%Y-%m-%d")
     
+    # JOB 7: Single leave per day check
+    current_date = start
+    while current_date <= end:
+        date_str = current_date.strftime("%Y-%m-%d")
+        existing = await db.leaves.find_one({
+            "employee_id": data.employee_id,
+            "status": {"$ne": "rejected"},
+            "start_date": {"$lte": date_str},
+            "end_date": {"$gte": date_str}
+        })
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Leave request already exists for {date_str}")
+        current_date += timedelta(days=1)
+    
+    start = datetime.strptime(data.start_date, "%Y-%m-%d")
+    end = datetime.strptime(data.end_date, "%Y-%m-%d")
+    
     # Calculate duration based on leave_split
     if data.leave_split in ["First Half", "Second Half"]:
         duration_str = "0.5 day(s)"
@@ -4479,9 +4496,45 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     if end_dt < start_dt:
         raise HTTPException(status_code=400, detail="End date cannot be before start date")
     
-    # Validate not in past
-    if start_dt.date() < get_ist_now().date():
-        raise HTTPException(status_code=400, detail="Cannot apply leave for past dates")
+    today = get_ist_now().date()
+    
+    # JOB 6: Leave type-specific rules
+    if data.leave_type == "Sick":
+        # Sick leave: past + current only, no future
+        if start_dt.date() > today:
+            raise HTTPException(status_code=400, detail="Sick leave can only be applied for past or current dates")
+    elif data.leave_type == "Casual":
+        # Casual leave: minimum 4 working days before (exclude Sundays)
+        if start_dt.date() <= today:
+            raise HTTPException(status_code=400, detail="Casual leave cannot be applied for past or current dates")
+        # Count working days between today and start date (excluding Sundays)
+        working_days = 0
+        check_date = today + timedelta(days=1)
+        while check_date < start_dt.date():
+            if check_date.weekday() != 6:  # 6 = Sunday
+                working_days += 1
+            check_date += timedelta(days=1)
+        if working_days < 4:
+            raise HTTPException(status_code=400, detail="Casual leave must be applied at least 4 working days in advance (excluding Sundays)")
+    # Emergency leave: no restrictions
+    
+    # JOB 7: Single leave per day - check all dates in range
+    current_date = start_dt
+    while current_date <= end_dt:
+        date_str = current_date.strftime("%Y-%m-%d")
+        existing = await db.leaves.find_one({
+            "employee_id": employee_id,
+            "status": {"$ne": "rejected"},
+            "$or": [
+                {"start_date": {"$lte": date_str}, "end_date": {"$gte": date_str}},
+            ]
+        })
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Leave request already exists for {date_str}. Please edit existing request instead."
+            )
+        current_date += timedelta(days=1)
     
     # Calculate duration based on leave_split
     if data.leave_split in ["First Half", "Second Half"]:
@@ -4518,7 +4571,7 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     asyncio.create_task(notify_role(
         UserRole.HR,
         "New Leave Request",
-        f"{emp.get('full_name', 'Employee')} has submitted a {data.leave_type} leave request ({data.start_date} to {data.end_date}).",
+        f"{employee.get('full_name', 'Employee')} has submitted a {data.leave_type} leave request ({data.start_date} to {data.end_date}).",
         "action",
         "/leave"
     ))
@@ -6919,6 +6972,16 @@ async def get_late_requests(
 @api_router.post("/late-requests")
 async def create_late_request(data: LateRequestCreate, current_user: dict = Depends(get_current_user)):
     emp, is_admin = await _resolve_employee(data.employee_id, current_user)
+    
+    # JOB 4: Prevent duplicate late request (same employee + date)
+    existing = await db.late_requests.find_one({
+        "employee_id": emp["id"],
+        "date": data.date,
+        "status": {"$ne": "rejected"}
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Late request already exists for this date")
+    
     req = LateRequest(
         employee_id=emp["id"],
         emp_name=emp["full_name"],
@@ -6996,6 +7059,16 @@ async def get_early_out_requests(
 @api_router.post("/early-out-requests")
 async def create_early_out_request(data: EarlyOutRequestCreate, current_user: dict = Depends(get_current_user)):
     emp, is_admin = await _resolve_employee(data.employee_id, current_user)
+    
+    # JOB 4: Prevent duplicate early out request
+    existing = await db.early_out_requests.find_one({
+        "employee_id": emp["id"],
+        "date": data.date,
+        "status": {"$ne": "rejected"}
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Early out request already exists for this date")
+    
     req = EarlyOutRequest(
         employee_id=emp["id"],
         emp_name=emp["full_name"],
@@ -7053,10 +7126,73 @@ async def edit_early_out_request(request_id: str, data: EarlyOutRequestCreate, c
 
 # ============== MISSED PUNCH REQUEST ROUTES ==============
 
+# ============== ATTENDANCE UPDATE HELPER ==============
+
+async def _update_attendance_from_missed_punch(rec):
+    """JOB 3: Update attendance record when missed punch is approved"""
+    emp_id = rec.get("employee_id")
+    date = rec.get("date")
+    punch_type = rec.get("punch_type")
+    check_in = rec.get("check_in_time")
+    check_out = rec.get("check_out_time")
+    
+    # Find or create attendance record for this date
+    attendance = await db.attendance.find_one({"employee_id": emp_id, "date": date})
+    
+    update_fields = {}
+    if punch_type in ("Check-in", "Both") and check_in:
+        # Extract time part if datetime string provided
+        time_val = check_in.split("T")[-1][:5] if "T" in check_in else check_in[:5]
+        update_fields["first_punch"] = time_val
+        update_fields["status"] = "present"
+    if punch_type in ("Check-out", "Both") and check_out:
+        time_val = check_out.split("T")[-1][:5] if "T" in check_out else check_out[:5]
+        update_fields["last_punch"] = time_val
+        update_fields["status"] = "present"
+    
+    if not update_fields:
+        return
+    
+    update_fields["missed_punch_corrected"] = True
+    
+    if attendance:
+        # Only overwrite if field is empty/missing or already flagged as missed
+        set_fields = {}
+        for k, v in update_fields.items():
+            existing_val = attendance.get(k)
+            if k in ("first_punch", "last_punch"):
+                if not existing_val or existing_val in ("", "-", None) or attendance.get("missed_punch_corrected"):
+                    set_fields[k] = v
+            else:
+                set_fields[k] = v
+        if set_fields:
+            await db.attendance.update_one({"employee_id": emp_id, "date": date}, {"$set": set_fields})
+    else:
+        # Create new attendance record
+        emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+        if emp:
+            new_att = {
+                "id": str(uuid.uuid4()),
+                "employee_id": emp_id,
+                "emp_name": emp.get("full_name", ""),
+                "date": date,
+                "first_punch": update_fields.get("first_punch", ""),
+                "last_punch": update_fields.get("last_punch", ""),
+                "status": "present",
+                "department": emp.get("department", ""),
+                "team": emp.get("team", ""),
+                "missed_punch_corrected": True
+            }
+            await db.attendance.insert_one(new_att.copy())
+
 @api_router.get("/missed-punches")
 async def get_missed_punches(
     status: Optional[str] = None,
     employee_name: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=100),
     current_user: dict = Depends(get_current_user)
 ):
     query = {}
@@ -7067,12 +7203,30 @@ async def get_missed_punches(
         query["status"] = status
     if employee_name:
         query["emp_name"] = {"$regex": employee_name, "$options": "i"}
-    records = await db.missed_punches.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    return [serialize_doc(r) for r in records]
+    if from_date:
+        query.setdefault("date", {})["$gte"] = from_date
+    if to_date:
+        query.setdefault("date", {})["$lte"] = to_date
+    
+    total = await db.missed_punches.count_documents(query)
+    skip = (page - 1) * per_page
+    records = await db.missed_punches.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(per_page).to_list(per_page)
+    return {"data": [serialize_doc(r) for r in records], "total": total, "page": page, "per_page": per_page}
 
 @api_router.post("/missed-punches")
 async def create_missed_punch(data: MissedPunchCreate, current_user: dict = Depends(get_current_user)):
-    emp, is_admin = await _resolve_employee(data.employee_id, current_user)
+    emp, is_hr = await _resolve_employee(data.employee_id, current_user)
+    
+    # JOB 4: Prevent duplicate missed punch (same employee + date + punch_type)
+    existing = await db.missed_punches.find_one({
+        "employee_id": emp["id"],
+        "date": data.date,
+        "punch_type": data.punch_type,
+        "status": {"$ne": "rejected"}
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Request already exists for this date and punch type")
+    
     req = MissedPunchRequest(
         employee_id=emp["id"],
         emp_name=emp["full_name"],
@@ -7083,24 +7237,38 @@ async def create_missed_punch(data: MissedPunchCreate, current_user: dict = Depe
         check_in_time=data.check_in_time,
         check_out_time=data.check_out_time,
         reason=data.reason,
-        applied_by_admin=is_admin,
-        status="approved" if (data.auto_approve and is_admin) else "pending",
-        approved_by=current_user["id"] if (data.auto_approve and is_admin) else None
+        applied_by_admin=is_hr,
+        status="approved" if (data.auto_approve and is_hr) else "pending",
+        approved_by=current_user["id"] if (data.auto_approve and is_hr) else None
     )
     doc = req.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     await db.missed_punches.insert_one(doc.copy())
+    
+    # JOB 3: If auto-approved, update attendance
+    if data.auto_approve and is_hr:
+        await _update_attendance_from_missed_punch(doc)
+    
     return serialize_doc(doc)
 
 @api_router.put("/missed-punches/{request_id}/approve")
 async def approve_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if rec.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Request is not pending")
     result = await db.missed_punches.update_one({"id": request_id}, {"$set": {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Request not found")
-    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
-    return serialize_doc(rec)
+    
+    # JOB 3: Update attendance record on approval
+    updated_rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    await _update_attendance_from_missed_punch(updated_rec)
+    
+    return serialize_doc(updated_rec)
 
 @api_router.put("/missed-punches/{request_id}/reject")
 async def reject_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):
