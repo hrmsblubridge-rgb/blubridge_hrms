@@ -142,7 +142,14 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - Edit role dialog (HR only)
 - Role count overview cards
 
-## Pending Issues
+### Phase 4 (Apr 9, 2026) - 7 Jobs
+**JOB 1**: Missed punch forms use datetime-local (YYYY-MM-DDTHH:mm) instead of time-only
+**JOB 2**: Admin missed punch page: date range filters, status dropdown, employee search, server-side pagination
+**JOB 3**: Approved missed punch → auto-updates attendance (first_punch/last_punch/status)
+**JOB 4**: Duplicate prevention: missed punch, late request, early out, leave (per employee+date)
+**JOB 5**: Fixed "Failed to apply leave" bug (NameError: `emp` → `employee`)
+**JOB 6**: Leave rules: Sick=past/current only, Casual=4+ working days (excl Sundays), Emergency=any
+**JOB 7**: Single leave per day enforcement (blocks duplicate dates, suggests edit instead)
 - **P1**: Cloudinary PDF Viewing (blocked on user settings)
 - **P2**: Username collision on employee creation
 
