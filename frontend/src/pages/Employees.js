@@ -450,7 +450,7 @@ const Employees = () => {
     const content = salarySlipRef.current;
     if (!content) return;
     const printWindow = window.open('', '_blank', 'width=900,height=700');
-    printWindow.document.write(`<!DOCTYPE html><html><head><title>Salary Slip - ${selectedEmployee?.full_name || 'Employee'}</title><style>body{margin:0;padding:20px;font-family:'Segoe UI',sans-serif}@media print{body{padding:0}}</style></head><body>`);
+    printWindow.document.write(`<!DOCTYPE html><html><head><title>Salary Slip - ${selectedEmployee?.full_name || 'Employee'}</title><style>body{margin:0;padding:0;font-family:'Segoe UI',Tahoma,sans-serif;background:#f4f6f9}@media print{body{padding:0;background:#f4f6f9}@page{margin:0.3in}}</style></head><body>`);
     printWindow.document.write(content.innerHTML);
     printWindow.document.write('</body></html>');
     printWindow.document.close();

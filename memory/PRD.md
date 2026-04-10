@@ -155,6 +155,7 @@ Auto-created on employee creation + backfilled for existing employees on startup
 
 ### Phase 5 (Apr 10, 2026) - Payslip UI & Bug Fixes
 - **Salary Slip / Payslip UI**: Professional payslip dialog with company logo (BluBridge Technologies), full compensation breakdown (Base, Allowances, Retirement, Variable, CTC), Insurance Coverage, Employee Deductions, Net Salary, and Print/Download PDF functionality. Component: `SalarySlip.js` (forwardRef for printing)
+- **Payslip Redesign**: Redesigned to match reference PDF design - navy blue header banner with BluBridge logo (logo-black.webp inverted to white), employee info card, lettered section badges (A-F), clean single-column monthly tables, red deductions section, gradient net salary card
 - **Username Collision Fix**: Auto-appends numeric suffix (e.g., user1, user2) when creating employees with duplicate email prefixes
 
 ## Backlog / Future Tasks
