@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
+import SalarySlip from '../components/SalarySlip';
 import { 
   Users, 
   Search, 
@@ -43,7 +44,8 @@ import {
   AlertCircle,
   X,
   Fingerprint,
-  Hash
+  Hash,
+  Printer
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -137,6 +139,8 @@ const Employees = () => {
     end_month: ''
   });
   const [savingSalary, setSavingSalary] = useState(false);
+  const [showPayslip, setShowPayslip] = useState(false);
+  const salarySlipRef = useRef(null);
   
   // Bulk import state
   const [showBulkImport, setShowBulkImport] = useState(false);
@@ -442,6 +446,17 @@ const Employees = () => {
     }
   };
   
+  const handlePrintPayslip = () => {
+    const content = salarySlipRef.current;
+    if (!content) return;
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    printWindow.document.write(`<!DOCTYPE html><html><head><title>Salary Slip - ${selectedEmployee?.full_name || 'Employee'}</title><style>body{margin:0;padding:20px;font-family:'Segoe UI',sans-serif}@media print{body{padding:0}}</style></head><body>`);
+    printWindow.document.write(content.innerHTML);
+    printWindow.document.write('</body></html>');
+    printWindow.document.close();
+    setTimeout(() => { printWindow.print(); }, 300);
+  };
+
   const handleDelete = (employee) => { setSelectedEmployee(employee); setShowDeleteDialog(true); };
 
   const validateForm = (isEdit = false) => {
@@ -1463,77 +1478,73 @@ const Employees = () => {
                     </div>
                   ) : (
                     <div className="space-y-6">
-                      {/* CTC Update Section */}
-                      {canEdit && (
-                        <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="text-sm font-medium text-blue-700">Annual CTC</p>
-                              <p className="text-2xl font-bold text-blue-900">
-                                ₹{salaryData?.annual_ctc?.toLocaleString('en-IN') || '0'}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="number"
-                                placeholder="Enter Annual CTC"
-                                className="w-40 px-3 py-2 rounded-lg border border-blue-200 text-sm"
-                                id="new-ctc-input"
-                              />
-                              <Button
-                                size="sm"
-                                onClick={() => {
-                                  const input = document.getElementById('new-ctc-input');
-                                  if (input?.value) handleUpdateSalary(input.value);
-                                }}
-                                disabled={savingSalary}
-                                className="bg-blue-600 hover:bg-blue-700 rounded-lg"
-                              >
-                                {savingSalary ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Update CTC'}
-                              </Button>
+                      {/* CTC Update + View Payslip */}
+                      <div className="flex items-center justify-between gap-4">
+                        {canEdit && (
+                          <div className="flex-1 p-4 bg-blue-50 rounded-xl border border-blue-100">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-sm font-medium text-blue-700">Annual CTC</p>
+                                <p className="text-2xl font-bold text-blue-900">
+                                  {salaryData?.annual_ctc ? `₹${salaryData.annual_ctc.toLocaleString('en-IN')}` : 'Not Set'}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <input type="number" placeholder="Enter Annual CTC" className="w-40 px-3 py-2 rounded-lg border border-blue-200 text-sm" id="new-ctc-input" data-testid="ctc-input" />
+                                <Button size="sm" onClick={() => { const input = document.getElementById('new-ctc-input'); if (input?.value) handleUpdateSalary(input.value); }} disabled={savingSalary} className="bg-blue-600 hover:bg-blue-700 rounded-lg" data-testid="update-ctc-btn">
+                                  {savingSalary ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Update CTC'}
+                                </Button>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      )}
+                        )}
+                        {salaryData && (
+                          <Button onClick={() => setShowPayslip(true)} className="bg-[#063c88] hover:bg-[#052d66] rounded-xl h-14 px-6 gap-2" data-testid="view-payslip-btn">
+                            <Printer className="w-4 h-4" /> View Payslip
+                          </Button>
+                        )}
+                      </div>
                       
-                      {/* Salary Breakdown */}
+                      {/* Structured Compensation Table */}
                       {salaryData ? (
-                        <div className="grid grid-cols-2 gap-4">
-                          {/* Earnings */}
-                          <div className="space-y-2">
-                            <h4 className="font-semibold text-sm text-emerald-700 flex items-center gap-2">
-                              <TrendingUp className="w-4 h-4" /> Earnings
-                            </h4>
-                            <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
-                              <SalaryItem label="Basic" amount={salaryData.basic} />
-                              <SalaryItem label="HRA" amount={salaryData.hra} />
-                              <SalaryItem label="DA" amount={salaryData.da} />
-                              <SalaryItem label="Conveyance" amount={salaryData.conveyance} />
-                              <SalaryItem label="Medical" amount={salaryData.medical_allowance} />
-                              <SalaryItem label="Special Allowance" amount={salaryData.special_allowance} />
-                              <div className="p-3 bg-emerald-50 flex justify-between font-semibold text-emerald-700">
-                                <span>Gross</span>
-                                <span>₹{salaryData.gross_salary?.toLocaleString('en-IN')}</span>
-                              </div>
-                            </div>
-                          </div>
-                          
-                          {/* Deductions */}
-                          <div className="space-y-2">
-                            <h4 className="font-semibold text-sm text-red-700 flex items-center gap-2">
-                              <TrendingDown className="w-4 h-4" /> Deductions
-                            </h4>
-                            <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
-                              <SalaryItem label="PF (Employee)" amount={salaryData.pf_employee} isDeduction />
-                              <SalaryItem label="ESI" amount={salaryData.esi_employee} isDeduction />
-                              <SalaryItem label="Professional Tax" amount={salaryData.professional_tax} isDeduction />
-                              <SalaryItem label="TDS" amount={salaryData.tds} isDeduction />
-                              <div className="p-3 bg-red-50 flex justify-between font-semibold text-red-700">
-                                <span>Total Deductions</span>
-                                <span>₹{salaryData.total_deductions?.toLocaleString('en-IN')}</span>
-                              </div>
-                            </div>
-                          </div>
+                        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="bg-[#063c88]">
+                                <th className="text-left px-5 py-3 text-xs text-white font-semibold uppercase tracking-wider">Particulars</th>
+                                <th className="text-right px-5 py-3 text-xs text-white font-semibold uppercase tracking-wider">Monthly (INR)</th>
+                                <th className="text-right px-5 py-3 text-xs text-white font-semibold uppercase tracking-wider">Annual (INR)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="bg-slate-50"><td colSpan={3} className="px-5 py-2 text-xs font-bold text-slate-700 uppercase tracking-wider">Base Components (A)</td></tr>
+                              <SalaryRow label="Basic" value={salaryData.basic} />
+                              <SalaryRow label="HRA" value={salaryData.hra} />
+                              <tr className="bg-slate-50 border-b-2 border-slate-200"><td className="px-5 py-2.5 font-bold text-slate-800">Sub Total (A)</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.base_components_total)}</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.base_components_total * 12)}</td></tr>
+                              
+                              <tr className="bg-slate-50"><td colSpan={3} className="px-5 py-2 text-xs font-bold text-slate-700 uppercase tracking-wider">Basket of Allowances (B)</td></tr>
+                              <SalaryRow label="Leave Travel Assistance" value={salaryData.lta} />
+                              <SalaryRow label="Phone & Internet Reimbursement" value={salaryData.phone_internet} />
+                              <SalaryRow label="Bonus" value={salaryData.bonus} />
+                              <SalaryRow label="Stay and Travel Allowance" value={salaryData.stay_travel} />
+                              <SalaryRow label="Special Allowance" value={salaryData.special_allowance} />
+                              <SalaryRow label="Food Reimbursement" value={salaryData.food_reimbursement} />
+                              {salaryData.medical_allowance > 0 && <SalaryRow label="Medical Allowance" value={salaryData.medical_allowance} />}
+                              {salaryData.conveyance > 0 && <SalaryRow label="Conveyance" value={salaryData.conveyance} />}
+                              <tr className="bg-slate-50 border-b-2 border-slate-200"><td className="px-5 py-2.5 font-bold text-slate-800">Sub Total (B)</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.basket_allowances_total)}</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.basket_allowances_total * 12)}</td></tr>
+                              
+                              <tr className="bg-slate-50"><td colSpan={3} className="px-5 py-2 text-xs font-bold text-slate-700 uppercase tracking-wider">Retirement Benefits (C)</td></tr>
+                              <SalaryRow label="PF Company Contribution" value={salaryData.pf_employer} />
+                              <SalaryRow label="Gratuity" value={salaryData.gratuity} />
+                              <tr className="bg-slate-50 border-b-2 border-slate-200"><td className="px-5 py-2.5 font-bold text-slate-800">Sub Total (C)</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.retirement_benefits_total)}</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.retirement_benefits_total * 12)}</td></tr>
+                              
+                              <tr className="bg-blue-50 border-b-2 border-blue-200"><td className="px-5 py-3 font-bold text-blue-800">Fixed Compensation (A+B+C)</td><td className="px-5 py-3 text-right font-bold text-blue-800">{fmtINR(salaryData.fixed_compensation)}</td><td className="px-5 py-3 text-right font-bold text-blue-800">{fmtINR(salaryData.fixed_compensation * 12)}</td></tr>
+                              
+                              <SalaryRow label="Variable Compensation (at 100%)" value={salaryData.variable_compensation} />
+                              
+                              <tr className="bg-[#063c88]"><td className="px-5 py-3 font-bold text-white text-sm">Cost To Company (CTC)</td><td className="px-5 py-3 text-right font-bold text-white text-sm">{fmtINR(salaryData.monthly_ctc)}</td><td className="px-5 py-3 text-right font-bold text-white text-sm">{fmtINR(salaryData.annual_ctc)}</td></tr>
+                            </tbody>
+                          </table>
                         </div>
                       ) : (
                         <div className="text-center py-8 text-slate-500">
@@ -1543,15 +1554,46 @@ const Employees = () => {
                         </div>
                       )}
                       
+                      {/* Deductions Summary */}
+                      {salaryData && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                            <div className="p-4 bg-red-50 border-b border-red-100">
+                              <h4 className="text-sm font-bold text-red-700 flex items-center gap-2"><TrendingDown className="w-4 h-4" /> Employee Deductions</h4>
+                            </div>
+                            <div className="divide-y divide-slate-100">
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">PF (Employee)</span><span className="font-medium text-red-600">{fmtINR(salaryData.pf_employee)}</span></div>
+                              {salaryData.esi_employee > 0 && <div className="p-3 flex justify-between"><span className="text-slate-600">ESI</span><span className="font-medium text-red-600">{fmtINR(salaryData.esi_employee)}</span></div>}
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">Professional Tax</span><span className="font-medium text-red-600">{fmtINR(salaryData.professional_tax)}</span></div>
+                              {salaryData.tds > 0 && <div className="p-3 flex justify-between"><span className="text-slate-600">TDS</span><span className="font-medium text-red-600">{fmtINR(salaryData.tds)}</span></div>}
+                              <div className="p-3 bg-red-50 flex justify-between font-bold"><span className="text-red-700">Total Deductions</span><span className="text-red-700">{fmtINR(salaryData.total_deductions)}</span></div>
+                            </div>
+                          </div>
+                          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                            <div className="p-4 bg-slate-50 border-b border-slate-100">
+                              <h4 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Shield className="w-4 h-4" /> Insurance Coverage</h4>
+                            </div>
+                            <div className="divide-y divide-slate-100">
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">Medical Insurance</span><span className="font-medium">Up to ₹3,00,000 p.a.</span></div>
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">Accident Insurance</span><span className="font-medium">1x CTC (Min ₹5,00,000)</span></div>
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">Life Insurance</span><span className="font-medium">₹5,00,000</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
                       {/* Net Salary */}
                       {salaryData && (
-                        <div className="p-4 bg-gradient-to-r from-blue-600 to-blue-700 rounded-xl text-white">
+                        <div className="p-5 bg-gradient-to-r from-[#063c88] to-[#0a5cba] rounded-2xl text-white">
                           <div className="flex items-center justify-between">
                             <div>
-                              <p className="text-blue-200 text-sm">Monthly Net Salary</p>
+                              <p className="text-blue-200 text-sm">Monthly Net Salary (Take Home)</p>
                               <p className="text-3xl font-bold">₹{salaryData.net_salary?.toLocaleString('en-IN')}</p>
                             </div>
-                            <Wallet className="w-12 h-12 text-blue-300" />
+                            <div className="text-right">
+                              <p className="text-blue-200 text-sm">Annual Take Home</p>
+                              <p className="text-xl font-bold">₹{(salaryData.net_salary * 12)?.toLocaleString('en-IN')}</p>
+                            </div>
                           </div>
                         </div>
                       )}
@@ -1835,6 +1877,32 @@ const Employees = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Payslip Dialog */}
+      <Dialog open={showPayslip} onOpenChange={setShowPayslip}>
+        <DialogContent className="bg-white max-w-[950px] max-h-[90vh] overflow-y-auto rounded-2xl p-0" data-testid="payslip-dialog">
+          <DialogHeader className="px-6 pt-5 pb-0">
+            <DialogTitle style={{ fontFamily: 'Outfit' }} className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-[#063c88]" /> Salary Slip
+            </DialogTitle>
+            <DialogDescription>Compensation structure for {selectedEmployee?.full_name}</DialogDescription>
+          </DialogHeader>
+          <div className="px-4 py-4">
+            <SalarySlip
+              ref={salarySlipRef}
+              employee={selectedEmployee}
+              salary={salaryData}
+              month={new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
+            />
+          </div>
+          <DialogFooter className="px-6 pb-5 pt-2 border-t border-slate-100 flex gap-2">
+            <Button variant="outline" onClick={() => setShowPayslip(false)} className="rounded-lg">Close</Button>
+            <Button onClick={handlePrintPayslip} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg gap-2" data-testid="print-payslip-btn">
+              <Printer className="w-4 h-4" /> Print / Download PDF
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
@@ -1847,6 +1915,19 @@ const SalaryItem = ({ label, amount, isDeduction }) => (
       {isDeduction && amount > 0 ? '-' : ''}₹{amount?.toLocaleString('en-IN') || '0'}
     </span>
   </div>
+);
+
+const fmtINR = (v) => {
+  if (!v && v !== 0) return '₹0';
+  return `₹${Math.round(Number(v)).toLocaleString('en-IN')}`;
+};
+
+const SalaryRow = ({ label, value }) => (
+  <tr className="border-b border-slate-100 hover:bg-slate-50/50">
+    <td className="px-5 py-2.5 text-slate-700">{label}</td>
+    <td className="px-5 py-2.5 text-right tabular-nums text-slate-800">{fmtINR(value)}</td>
+    <td className="px-5 py-2.5 text-right tabular-nums text-slate-800">{fmtINR(value * 12)}</td>
+  </tr>
 );
 
 export default Employees;

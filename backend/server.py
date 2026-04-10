@@ -2577,9 +2577,14 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     
     # Create user account if login is enabled
     if data.login_enabled:
-        # Check if user already exists (unlikely for new employee, but check anyway)
+        # Ensure username is unique by appending a suffix if needed
         existing_user = await db.users.find_one({"username": username})
-        if not existing_user:
+        if existing_user:
+            suffix = 1
+            while await db.users.find_one({"username": f"{username}{suffix}"}):
+                suffix += 1
+            username = f"{username}{suffix}"
+        if True:
             new_user = User(
                 username=username,
                 email=data.official_email,
