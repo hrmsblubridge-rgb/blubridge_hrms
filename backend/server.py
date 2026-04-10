@@ -5582,6 +5582,93 @@ def calculate_salary_structure(annual_ctc: float) -> dict:
         "net_salary": net_salary
     }
 
+def calculate_salary_structure_research(annual_ctc: float) -> dict:
+    """CTC-based salary breakdown for Research designation employees.
+    Uses B-percentage allocation: LTA=5.6%B, Bonus=9.9%B, Stay=30%B, Special=remainder.
+    No Medical Allowance or Conveyance. PF Employer & Employee fixed at 1800."""
+    monthly_ctc = annual_ctc / 12
+
+    # Variable = 20% of CTC, Fixed = 80% of CTC
+    variable_compensation = round(monthly_ctc * 0.20, 2)
+    fixed = round(monthly_ctc * 0.80, 2)
+
+    # A: Base Components (Basic = 30% CTC, HRA = 50% Basic → A = 45% CTC)
+    basic = round(monthly_ctc * 0.30, 2)
+    hra = round(basic * 0.50, 2)
+    base_components = round(basic + hra, 2)
+
+    # C: Retirement Benefits (PF fixed 1800, Gratuity via Gratuity Act)
+    pf_employer = 1800
+    pf_employee = 1800
+    gratuity = round(basic * 15 / 26 / 12, 2)
+    retirement_benefits = round(pf_employer + gratuity, 2)
+
+    # B: Basket of Allowances = Fixed - A - C
+    basket_total = round(fixed - base_components - retirement_benefits, 2)
+    if basket_total < 0:
+        basket_total = 0
+
+    # B components: percentages of B + fixed items
+    lta = round(basket_total * 0.056, 2)
+    phone_internet = 1100
+    bonus = round(basket_total * 0.099, 2)
+    stay_travel = round(basket_total * 0.30, 2)
+    food_reimbursement = 1210
+    # Special Allowance = balancing figure within B
+    special_allowance = round(basket_total - lta - phone_internet - bonus - stay_travel - food_reimbursement, 2)
+    if special_allowance < 0:
+        special_allowance = 0
+
+    fixed_compensation = round(base_components + basket_total + retirement_benefits, 2)
+    gross_salary = round(base_components + basket_total, 2)
+
+    # ESI (only if gross < 21000)
+    esi_employee = round(gross_salary * 0.0075, 2) if gross_salary < 21000 else 0
+    esi_employer = round(gross_salary * 0.0325, 2) if gross_salary < 21000 else 0
+
+    professional_tax = 200
+    total_deductions = round(pf_employee + esi_employee + professional_tax, 2)
+    net_salary = round(gross_salary - total_deductions, 2)
+
+    return {
+        "annual_ctc": annual_ctc,
+        "monthly_ctc": round(monthly_ctc, 2),
+        "basic": basic,
+        "hra": hra,
+        "base_components_total": base_components,
+        "lta": lta,
+        "phone_internet": phone_internet,
+        "bonus": bonus,
+        "stay_travel": stay_travel,
+        "special_allowance": special_allowance,
+        "food_reimbursement": food_reimbursement,
+        "medical_allowance": 0,
+        "conveyance": 0,
+        "basket_allowances_total": basket_total,
+        "da": 0,
+        "other_allowances": 0,
+        "pf_employer": pf_employer,
+        "gratuity": gratuity,
+        "retirement_benefits_total": retirement_benefits,
+        "fixed_compensation": fixed_compensation,
+        "variable_compensation": variable_compensation,
+        "gross_salary": gross_salary,
+        "pf_employee": pf_employee,
+        "esi_employee": esi_employee,
+        "esi_employer": esi_employer,
+        "professional_tax": professional_tax,
+        "tds": 0,
+        "other_deductions": 0,
+        "total_deductions": total_deductions,
+        "net_salary": net_salary
+    }
+
+def get_salary_calculator(designation: str):
+    """Return the appropriate salary calculator based on employee designation."""
+    if designation and "research" in designation.lower():
+        return calculate_salary_structure_research
+    return calculate_salary_structure
+
 @api_router.get("/employees/{employee_id}/salary")
 async def get_employee_salary(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Get employee salary structure"""
@@ -5602,7 +5689,8 @@ async def get_employee_salary(employee_id: str, current_user: dict = Depends(get
         monthly_salary = employee.get("monthly_salary", 0)
         if monthly_salary > 0:
             annual_ctc = monthly_salary * 12
-            salary_data = calculate_salary_structure(annual_ctc)
+            calc_fn = get_salary_calculator(employee.get("designation", ""))
+            salary_data = calc_fn(annual_ctc)
             salary_data["id"] = str(uuid.uuid4())
             salary_data["employee_id"] = employee_id
             salary_data["effective_from"] = employee.get("date_of_joining", get_ist_today())
@@ -5635,7 +5723,8 @@ async def update_employee_salary(
     
     # If annual_ctc is provided, recalculate entire structure
     if data.annual_ctc is not None:
-        salary_data = calculate_salary_structure(data.annual_ctc)
+        calc_fn = get_salary_calculator(employee.get("designation", ""))
+        salary_data = calc_fn(data.annual_ctc)
         salary_data["updated_at"] = get_ist_now().isoformat()
         
         existing = await db.salary_structures.find_one({"employee_id": employee_id})
@@ -5972,7 +6061,8 @@ async def get_my_salary(current_user: dict = Depends(get_current_user)):
         monthly_salary = employee.get("monthly_salary", 0)
         if monthly_salary > 0:
             annual_ctc = monthly_salary * 12
-            salary_data = calculate_salary_structure(annual_ctc)
+            calc_fn = get_salary_calculator(employee.get("designation", ""))
+            salary_data = calc_fn(annual_ctc)
             salary_data["id"] = str(uuid.uuid4())
             salary_data["employee_id"] = employee_id
             salary_data["effective_from"] = employee.get("date_of_joining", get_ist_today())
