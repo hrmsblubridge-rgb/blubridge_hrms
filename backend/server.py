@@ -5483,42 +5483,40 @@ def calculate_salary_structure(annual_ctc: float) -> dict:
     """Calculate salary breakdown from annual CTC based on professional structure"""
     monthly_ctc = annual_ctc / 12
     
-    # Base Components (A) - approximately 45% of CTC
+    # Base Components (A)
     basic = round(monthly_ctc * 0.30, 2)  # 30% of Monthly CTC
     hra = round(basic * 0.50, 2)  # 50% of Basic
+    base_components = basic + hra
     
-    # Basket of Allowances (B) - approximately 30% of CTC
-    lta = round(basic * 0.0567, 2)  # Leave Travel Assistance
-    phone_internet = round(1100, 2)  # Fixed
-    bonus = round(basic * 0.10, 2)  # Performance Bonus
-    stay_travel = round(basic * 0.30, 2)  # Stay and Travel
-    special_allowance = round(monthly_ctc * 0.12, 2)  # Special Allowance
-    food_reimbursement = round(1210, 2)  # Fixed
-    medical_allowance = round(1250, 2)  # Fixed
-    conveyance = round(1600, 2)  # Fixed
+    # Variable Compensation (20% of CTC)
+    variable_compensation = round(monthly_ctc * 0.20, 2)
     
     # Retirement Benefits (C)
     pf_basic = min(basic, 15000)
-    pf_employee = round(pf_basic * 0.12, 2)  # Employee PF contribution
-    pf_employer = round(pf_basic * 0.12, 2)  # Employer PF contribution
-    gratuity = round(basic * 0.0481, 2)  # 4.81% of Basic (as per Gratuity Act)
-    
-    # ESI: Only if gross < 21000 (0.75% employee, 3.25% employer)
-    base_components = basic + hra
-    basket_allowances = lta + phone_internet + bonus + stay_travel + special_allowance + food_reimbursement + medical_allowance + conveyance
+    pf_employee = round(pf_basic * 0.12, 2)
+    pf_employer = round(pf_basic * 0.12, 2)
+    gratuity = round(basic * 15 / 26 / 12, 2)  # Gratuity Act formula
     retirement_benefits = pf_employer + gratuity
     
+    # Fixed known allowances in Basket (B)
+    lta = round(basic * 0.0567, 2)
+    phone_internet = 1100
+    bonus = round(basic * 0.10, 2)
+    stay_travel = round(basic * 0.30, 2)
+    food_reimbursement = 1210
+    medical_allowance = 1250
+    conveyance = 1600
+    
+    known_allowances = lta + phone_internet + bonus + stay_travel + food_reimbursement + medical_allowance + conveyance
+    
+    # Special Allowance = balancing figure so total equals CTC exactly
+    fixed_target = monthly_ctc - variable_compensation
+    special_allowance = round(fixed_target - base_components - known_allowances - retirement_benefits, 2)
+    if special_allowance < 0:
+        special_allowance = 0
+    
+    basket_allowances = known_allowances + special_allowance
     fixed_compensation = base_components + basket_allowances + retirement_benefits
-    
-    # Variable Compensation (typically 20% of Fixed)
-    variable_compensation = round(monthly_ctc * 0.20, 2)
-    
-    # Adjust special allowance to match CTC
-    current_total = base_components + basket_allowances + retirement_benefits + variable_compensation
-    if current_total < monthly_ctc:
-        special_allowance = round(special_allowance + (monthly_ctc - current_total), 2)
-        basket_allowances = lta + phone_internet + bonus + stay_travel + special_allowance + food_reimbursement + medical_allowance + conveyance
-        fixed_compensation = base_components + basket_allowances + retirement_benefits
     
     gross_salary = base_components + basket_allowances
     

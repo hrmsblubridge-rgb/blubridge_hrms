@@ -450,11 +450,14 @@ const Employees = () => {
     const content = salarySlipRef.current;
     if (!content) return;
     const printWindow = window.open('', '_blank', 'width=900,height=700');
+    const origin = window.location.origin;
+    let html = content.innerHTML;
+    html = html.replace(/src="\/logo/g, `src="${origin}/logo`);
     printWindow.document.write(`<!DOCTYPE html><html><head><title>Salary Slip - ${selectedEmployee?.full_name || 'Employee'}</title><style>body{margin:0;padding:0;font-family:'Segoe UI',Tahoma,sans-serif;background:#f4f6f9}@media print{body{padding:0;background:#f4f6f9}@page{margin:0.3in}}</style></head><body>`);
-    printWindow.document.write(content.innerHTML);
+    printWindow.document.write(html);
     printWindow.document.write('</body></html>');
     printWindow.document.close();
-    setTimeout(() => { printWindow.print(); }, 300);
+    setTimeout(() => { printWindow.print(); }, 500);
   };
 
   const handleDelete = (employee) => { setSelectedEmployee(employee); setShowDeleteDialog(true); };
