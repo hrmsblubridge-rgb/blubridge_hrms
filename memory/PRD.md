@@ -159,6 +159,7 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - **Username Collision Fix**: Auto-appends numeric suffix (e.g., user1, user2) when creating employees with duplicate email prefixes
 - **CTC Calculation Fix**: Special Allowance is now the true balancing figure (Fixed + Variable = CTC exactly). Previous bug had total exceeding CTC. Verified against reference salary table.
 - **Logo in Print/PDF Fix**: Print handler now converts relative logo path to absolute URL so logo renders in the print window.
+- **Research Designation CTC Formula**: New `calculate_salary_structure_research()` function for Research employees — uses B-percentage allocation (LTA=5.6%B, Bonus=9.9%B, Stay=30%B), no Medical/Conveyance, PF fixed at ₹1,800. Non-Research employees unchanged. Designation-based routing via `get_salary_calculator()`.
 
 ## Backlog / Future Tasks
 - **P1**: Biometric Sync Dashboard
