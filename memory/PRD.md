@@ -151,7 +151,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
 **JOB 6**: Leave rules: Sick=past/current only, Casual=4+ working days (excl Sundays), Emergency=any
 **JOB 7**: Single leave per day enforcement (blocks duplicate dates, suggests edit instead)
 - **P1**: Cloudinary PDF Viewing (blocked on user settings)
-- **P2**: Username collision on employee creation
+- **P2**: Username collision on employee creation - **FIXED Apr 10, 2026**
+
+### Phase 5 (Apr 10, 2026) - Payslip UI & Bug Fixes
+- **Salary Slip / Payslip UI**: Professional payslip dialog with company logo (BluBridge Technologies), full compensation breakdown (Base, Allowances, Retirement, Variable, CTC), Insurance Coverage, Employee Deductions, Net Salary, and Print/Download PDF functionality. Component: `SalarySlip.js` (forwardRef for printing)
+- **Username Collision Fix**: Auto-appends numeric suffix (e.g., user1, user2) when creating employees with duplicate email prefixes
 
 ## Backlog / Future Tasks
 - **P1**: Biometric Sync Dashboard
