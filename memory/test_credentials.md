@@ -11,6 +11,7 @@
 | Role | Username | Password | Notes |
 |------|----------|----------|-------|
 | Employee | user | user | Linked to first seeded employee |
+| Employee | spartasolace1 | spar@1230 | spartan (EMP0047), spartasolace@outlook.com |
 
 ## Notes
 - HR role has full CRUD + approval access
