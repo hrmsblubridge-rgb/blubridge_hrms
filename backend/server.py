@@ -4371,10 +4371,11 @@ async def get_employee_attendance(
                 "status": "NA"
             }
         else:
-            # Look up actual attendance
+            # Look up actual attendance (query both date formats for compatibility)
+            date_str_iso = current_date.strftime("%Y-%m-%d")
             att = await db.attendance.find_one({
                 "employee_id": employee_id,
-                "date": date_str
+                "date": {"$in": [date_str, date_str_iso]}
             }, {"_id": 0})
             
             # Check for approved leave
