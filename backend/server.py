@@ -7222,46 +7222,82 @@ async def edit_early_out_request(request_id: str, data: EarlyOutRequestCreate, c
 # ============== ATTENDANCE UPDATE HELPER ==============
 
 async def _update_attendance_from_missed_punch(rec):
-    """JOB 3: Update attendance record when missed punch is approved"""
+    """JOB 3: Update attendance record when missed punch is approved.
+    Writes to check_in/check_in_24h (punch-in) and check_out/check_out_24h (punch-out)
+    to match the biometric attendance schema the frontend reads."""
     emp_id = rec.get("employee_id")
     date = rec.get("date")
     punch_type = rec.get("punch_type")
-    check_in = rec.get("check_in_time")
-    check_out = rec.get("check_out_time")
-    
-    # Find or create attendance record for this date
+    check_in_raw = rec.get("check_in_time")
+    check_out_raw = rec.get("check_out_time")
+
     attendance = await db.attendance.find_one({"employee_id": emp_id, "date": date})
-    
+
     update_fields = {}
-    if punch_type in ("Check-in", "Both") and check_in:
-        # Extract time part if datetime string provided
-        time_val = check_in.split("T")[-1][:5] if "T" in check_in else check_in[:5]
-        update_fields["first_punch"] = time_val
+    log_changes = []
+
+    if punch_type in ("Check-in", "Both") and check_in_raw:
+        time_24h = check_in_raw.split("T")[-1][:5] if "T" in check_in_raw else check_in_raw[:5]
+        # Convert to 12h format for check_in field
+        try:
+            from datetime import datetime as _dt
+            t = _dt.strptime(time_24h, "%H:%M")
+            time_12h = t.strftime("%I:%M %p")
+        except Exception:
+            time_12h = time_24h
+        update_fields["check_in"] = time_12h
+        update_fields["check_in_24h"] = time_24h
         update_fields["status"] = "present"
-    if punch_type in ("Check-out", "Both") and check_out:
-        time_val = check_out.split("T")[-1][:5] if "T" in check_out else check_out[:5]
-        update_fields["last_punch"] = time_val
+        log_changes.append(("check_in", attendance.get("check_in") if attendance else None, time_12h))
+
+    if punch_type in ("Check-out", "Both") and check_out_raw:
+        time_24h = check_out_raw.split("T")[-1][:5] if "T" in check_out_raw else check_out_raw[:5]
+        try:
+            from datetime import datetime as _dt
+            t = _dt.strptime(time_24h, "%H:%M")
+            time_12h = t.strftime("%I:%M %p")
+        except Exception:
+            time_12h = time_24h
+        update_fields["check_out"] = time_12h
+        update_fields["check_out_24h"] = time_24h
         update_fields["status"] = "present"
-    
+        log_changes.append(("check_out", attendance.get("check_out") if attendance else None, time_12h))
+
     if not update_fields:
         return
-    
+
     update_fields["missed_punch_corrected"] = True
-    
+
     if attendance:
-        # Only overwrite if field is empty/missing or already flagged as missed
         set_fields = {}
         for k, v in update_fields.items():
-            existing_val = attendance.get(k)
-            if k in ("first_punch", "last_punch"):
-                if not existing_val or existing_val in ("", "-", None) or attendance.get("missed_punch_corrected"):
+            if k in ("check_in", "check_in_24h"):
+                existing = attendance.get(k)
+                if not existing or existing in ("", "-", None):
+                    set_fields[k] = v
+            elif k in ("check_out", "check_out_24h"):
+                existing = attendance.get(k)
+                if not existing or existing in ("", "-", None):
                     set_fields[k] = v
             else:
                 set_fields[k] = v
         if set_fields:
+            # Recalculate total hours if both in and out are now available
+            final_in = set_fields.get("check_in_24h") or attendance.get("check_in_24h")
+            final_out = set_fields.get("check_out_24h") or attendance.get("check_out_24h")
+            if final_in and final_out:
+                try:
+                    in_mins = parse_time_24h_to_minutes(final_in)
+                    out_mins = parse_time_24h_to_minutes(final_out)
+                    diff = out_mins - in_mins
+                    if diff > 0:
+                        hours = diff / 60
+                        set_fields["total_hours"] = f"{int(hours)}h {int(diff % 60)}m"
+                        set_fields["total_hours_decimal"] = round(hours, 2)
+                except Exception:
+                    pass
             await db.attendance.update_one({"employee_id": emp_id, "date": date}, {"$set": set_fields})
     else:
-        # Create new attendance record
         emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
         if emp:
             new_att = {
@@ -7269,14 +7305,32 @@ async def _update_attendance_from_missed_punch(rec):
                 "employee_id": emp_id,
                 "emp_name": emp.get("full_name", ""),
                 "date": date,
-                "first_punch": update_fields.get("first_punch", ""),
-                "last_punch": update_fields.get("last_punch", ""),
+                "check_in": update_fields.get("check_in", ""),
+                "check_in_24h": update_fields.get("check_in_24h", ""),
+                "check_out": update_fields.get("check_out", ""),
+                "check_out_24h": update_fields.get("check_out_24h", ""),
                 "status": "present",
                 "department": emp.get("department", ""),
                 "team": emp.get("team", ""),
+                "source": "missed_punch",
                 "missed_punch_corrected": True
             }
+            # Calculate total hours if both available
+            if new_att["check_in_24h"] and new_att["check_out_24h"]:
+                try:
+                    in_mins = parse_time_24h_to_minutes(new_att["check_in_24h"])
+                    out_mins = parse_time_24h_to_minutes(new_att["check_out_24h"])
+                    diff = out_mins - in_mins
+                    if diff > 0:
+                        new_att["total_hours"] = f"{int(diff // 60)}h {int(diff % 60)}m"
+                        new_att["total_hours_decimal"] = round(diff / 60, 2)
+                except Exception:
+                    pass
             await db.attendance.insert_one(new_att.copy())
+
+    # Audit log
+    for field, old_val, new_val in log_changes:
+        logger.info(f"Missed punch correction: emp={emp_id}, date={date}, field={field}, old={old_val}, new={new_val}, request={rec.get('id')}")
 
 @api_router.get("/missed-punches")
 async def get_missed_punches(

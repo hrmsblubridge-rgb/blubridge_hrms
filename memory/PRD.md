@@ -158,7 +158,7 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - **Payslip Redesign**: Redesigned to match reference PDF design - navy blue header banner with BluBridge logo (logo-black.webp inverted to white), employee info card, lettered section badges (A-F), clean single-column monthly tables, red deductions section, gradient net salary card
 - **Username Collision Fix**: Auto-appends numeric suffix (e.g., user1, user2) when creating employees with duplicate email prefixes
 - **CTC Calculation Fix**: Special Allowance is now the true balancing figure (Fixed + Variable = CTC exactly). Previous bug had total exceeding CTC. Verified against reference salary table.
-- **Logo in Print/PDF Fix**: Print handler now converts relative logo path to absolute URL so logo renders in the print window.
+- **Missed Punch → Attendance Fix (Apr 15)**: Fixed critical bug where `_update_attendance_from_missed_punch` wrote to wrong fields (`first_punch`/`last_punch` instead of `check_in`/`check_out`/`check_in_24h`/`check_out_24h`). Now correctly populates attendance with 12h+24h formats, recalculates `total_hours`, and logs audit trail. Migrated 5 old corrupted records.
 - **Research Designation CTC Formula**: New `calculate_salary_structure_research()` function for Research employees — uses B-percentage allocation (LTA=5.6%B, Bonus=9.9%B, Stay=30%B), no Medical/Conveyance, PF fixed at ₹1,800. Non-Research employees unchanged. Designation-based routing via `get_salary_calculator()`.
 
 ## Backlog / Future Tasks
