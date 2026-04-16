@@ -1770,10 +1770,12 @@ async def delete_cloudinary_asset(
 @api_router.post("/auth/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
     user = await db.users.find_one({"username": request.username}, {"_id": 0})
-    if not user or not verify_password(request.password, user["password_hash"]):
+    if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not user.get("is_active", True):
-        raise HTTPException(status_code=401, detail="Account disabled")
+        raise HTTPException(status_code=403, detail="Your account is deactivated. Contact admin.")
+    if not verify_password(request.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
     
     token = create_token(user["id"], user["role"])
     await log_audit(user["id"], "login", "auth")
@@ -1869,9 +1871,12 @@ async def get_employees(
 ):
     query = {}
     
-    # Exclude soft-deleted by default
+    # Exclude soft-deleted by default, but include them when filtering by inactive status or inactive type
     if not include_deleted:
-        query["is_deleted"] = {"$ne": True}
+        if (status and status == EmployeeStatus.INACTIVE) or (inactive_type and inactive_type != "All"):
+            pass  # Don't exclude — we want to see inactive employees
+        else:
+            query["is_deleted"] = {"$ne": True}
     
     if department and department != "All":
         query["department"] = department
@@ -2407,8 +2412,6 @@ async def bulk_import_employees(
                 ldp = str(row_last_day_payable).strip().lower() in ("yes", "true", "1") if row_last_day_payable else False
                 
                 await db.employees.update_one({"id": employee.id}, {"$set": {
-                    "is_deleted": True,
-                    "deleted_at": get_ist_now().isoformat(),
                     "employee_status": EmployeeStatus.INACTIVE,
                     "login_enabled": False,
                     "inactive_type": deact_type,
@@ -2758,15 +2761,16 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
     return serialize_doc(employee)
 
 @api_router.delete("/employees/{employee_id}")
-@api_router.delete("/employees/{employee_id}")
 async def deactivate_employee(employee_id: str, request: Request, current_user: dict = Depends(get_current_user)):
-    """Soft delete - deactivates employee with structured deactivation data"""
+    """Soft deactivate - marks employee as inactive without deleting the record"""
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
-    existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    existing = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Employee not found")
+    if existing.get("employee_status") == EmployeeStatus.INACTIVE:
+        raise HTTPException(status_code=400, detail="Employee is already inactive")
     
     # Parse optional body (form modal data)
     body = {}
@@ -2781,8 +2785,6 @@ async def deactivate_employee(employee_id: str, request: Request, current_user: 
     last_day_payable = body.get("last_day_payable", False)
     
     update_data = {
-        "is_deleted": True,
-        "deleted_at": get_ist_now().isoformat(),
         "employee_status": EmployeeStatus.INACTIVE,
         "login_enabled": False,
         "inactive_type": inactive_type,

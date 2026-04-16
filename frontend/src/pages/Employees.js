@@ -202,7 +202,6 @@ const Employees = () => {
         ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
         ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
         ...(inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
-        ...(inactiveTypeFilter !== 'All' && { include_deleted: true })
       };
       
       const [employeesRes, statsRes, teamsRes, deptsRes, allEmpRes] = await Promise.all([
