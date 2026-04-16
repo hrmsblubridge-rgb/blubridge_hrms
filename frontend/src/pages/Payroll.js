@@ -66,6 +66,20 @@ const Payroll = () => {
   };
 
   const getStatusDisplay = (status, isLop) => {
+    // New payroll engine status codes
+    if (status === 'PF') return { code: 'PF', color: 'text-emerald-600 font-semibold', bg: '' };
+    if (status === 'PH') return { code: 'PH', color: 'text-blue-600 font-semibold', bg: 'bg-blue-50' };
+    if (status === 'PA') return { code: 'PA', color: 'text-emerald-500 font-semibold', bg: 'bg-emerald-50' };
+    if (status === 'WO') return { code: 'WO', color: 'text-slate-400', bg: 'bg-slate-50' };
+    if (status === 'OH') return { code: 'OH', color: 'text-indigo-500', bg: 'bg-indigo-50' };
+    if (status === 'LC') return { code: 'LC', color: 'text-orange-600 font-semibold', bg: 'bg-orange-50' };
+    if (status === 'MP') return { code: 'MP', color: 'text-yellow-600 font-semibold', bg: 'bg-yellow-50' };
+    if (status === 'LOP') return { code: 'LOP', color: 'text-red-600 font-bold', bg: 'bg-red-50' };
+    if (status === 'R') return { code: 'R', color: 'text-gray-500', bg: 'bg-gray-100' };
+    if (status === 'BLANK') return { code: '', color: '', bg: 'bg-gray-50' };
+    if (status === 'H') return { code: 'H', color: 'text-indigo-500', bg: 'bg-indigo-50' };
+    if (status === 'Su') return { code: 'Su', color: 'text-slate-400', bg: 'bg-slate-50' };
+    // Legacy codes (backward compatibility)
     if (status === 'Sunday') return { code: 'Su', color: 'text-slate-400', bg: 'bg-slate-50' };
     if (isLop || status === 'Loss of Pay') return { code: 'LOP', color: 'text-red-600 font-bold', bg: 'bg-red-50' };
     if (status === 'Present' || status === 'Completed') return { code: 'P', color: 'text-emerald-600 font-semibold', bg: '' };
@@ -245,11 +259,18 @@ const Payroll = () => {
           </div>
           <div className="flex flex-wrap gap-4 text-xs mt-4">
             {[
-              { code: 'P', label: 'Present', color: 'emerald' },
+              { code: 'PF', label: 'Present Full', color: 'emerald' },
+              { code: 'PH', label: 'Present Half', color: 'blue' },
+              { code: 'PA', label: 'Present (Approved Leave)', color: 'emerald' },
+              { code: 'WO', label: 'Week Off', color: 'slate' },
+              { code: 'OH', label: 'Office Holiday', color: 'indigo' },
+              { code: 'LC', label: 'Late Coming', color: 'orange' },
               { code: 'LOP', label: 'Loss of Pay', color: 'red' },
-              { code: 'L', label: 'Leave', color: 'purple' },
+              { code: 'MP', label: 'Missed Punch', color: 'yellow' },
               { code: 'A', label: 'Absent', color: 'amber' },
-              { code: 'Su', label: 'Sunday', color: 'slate' },
+              { code: 'Su', label: 'Sunday (Future)', color: 'slate' },
+              { code: 'H', label: 'Holiday (Future)', color: 'indigo' },
+              { code: 'R', label: 'Relieved', color: 'gray' },
             ].map((item, i) => (
               <div key={i} className="flex items-center gap-1">
                 <span className={`text-${item.color}-600 font-semibold`}>{item.code}</span>
@@ -323,12 +344,13 @@ const Payroll = () => {
           </div>
           <div className="mt-4 p-4 bg-amber-50 rounded-xl border border-amber-200">
             <h3 className="font-semibold text-amber-800 mb-2 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4" /> LOP Calculation Rules
+              <AlertTriangle className="w-4 h-4" /> Payroll Calculation Rules
             </h3>
             <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
-              <li><strong>Late Login:</strong> 1 minute late = LOP</li>
-              <li><strong>Early Logout:</strong> 1 minute early = LOP</li>
-              <li><strong>Formula:</strong> (Monthly Salary / 30) × (LOP Days + Absent Days)</li>
+              <li><strong>Late Coming (LC):</strong> Unapproved late = LOP 0.5 day</li>
+              <li><strong>Half Day (PH):</strong> Less than full hours = LOP 0.5 day</li>
+              <li><strong>Absent (A):</strong> No attendance = LOP 1 day</li>
+              <li><strong>Formula:</strong> Payable Days = (Working Days - LOP) + Weekoff Pay + Extra Pay</li>
             </ul>
           </div>
         </TabsContent>

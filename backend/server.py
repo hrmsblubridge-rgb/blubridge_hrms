@@ -826,9 +826,14 @@ class PayrollRecord(BaseModel):
     team: str
     month: str  # Format: "YYYY-MM"
     monthly_salary: float = 0.0
-    working_days: int = 0  # Total working days in month (excluding Sundays)
-    present_days: int = 0
-    lop_days: int = 0
+    total_days: int = 0  # Calendar days in month
+    working_days: int = 0  # Non-Sunday, non-Holiday days
+    weekoff_pay: float = 0.0  # +1 per Sunday/Holiday
+    extra_pay: float = 0.0  # +1/+0.5 for Sunday/Holiday worked
+    lop: float = 0.0  # Total LOP days (supports 0.5)
+    final_payable_days: float = 0.0  # (Working Days - LOP) + Weekoff + Extra
+    present_days: int = 0  # Backward compat
+    lop_days: float = 0  # Backward compat (= lop)
     leave_days: int = 0
     absent_days: int = 0
     per_day_salary: float = 0.0
@@ -1424,145 +1429,524 @@ def calculate_total_hours_str(total_hours_decimal: float) -> str:
     minutes = int((total_hours_decimal - hours) * 60)
     return f"{hours}h {minutes}m"
 
-async def calculate_payroll_for_employee(employee_id: str, month: str) -> dict:
-    """
-    Calculate payroll for an employee for a given month.
-    Month format: "YYYY-MM"
-    """
-    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
-    if not employee:
+# ============== DEPARTMENT WORK HOURS (PAYROLL ENGINE) ==============
+
+DEPARTMENT_WORK_HOURS = {
+    "Research Unit": {"full": 11, "half": 6},
+    "Business & Product": {"full": 10, "half": 5},
+    "Support Staff": {"full": 9, "half": 4.5},
+}
+
+def _parse_date_flex(date_str):
+    """Parse date string from multiple formats to a date object."""
+    if not date_str:
         return None
-    
-    year, month_num = map(int, month.split('-'))
-    
-    # Get number of days in month and working days (excluding Sundays)
-    import calendar
-    days_in_month = calendar.monthrange(year, month_num)[1]
-    
-    working_days = 0
-    for day in range(1, days_in_month + 1):
-        date_obj = datetime(year, month_num, day)
-        if date_obj.weekday() != 6:  # Not Sunday
-            working_days += 1
-    
-    # Get attendance records for the month
-    from_date = f"01-{month_num:02d}-{year}"
-    to_date = f"{days_in_month:02d}-{month_num:02d}-{year}"
-    
-    attendance_records = await db.attendance.find({
-        "employee_id": employee_id,
-        "date": {"$gte": from_date, "$lte": to_date}
-    }, {"_id": 0}).to_list(days_in_month)
-    
-    # Get leave records for the month
-    leave_records = await db.leaves.find({
-        "employee_id": employee_id,
-        "status": "approved",
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(str(date_str).strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def _calc_hours_worked(att_record: dict) -> float:
+    """Calculate hours worked from an attendance record."""
+    hw = att_record.get("total_hours_decimal", 0) or 0
+    if hw > 0:
+        return hw
+    ci = att_record.get("check_in_24h")
+    co = att_record.get("check_out_24h")
+    if ci and co:
+        in_mins = parse_time_24h_to_minutes(ci)
+        out_mins = parse_time_24h_to_minutes(co)
+        if in_mins is not None and out_mins is not None:
+            diff = out_mins - in_mins if out_mins > in_mins else (1440 - in_mins + out_mins)
+            return diff / 60
+    return 0
+
+async def _prefetch_payroll_data(employee_ids: list, year: int, month_num: int, days_in_month: int) -> dict:
+    """Batch-prefetch all payroll-related data for a set of employees in one month."""
+    # 1. Attendance (both date formats)
+    all_att = await db.attendance.find({
+        "employee_id": {"$in": employee_ids},
+        "$or": [
+            {"date": {"$regex": f"^\\d{{2}}-{month_num:02d}-{year}$"}},
+            {"date": {"$regex": f"^{year}-{month_num:02d}-"}}
+        ]
+    }, {"_id": 0}).to_list(len(employee_ids) * 35)
+    att_by_emp = {}
+    for r in all_att:
+        att_by_emp.setdefault(r["employee_id"], []).append(r)
+
+    # 2. Leaves
+    all_leaves = await db.leaves.find({
+        "employee_id": {"$in": employee_ids},
         "$or": [
             {"start_date": {"$regex": f"^{year}-{month_num:02d}"}},
             {"end_date": {"$regex": f"^{year}-{month_num:02d}"}}
         ]
-    }, {"_id": 0}).to_list(100)
-    
-    # Build attendance map
+    }, {"_id": 0}).to_list(len(employee_ids) * 10)
+    leaves_by_emp = {}
+    for lv in all_leaves:
+        leaves_by_emp.setdefault(lv["employee_id"], []).append(lv)
+
+    # 3. Approved late requests
+    all_late = await db.late_requests.find({
+        "employee_id": {"$in": employee_ids},
+        "status": "approved",
+        "date": {"$regex": f"^{year}-{month_num:02d}"}
+    }, {"_id": 0}).to_list(len(employee_ids) * 10)
+    late_by_emp = {}
+    for lr in all_late:
+        late_by_emp.setdefault(lr["employee_id"], []).append(lr)
+
+    # 4. Missed punches
+    all_mp = await db.missed_punches.find({
+        "employee_id": {"$in": employee_ids},
+        "date": {"$regex": f"^{year}-{month_num:02d}"}
+    }, {"_id": 0}).to_list(len(employee_ids) * 10)
+    mp_by_emp = {}
+    for mp in all_mp:
+        mp_by_emp.setdefault(mp["employee_id"], []).append(mp)
+
+    # 5. Holidays
+    holiday_records = await db.holidays.find({
+        "date": {
+            "$gte": f"{year}-{month_num:02d}-01",
+            "$lte": f"{year}-{month_num:02d}-{days_in_month:02d}"
+        }
+    }, {"_id": 0}).to_list(50)
+    holiday_dates = set()
+    for h in holiday_records:
+        hd = _parse_date_flex(h.get("date"))
+        if hd:
+            holiday_dates.add(hd)
+
+    return {
+        "att_by_emp": att_by_emp,
+        "leaves_by_emp": leaves_by_emp,
+        "late_by_emp": late_by_emp,
+        "mp_by_emp": mp_by_emp,
+        "holiday_dates": holiday_dates,
+    }
+
+async def calculate_payroll_for_employee(employee_id: str, month: str, employee: dict = None, prefetched: dict = None) -> dict:
+    """
+    Payroll engine aligned to strict specification.
+    - Department-based work hour mapping (Research 11h, Business 10h, Support 9h)
+    - Sunday/Holiday: Weekoff Pay +1; if worked Full→PF Extra+1, Half→PH Extra+0.5
+    - Working day classification cross-references leaves, late requests, missed punches
+    - LOP: A=1, LC=0.5, PH(working day)=0.5, pending/LOP leave
+    - Payable Days = (Working Days - LOP) + Weekoff Pay + Extra Pay
+    - Relieved employee: if last_day_payable=0 → subtract 1 day
+    """
+    import calendar
+    from datetime import date, timedelta
+    from datetime import timezone as tz
+
+    if not employee:
+        employee = await db.employees.find_one(
+            {"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0}
+        )
+    if not employee:
+        return None
+
+    year, month_num = map(int, month.split('-'))
+    days_in_month = calendar.monthrange(year, month_num)[1]
+
+    # --- Parse employee dates ---
+    joining_date = _parse_date_flex(employee.get("date_of_joining"))
+    emp_status = employee.get("employee_status", "Active")
+    relieving_date = None
+    if emp_status == EmployeeStatus.INACTIVE:
+        relieving_date = _parse_date_flex(employee.get("inactive_date"))
+
+    payroll_start = date(year, month_num, 1)
+    payroll_end = date(year, month_num, days_in_month)
+
+    if joining_date and joining_date > payroll_end:
+        return None
+    if relieving_date and relieving_date < payroll_start:
+        return None
+
+    dept = employee.get("department", "")
+    work_cfg = DEPARTMENT_WORK_HOURS.get(dept, {"full": 10, "half": 5})
+    full_hours = work_cfg["full"]
+    half_hours = work_cfg["half"]
+
+    # --- Load data (prefetched or individual queries) ---
+    if prefetched:
+        holiday_dates = prefetched["holiday_dates"]
+        att_records = prefetched["att_by_emp"].get(employee_id, [])
+        leave_records = prefetched["leaves_by_emp"].get(employee_id, [])
+        late_records = prefetched["late_by_emp"].get(employee_id, [])
+        all_missed = prefetched["mp_by_emp"].get(employee_id, [])
+    else:
+        holiday_records_q = await db.holidays.find({
+            "date": {"$gte": f"{year}-{month_num:02d}-01", "$lte": f"{year}-{month_num:02d}-{days_in_month:02d}"}
+        }, {"_id": 0}).to_list(50)
+        holiday_dates = set()
+        for h in holiday_records_q:
+            hd = _parse_date_flex(h.get("date"))
+            if hd:
+                holiday_dates.add(hd)
+        att_records = await db.attendance.find({
+            "employee_id": employee_id,
+            "$or": [
+                {"date": {"$regex": f"^\\d{{2}}-{month_num:02d}-{year}$"}},
+                {"date": {"$regex": f"^{year}-{month_num:02d}-"}}
+            ]
+        }, {"_id": 0}).to_list(50)
+        leave_records = await db.leaves.find({
+            "employee_id": employee_id,
+            "$or": [
+                {"start_date": {"$regex": f"^{year}-{month_num:02d}"}},
+                {"end_date": {"$regex": f"^{year}-{month_num:02d}"}}
+            ]
+        }, {"_id": 0}).to_list(100)
+        late_records = await db.late_requests.find({
+            "employee_id": employee_id, "status": "approved",
+            "date": {"$regex": f"^{year}-{month_num:02d}"}
+        }, {"_id": 0}).to_list(50)
+        all_missed = await db.missed_punches.find({
+            "employee_id": employee_id,
+            "date": {"$regex": f"^{year}-{month_num:02d}"}
+        }, {"_id": 0}).to_list(50)
+    # --- Build attendance map with merging ---
     attendance_map = {}
-    for record in attendance_records:
-        attendance_map[record["date"]] = record
-    
-    # Calculate days (lop_days is float to support 0.5 day calculations)
-    present_days = 0
-    lop_days = 0.0  # Float to support half-day LOP
-    leave_days = 0
-    absent_days = 0
+    for r in att_records:
+        d = r.get("date", "")
+        if len(d) >= 10 and d[4] == '-':
+            parts = d.split('-')
+            normalized = f"{parts[2]}-{parts[1]}-{parts[0]}"
+        else:
+            normalized = d
+        if normalized in attendance_map:
+            existing = attendance_map[normalized]
+            for fld in ("check_in", "check_in_24h", "check_out", "check_out_24h", "total_hours", "total_hours_decimal"):
+                if r.get(fld) and not existing.get(fld):
+                    existing[fld] = r[fld]
+            # Recalculate hours if both timestamps now present
+            ci_ = existing.get("check_in_24h")
+            co_ = existing.get("check_out_24h")
+            if ci_ and co_ and not existing.get("total_hours_decimal"):
+                try:
+                    i_m = parse_time_24h_to_minutes(ci_)
+                    o_m = parse_time_24h_to_minutes(co_)
+                    diff = o_m - i_m if o_m > i_m else (1440 - i_m + o_m)
+                    existing["total_hours_decimal"] = round(diff / 60, 2)
+                    existing["total_hours"] = f"{int(diff // 60)}h {int(diff % 60)}m"
+                except Exception:
+                    pass
+        else:
+            attendance_map[normalized] = r
+
+    # --- Build leave map ---
+    leave_map = {}
+    for lv in leave_records:
+        s = _parse_date_flex(lv.get("start_date"))
+        e = _parse_date_flex(lv.get("end_date"))
+        if s and e:
+            cur = s
+            while cur <= e:
+                if payroll_start <= cur <= payroll_end:
+                    leave_map[cur.strftime("%Y-%m-%d")] = lv
+                cur += timedelta(days=1)
+
+    late_approved_dates = {lr["date"] for lr in late_records}
+
+    mp_approved_dates = set()
+    mp_pending_dates = set()
+    for mp in all_missed:
+        md = _parse_date_flex(mp.get("date"))
+        if md and payroll_start <= md <= payroll_end:
+            iso = md.strftime("%Y-%m-%d")
+            if mp.get("status") == "approved":
+                mp_approved_dates.add(iso)
+            elif mp.get("status") == "pending":
+                mp_pending_dates.add(iso)
+
+    # IST today
+    ist = tz(timedelta(hours=5, minutes=30))
+    today = datetime.now(ist).date()
+
+    # --- Payroll accumulators ---
+    total_days = days_in_month
+    working_days = 0
+    weekoff_pay = 0.0
+    extra_pay = 0.0
+    lop = 0.0
     attendance_details = []
-    
+
     for day in range(1, days_in_month + 1):
-        date_obj = datetime(year, month_num, day)
-        date_str = f"{day:02d}-{month_num:02d}-{year}"
-        
+        current_date = date(year, month_num, day)
+        date_dd = f"{day:02d}-{month_num:02d}-{year}"
+        date_iso = current_date.strftime("%Y-%m-%d")
+        day_name = current_date.strftime("%a")
+        is_sun = current_date.weekday() == 6
+        is_hol = current_date in holiday_dates
+        is_future = current_date > today
+
         detail = {
-            "date": date_str,
-            "day_name": date_obj.strftime("%a"),
-            "is_sunday": date_obj.weekday() == 6,
+            "date": date_dd,
+            "day_name": day_name,
+            "is_sunday": is_sun,
+            "is_holiday": is_hol,
             "status": "NA",
-            "is_lop": False,
+            "lop_value": 0,
+            "weekoff_value": 0,
+            "extra_value": 0,
             "check_in": None,
             "check_out": None,
-            "total_hours": None
+            "total_hours": None,
+            "is_lop": False,
         }
-        
-        if date_obj.weekday() == 6:  # Sunday
-            detail["status"] = "Sunday"
+
+        # --- Before joining → BLANK ---
+        if joining_date and current_date < joining_date:
+            detail["status"] = "BLANK"
             attendance_details.append(detail)
             continue
-        
-        record = attendance_map.get(date_str)
-        
-        if record:
-            detail["check_in"] = record.get("check_in")
-            detail["check_out"] = record.get("check_out")
-            detail["total_hours"] = record.get("total_hours")
-            detail["status"] = record.get("status", "NA")
-            detail["is_lop"] = record.get("is_lop", False)
-            detail["lop_value"] = 0  # Default: no LOP
-            
-            status = record.get("status", "NA")
-            is_lop = record.get("is_lop", False)
-            
-            # Full day LOP: is_lop flag or Loss of Pay status (late + early out combined)
-            if is_lop or status == "Loss of Pay":
-                lop_days += 1
-                detail["lop_value"] = 1
-            # Half day LOP: Late Login only OR Early Out only (without is_lop flag)
-            elif status in [AttendanceStatus.LATE_LOGIN, "Late Login"]:
-                lop_days += 0.5
-                detail["is_lop"] = True
-                detail["lop_value"] = 0.5
-            elif status in [AttendanceStatus.EARLY_OUT, "Early Out"]:
-                lop_days += 0.5
-                detail["is_lop"] = True
-                detail["lop_value"] = 0.5
-            # Present: no LOP
-            elif status in [AttendanceStatus.PRESENT, AttendanceStatus.COMPLETED, "Present", "Completed"]:
-                present_days += 1
-            # Leave
-            elif status == AttendanceStatus.LEAVE or status == "Leave":
-                leave_days += 1
-            # Not logged / NA
-            elif status in [AttendanceStatus.NOT_LOGGED, "Not Logged", "NA"]:
-                absent_days += 1
+
+        # --- After relieving → R ---
+        if relieving_date and current_date > relieving_date:
+            detail["status"] = "R"
+            attendance_details.append(detail)
+            continue
+
+        # --- Future dates ---
+        if is_future:
+            if is_sun:
+                detail["status"] = "Su"
+            elif is_hol:
+                detail["status"] = "H"
             else:
-                present_days += 1
+                detail["status"] = "NA"
+            attendance_details.append(detail)
+            continue
+
+        att = attendance_map.get(date_dd)
+        leave = leave_map.get(date_iso)
+
+        # ===== SECTION 5: SUNDAY / HOLIDAY =====
+        if is_sun or is_hol:
+            weekoff_pay += 1
+            detail["weekoff_value"] = 1
+
+            if att:
+                detail["check_in"] = att.get("check_in")
+                detail["check_out"] = att.get("check_out")
+                detail["total_hours"] = att.get("total_hours")
+                hw = _calc_hours_worked(att)
+                if hw >= full_hours:
+                    detail["status"] = "PF"
+                    extra_pay += 1
+                    detail["extra_value"] = 1
+                elif hw >= half_hours:
+                    detail["status"] = "PH"
+                    extra_pay += 0.5
+                    detail["extra_value"] = 0.5
+                else:
+                    detail["status"] = "WO" if is_sun else "OH"
+            else:
+                detail["status"] = "WO" if is_sun else "OH"
+
+            attendance_details.append(detail)
+            continue
+
+        # ===== WORKING DAY =====
+        working_days += 1
+
+        # --- SECTION 6A: LEAVE ONLY (no attendance) ---
+        if leave and not att:
+            ls = leave.get("status", "pending")
+            is_lop_flag = leave.get("is_lop")
+            split = leave.get("leave_split", "Full Day")
+
+            if ls == "approved":
+                if is_lop_flag is True:
+                    if split == "Full Day":
+                        detail["status"] = "LOP"
+                        detail["is_lop"] = True
+                        lop += 1
+                        detail["lop_value"] = 1
+                    else:
+                        detail["status"] = "LOP"
+                        detail["is_lop"] = True
+                        lop += 0.5
+                        detail["lop_value"] = 0.5
+                else:
+                    if split == "Full Day":
+                        detail["status"] = "PA"
+                    else:
+                        detail["status"] = "PH"
+            elif ls == "pending":
+                if split == "Full Day":
+                    lop += 1
+                    detail["lop_value"] = 1
+                else:
+                    lop += 0.5
+                    detail["lop_value"] = 0.5
+                detail["status"] = "LOP"
+                detail["is_lop"] = True
+            else:
+                detail["status"] = "A"
+                lop += 1
+                detail["lop_value"] = 1
+
+            attendance_details.append(detail)
+            continue
+
+        # --- SECTION 6B: LEAVE + ATTENDANCE ---
+        if leave and att:
+            detail["check_in"] = att.get("check_in")
+            detail["check_out"] = att.get("check_out")
+            detail["total_hours"] = att.get("total_hours")
+            ls = leave.get("status", "pending")
+            is_lop_flag = leave.get("is_lop")
+            split = leave.get("leave_split", "Full Day")
+
+            if split in ("First Half", "Second Half"):
+                if ls == "approved" and is_lop_flag is not True:
+                    detail["status"] = "PF"
+                else:
+                    detail["status"] = "PH"
+                    detail["is_lop"] = True
+                    lop += 0.5
+                    detail["lop_value"] = 0.5
+            else:
+                detail["status"] = "PF"
+
+            attendance_details.append(detail)
+            continue
+
+        # --- SECTION 6C: ATTENDANCE ONLY (no leave) ---
+        if att:
+            detail["check_in"] = att.get("check_in")
+            detail["check_out"] = att.get("check_out")
+            detail["total_hours"] = att.get("total_hours")
+            ci24 = att.get("check_in_24h")
+            co24 = att.get("check_out_24h")
+            hw = _calc_hours_worked(att)
+
+            if not co24:
+                # --- Without Checkout ---
+                if current_date == today:
+                    if date_iso in late_approved_dates:
+                        detail["status"] = "PF"
+                    else:
+                        detail["status"] = "PF"
+                else:
+                    # Past day, no checkout = missed out-punch
+                    if ci24:
+                        ci_mins = parse_time_24h_to_minutes(ci24)
+                        if ci_mins is not None and ci_mins < 600:
+                            detail["status"] = "PF"
+                        else:
+                            detail["status"] = "PH"
+                            detail["is_lop"] = True
+                            lop += 0.5
+                            detail["lop_value"] = 0.5
+                    else:
+                        detail["status"] = "MP"
+            else:
+                # --- With Checkout ---
+                is_late = False
+                if ci24:
+                    shift_timings = get_shift_timings(employee)
+                    exp_login = shift_timings.get("login_time") if shift_timings else None
+                    if exp_login:
+                        act_mins = parse_time_24h_to_minutes(ci24)
+                        exp_mins = parse_time_24h_to_minutes(exp_login)
+                        if act_mins is not None and exp_mins is not None and act_mins > exp_mins:
+                            is_late = True
+
+                if hw >= full_hours and not is_late:
+                    detail["status"] = "PF"
+                elif hw >= full_hours and is_late:
+                    if date_iso in late_approved_dates:
+                        detail["status"] = "PF"
+                    else:
+                        detail["status"] = "LC"
+                        detail["is_lop"] = True
+                        lop += 0.5
+                        detail["lop_value"] = 0.5
+                elif hw >= half_hours:
+                    detail["status"] = "PH"
+                    detail["is_lop"] = True
+                    lop += 0.5
+                    detail["lop_value"] = 0.5
+                else:
+                    detail["status"] = "A"
+                    lop += 1
+                    detail["lop_value"] = 1
+
+            attendance_details.append(detail)
+            continue
+
+        # --- SECTION 6D: NO ATTENDANCE (and no leave) ---
+        if date_iso in mp_approved_dates:
+            detail["status"] = "PF"
+        elif date_iso in mp_pending_dates:
+            detail["status"] = "MP"
         else:
-            detail["status"] = "Absent"
-            absent_days += 1
-        
+            detail["status"] = "A"
+            lop += 1
+            detail["lop_value"] = 1
+
         attendance_details.append(detail)
-    
-    # Calculate salary
+
+    # ===== SECTION 8: FINAL PAY FORMULA =====
+    # Payable Days = (Working Days - LOP) + Weekoff Pay + Extra Pay
+    final_payable_days = (working_days - lop) + weekoff_pay + extra_pay
+
+    # ===== SECTION 9: RELIEVED EMPLOYEE ADJUSTMENT =====
+    last_day_payable = employee.get("last_day_payable", True)
+    if emp_status == EmployeeStatus.INACTIVE and last_day_payable in (False, 0, "0", "false", "False"):
+        final_payable_days -= 1
+
+    final_payable_days = max(0, final_payable_days)
+
+    # Salary calculation
     monthly_salary = employee.get("monthly_salary", 0.0) or 0.0
-    per_day_salary = monthly_salary / 30 if monthly_salary > 0 else 0  # Standard 30-day calculation
-    lop_deduction = per_day_salary * (lop_days + absent_days)
-    net_salary = monthly_salary - lop_deduction
-    
+    per_day_salary = monthly_salary / total_days if total_days > 0 else 0
+    net_salary = per_day_salary * final_payable_days
+    lop_deduction = monthly_salary - net_salary
+
+    # Derived counts for backward compatibility
+    present_count = sum(1 for d in attendance_details if d["status"] in ("PF", "PA"))
+    leave_count = sum(1 for d in attendance_details if d["status"] == "PA")
+    absent_count = sum(1 for d in attendance_details if d["status"] == "A")
+
     return {
         "employee_id": employee_id,
         "emp_name": employee.get("full_name"),
         "emp_id": employee.get("emp_id"),
-        "department": employee.get("department"),
+        "department": dept,
         "team": employee.get("team"),
+        "designation": employee.get("designation"),
         "shift_type": employee.get("shift_type"),
+        "date_of_joining": employee.get("date_of_joining"),
+        "employee_status": emp_status,
         "month": month,
         "monthly_salary": monthly_salary,
+        # Spec-defined output fields
+        "total_days": total_days,
         "working_days": working_days,
-        "present_days": present_days,
-        "lop_days": lop_days,  # Now can be decimal (e.g., 2.5)
-        "leave_days": leave_days,
-        "absent_days": absent_days,
+        "weekoff_pay": weekoff_pay,
+        "extra_pay": extra_pay,
+        "lop": lop,
+        "final_payable_days": final_payable_days,
+        # Salary
         "per_day_salary": round(per_day_salary, 2),
-        "lop_deduction": round(lop_deduction, 2),
+        "lop_deduction": round(max(0, lop_deduction), 2),
         "net_salary": round(max(0, net_salary), 2),
-        "attendance_details": attendance_details
+        # Daily breakdown
+        "attendance_details": attendance_details,
+        # Backward compatibility fields
+        "present_days": present_count,
+        "lop_days": lop,
+        "leave_days": leave_count,
+        "absent_days": absent_count,
     }
 
 # ============== EMAIL HELPERS ==============
@@ -2393,7 +2777,7 @@ async def bulk_import_employees(
                     email=email,
                     username=username,
                     password=temp_password,
-                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://hrms-module-enhance.preview.emergentagent.com')}/login"
+                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://employee-portal-202.preview.emergentagent.com')}/login"
                 )
             )
             
@@ -3848,7 +4232,8 @@ async def get_payroll_data(
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
-    query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
+    # Include Active + Inactive employees (relieved within period handled by engine)
+    query = {"is_deleted": {"$ne": True}, "employee_status": {"$in": [EmployeeStatus.ACTIVE, EmployeeStatus.INACTIVE]}}
     if department and department != "All":
         query["department"] = department
     if team and team != "All":
@@ -3856,9 +4241,15 @@ async def get_payroll_data(
     
     employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
     
+    year, month_num = map(int, month.split('-'))
+    import calendar
+    days_in_month = calendar.monthrange(year, month_num)[1]
+    emp_ids = [emp["id"] for emp in employees]
+    prefetched = await _prefetch_payroll_data(emp_ids, year, month_num, days_in_month)
+
     payroll_data = []
     for emp in employees:
-        payroll = await calculate_payroll_for_employee(emp["id"], month)
+        payroll = await calculate_payroll_for_employee(emp["id"], month, employee=emp, prefetched=prefetched)
         if payroll:
             payroll_data.append(payroll)
     
@@ -3886,27 +4277,40 @@ async def get_payroll_summary(
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
-    query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
+    query = {"is_deleted": {"$ne": True}, "employee_status": {"$in": [EmployeeStatus.ACTIVE, EmployeeStatus.INACTIVE]}}
     if department and department != "All":
         query["department"] = department
     
     employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
     
-    total_employees = len(employees)
+    year, month_num = map(int, month.split('-'))
+    import calendar
+    days_in_month = calendar.monthrange(year, month_num)[1]
+    emp_ids = [emp["id"] for emp in employees]
+    prefetched = await _prefetch_payroll_data(emp_ids, year, month_num, days_in_month)
+
+    total_employees = 0
     total_salary = 0.0
     total_deductions = 0.0
     total_net_salary = 0.0
-    total_lop_days = 0
+    total_lop_days = 0.0
     total_present_days = 0
+    total_weekoff_pay = 0.0
+    total_extra_pay = 0.0
+    total_payable_days = 0.0
     
     for emp in employees:
-        payroll = await calculate_payroll_for_employee(emp["id"], month)
+        payroll = await calculate_payroll_for_employee(emp["id"], month, employee=emp, prefetched=prefetched)
         if payroll:
+            total_employees += 1
             total_salary += payroll.get("monthly_salary", 0)
             total_deductions += payroll.get("lop_deduction", 0)
             total_net_salary += payroll.get("net_salary", 0)
-            total_lop_days += payroll.get("lop_days", 0)
+            total_lop_days += payroll.get("lop", 0)
             total_present_days += payroll.get("present_days", 0)
+            total_weekoff_pay += payroll.get("weekoff_pay", 0)
+            total_extra_pay += payroll.get("extra_pay", 0)
+            total_payable_days += payroll.get("final_payable_days", 0)
     
     return {
         "month": month,
@@ -3915,7 +4319,10 @@ async def get_payroll_summary(
         "total_deductions": round(total_deductions, 2),
         "total_net_salary": round(total_net_salary, 2),
         "total_lop_days": total_lop_days,
-        "total_present_days": total_present_days
+        "total_present_days": total_present_days,
+        "total_weekoff_pay": total_weekoff_pay,
+        "total_extra_pay": total_extra_pay,
+        "total_payable_days": round(total_payable_days, 2),
     }
 
 # ============== SHIFT CONFIGURATION ROUTES ==============
