@@ -160,6 +160,7 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - **CTC Calculation Fix**: Special Allowance is now the true balancing figure (Fixed + Variable = CTC exactly). Previous bug had total exceeding CTC. Verified against reference salary table.
 - **Missed Punch → Attendance Fix (Apr 15)**: Fixed critical bug where `_update_attendance_from_missed_punch` wrote to wrong fields (`first_punch`/`last_punch` instead of `check_in`/`check_out`/`check_in_24h`/`check_out_24h`). Also fixed employee attendance API date format mismatch (`dd-MM-yyyy` vs `yyyy-MM-dd` query). Now correctly populates attendance with 12h+24h formats, recalculates `total_hours`, and logs audit trail. Migrated 5 old corrupted records.
 - **Research Designation CTC Formula**: New `calculate_salary_structure_research()` function for Research employees — uses B-percentage allocation (LTA=5.6%B, Bonus=9.9%B, Stay=30%B), no Medical/Conveyance, PF fixed at ₹1,800. Non-Research employees unchanged. Designation-based routing via `get_salary_calculator()`.
+- **Employee Deactivation Enhancement (Apr 16)**: Replaced simple confirmation with structured form modal (Type: Relieved/Terminated/Completed Internship, Date, Reason, Last Day Payable). Added Inactive Type column + filter to employee list. Extended bulk upload to support deactivation fields. Backend stores inactive_type, inactive_date, inactive_reason, last_day_payable.
 
 ## Backlog / Future Tasks
 - **P1**: Biometric Sync Dashboard
