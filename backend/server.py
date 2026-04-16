@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File as FastAPIFile, Body
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File as FastAPIFile, Body, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -1860,6 +1860,7 @@ async def get_employees(
     employment_type: Optional[str] = None,
     tier_level: Optional[str] = None,
     work_location: Optional[str] = None,
+    inactive_type: Optional[str] = None,
     search: Optional[str] = None,
     include_deleted: bool = False,
     page: int = Query(1, ge=1),
@@ -1884,6 +1885,8 @@ async def get_employees(
         query["tier_level"] = tier_level
     if work_location and work_location != "All":
         query["work_location"] = work_location
+    if inactive_type and inactive_type != "All":
+        query["inactive_type"] = inactive_type
     if search:
         query["$or"] = [
             {"full_name": {"$regex": search, "$options": "i"}},
@@ -2277,6 +2280,13 @@ async def bulk_import_employees(
                     "office_admin": "office_admin"}
         user_role = role_map.get(user_role, "employee")
         
+        # Extract deactivation fields (optional)
+        row_status = get_value(row, "Status", "Employee Status")
+        row_inactive_type = get_value(row, "Inactive Type", "Inactive_Type", "InactiveType")
+        row_inactive_date = get_value(row, "Inactive Date", "Inactive_Date", "Deactivation Date")
+        row_inactive_reason = get_value(row, "Reason", "Inactive Reason", "Deactivation Reason")
+        row_last_day_payable = get_value(row, "Last Day Payable", "Last_Day_Payable")
+        
         # Check for duplicate email
         if email:
             email_lower = email.lower()
@@ -2386,6 +2396,28 @@ async def bulk_import_employees(
             existing_emails.add(email.lower())
             existing_emp_ids.add(custom_employee_id.lower())
             existing_bio_ids.add(biometric_id.lower())
+            
+            # Handle bulk deactivation if status=inactive
+            if row_status and str(row_status).lower().strip() == "inactive":
+                deact_type = str(row_inactive_type).strip() if row_inactive_type else "Terminated"
+                parsed_inactive_date = parse_date(row_inactive_date) if row_inactive_date else get_ist_now().strftime("%Y-%m-%d")
+                if parsed_inactive_date == "__INVALID__":
+                    parsed_inactive_date = get_ist_now().strftime("%Y-%m-%d")
+                deact_reason = str(row_inactive_reason).strip() if row_inactive_reason else ""
+                ldp = str(row_last_day_payable).strip().lower() in ("yes", "true", "1") if row_last_day_payable else False
+                
+                await db.employees.update_one({"id": employee.id}, {"$set": {
+                    "is_deleted": True,
+                    "deleted_at": get_ist_now().isoformat(),
+                    "employee_status": EmployeeStatus.INACTIVE,
+                    "login_enabled": False,
+                    "inactive_type": deact_type,
+                    "inactive_date": parsed_inactive_date,
+                    "inactive_reason": deact_reason,
+                    "last_day_payable": ldp,
+                    "deactivated_by": current_user["id"]
+                }})
+                await db.users.update_one({"employee_id": employee.id}, {"$set": {"is_active": False}})
             
             results["success"] += 1
             
@@ -2726,8 +2758,9 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
     return serialize_doc(employee)
 
 @api_router.delete("/employees/{employee_id}")
-async def deactivate_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
-    """Soft delete - deactivates employee"""
+@api_router.delete("/employees/{employee_id}")
+async def deactivate_employee(employee_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """Soft delete - deactivates employee with structured deactivation data"""
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
@@ -2735,11 +2768,28 @@ async def deactivate_employee(employee_id: str, current_user: dict = Depends(get
     if not existing:
         raise HTTPException(status_code=404, detail="Employee not found")
     
+    # Parse optional body (form modal data)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    
+    inactive_type = body.get("inactive_type", "Terminated")
+    inactive_date = body.get("inactive_date", get_ist_now().strftime("%Y-%m-%d"))
+    reason = body.get("reason", "")
+    last_day_payable = body.get("last_day_payable", False)
+    
     update_data = {
         "is_deleted": True,
         "deleted_at": get_ist_now().isoformat(),
         "employee_status": EmployeeStatus.INACTIVE,
         "login_enabled": False,
+        "inactive_type": inactive_type,
+        "inactive_date": inactive_date,
+        "inactive_reason": reason,
+        "last_day_payable": last_day_payable,
+        "deactivated_by": current_user["id"],
         "updated_at": get_ist_now().isoformat()
     }
     
@@ -2749,14 +2799,12 @@ async def deactivate_employee(employee_id: str, current_user: dict = Depends(get
     await db.teams.update_one({"name": existing.get("team")}, {"$inc": {"member_count": -1}})
     
     # Deactivate the user account as well
-    username = existing.get("official_email", "").split('@')[0]
-    if username:
-        await db.users.update_one(
-            {"username": username},
-            {"$set": {"is_active": False}}
-        )
+    await db.users.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"is_active": False}}
+    )
     
-    await log_audit(current_user["id"], "deactivate", "employee", employee_id, f"Deactivated employee: {existing.get('full_name')}")
+    await log_audit(current_user["id"], "deactivate", "employee", employee_id, f"Deactivated employee: {existing.get('full_name')} | Type: {inactive_type} | Reason: {reason}")
     return {"message": "Employee deactivated successfully"}
 
 @api_router.put("/employees/{employee_id}/restore")

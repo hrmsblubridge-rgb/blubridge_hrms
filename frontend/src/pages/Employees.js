@@ -49,6 +49,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { Textarea } from '../components/ui/textarea';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Badge } from '../components/ui/badge';
@@ -148,6 +149,15 @@ const Employees = () => {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
   
+  // Deactivation form state
+  const [deactForm, setDeactForm] = useState({
+    inactive_type: 'Relieved',
+    inactive_date: new Date().toISOString().split('T')[0],
+    reason: '',
+    last_day_payable: false
+  });
+  const [inactiveTypeFilter, setInactiveTypeFilter] = useState('All');
+  
   const [form, setForm] = useState({
     full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
     date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
@@ -190,7 +200,9 @@ const Employees = () => {
         ...(filters.status !== 'All' && { status: filters.status }),
         ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
         ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
-        ...(filters.work_location !== 'All' && { work_location: filters.work_location })
+        ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
+        ...(inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
+        ...(inactiveTypeFilter !== 'All' && { include_deleted: true })
       };
       
       const [employeesRes, statsRes, teamsRes, deptsRes, allEmpRes] = await Promise.all([
@@ -213,10 +225,10 @@ const Employees = () => {
     } finally {
       setLoading(false);
     }
-  }, [getAuthHeaders, pagination.page, pagination.limit, filters]);
+  }, [getAuthHeaders, pagination.page, pagination.limit, filters, inactiveTypeFilter]);
 
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
-  useEffect(() => { fetchData(); }, [pagination.page, filters.department, filters.team, filters.status]);
+  useEffect(() => { fetchData(); }, [pagination.page, filters.department, filters.team, filters.status, inactiveTypeFilter]);
 
   const handleSearch = () => { setPagination(prev => ({ ...prev, page: 1 })); fetchData(); };
   const handleReset = () => {
@@ -505,9 +517,13 @@ const Employees = () => {
 
   const confirmDelete = async () => {
     try {
-      await axios.delete(`${API}/employees/${selectedEmployee.id}`, { headers: getAuthHeaders() });
+      await axios.delete(`${API}/employees/${selectedEmployee.id}`, {
+        headers: getAuthHeaders(),
+        data: deactForm
+      });
       toast.success('Employee deactivated successfully');
       setShowDeleteDialog(false);
+      setDeactForm({ inactive_type: 'Relieved', inactive_date: new Date().toISOString().split('T')[0], reason: '', last_day_payable: false });
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to deactivate employee');
@@ -656,6 +672,18 @@ const Employees = () => {
               </SelectContent>
             </Select>
           </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Inactive Type</Label>
+            <Select value={inactiveTypeFilter} onValueChange={(v) => setInactiveTypeFilter(v)}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-inactive-type"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                <SelectItem value="Relieved">Relieved</SelectItem>
+                <SelectItem value="Terminated">Terminated</SelectItem>
+                <SelectItem value="Completed Internship">Completed Internship</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <div className="flex items-end gap-2">
             <Button onClick={handleSearch} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="search-btn">
               <Filter className="w-4 h-4 mr-1" /> Filter
@@ -692,13 +720,14 @@ const Employees = () => {
                     <th className="whitespace-nowrap hidden xl:table-cell">Designation</th>
                     <th className="whitespace-nowrap hidden xl:table-cell">Biometric ID</th>
                     <th className="whitespace-nowrap">Status</th>
+                    <th className="whitespace-nowrap hidden xl:table-cell">Inactive Type</th>
                     <th className="whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {employees.length === 0 ? (
                     <tr>
-                      <td colSpan="9" className="text-center py-12 text-slate-500">No employees found</td>
+                      <td colSpan="10" className="text-center py-12 text-slate-500">No employees found</td>
                     </tr>
                   ) : (
                     employees.map((emp) => (
@@ -726,6 +755,11 @@ const Employees = () => {
                           <span className="text-xs font-mono">{emp.biometric_id || '-'}</span>
                         </td>
                         <td><Badge className={getStatusBadge(emp.employee_status)}>{emp.employee_status}</Badge></td>
+                        <td className="hidden xl:table-cell">
+                          {emp.inactive_type ? (
+                            <Badge variant="outline" className="text-xs border-slate-300 text-slate-600">{emp.inactive_type}</Badge>
+                          ) : <span className="text-slate-400">-</span>}
+                        </td>
                         <td>
                           <div className="flex gap-1">
                             <Button size="sm" variant="ghost" onClick={() => handleView(emp)} className="h-7 w-7 p-0 rounded-lg" data-testid={`view-${emp.id}`}>
@@ -1675,13 +1709,45 @@ const Employees = () => {
 
       {/* Delete Dialog */}
       <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <DialogContent className="bg-[#fffdf7] rounded-2xl">
+        <DialogContent className="bg-[#fffdf7] rounded-2xl max-w-md" data-testid="deactivation-modal">
           <DialogHeader>
             <DialogTitle style={{ fontFamily: 'Outfit' }}>Deactivate Employee</DialogTitle>
-            <DialogDescription>This will disable their login access and mark them as inactive.</DialogDescription>
+            <DialogDescription>Fill in the deactivation details. This will disable login access and mark the employee as inactive.</DialogDescription>
           </DialogHeader>
-          <div className="py-4">
-            <p className="text-slate-600">Are you sure you want to deactivate <span className="font-semibold">{selectedEmployee?.full_name}</span>?</p>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-sm text-slate-600">Employee</Label>
+              <Input value={selectedEmployee?.full_name || ''} readOnly className="mt-1 bg-slate-50 rounded-lg" data-testid="deact-employee-name" />
+            </div>
+            <div>
+              <Label className="text-sm text-slate-600">Date</Label>
+              <Input type="date" value={deactForm.inactive_date} onChange={(e) => setDeactForm({ ...deactForm, inactive_date: e.target.value })} className="mt-1 rounded-lg" data-testid="deact-date" />
+            </div>
+            <div>
+              <Label className="text-sm text-slate-600">Type</Label>
+              <Select value={deactForm.inactive_type} onValueChange={(v) => setDeactForm({ ...deactForm, inactive_type: v })}>
+                <SelectTrigger className="mt-1 rounded-lg" data-testid="deact-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Relieved">Relieved</SelectItem>
+                  <SelectItem value="Terminated">Terminated</SelectItem>
+                  <SelectItem value="Completed Internship">Completed Internship</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-sm text-slate-600">Reason</Label>
+              <Textarea value={deactForm.reason} onChange={(e) => setDeactForm({ ...deactForm, reason: e.target.value })} placeholder="Reason for deactivation..." className="mt-1 rounded-lg" rows={3} data-testid="deact-reason" />
+            </div>
+            <div>
+              <Label className="text-sm text-slate-600">Last Day Payable</Label>
+              <Select value={deactForm.last_day_payable ? 'yes' : 'no'} onValueChange={(v) => setDeactForm({ ...deactForm, last_day_payable: v === 'yes' })}>
+                <SelectTrigger className="mt-1 rounded-lg" data-testid="deact-ldp"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="yes">Yes</SelectItem>
+                  <SelectItem value="no">No</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDeleteDialog(false)} className="rounded-lg">Cancel</Button>
