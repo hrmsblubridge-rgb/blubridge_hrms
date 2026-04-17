@@ -92,13 +92,13 @@ const Payroll = () => {
   const handleExportCSV = () => {
     let headers, rows, filename;
     if (activeTab === 'attendance') {
-      headers = ['Sl.No', 'Emp ID', 'Name', 'Shift', ...days.map(d => `${String(d.day).padStart(2, '0')} ${d.dayName}`)];
+      headers = ['Sl.No', 'Emp ID', 'Name', 'Shift', ...days.map(d => `${String(d.day).padStart(2, '0')} ${d.dayName}`), 'Total Days', 'Working Days', 'Weekoff Pay', 'Extra Pay', 'LOP', 'Payable Days'];
       rows = payrollData.map((emp, i) => {
         const dayStatuses = days.map(day => {
           const detail = emp.attendance_details?.find(a => a.date === day.date);
           return getStatusDisplay(detail?.status, detail?.is_lop).code;
         });
-        return [i + 1, emp.emp_id, emp.emp_name, emp.shift_type, ...dayStatuses];
+        return [i + 1, emp.emp_id, emp.emp_name, emp.shift_type, ...dayStatuses, emp.total_days, emp.working_days, emp.weekoff_pay, emp.extra_pay, emp.lop, emp.final_payable_days];
       });
       filename = `payroll-attendance-${selectedMonth}.csv`;
     } else {
@@ -221,14 +221,17 @@ const Payroll = () => {
                         <div className="text-[10px]">{day.dayName}</div>
                       </th>
                     ))}
-                    <th className="px-3 py-3 text-center text-xs font-semibold text-emerald-700 bg-emerald-50 min-w-[50px]">P</th>
-                    <th className="px-3 py-3 text-center text-xs font-semibold text-red-700 bg-red-50 min-w-[50px]">LOP</th>
-                    <th className="px-3 py-3 text-center text-xs font-semibold text-amber-700 bg-amber-50 min-w-[50px]">A</th>
+                    <th className="px-3 py-3 text-center text-xs font-semibold text-slate-700 bg-slate-200 min-w-[44px]" title="Total Days">TD</th>
+                    <th className="px-3 py-3 text-center text-xs font-semibold text-blue-700 bg-blue-50 min-w-[44px]" title="Working Days">WD</th>
+                    <th className="px-3 py-3 text-center text-xs font-semibold text-indigo-700 bg-indigo-50 min-w-[44px]" title="Weekoff Pay">WP</th>
+                    <th className="px-3 py-3 text-center text-xs font-semibold text-teal-700 bg-teal-50 min-w-[44px]" title="Extra Pay">EP</th>
+                    <th className="px-3 py-3 text-center text-xs font-semibold text-red-700 bg-red-50 min-w-[44px]" title="Loss of Pay">LOP</th>
+                    <th className="px-3 py-3 text-center text-xs font-semibold text-emerald-700 bg-emerald-100 min-w-[50px]" title="Payable Days">Pay</th>
                   </tr>
                 </thead>
                 <tbody>
                   {payrollData.length === 0 ? (
-                    <tr><td colSpan={6 + days.length} className="px-4 py-12 text-center text-slate-500">No employees found</td></tr>
+                    <tr><td colSpan={9 + days.length} className="px-4 py-12 text-center text-slate-500">No employees found</td></tr>
                   ) : (
                     payrollData.map((emp, index) => (
                       <tr key={emp.employee_id} className="border-t border-slate-100 hover:bg-slate-50/50">
@@ -247,9 +250,12 @@ const Payroll = () => {
                             </td>
                           );
                         })}
-                        <td className="px-3 py-2 text-center text-sm font-semibold text-emerald-600 bg-emerald-50">{emp.present_days}</td>
-                        <td className="px-3 py-2 text-center text-sm font-semibold text-red-600 bg-red-50">{emp.lop_days}</td>
-                        <td className="px-3 py-2 text-center text-sm font-semibold text-amber-600 bg-amber-50">{emp.absent_days}</td>
+                        <td className="px-3 py-2 text-center text-sm font-medium text-slate-700 bg-slate-50">{emp.total_days}</td>
+                        <td className="px-3 py-2 text-center text-sm font-medium text-blue-600 bg-blue-50">{emp.working_days}</td>
+                        <td className="px-3 py-2 text-center text-sm font-medium text-indigo-600 bg-indigo-50">{emp.weekoff_pay}</td>
+                        <td className="px-3 py-2 text-center text-sm font-medium text-teal-600 bg-teal-50">{emp.extra_pay}</td>
+                        <td className="px-3 py-2 text-center text-sm font-semibold text-red-600 bg-red-50">{emp.lop > 0 ? emp.lop : <span className="text-slate-400">0</span>}</td>
+                        <td className="px-3 py-2 text-center text-sm font-bold text-emerald-700 bg-emerald-100">{emp.final_payable_days}</td>
                       </tr>
                     ))
                   )}
