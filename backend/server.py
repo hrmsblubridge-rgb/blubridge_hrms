@@ -1720,10 +1720,15 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
         if is_future:
             if is_sun:
                 detail["status"] = "Su"
+                weekoff_pay += 1
+                detail["weekoff_value"] = 1
             elif is_hol:
                 detail["status"] = "H"
+                weekoff_pay += 1
+                detail["weekoff_value"] = 1
             else:
                 detail["status"] = "NA"
+                working_days += 1
             attendance_details.append(detail)
             continue
 
