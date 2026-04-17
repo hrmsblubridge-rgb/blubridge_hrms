@@ -179,6 +179,8 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - **Frontend Status Display**: Updated getStatusDisplay() and legend to handle all new payroll codes
 - **Backward Compatibility**: Kept present_days, lop_days, absent_days, leave_days for existing consumers
 
+- **Employee Reactivation (Apr 17)**: New `PUT /api/employees/{id}/reactivate` endpoint restores Inactive employees to Active status, re-enables login (is_active=True), preserves deactivation history (inactive_type, inactive_date, reason kept). Frontend shows green Activate button (UserCheck icon) for inactive employees in table, and 'Reactivate Employee' button in employee detail view.
+- **Inactive Details Display (Apr 17)**: Employee detail Profile tab now shows 'Deactivation Details' section with inactive_type, inactive_date, reason, and last_day_payable. Only visible for employees with inactive history.
 - **Global Employee Autocomplete (Apr 17)**: Created reusable `EmployeeAutocomplete` component (`/app/frontend/src/components/EmployeeAutocomplete.js`) with 350ms debounce, dropdown suggestions (Name|EMP ID|Email|Dept), click-outside-to-close. Applied to 5 modules: Employees, Attendance, Leave, Late Requests, Early Out.
 - **Payroll Sticky Header (Apr 17)**: Made Attendance View table header fixed during vertical scroll (`position:sticky; top:0; z-index:20`). Table body scrolls within `max-h-[65vh]` container while header stays visible.
 - **Inactive Employee Payroll Fix (Apr 17)**: Inactive employees without `inactive_date` are now excluded from payroll calculation (returns None). Employees WITH `inactive_date` only have payroll calculated up to that date — days after show "R" status and are excluded from Working Days, Weekoff Pay, Extra Pay, and LOP.
