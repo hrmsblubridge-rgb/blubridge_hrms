@@ -158,6 +158,65 @@ const Employees = () => {
   });
   const [inactiveTypeFilter, setInactiveTypeFilter] = useState('All');
   
+  // Autocomplete state
+  const [suggestions, setSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const searchBoxRef = useRef(null);
+  const debounceRef = useRef(null);
+
+  const fetchSuggestions = useCallback(async (query) => {
+    if (!query || query.trim().length < 1) {
+      setSuggestions([]);
+      setShowSuggestions(false);
+      return;
+    }
+    try {
+      setLoadingSuggestions(true);
+      const headers = getAuthHeaders();
+      const res = await axios.get(`${API}/employees/autocomplete`, { headers, params: { q: query.trim() } });
+      setSuggestions(res.data || []);
+      setShowSuggestions(true);
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }, [getAuthHeaders]);
+
+  const handleSearchInput = (value) => {
+    setFilters(prev => ({ ...prev, search: value }));
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchSuggestions(value), 350);
+  };
+
+  const handleSelectSuggestion = (emp) => {
+    setFilters(prev => ({ ...prev, search: emp.full_name }));
+    setShowSuggestions(false);
+    setSuggestions([]);
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  // Trigger fetch when search changes from autocomplete selection
+  const prevSearchRef = useRef(filters.search);
+  useEffect(() => {
+    if (prevSearchRef.current !== filters.search && !showSuggestions && filters.search) {
+      fetchData();
+    }
+    prevSearchRef.current = filters.search;
+  }, [filters.search, showSuggestions]);
+
+  // Close suggestions on outside click
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+  
   const [form, setForm] = useState({
     full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
     date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
@@ -229,9 +288,10 @@ const Employees = () => {
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
   useEffect(() => { fetchData(); }, [pagination.page, filters.department, filters.team, filters.status, inactiveTypeFilter]);
 
-  const handleSearch = () => { setPagination(prev => ({ ...prev, page: 1 })); fetchData(); };
+  const handleSearch = () => { setShowSuggestions(false); setPagination(prev => ({ ...prev, page: 1 })); fetchData(); };
   const handleReset = () => {
     setFilters({ search: '', department: 'All', team: 'All', status: 'All', employment_type: 'All', tier_level: 'All', work_location: 'All' });
+    setSuggestions([]); setShowSuggestions(false);
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
@@ -636,9 +696,46 @@ const Employees = () => {
         <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4">
           <div className="lg:col-span-2">
             <Label className="text-sm text-slate-600 mb-1.5 block">Search</Label>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <Input placeholder="Name, email, ID..." value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} onKeyPress={(e) => e.key === 'Enter' && handleSearch()} className="pl-10 rounded-lg" data-testid="filter-search" />
+            <div className="relative" ref={searchBoxRef}>
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 z-10" />
+              <Input
+                placeholder="Name, email, ID..."
+                value={filters.search}
+                onChange={(e) => handleSearchInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { setShowSuggestions(false); handleSearch(); } }}
+                onFocus={() => { if (suggestions.length > 0) setShowSuggestions(true); }}
+                className="pl-10 rounded-lg"
+                data-testid="filter-search"
+                autoComplete="off"
+              />
+              {showSuggestions && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-[280px] overflow-y-auto" data-testid="search-suggestions">
+                  {loadingSuggestions ? (
+                    <div className="px-4 py-3 text-sm text-slate-400">Searching...</div>
+                  ) : suggestions.length === 0 ? (
+                    <div className="px-4 py-3 text-sm text-slate-400">No matches found</div>
+                  ) : (
+                    suggestions.map((emp) => (
+                      <button
+                        key={emp.id}
+                        type="button"
+                        className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex items-center gap-3 border-b border-slate-100 last:border-0 transition-colors"
+                        onClick={() => handleSelectSuggestion(emp)}
+                        data-testid={`suggestion-${emp.emp_id}`}
+                      >
+                        <div className="w-8 h-8 rounded-full bg-[#063c88]/10 flex items-center justify-center text-xs font-bold text-[#063c88] shrink-0">
+                          {emp.full_name?.charAt(0)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-slate-800 truncate">{emp.full_name}</div>
+                          <div className="text-xs text-slate-500 truncate">{emp.emp_id} &middot; {emp.official_email}</div>
+                        </div>
+                        <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded shrink-0">{emp.department}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
           </div>
           <div>

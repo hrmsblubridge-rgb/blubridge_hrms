@@ -2311,6 +2311,30 @@ async def get_all_employees(current_user: dict = Depends(get_current_user)):
     employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1, "custom_employee_id": 1, "biometric_id": 1}).to_list(1000)
     return employees
 
+@api_router.get("/employees/autocomplete")
+async def employee_autocomplete(
+    q: str = Query("", min_length=0),
+    current_user: dict = Depends(get_current_user)
+):
+    """Lightweight autocomplete: returns max 10 matches by name/email/emp_id."""
+    if not q or len(q.strip()) < 1:
+        return []
+    q = q.strip()
+    query = {
+        "is_deleted": {"$ne": True},
+        "$or": [
+            {"full_name": {"$regex": q, "$options": "i"}},
+            {"official_email": {"$regex": q, "$options": "i"}},
+            {"emp_id": {"$regex": q, "$options": "i"}},
+            {"custom_employee_id": {"$regex": q, "$options": "i"}},
+        ]
+    }
+    results = await db.employees.find(
+        query,
+        {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "emp_id": 1, "department": 1}
+    ).limit(10).to_list(10)
+    return results
+
 @api_router.get("/employees/stats")
 async def get_employee_stats(current_user: dict = Depends(get_current_user)):
     """Get employee statistics for dashboard"""
