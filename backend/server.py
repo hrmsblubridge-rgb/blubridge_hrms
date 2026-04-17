@@ -1724,8 +1724,7 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 detail["weekoff_value"] = 1
             elif is_hol:
                 detail["status"] = "H"
-                weekoff_pay += 1
-                detail["weekoff_value"] = 1
+                # Holidays do NOT contribute to weekoff — only extra_pay if worked
             else:
                 detail["status"] = "NA"
                 working_days += 1
@@ -1735,8 +1734,8 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
         att = attendance_map.get(date_dd)
         leave = leave_map.get(date_iso)
 
-        # ===== SECTION 5: SUNDAY / HOLIDAY =====
-        if is_sun or is_hol:
+        # ===== SECTION 5A: SUNDAY =====
+        if is_sun:
             weekoff_pay += 1
             detail["weekoff_value"] = 1
 
@@ -1754,9 +1753,33 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     extra_pay += 0.5
                     detail["extra_value"] = 0.5
                 else:
-                    detail["status"] = "WO" if is_sun else "OH"
+                    detail["status"] = "WO"
             else:
-                detail["status"] = "WO" if is_sun else "OH"
+                detail["status"] = "WO"
+
+            attendance_details.append(detail)
+            continue
+
+        # ===== SECTION 5B: HOLIDAY (non-Sunday) =====
+        if is_hol:
+            # Holiday: NO weekoff pay. Only extra_pay if employee worked.
+            if att:
+                detail["check_in"] = att.get("check_in")
+                detail["check_out"] = att.get("check_out")
+                detail["total_hours"] = att.get("total_hours")
+                hw = _calc_hours_worked(att)
+                if hw >= full_hours:
+                    detail["status"] = "PF"
+                    extra_pay += 1
+                    detail["extra_value"] = 1
+                elif hw >= half_hours:
+                    detail["status"] = "PH"
+                    extra_pay += 0.5
+                    detail["extra_value"] = 0.5
+                else:
+                    detail["status"] = "OH"
+            else:
+                detail["status"] = "OH"
 
             attendance_details.append(detail)
             continue
