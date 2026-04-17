@@ -179,6 +179,7 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - **Frontend Status Display**: Updated getStatusDisplay() and legend to handle all new payroll codes
 - **Backward Compatibility**: Kept present_days, lop_days, absent_days, leave_days for existing consumers
 
+- **Payroll Attendance View Column Labels & Top Scroll (Apr 17)**: Expanded summary column headers from abbreviations (TD/WD/WP/EP/Pay) to full text (Total Days, Working Days, Weekoff Pay, Extra Pay, Payable Days). Added synchronized top horizontal scrollbar above the table.
 - **Payroll Attendance View Summary Columns (Apr 17)**: Added 6 summary columns to the Attendance View tab: Total Days (TD), Working Days (WD), Weekoff Pay (WP), Extra Pay (EP), LOP, Payable Days (Pay). Values sourced directly from backend payroll engine. CSV export updated to include new columns.
 - **Employee Search Autocomplete (Apr 17)**: Converted plain search box to autocomplete with dropdown suggestions showing Name | EMP ID | Email | Department. Backend `GET /api/employees/autocomplete?q=` endpoint with case-insensitive regex, max 10 results. Frontend 350ms debounce, "No matches found" for empty, click-outside-to-close.
 
