@@ -3247,6 +3247,41 @@ async def restore_employee(employee_id: str, current_user: dict = Depends(get_cu
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     return serialize_doc(employee)
 
+@api_router.put("/employees/{employee_id}/reactivate")
+async def reactivate_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Reactivate an inactive employee — restores login access, preserves deactivation history."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    existing = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if existing.get("employee_status") != EmployeeStatus.INACTIVE:
+        raise HTTPException(status_code=400, detail="Employee is not inactive")
+
+    update_data = {
+        "employee_status": EmployeeStatus.ACTIVE,
+        "login_enabled": True,
+        "updated_at": get_ist_now().isoformat()
+    }
+
+    await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+
+    # Re-enable user login
+    await db.users.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"is_active": True}}
+    )
+
+    # Update team member count
+    await db.teams.update_one({"name": existing.get("team")}, {"$inc": {"member_count": 1}})
+
+    await log_audit(current_user["id"], "reactivate", "employee", employee_id,
+                    f"Reactivated employee: {existing.get('full_name')} (was {existing.get('inactive_type', 'N/A')} since {existing.get('inactive_date', 'N/A')})")
+
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    return serialize_doc(employee)
+
 class AvatarUpdate(BaseModel):
     avatar_url: str
     avatar_public_id: Optional[str] = None

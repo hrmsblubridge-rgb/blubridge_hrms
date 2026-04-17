@@ -544,6 +544,16 @@ const Employees = () => {
     }
   };
 
+  const handleReactivate = async (employee) => {
+    try {
+      await axios.put(`${API}/employees/${employee.id}/reactivate`, {}, { headers: getAuthHeaders() });
+      toast.success(`${employee.full_name} has been reactivated`);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to reactivate employee');
+    }
+  };
+
   const handleExportCSV = () => {
     const headers = ['Emp ID', 'Employee ID', 'Biometric ID', 'Name', 'Email', 'Department', 'Team', 'Designation', 'Status', 'Employment Type', 'Work Location'];
     const rows = employees.map(e => [e.emp_id, e.custom_employee_id || '', e.biometric_id || '', e.full_name, e.official_email, e.department, e.team, e.designation, e.employee_status, e.employment_type, e.work_location]);
@@ -787,9 +797,15 @@ const Employees = () => {
                                 <Button size="sm" variant="ghost" onClick={() => handleEdit(emp)} className="h-7 w-7 p-0 rounded-lg" data-testid={`edit-${emp.id}`}>
                                   <Edit className="w-4 h-4 text-blue-500" />
                                 </Button>
-                                <Button size="sm" variant="ghost" onClick={() => handleDelete(emp)} className="h-7 w-7 p-0 rounded-lg" data-testid={`delete-${emp.id}`}>
-                                  <Trash2 className="w-4 h-4 text-red-500" />
-                                </Button>
+                                {emp.employee_status === 'Inactive' ? (
+                                  <Button size="sm" variant="ghost" onClick={() => handleReactivate(emp)} className="h-7 w-7 p-0 rounded-lg" title="Reactivate" data-testid={`activate-${emp.id}`}>
+                                    <UserCheck className="w-4 h-4 text-emerald-600" />
+                                  </Button>
+                                ) : (
+                                  <Button size="sm" variant="ghost" onClick={() => handleDelete(emp)} className="h-7 w-7 p-0 rounded-lg" data-testid={`delete-${emp.id}`}>
+                                    <Trash2 className="w-4 h-4 text-red-500" />
+                                  </Button>
+                                )}
                               </>
                             )}
                           </div>
@@ -1308,9 +1324,26 @@ const Employees = () => {
                       </div>
                     </div>
                   </div>
+                  {/* Inactive Details — shown only if employee has inactive history */}
+                  {(selectedEmployee.employee_status === 'Inactive' || selectedEmployee.inactive_type) && (
+                    <div className="mt-4 p-4 rounded-xl border border-slate-200 bg-slate-50/60 space-y-3" data-testid="inactive-details">
+                      <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide flex items-center gap-2">
+                        <UserX className="w-4 h-4" /> Deactivation Details
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div><span className="text-slate-500">Type:</span> <span className="font-medium text-slate-700">{selectedEmployee.inactive_type || '-'}</span></div>
+                        <div><span className="text-slate-500">Date:</span> <span className="font-medium text-slate-700">{selectedEmployee.inactive_date || '-'}</span></div>
+                        <div><span className="text-slate-500">Reason:</span> <span className="font-medium text-slate-700">{selectedEmployee.inactive_reason || '-'}</span></div>
+                        <div><span className="text-slate-500">Last Day Payable:</span> <span className="font-medium text-slate-700">{selectedEmployee.last_day_payable ? 'Yes' : 'No'}</span></div>
+                      </div>
+                      {canEdit && selectedEmployee.employee_status === 'Inactive' && (
+                        <Button size="sm" onClick={() => handleReactivate(selectedEmployee)} className="mt-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg" data-testid="reactivate-btn">
+                          <UserCheck className="w-4 h-4 mr-1" /> Reactivate Employee
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </TabsContent>
-                
-                {/* Education & Experience Tab */}
                 <TabsContent value="education" className="mt-4">
                   {loadingEduExp ? (
                     <div className="flex items-center justify-center py-12">
