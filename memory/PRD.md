@@ -179,6 +179,8 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - **Frontend Status Display**: Updated getStatusDisplay() and legend to handle all new payroll codes
 - **Backward Compatibility**: Kept present_days, lop_days, absent_days, leave_days for existing consumers
 
+- **Employee Search Autocomplete (Apr 17)**: Converted plain search box to autocomplete with dropdown suggestions showing Name | EMP ID | Email | Department. Backend `GET /api/employees/autocomplete?q=` endpoint with case-insensitive regex, max 10 results. Frontend 350ms debounce, "No matches found" for empty, click-outside-to-close.
+
 ## Backlog / Future Tasks
 - **P1**: Biometric Sync Dashboard
 - **P2**: Leave Balance Tracking endpoint
