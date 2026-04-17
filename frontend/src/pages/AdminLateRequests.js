@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Clock, Search, Check, X, Plus, Eye, AlertTriangle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
@@ -120,7 +121,7 @@ const AdminLateRequests = () => {
         {isHR && <Button onClick={() => setShowApply(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-late-btn"><Plus className="w-4 h-4 mr-2" /> Apply for Employee</Button>}
       </div>
 
-      <div className="card-flat p-4"><div className="relative max-w-sm"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" /><Input placeholder="Search employee..." value={searchName} onChange={e => setSearchName(e.target.value)} className="pl-10 rounded-lg" /></div></div>
+      <div className="card-flat p-4"><div className="max-w-sm"><EmployeeAutocomplete value={searchName} onChange={setSearchName} onSelect={(emp) => setSearchName(emp.full_name)} placeholder="Search employee..." data-testid="late-search" /></div></div>
 
       <div className="card-premium overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab}>

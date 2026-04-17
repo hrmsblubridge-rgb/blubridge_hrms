@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
 import { 
   CalendarCheck, 
   Search, 
@@ -242,10 +243,13 @@ const Attendance = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
           <div>
             <label className="text-sm text-slate-600 mb-1.5 block font-medium">Employee Name</label>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <Input placeholder="Search..." value={filters.empName} onChange={(e) => setFilters({ ...filters, empName: e.target.value })} className="pl-10 rounded-lg" data-testid="search-emp-name" />
-            </div>
+            <EmployeeAutocomplete
+              value={filters.empName}
+              onChange={(val) => setFilters({ ...filters, empName: val })}
+              onSelect={(emp) => setFilters({ ...filters, empName: emp.full_name })}
+              placeholder="Search employee..."
+              data-testid="search-emp-name"
+            />
           </div>
           <div>
             <label className="text-sm text-slate-600 mb-1.5 block font-medium">Department</label>

@@ -1559,6 +1559,9 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     relieving_date = None
     if emp_status == EmployeeStatus.INACTIVE:
         relieving_date = _parse_date_flex(employee.get("inactive_date"))
+        # Inactive without a date → cannot calculate payroll
+        if not relieving_date:
+            return None
 
     payroll_start = date(year, month_num, 1)
     payroll_end = date(year, month_num, days_in_month)

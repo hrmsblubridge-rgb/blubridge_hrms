@@ -254,25 +254,25 @@ const Payroll = () => {
             >
               <div style={{ width: tableWidth || '100%', height: '1px' }} />
             </div>
-            <div className="overflow-x-auto" ref={tableScrollRef} onScroll={handleTableScroll}>
+            <div className="overflow-x-auto overflow-y-auto max-h-[65vh]" ref={tableScrollRef} onScroll={handleTableScroll}>
               <table className="w-full border-collapse min-w-max">
-                <thead>
-                  <tr className="bg-gradient-to-r from-slate-100 to-slate-50">
-                    <th className="px-3 py-3 text-left text-xs font-semibold text-slate-600 sticky left-0 bg-slate-100 z-10 w-[50px]">Sl</th>
-                    <th className="px-3 py-3 text-left text-xs font-semibold text-slate-600 sticky left-[50px] bg-slate-100 z-10 min-w-[140px]">Name</th>
-                    <th className="px-3 py-3 text-left text-xs font-semibold text-slate-600 sticky left-[190px] bg-slate-100 z-10 min-w-[80px]">Shift</th>
+                <thead className="sticky top-0 z-20">
+                  <tr>
+                    <th className="px-3 py-3 text-left text-xs font-semibold text-slate-600 sticky left-0 bg-slate-100 z-30 w-[50px]">Sl</th>
+                    <th className="px-3 py-3 text-left text-xs font-semibold text-slate-600 sticky left-[50px] bg-slate-100 z-30 min-w-[140px]">Name</th>
+                    <th className="px-3 py-3 text-left text-xs font-semibold text-slate-600 sticky left-[190px] bg-slate-100 z-30 min-w-[80px]">Shift</th>
                     {days.map((day) => (
-                      <th key={day.day} className={`px-1 py-2 text-center text-xs font-medium min-w-[36px] ${day.isSunday ? 'bg-slate-50 text-slate-400' : 'text-slate-600'}`}>
+                      <th key={day.day} className={`px-1 py-2 text-center text-xs font-medium min-w-[36px] ${day.isSunday ? 'bg-slate-100 text-slate-400' : 'bg-slate-100 text-slate-600'}`}>
                         <div>{String(day.day).padStart(2, '0')}</div>
                         <div className="text-[10px]">{day.dayName}</div>
                       </th>
                     ))}
                     <th className="px-2 py-3 text-center text-[11px] font-semibold text-slate-700 bg-slate-200 min-w-[62px] whitespace-nowrap">Total Days</th>
-                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-blue-700 bg-blue-50 min-w-[68px] whitespace-nowrap">Working Days</th>
-                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-indigo-700 bg-indigo-50 min-w-[72px] whitespace-nowrap">Weekoff Pay</th>
-                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-teal-700 bg-teal-50 min-w-[62px] whitespace-nowrap">Extra Pay</th>
-                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-red-700 bg-red-50 min-w-[44px] whitespace-nowrap">LOP</th>
-                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-emerald-700 bg-emerald-100 min-w-[76px] whitespace-nowrap">Payable Days</th>
+                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-blue-700 bg-blue-100 min-w-[68px] whitespace-nowrap">Working Days</th>
+                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-indigo-700 bg-indigo-100 min-w-[72px] whitespace-nowrap">Weekoff Pay</th>
+                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-teal-700 bg-teal-100 min-w-[62px] whitespace-nowrap">Extra Pay</th>
+                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-red-700 bg-red-100 min-w-[44px] whitespace-nowrap">LOP</th>
+                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-emerald-700 bg-emerald-200 min-w-[76px] whitespace-nowrap">Payable Days</th>
                   </tr>
                 </thead>
                 <tbody>
