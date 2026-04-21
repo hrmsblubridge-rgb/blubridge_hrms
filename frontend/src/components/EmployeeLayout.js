@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import NotificationBell from './NotificationBell';
+import axios from 'axios';
+import { toast } from 'sonner';
 import { 
   LayoutDashboard, 
   CalendarCheck, 
@@ -20,7 +22,8 @@ import {
   Wallet,
   Clock,
   LogOut as LogOutIcon,
-  Fingerprint
+  Fingerprint,
+  HelpCircle
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -48,7 +51,7 @@ const navItems = [
 ];
 
 const EmployeeLayout = ({ children }) => {
-  const { user, logout } = useAuth();
+  const { user, token, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -56,6 +59,28 @@ const EmployeeLayout = ({ children }) => {
   const handleLogout = () => {
     logout();
     navigate('/login');
+  };
+
+  const handleDownloadHelp = async () => {
+    try {
+      toast.info('Preparing your help guide...');
+      const res = await axios.get(
+        `${process.env.REACT_APP_BACKEND_URL}/api/help/download`,
+        { headers: { Authorization: `Bearer ${token}` }, responseType: 'blob' }
+      );
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'BluBridge_HRMS_Employee_User_Guide.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Help guide downloaded');
+    } catch (err) {
+      toast.error('Failed to download help guide');
+    }
   };
 
   const getPageTitle = () => {
@@ -199,6 +224,14 @@ const EmployeeLayout = ({ children }) => {
                   >
                     <User className="w-4 h-4 mr-2" />
                     My Profile
+                  </DropdownMenuItem>
+                  <DropdownMenuItem 
+                    onClick={handleDownloadHelp}
+                    className="cursor-pointer rounded-lg"
+                    data-testid="download-help-guide-btn"
+                  >
+                    <HelpCircle className="w-4 h-4 mr-2" />
+                    Download Help Guide
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="my-1" />
                   <DropdownMenuItem 

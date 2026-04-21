@@ -7990,6 +7990,30 @@ async def edit_missed_punch(request_id: str, data: MissedPunchCreate, current_us
     updated = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
     return serialize_doc(updated)
 
+# ---------------------------------------------------------------------------
+# Help documentation — downloadable role-specific PDF
+# ---------------------------------------------------------------------------
+from help_docs import generate_help_pdf, ROLE_META  # noqa: E402
+
+
+@api_router.get("/help/download")
+async def download_help_guide(current_user: dict = Depends(get_current_user)):
+    """Return a role-specific BluBridge HRMS User Guide PDF for the logged-in user."""
+    role = (current_user.get("role") or "employee").lower()
+    user_name = current_user.get("name")
+    pdf_bytes = generate_help_pdf(role=role, user_name=user_name)
+
+    role_title = ROLE_META.get(role, ROLE_META["employee"])["title"]
+    safe_role = role_title.replace(" ", "_")
+    filename = f"BluBridge_HRMS_{safe_role}_User_Guide.pdf"
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # Include router
 app.include_router(api_router)
 

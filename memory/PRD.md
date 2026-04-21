@@ -213,3 +213,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - `GET /api/roles/users` - List users with roles
 - `PUT /api/roles/users/{id}/role` - Update user role
 - `GET /api/roles/permissions` - Permission matrix
+- `GET /api/help/download` - Download role-specific User Guide PDF (HR / SysAdmin / OfficeAdmin / Employee)
+
+## Changelog
+- **2026-04-21** Added Role-based Help Guide PDF download.
+  - New file `/app/backend/help_docs.py` with step-by-step content for all 4 roles.
+  - New endpoint `GET /api/help/download` returns role-aware PDF via reportlab.
+  - "Download Help Guide" added to profile dropdown in both `Layout.js` (admins) and `EmployeeLayout.js` (employees).
+  - No help content rendered in UI (download-only as requested).

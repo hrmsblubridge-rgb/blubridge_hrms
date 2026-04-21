@@ -3,6 +3,7 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import NotificationBell from './NotificationBell';
 import axios from 'axios';
+import { toast } from 'sonner';
 import { 
   LayoutDashboard, 
   CalendarCheck, 
@@ -30,7 +31,8 @@ import {
   Clock,
   LogOut as LogOutIcon,
   Fingerprint,
-  Shield
+  Shield,
+  HelpCircle
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -116,6 +118,29 @@ const Layout = ({ children }) => {
   const handleLogout = () => {
     logout();
     navigate('/login');
+  };
+
+  const handleDownloadHelp = async () => {
+    try {
+      toast.info('Preparing your help guide...');
+      const res = await axios.get(
+        `${process.env.REACT_APP_BACKEND_URL}/api/help/download`,
+        { headers: { Authorization: `Bearer ${token}` }, responseType: 'blob' }
+      );
+      const blob = new Blob([res.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const roleSlug = (roleLabels[user?.role] || user?.role || 'User').replace(/\s+/g, '_');
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `BluBridge_HRMS_${roleSlug}_User_Guide.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Help guide downloaded');
+    } catch (err) {
+      toast.error('Failed to download help guide');
+    }
   };
 
   const getPageTitle = () => {
@@ -327,6 +352,14 @@ const Layout = ({ children }) => {
                   >
                     <KeyRound className="w-4 h-4 mr-2" />
                     Change Password
+                  </DropdownMenuItem>
+                  <DropdownMenuItem 
+                    onClick={handleDownloadHelp}
+                    className="cursor-pointer rounded-lg"
+                    data-testid="download-help-guide-btn"
+                  >
+                    <HelpCircle className="w-4 h-4 mr-2" />
+                    Download Help Guide
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="my-1" />
                   <DropdownMenuItem 
