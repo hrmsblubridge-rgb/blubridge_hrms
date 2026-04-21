@@ -14,6 +14,10 @@ from reportlab.platypus import (
     ListFlowable, ListItem, KeepTogether
 )
 
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
 # ---------------------------------------------------------------------------
 # Role metadata
 # ---------------------------------------------------------------------------
@@ -726,3 +730,173 @@ def generate_help_pdf(role: str, user_name: str | None = None) -> bytes:
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
     return buffer.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Excel builder
+# ---------------------------------------------------------------------------
+def generate_help_xlsx(role: str, user_name: str | None = None) -> bytes:
+    """Return an XLSX workbook (bytes) for the given role."""
+    role = (role or "employee").lower()
+    if role not in ROLE_CONTENT:
+        role = "employee"
+
+    meta = ROLE_META[role]
+    modules = ROLE_CONTENT[role]
+
+    wb = openpyxl.Workbook()
+
+    # --- Colours & styles ---
+    navy = "FF063C88"
+    navy_soft = "FFE7EEF7"
+    grey = "FF475569"
+    slate = "FF1E293B"
+    thin = Side(border_style="thin", color="FFCBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    title_font = Font(name="Calibri", size=18, bold=True, color="FFFFFFFF")
+    title_fill = PatternFill("solid", fgColor=navy)
+    h2_font = Font(name="Calibri", size=13, bold=True, color="FFFFFFFF")
+    h2_fill = PatternFill("solid", fgColor=navy)
+    label_font = Font(name="Calibri", size=11, bold=True, color=slate)
+    label_fill = PatternFill("solid", fgColor=navy_soft)
+    body_font = Font(name="Calibri", size=11, color=slate)
+    muted_font = Font(name="Calibri", size=10, italic=True, color=grey)
+    tip_font = Font(name="Calibri", size=10, italic=True, color=navy)
+    step_num_font = Font(name="Calibri", size=11, bold=True, color=navy)
+    wrap_top = Alignment(wrap_text=True, vertical="top")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    # --- Overview sheet ---
+    ws = wb.active
+    ws.title = "Overview"
+    ws.column_dimensions["A"].width = 22
+    ws.column_dimensions["B"].width = 90
+
+    ws.merge_cells("A1:B1")
+    c = ws["A1"]
+    c.value = f"BluBridge HRMS — {meta['title']} User Guide"
+    c.font = title_font
+    c.fill = title_fill
+    c.alignment = center
+    ws.row_dimensions[1].height = 34
+
+    rows = [
+        ("Role", meta["title"]),
+        ("Generated On", datetime.utcnow().strftime("%d %b %Y")),
+    ]
+    if user_name:
+        rows.insert(0, ("Prepared For", user_name))
+    rows.append(("Overview", meta["intro"]))
+
+    r = 3
+    for label, value in rows:
+        ws.cell(row=r, column=1, value=label).font = label_font
+        ws.cell(row=r, column=1).fill = label_fill
+        ws.cell(row=r, column=1).alignment = wrap_top
+        ws.cell(row=r, column=1).border = border
+        ws.cell(row=r, column=2, value=value).font = body_font
+        ws.cell(row=r, column=2).alignment = wrap_top
+        ws.cell(row=r, column=2).border = border
+        if label == "Overview":
+            ws.row_dimensions[r].height = 80
+        else:
+            ws.row_dimensions[r].height = 22
+        r += 1
+
+    # Table of Contents
+    r += 1
+    ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=2)
+    toc_title = ws.cell(row=r, column=1, value="Table of Contents")
+    toc_title.font = h2_font
+    toc_title.fill = h2_fill
+    toc_title.alignment = center
+    ws.row_dimensions[r].height = 26
+    r += 1
+    for i, (title, *_rest) in enumerate(modules, start=1):
+        ws.cell(row=r, column=1, value=f"{i}.").font = step_num_font
+        ws.cell(row=r, column=1).alignment = Alignment(horizontal="center")
+        ws.cell(row=r, column=2, value=title).font = body_font
+        r += 1
+
+    # --- One sheet per module ---
+    used_titles = set()
+    for idx, (title, desc, steps, tips) in enumerate(modules, start=1):
+        # Excel tab names: max 31 chars, no : \ / ? * [ ]
+        clean = "".join(ch for ch in title if ch not in ":\\/?*[]")
+        base = f"{idx:02d}. {clean}"[:31]
+        sheet_name = base
+        n = 2
+        while sheet_name in used_titles:
+            sheet_name = f"{base[:28]}_{n}"
+            n += 1
+        used_titles.add(sheet_name)
+        s = wb.create_sheet(sheet_name)
+        s.column_dimensions["A"].width = 6
+        s.column_dimensions["B"].width = 95
+
+        # Title
+        s.merge_cells("A1:B1")
+        t = s["A1"]
+        t.value = f"{idx}. {title}"
+        t.font = title_font
+        t.fill = title_fill
+        t.alignment = center
+        s.row_dimensions[1].height = 30
+
+        # Description
+        s.merge_cells("A3:B3")
+        d = s["A3"]
+        d.value = desc
+        d.font = muted_font
+        d.alignment = wrap_top
+        s.row_dimensions[3].height = 32
+
+        # Steps header
+        s.merge_cells("A5:B5")
+        sh = s["A5"]
+        sh.value = "Step-by-step"
+        sh.font = label_font
+        sh.fill = label_fill
+        sh.alignment = Alignment(vertical="center")
+        s.row_dimensions[5].height = 22
+
+        row = 6
+        for i, step in enumerate(steps, start=1):
+            sc = s.cell(row=row, column=1, value=i)
+            sc.font = step_num_font
+            sc.alignment = Alignment(horizontal="center", vertical="top")
+            sc.border = border
+            bc = s.cell(row=row, column=2, value=step)
+            bc.font = body_font
+            bc.alignment = wrap_top
+            bc.border = border
+            # rough height by length
+            s.row_dimensions[row].height = max(22, 16 * (1 + len(step) // 90))
+            row += 1
+
+        if tips:
+            row += 1
+            s.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
+            th = s.cell(row=row, column=1, value="Tips")
+            th.font = label_font
+            th.fill = label_fill
+            th.alignment = Alignment(vertical="center")
+            s.row_dimensions[row].height = 22
+            row += 1
+            for tip in tips:
+                s.cell(row=row, column=1, value="•").alignment = Alignment(horizontal="center")
+                s.cell(row=row, column=1).font = tip_font
+                tc = s.cell(row=row, column=2, value=tip)
+                tc.font = tip_font
+                tc.alignment = wrap_top
+                s.row_dimensions[row].height = max(20, 16 * (1 + len(tip) // 90))
+                row += 1
+
+        # Freeze the title row
+        s.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+

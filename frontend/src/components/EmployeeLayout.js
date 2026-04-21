@@ -23,7 +23,8 @@ import {
   Clock,
   LogOut as LogOutIcon,
   Fingerprint,
-  HelpCircle
+  HelpCircle,
+  FileSpreadsheet
 } from 'lucide-react';
 import { Button } from './ui/button';
 import {
@@ -61,18 +62,22 @@ const EmployeeLayout = ({ children }) => {
     navigate('/login');
   };
 
-  const handleDownloadHelp = async () => {
+  const handleDownloadHelp = async (format = 'pdf') => {
     try {
-      toast.info('Preparing your help guide...');
+      toast.info(`Preparing ${format === 'xlsx' ? 'Excel' : 'PDF'} help guide...`);
       const res = await axios.get(
-        `${process.env.REACT_APP_BACKEND_URL}/api/help/download`,
+        `${process.env.REACT_APP_BACKEND_URL}/api/help/download?format=${format}`,
         { headers: { Authorization: `Bearer ${token}` }, responseType: 'blob' }
       );
-      const blob = new Blob([res.data], { type: 'application/pdf' });
+      const mime = format === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'application/pdf';
+      const blob = new Blob([res.data], { type: mime });
       const url = window.URL.createObjectURL(blob);
+      const ext = format === 'xlsx' ? 'xlsx' : 'pdf';
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'BluBridge_HRMS_Employee_User_Guide.pdf';
+      a.download = `BluBridge_HRMS_Employee_User_Guide.${ext}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -226,12 +231,20 @@ const EmployeeLayout = ({ children }) => {
                     My Profile
                   </DropdownMenuItem>
                   <DropdownMenuItem 
-                    onClick={handleDownloadHelp}
+                    onClick={() => handleDownloadHelp('pdf')}
                     className="cursor-pointer rounded-lg"
                     data-testid="download-help-guide-btn"
                   >
                     <HelpCircle className="w-4 h-4 mr-2" />
-                    Download Help Guide
+                    Help Guide (PDF)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem 
+                    onClick={() => handleDownloadHelp('xlsx')}
+                    className="cursor-pointer rounded-lg"
+                    data-testid="download-help-guide-excel-btn"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 mr-2" />
+                    Help Guide (Excel)
                   </DropdownMenuItem>
                   <DropdownMenuSeparator className="my-1" />
                   <DropdownMenuItem 
