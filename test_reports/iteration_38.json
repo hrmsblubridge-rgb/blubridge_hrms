@@ -51,7 +51,7 @@
     "hr_admin": {"username": "admin", "password": "pass123"},
     "employee": {"username": "spartasolace1", "password": "spar@1230"}
   },
-  "seed_data_creation": "No new seed data created. Used existing TEST_Relieved_05658888 (id=8bc4cef5-2213-4701-9f61-d98bac1cf582) with inactive_date=2026-04-16.",
+  "seed_data_creation": "No new seed data created. Used existing TEST_Relieved_05658888 (id=employee-onboard-7) with inactive_date=2026-04-16.",
   "retest_needed": false,
   "should_main_agent_self_test": false,
   "context_for_next_testing_agent": "Employee Reactivation feature fully tested. PUT /api/employees/{id}/reactivate endpoint works correctly. Frontend shows Activate button (UserCheck icon) for inactive employees and Deactivate button (Trash icon) for active employees. Employee detail Profile tab shows 'DEACTIVATION DETAILS' section with data-testid='inactive-details' containing inactive_type, inactive_date, reason, last_day_payable. Reactivate Employee button has data-testid='reactivate-btn'. Test employee TEST_Relieved_05658888 is currently Inactive with inactive_date=2026-04-16. Test file: /app/backend/tests/test_employee_reactivation.py"

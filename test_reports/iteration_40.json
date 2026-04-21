@@ -51,7 +51,7 @@
   "seed_data_creation": "No new seed data created. Used existing test employees: TEST_NoBody_25a93648 (active), TEST_Deactivation_f98a8836 (inactive_date=2026-04-14), TEST_Relieved_05658888 (inactive_date=2026-04-16)",
   "retest_needed": false,
   "should_main_agent_self_test": false,
-  "context_for_next_testing_agent": "Payroll Sundays-only weekoff fix verified. Key test employees: (1) TEST_NoBody_25a93648 (id=4666841e-2f7b-4659-9158-2b3e1bf7a357) - Active, April 2026 weekoff_pay=4 (Sundays only), working_days=24. (2) TEST_Deactivation_f98a8836 (id=e93ef490-5c06-4c2c-8290-00537df17516) - Inactive (Apr 14), weekoff_pay=2 (Sundays 5,12 only). (3) TEST_Relieved_05658888 (id=8bc4cef5-2213-4701-9f61-d98bac1cf582) - Inactive (Apr 16), weekoff_pay=2 (Sundays 5,12 only). April 2026 holidays: Apr 3 (Good Friday), Apr 14 (Tamil New Year) - these show OH status with weekoff_value=0. Test file: /app/backend/tests/test_payroll_sundays_only.py",
+  "context_for_next_testing_agent": "Payroll Sundays-only weekoff fix verified. Key test employees: (1) TEST_NoBody_25a93648 (id=employee-onboard-7) - Active, April 2026 weekoff_pay=4 (Sundays only), working_days=24. (2) TEST_Deactivation_f98a8836 (id=employee-onboard-7) - Inactive (Apr 14), weekoff_pay=2 (Sundays 5,12 only). (3) TEST_Relieved_05658888 (id=employee-onboard-7) - Inactive (Apr 16), weekoff_pay=2 (Sundays 5,12 only). April 2026 holidays: Apr 3 (Good Friday), Apr 14 (Tamil New Year) - these show OH status with weekoff_value=0. Test file: /app/backend/tests/test_payroll_sundays_only.py",
   "payroll_calculation_details": {
     "april_2026_calendar": {
       "total_days": 30,
