@@ -221,3 +221,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - New endpoint `GET /api/help/download` returns role-aware PDF via reportlab.
   - "Download Help Guide" added to profile dropdown in both `Layout.js` (admins) and `EmployeeLayout.js` (employees).
   - No help content rendered in UI (download-only as requested).
+- **2026-05-05** Cross-Midnight Shift Handling in Attendance Processing.
+  - Added `get_effective_attendance_date()` and `attendance_shift_offset()` helpers in `server.py`.
+  - Punches at or before configurable threshold (default `05:00` AM, env `CROSS_MIDNIGHT_THRESHOLD_MINUTES=300`) are attributed to the PREVIOUS working day's attendance record (overnight shift OUT).
+  - Punches after threshold start a NEW day (regular IN).
+  - Updated `/api/attendance/import-biometric` grouping + merge logic to use shift-offset comparison so IN (earliest in shift) and OUT (latest in shift, possibly next calendar day) are always correctly identified, including across split/incremental batches.
+  - Fixed total-hours calculation for cross-midnight (wraps 24h).
+  - 24 unit tests added in `/app/backend/tests/test_cross_midnight_attendance.py` (all pass) + validated end-to-end via curl for 5 scenarios (normal day shift, cross-midnight OUT, new-day after 05:00, multi-punch after midnight, split-batch sync).
+  - No schema changes; backward compatible with existing records.

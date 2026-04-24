@@ -37,6 +37,48 @@ def get_ist_today():
     """Get today's date string in IST (format: DD-MM-YYYY)"""
     return get_ist_now().strftime("%d-%m-%Y")
 
+# ============================================================
+# Cross-midnight attendance handling (configurable)
+# ------------------------------------------------------------
+# Punches occurring at or before CROSS_MIDNIGHT_THRESHOLD_MINUTES
+# (minutes since midnight, default 300 = 05:00 AM) are treated as
+# belonging to the PREVIOUS working day (i.e., the OUT punch of an
+# overnight shift). Punches after the threshold are treated as
+# belonging to their own calendar date (a new working day).
+# Configure via env var CROSS_MIDNIGHT_THRESHOLD_MINUTES.
+# ============================================================
+CROSS_MIDNIGHT_THRESHOLD_MINUTES = int(os.environ.get("CROSS_MIDNIGHT_THRESHOLD_MINUTES", "300"))
+
+def get_effective_attendance_date(punch_dt: datetime) -> str:
+    """Return DD-MM-YYYY attendance date for a punch, handling cross-midnight.
+
+    If the punch time is at or before the configured threshold, the punch is
+    attributed to the previous calendar day. Otherwise, its own calendar day.
+    """
+    minutes_since_midnight = punch_dt.hour * 60 + punch_dt.minute
+    effective = punch_dt - timedelta(days=1) if minutes_since_midnight <= CROSS_MIDNIGHT_THRESHOLD_MINUTES else punch_dt
+    return effective.strftime("%d-%m-%Y")
+
+def attendance_shift_offset(time_24h: str) -> Optional[int]:
+    """Compute shift-time offset in minutes for an HH:MM time string.
+
+    Times at or before the cross-midnight threshold are treated as occurring
+    in the NEXT calendar day relative to the effective attendance date, so
+    their offset is minutes_since_midnight + 1440. This allows MIN/MAX
+    comparisons to correctly identify IN (earliest in shift) and OUT
+    (latest in shift) across cross-midnight shifts.
+    """
+    if not time_24h:
+        return None
+    try:
+        hours, minutes = map(int, time_24h.split(":"))
+    except (ValueError, AttributeError):
+        return None
+    mins = hours * 60 + minutes
+    if mins <= CROSS_MIDNIGHT_THRESHOLD_MINUTES:
+        return mins + 1440
+    return mins
+
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(
@@ -2832,7 +2874,7 @@ async def bulk_import_employees(
                     email=email,
                     username=username,
                     password=temp_password,
-                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://employee-onboard-7.preview.emergentagent.com')}/login"
+                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://help-guides-download.preview.emergentagent.com')}/login"
                 )
             )
             
@@ -3603,7 +3645,8 @@ async def import_biometric_attendance(
         
         # Convert to IST
         punch_ist = punch_dt.astimezone(IST)
-        date_str = punch_ist.strftime("%d-%m-%Y")
+        # Cross-midnight handling: punches <= threshold belong to previous day.
+        date_str = get_effective_attendance_date(punch_ist)
         emp_id = employee["id"]
         
         key = (emp_id, date_str)
@@ -3637,39 +3680,52 @@ async def import_biometric_attendance(
         punches = sorted(data["punches"])
         employee = data["employee"]
         device_ip = data["ip"]
-        
+
+        # Within a batch, the true chronological first punch is IN and the
+        # last is OUT (accounting for cross-midnight punches which may appear
+        # as small HH:MM numerically but are actually later in shift time).
         in_time = punches[0]
         out_time = punches[-1] if len(punches) > 1 else None
-        
+
         in_24h = in_time.strftime("%H:%M")
         in_12h = in_time.strftime("%I:%M %p")
         out_24h = out_time.strftime("%H:%M") if out_time else None
         out_12h = out_time.strftime("%I:%M %p") if out_time else None
-        
+
         # Check existing record for this employee+date
         existing = await db.attendance.find_one(
             {"employee_id": emp_id, "date": date_str},
             {"_id": 0, "check_in_24h": 1, "check_out_24h": 1}
         )
-        
-        # Merge: MIN for in, MAX for out
+
+        # Merge with existing record using shift-aware offsets so that
+        # cross-midnight OUT punches (00:00-05:00) are correctly recognized
+        # as the latest point in the shift, not as the earliest IN.
         if existing:
             existing_in = existing.get("check_in_24h")
             existing_out = existing.get("check_out_24h")
-            
-            if existing_in:
-                if parse_time_24h_to_minutes(in_24h) > parse_time_24h_to_minutes(existing_in):
-                    in_24h = existing_in
-                    in_12h = None  # Will recalc below
-            
-            if out_24h and existing_out:
-                if parse_time_24h_to_minutes(out_24h) < parse_time_24h_to_minutes(existing_out):
-                    out_24h = existing_out
-                    out_12h = None
-            elif existing_out and not out_24h:
-                out_24h = existing_out
+
+            candidate_times = []
+            for t in (in_24h, out_24h, existing_in, existing_out):
+                if t:
+                    off = attendance_shift_offset(t)
+                    if off is not None:
+                        candidate_times.append((t, off))
+
+            if candidate_times:
+                # Deduplicate identical time strings (keep one entry per value)
+                seen = {}
+                for t, off in candidate_times:
+                    seen[t] = off
+                uniq = list(seen.items())
+                # IN = earliest offset; OUT = latest offset (only if distinct)
+                in_pick = min(uniq, key=lambda c: c[1])
+                out_pick = max(uniq, key=lambda c: c[1])
+                in_24h = in_pick[0]
+                out_24h = out_pick[0] if out_pick[0] != in_pick[0] else None
+                in_12h = None
                 out_12h = None
-        
+
         # Recalculate 12h from final 24h values
         if in_24h and not in_12h:
             t = datetime.strptime(in_24h, "%H:%M")
@@ -3677,24 +3733,27 @@ async def import_biometric_attendance(
         if out_24h and not out_12h:
             t = datetime.strptime(out_24h, "%H:%M")
             out_12h = t.strftime("%I:%M %p")
-        
+
         # Calculate total hours and status
         total_hours_decimal = 0.0
         total_hours_str = None
         status = AttendanceStatus.LOGIN
         is_lop = False
         lop_reason = None
-        
+
         shift_timings = get_shift_timings(employee)
-        
+
         if in_24h and out_24h:
             in_mins = parse_time_24h_to_minutes(in_24h)
             out_mins = parse_time_24h_to_minutes(out_24h)
             if out_mins > in_mins:
                 total_hours_decimal = round((out_mins - in_mins) / 60, 2)
-                total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            else:
+                # Cross-midnight: OUT is on next calendar day
+                total_hours_decimal = round((24 * 60 - in_mins + out_mins) / 60, 2)
+            total_hours_str = calculate_total_hours_str(total_hours_decimal)
             status = AttendanceStatus.PRESENT
-            
+
             if shift_timings:
                 status_result = calculate_attendance_status(in_24h, out_24h, shift_timings)
                 status = status_result.get("status", status)
