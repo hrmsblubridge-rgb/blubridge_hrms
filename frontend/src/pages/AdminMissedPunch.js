@@ -51,10 +51,16 @@ const AdminMissedPunch = () => {
   const [perPage, setPerPage] = useState(25);
   const [total, setTotal] = useState(0);
 
+  // Tab state — drives both record filter and pagination
+  const [activeTab, setActiveTab] = useState('requests'); // 'requests' (pending) | 'history'
+  const [pendingCount, setPendingCount] = useState(0);
+  const [historyCount, setHistoryCount] = useState(0);
+
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const params = { page, per_page: perPage };
+      const tabParam = activeTab === 'requests' ? 'pending' : 'history';
+      const params = { page, per_page: perPage, tab: tabParam };
       if (filterFromDate) params.from_date = filterFromDate;
       if (filterToDate) params.to_date = filterToDate;
       if (filterStatus) params.status = filterStatus;
@@ -72,6 +78,8 @@ const AdminMissedPunch = () => {
       } else {
         setData(res.data.data || []);
         setTotal(res.data.total || 0);
+        setPendingCount(res.data.pending_count ?? 0);
+        setHistoryCount(res.data.history_count ?? 0);
       }
       setEmployees(empRes.data || []);
     } catch {
@@ -79,12 +87,12 @@ const AdminMissedPunch = () => {
     } finally {
       setLoading(false);
     }
-  }, [page, perPage, filterFromDate, filterToDate, filterStatus, filterEmpName]);
+  }, [page, perPage, activeTab, filterFromDate, filterToDate, filterStatus, filterEmpName]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Reset to page 1 when filters change
-  useEffect(() => { setPage(1); }, [filterFromDate, filterToDate, filterStatus, filterEmpName, perPage]);
+  // Reset to page 1 when filters or tab change
+  useEffect(() => { setPage(1); }, [filterFromDate, filterToDate, filterStatus, filterEmpName, perPage, activeTab]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -200,8 +208,8 @@ const AdminMissedPunch = () => {
 
   const totalPages = Math.ceil(total / perPage) || 1;
 
-  const pendingData = data.filter(r => r.status === 'pending');
-  const historyData = data.filter(r => r.status !== 'pending');
+  // Server already filtered records by tab; `data` contains only the active tab's rows
+  const activeRows = data;
 
   const renderTable = (items, showActions) => (
     <div className="overflow-x-auto">
@@ -306,15 +314,15 @@ const AdminMissedPunch = () => {
 
       {/* Data Table with Tabs */}
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
-        <Tabs defaultValue="requests" className="w-full">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <div className="border-b border-slate-100 px-4">
             <TabsList className="bg-transparent h-12">
-              <TabsTrigger value="requests" className="text-sm data-[state=active]:border-b-2 data-[state=active]:border-[#063c88]" data-testid="tab-requests">Pending ({pendingData.length})</TabsTrigger>
-              <TabsTrigger value="history" className="text-sm data-[state=active]:border-b-2 data-[state=active]:border-[#063c88]" data-testid="tab-history">History ({historyData.length})</TabsTrigger>
+              <TabsTrigger value="requests" className="text-sm data-[state=active]:border-b-2 data-[state=active]:border-[#063c88]" data-testid="tab-requests">Pending ({pendingCount})</TabsTrigger>
+              <TabsTrigger value="history" className="text-sm data-[state=active]:border-b-2 data-[state=active]:border-[#063c88]" data-testid="tab-history">History ({historyCount})</TabsTrigger>
             </TabsList>
           </div>
-          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(pendingData, isHR)}</TabsContent>
-          <TabsContent value="history" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(historyData, false)}</TabsContent>
+          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(activeRows, isHR)}</TabsContent>
+          <TabsContent value="history" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(activeRows, false)}</TabsContent>
         </Tabs>
       </div>
 

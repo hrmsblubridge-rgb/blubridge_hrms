@@ -8645,30 +8645,49 @@ async def _update_attendance_from_missed_punch(rec):
 @api_router.get("/missed-punches")
 async def get_missed_punches(
     status: Optional[str] = None,
+    tab: Optional[str] = None,  # 'pending' | 'history' — filters and counts per-tab
     employee_name: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     page: int = Query(1, ge=1),
-    per_page: int = Query(50, ge=1, le=100),
+    per_page: int = Query(50, ge=1, le=500),
     current_user: dict = Depends(get_current_user)
 ):
-    query = {}
+    base_query: dict = {}
     is_admin = current_user["role"] in ALL_ADMIN_ROLES
     if not is_admin:
-        query["employee_id"] = current_user.get("employee_id", "")
+        base_query["employee_id"] = current_user.get("employee_id", "")
     if status and status != "All":
-        query["status"] = status
+        base_query["status"] = status
     if employee_name:
-        query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+        base_query["emp_name"] = {"$regex": employee_name, "$options": "i"}
     if from_date:
-        query.setdefault("date", {})["$gte"] = from_date
+        base_query.setdefault("date", {})["$gte"] = from_date
     if to_date:
-        query.setdefault("date", {})["$lte"] = to_date
-    
+        base_query.setdefault("date", {})["$lte"] = to_date
+
+    # Global per-tab counts (computed against base_query, ignore active tab)
+    pending_count = await db.missed_punches.count_documents({**base_query, "status": "pending"})
+    history_count = await db.missed_punches.count_documents({**base_query, "status": {"$ne": "pending"}})
+
+    # Apply tab filter to the records & total returned
+    query = dict(base_query)
+    if tab == "pending":
+        query["status"] = "pending"
+    elif tab == "history":
+        query["status"] = {"$ne": "pending"}
+
     total = await db.missed_punches.count_documents(query)
     skip = (page - 1) * per_page
     records = await db.missed_punches.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(per_page).to_list(per_page)
-    return {"data": [serialize_doc(r) for r in records], "total": total, "page": page, "per_page": per_page}
+    return {
+        "data": [serialize_doc(r) for r in records],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pending_count": pending_count,
+        "history_count": history_count,
+    }
 
 @api_router.post("/missed-punches")
 async def create_missed_punch(data: MissedPunchCreate, current_user: dict = Depends(get_current_user)):
