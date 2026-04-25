@@ -3408,6 +3408,310 @@ async def deactivate_employee(employee_id: str, request: Request, current_user: 
     await log_audit(current_user["id"], "deactivate", "employee", employee_id, f"Deactivated employee: {existing.get('full_name')} | Type: {inactive_type} | Reason: {reason}")
     return {"message": "Employee deactivated successfully"}
 
+# ============== EMPLOYEE BULK DEACTIVATE ==============
+
+INACTIVE_IMPORT_COLUMNS = [
+    "Email", "Inactive Date", "Reason", "Type", "Last Day Payable"
+]
+
+INACTIVE_COLUMN_ALIASES: dict[str, str] = {
+    # email
+    "Email": "email",
+    "Emp Mail ID": "email",
+    "Employee Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # inactive date
+    "Inactive Date": "inactive_date",
+    "Inactive_Date": "inactive_date",
+    "Relived_date": "inactive_date",
+    "Relieved Date": "inactive_date",
+    "Relieving Date": "inactive_date",
+    "Last Working Day": "inactive_date",
+    "Termination Date": "inactive_date",
+    "Date": "inactive_date",
+    # type (Relieved / Terminated)
+    "Type": "inactive_type",
+    "Inactive Type": "inactive_type",
+    "Inactive_Type": "inactive_type",
+    "Status Type": "inactive_type",
+    "Action": "inactive_type",
+    # reason
+    "Reason": "reason",
+    "Remarks": "reason",
+    "Notes": "reason",
+    "Comments": "reason",
+    # last day payable
+    "Last Day Payable": "last_day_payable",
+    "Last_day_payable": "last_day_payable",
+    "Last_Day_Payable": "last_day_payable",
+    "LDP": "last_day_payable",
+    "Payable": "last_day_payable",
+}
+
+
+def _build_inactive_alias_index() -> dict[str, str]:
+    return {_normalize_header(k): v for k, v in INACTIVE_COLUMN_ALIASES.items()}
+
+
+def _normalize_inactive_type(value) -> str:
+    """Map Type column → 'Relieved' or 'Terminated'. Default 'Terminated'."""
+    if value in (None, ""):
+        return "Terminated"
+    s = str(value).strip().lower()
+    if s in ("relieved", "relived", "resigned", "resignation", "retired", "retirement"):
+        return "Relieved"
+    if s in ("terminated", "termination", "fired", "dismissed"):
+        return "Terminated"
+    return "Terminated"
+
+
+def _normalize_payable(value) -> bool:
+    """Map Last Day Payable cell → bool. 1/yes/true → True; 0/no/false/blank → False."""
+    if value in (None, ""):
+        return False
+    s = str(value).strip().lower()
+    if s in ("1", "yes", "y", "true", "t"):
+        return True
+    return False
+
+
+@api_router.get("/employees/bulk-deactivate/template")
+async def download_inactive_template(current_user: dict = Depends(get_current_user)):
+    """Download styled .xlsx template for bulk-deactivation."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Inactive Employees"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(INACTIVE_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["employee@blubridge.com", "2026-04-22", "Resigned voluntarily", "Relieved", 0],
+        ["another@blubridge.com", "22/04/2026", "Performance issues", "Terminated", 0],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [32, 14, 36, 14, 18]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Email", "Yes", "employee_id (via email)", "Aliases: Emp Mail ID, Employee Email, Email ID, Mail"])
+    ws2.append(["Inactive Date", "Yes", "inactive_date", "Aliases: Relived_date, Relieving Date, Last Working Day. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, or Excel datetime"])
+    ws2.append(["Reason", "Yes", "inactive_reason", "Aliases: Remarks, Notes, Comments. Free text"])
+    ws2.append(["Type", "No", "inactive_type", "Aliases: Inactive Type, Action. 'Relieved' or 'Terminated' (default: Terminated)"])
+    ws2.append(["Last Day Payable", "No", "last_day_payable", "Aliases: LDP, Payable. 1/Yes/True → payable; 0/No/False/blank → not payable"])
+    ws2.append(["", "", "", ""])
+    ws2.append(["⚠️ This action will:", "", "", ""])
+    ws2.append(["• Set employee_status = 'Inactive'", "", "", ""])
+    ws2.append(["• Disable login (login_enabled = false, user.is_active = false)", "", "", ""])
+    ws2.append(["• Decrement team member count", "", "", ""])
+    ws2.append(["• Log to audit trail", "", "", ""])
+    ws2.append(["• Skip employees not found by email (silent)", "", "", ""])
+    ws2.append(["• Skip employees already inactive (silent)", "", "", ""])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=inactive_employees_template.xlsx"}
+    )
+
+
+@api_router.post("/employees/bulk-deactivate/preview")
+async def preview_bulk_deactivate(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + sample rows + match counts for bulk deactivation."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    alias_index = _build_inactive_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
+
+    required_fields = ["email", "inactive_date", "reason"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
+
+    # Match check
+    will_deactivate = 0
+    already_inactive = 0
+    not_found = 0
+    if not missing_required:
+        for r in rows:
+            row = _remap_row(r, alias_index)
+            email = (str(row.get("email") or "")).strip().lower()
+            if not email:
+                not_found += 1
+                continue
+            emp = await db.employees.find_one(
+                {"official_email": email, "is_deleted": {"$ne": True}},
+                {"_id": 0, "id": 1, "employee_status": 1}
+            )
+            if not emp:
+                not_found += 1
+            elif emp.get("employee_status") == EmployeeStatus.INACTIVE:
+                already_inactive += 1
+            else:
+                will_deactivate += 1
+
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else (str(v) if v is not None else None)) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "column_mapping": mapped,
+        "ignored_columns": ignored,
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
+        "will_deactivate": will_deactivate,
+        "already_inactive": already_inactive,
+        "not_found": not_found,
+        "sample_rows": sample,
+    }
+
+
+@api_router.post("/employees/bulk-deactivate")
+async def bulk_deactivate_employees(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-deactivate employees from an .xlsx/.csv file. HR-only.
+
+    For each row:
+    - Look up employee by email (case-insensitive)
+    - If not found OR already inactive → skip silently (counted in summary)
+    - Otherwise: set status=Inactive, login disabled, store inactive_type/date/reason/last_day_payable
+    - Decrement team member count, deactivate user account, write audit log
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    alias_index = _build_inactive_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    missing = []
+    if "email" not in detected_canonical:
+        missing.append("Email")
+    if "inactive_date" not in detected_canonical:
+        missing.append("Inactive Date")
+    if "reason" not in detected_canonical:
+        missing.append("Reason")
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing mandatory column(s): {', '.join(missing)}")
+
+    total = len(rows)
+    deactivated = 0
+    skipped_not_found = 0
+    skipped_already_inactive = 0
+    failed = 0
+    errors: List[dict] = []
+
+    for idx, raw_row in enumerate(rows, start=2):
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
+        if not email:
+            skipped_not_found += 1
+            continue
+
+        emp = await db.employees.find_one(
+            {"official_email": email, "is_deleted": {"$ne": True}},
+            {"_id": 0}
+        )
+        if not emp:
+            skipped_not_found += 1
+            continue
+        if emp.get("employee_status") == EmployeeStatus.INACTIVE:
+            skipped_already_inactive += 1
+            continue
+
+        # Parse date - prefer combined dt then plain date
+        inactive_date_iso, _ = _parse_import_datetime(row.get("inactive_date")) if row.get("inactive_date") not in (None, "") else (None, None)
+        if not inactive_date_iso:
+            inactive_date_iso = _parse_import_date(row.get("inactive_date"))
+        if not inactive_date_iso:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Inactive Date: '{row.get('inactive_date')}'"})
+            continue
+
+        reason = str(row.get("reason")).strip() if row.get("reason") not in (None, "") else ""
+        if not reason:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Reason is required"})
+            continue
+
+        inactive_type = _normalize_inactive_type(row.get("inactive_type"))
+        last_day_payable = _normalize_payable(row.get("last_day_payable"))
+
+        update_data = {
+            "employee_status": EmployeeStatus.INACTIVE,
+            "login_enabled": False,
+            "inactive_type": inactive_type,
+            "inactive_date": inactive_date_iso,
+            "inactive_reason": reason,
+            "last_day_payable": last_day_payable,
+            "deactivated_by": current_user["id"],
+            "updated_at": get_ist_now().isoformat(),
+        }
+        await db.employees.update_one({"id": emp["id"]}, {"$set": update_data})
+        if emp.get("team"):
+            await db.teams.update_one({"name": emp["team"]}, {"$inc": {"member_count": -1}})
+        await db.users.update_one({"employee_id": emp["id"]}, {"$set": {"is_active": False}})
+        await log_audit(
+            current_user["id"], "deactivate", "employee", emp["id"],
+            f"Bulk-deactivated: {emp.get('full_name')} | Type: {inactive_type} | Date: {inactive_date_iso} | Reason: {reason}"
+        )
+        deactivated += 1
+
+    return {
+        "total": total,
+        "deactivated": deactivated,
+        "skipped_not_found": skipped_not_found,
+        "skipped_already_inactive": skipped_already_inactive,
+        "failed": failed,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
+        "errors": errors,
+    }
+
 @api_router.put("/employees/{employee_id}/restore")
 async def restore_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Restore soft-deleted employee"""

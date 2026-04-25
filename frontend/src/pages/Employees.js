@@ -150,6 +150,13 @@ const Employees = () => {
   const [importFile, setImportFile] = useState(null);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
+
+  // Bulk Deactivate
+  const [showBulkDeactivate, setShowBulkDeactivate] = useState(false);
+  const [deactivateFile, setDeactivateFile] = useState(null);
+  const [deactivating, setDeactivating] = useState(false);
+  const [deactivatePreview, setDeactivatePreview] = useState(null);
+  const [deactivateResult, setDeactivateResult] = useState(null);
   
   // Deactivation form state
   const [deactForm, setDeactForm] = useState({
@@ -633,6 +640,62 @@ const Employees = () => {
     }
   };
 
+  // Bulk Deactivate handlers
+  const handleDownloadDeactivateTemplate = async () => {
+    try {
+      const resp = await axios.get(`${API}/employees/bulk-deactivate/template`, { headers: getAuthHeaders(), responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([resp.data]));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'inactive_employees_template.xlsx';
+      a.click();
+      window.URL.revokeObjectURL(url);
+      toast.success('Template downloaded');
+    } catch {
+      toast.error('Failed to download template');
+    }
+  };
+
+  const handlePreviewDeactivate = async (file) => {
+    if (!file) return;
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const resp = await axios.post(`${API}/employees/bulk-deactivate/preview`, fd, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' }
+      });
+      setDeactivatePreview(resp.data);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to preview file');
+      setDeactivatePreview(null);
+    }
+  };
+
+  const handleBulkDeactivate = async () => {
+    if (!deactivateFile) { toast.error('Please select a file'); return; }
+    if (!window.confirm(`This will deactivate ${deactivatePreview?.will_deactivate || 'multiple'} employees and disable their logins. Continue?`)) return;
+    setDeactivating(true);
+    setDeactivateResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', deactivateFile);
+      const resp = await axios.post(`${API}/employees/bulk-deactivate`, fd, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' }
+      });
+      setDeactivateResult(resp.data);
+      if (resp.data.deactivated > 0) {
+        toast.success(`${resp.data.deactivated} employees deactivated`);
+        fetchData();
+      }
+      if (resp.data.failed > 0) {
+        toast.error(`${resp.data.failed} rows failed`);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to deactivate');
+    } finally {
+      setDeactivating(false);
+    }
+  };
+
   const getStatusBadge = (status) => {
     const styles = { 'Active': 'badge-success', 'Inactive': 'badge-neutral', 'Resigned': 'badge-error' };
     return styles[status] || 'badge-neutral';
@@ -659,6 +722,10 @@ const Employees = () => {
             <Button onClick={() => { setImportFile(null); setImportResult(null); setShowBulkImport(true); }} variant="outline" className="rounded-xl border-[#063c88] text-[#063c88] hover:bg-[#063c88]/5" data-testid="bulk-import-btn">
               <FileSpreadsheet className="w-4 h-4 mr-2" />
               Bulk Import
+            </Button>
+            <Button onClick={() => { setDeactivateFile(null); setDeactivatePreview(null); setDeactivateResult(null); setShowBulkDeactivate(true); }} variant="outline" className="rounded-xl border-amber-500 text-amber-600 hover:bg-amber-50" data-testid="bulk-deactivate-btn">
+              <UserX className="w-4 h-4 mr-2" />
+              Bulk Deactivate
             </Button>
             <Button onClick={handleAdd} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-lg shadow-[#063c88]/20" data-testid="add-employee-btn">
               <Plus className="w-4 h-4 mr-2" />
@@ -2047,6 +2114,137 @@ const Employees = () => {
             <Button variant="outline" onClick={() => setShowPayslip(false)} className="rounded-lg">Close</Button>
             <Button onClick={handlePrintPayslip} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg gap-2" data-testid="print-payslip-btn">
               <Printer className="w-4 h-4" /> Print / Download PDF
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Deactivate Dialog */}
+      <Dialog open={showBulkDeactivate} onOpenChange={(open) => { if (!open) { setDeactivateFile(null); setDeactivatePreview(null); setDeactivateResult(null); } setShowBulkDeactivate(open); }}>
+        <DialogContent className="bg-[#fffdf7] max-w-xl max-h-[85vh] overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }} className="flex items-center gap-2">
+              <UserX className="w-5 h-5 text-amber-600" /> Bulk Deactivate Employees
+            </DialogTitle>
+            <DialogDescription>Upload an Excel/CSV file to deactivate multiple employees at once. Logins will be disabled.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-5 py-4">
+            <div className="flex items-center justify-between p-4 bg-amber-50 rounded-xl border border-amber-100">
+              <div>
+                <p className="font-medium text-slate-900 text-sm">Sample Template</p>
+                <p className="text-xs text-slate-500">Email · Inactive Date · Reason · Type · Last Day Payable</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={handleDownloadDeactivateTemplate} className="rounded-lg border-amber-500 text-amber-600" data-testid="download-deactivate-template-btn">
+                <Download className="w-4 h-4 mr-1" /> Template
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-sm font-medium text-slate-700">Upload File (.xlsx or .csv)</Label>
+              <input
+                type="file"
+                accept=".xlsx,.csv"
+                onChange={(e) => { const f = e.target.files[0]; setDeactivateFile(f); setDeactivatePreview(null); setDeactivateResult(null); if (f) handlePreviewDeactivate(f); }}
+                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-amber-500 file:text-white hover:file:bg-amber-600 cursor-pointer border border-slate-200 rounded-lg"
+                data-testid="deactivate-file-input"
+              />
+              {deactivateFile && (
+                <p className="text-xs text-slate-500 flex items-center gap-1">
+                  <FileSpreadsheet className="w-3 h-3" /> {deactivateFile.name} ({(deactivateFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+
+            {/* Preview Summary */}
+            {deactivatePreview && (
+              <div className="space-y-3" data-testid="deactivate-preview">
+                {deactivatePreview.missing_required?.length > 0 ? (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                    <p className="font-medium mb-1 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Missing required column(s):</p>
+                    <ul className="list-disc ml-5">{deactivatePreview.missing_required.map((m, i) => <li key={i}>{m}</li>)}</ul>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-sm font-medium text-slate-700">Preview · {deactivatePreview.total_rows} row(s)</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="text-center p-3 bg-amber-50 rounded-lg">
+                        <p className="text-lg font-bold text-amber-700">{deactivatePreview.will_deactivate}</p>
+                        <p className="text-xs text-amber-700">Will Deactivate</p>
+                      </div>
+                      <div className="text-center p-3 bg-slate-100 rounded-lg">
+                        <p className="text-lg font-bold text-slate-700">{deactivatePreview.already_inactive}</p>
+                        <p className="text-xs text-slate-500">Already Inactive</p>
+                      </div>
+                      <div className="text-center p-3 bg-red-50 rounded-lg">
+                        <p className="text-lg font-bold text-red-600">{deactivatePreview.not_found}</p>
+                        <p className="text-xs text-red-600">Not Found</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.entries(deactivatePreview.column_mapping || {}).map(([sheet, canon]) => (
+                        <span key={sheet} className="text-[11px] px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-200">
+                          {sheet} → {canon}
+                        </span>
+                      ))}
+                      {(deactivatePreview.ignored_columns || []).map((c, i) => (
+                        <span key={`ig${i}`} className="text-[11px] px-2 py-0.5 bg-amber-50 text-amber-700 rounded-full border border-amber-200">
+                          {c} (ignored)
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Result Summary */}
+            {deactivateResult && (
+              <div className="space-y-3" data-testid="deactivate-result">
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="text-center p-3 bg-slate-100 rounded-lg">
+                    <p className="text-lg font-bold text-slate-900">{deactivateResult.total}</p>
+                    <p className="text-xs text-slate-500">Total</p>
+                  </div>
+                  <div className="text-center p-3 bg-emerald-50 rounded-lg">
+                    <p className="text-lg font-bold text-emerald-600">{deactivateResult.deactivated}</p>
+                    <p className="text-xs text-emerald-600">Deactivated</p>
+                  </div>
+                  <div className="text-center p-3 bg-slate-100 rounded-lg">
+                    <p className="text-lg font-bold text-slate-700">{(deactivateResult.skipped_not_found || 0) + (deactivateResult.skipped_already_inactive || 0)}</p>
+                    <p className="text-xs text-slate-500">Skipped</p>
+                  </div>
+                  <div className="text-center p-3 bg-red-50 rounded-lg">
+                    <p className="text-lg font-bold text-red-600">{deactivateResult.failed}</p>
+                    <p className="text-xs text-red-600">Failed</p>
+                  </div>
+                </div>
+                {deactivateResult.errors?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-red-600 flex items-center gap-1">
+                      <AlertCircle className="w-4 h-4" /> Errors
+                    </p>
+                    <div className="max-h-40 overflow-y-auto space-y-1.5 border border-red-100 rounded-lg p-3 bg-red-50/50">
+                      {deactivateResult.errors.map((err, idx) => (
+                        <div key={idx} className="text-xs bg-white p-2 rounded border border-red-100">
+                          <span className="font-medium">Row {err.row}:</span> <span className="text-slate-600">{err.email}</span> – <span className="text-red-600">{err.reason}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex gap-2 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => setShowBulkDeactivate(false)} className="rounded-lg">Close</Button>
+            <Button
+              onClick={handleBulkDeactivate}
+              disabled={!deactivateFile || deactivating || (deactivatePreview && (deactivatePreview.missing_required?.length > 0 || deactivatePreview.will_deactivate === 0))}
+              className="bg-amber-600 hover:bg-amber-700 text-white rounded-lg"
+              data-testid="deactivate-submit-btn"
+            >
+              {deactivating ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <UserX className="w-4 h-4 mr-2" />}
+              {deactivating ? 'Deactivating...' : `Deactivate ${deactivatePreview?.will_deactivate || ''} Employees`}
             </Button>
           </DialogFooter>
         </DialogContent>
