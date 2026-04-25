@@ -555,17 +555,38 @@ const Employees = () => {
     }
   };
 
-  const handleExportCSV = () => {
-    const headers = ['Emp ID', 'Employee ID', 'Biometric ID', 'Name', 'Email', 'Department', 'Team', 'Designation', 'Status', 'Employment Type', 'Work Location'];
-    const rows = employees.map(e => [e.emp_id, e.custom_employee_id || '', e.biometric_id || '', e.full_name, e.official_email, e.department, e.team, e.designation, e.employee_status, e.employment_type, e.work_location]);
-    const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `employees-${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    toast.success('CSV exported');
+  const handleExportCSV = async () => {
+    try {
+      // Build same filter params as the list view so export honors current filters.
+      const params = {
+        ...(filters.search && { search: filters.search }),
+        ...(filters.department !== 'All' && { department: filters.department }),
+        ...(filters.team !== 'All' && { team: filters.team }),
+        ...(filters.status !== 'All' && { status: filters.status }),
+        ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
+        ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
+        ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
+        ...(inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
+      };
+      const response = await axios.get(`${API}/employees/export`, {
+        headers: getAuthHeaders(),
+        params,
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `employees-${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      toast.success('Employees exported');
+    } catch (error) {
+      toast.error(error?.response?.data?.detail || 'Failed to export');
+    }
   };
 
   // Bulk Import handlers

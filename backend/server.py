@@ -2527,6 +2527,121 @@ async def get_import_template(current_user: dict = Depends(get_current_user)):
         headers={"Content-Disposition": "attachment; filename=employee_import_template.xlsx"}
     )
 
+@api_router.get("/employees/export")
+async def export_employees(
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    status: Optional[str] = None,
+    employment_type: Optional[str] = None,
+    tier_level: Optional[str] = None,
+    work_location: Optional[str] = None,
+    inactive_type: Optional[str] = None,
+    search: Optional[str] = None,
+    include_deleted: bool = False,
+    current_user: dict = Depends(get_current_user)
+):
+    """Export ALL employees matching the given filters as a styled .xlsx file.
+
+    Columns match the bulk import template (17 fields) so the export is a
+    valid round-trip with the import flow.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Build the same query as GET /employees so the export honors current filters.
+    query = {}
+    if not include_deleted:
+        if (status and status == EmployeeStatus.INACTIVE) or (inactive_type and inactive_type != "All"):
+            pass
+        else:
+            query["is_deleted"] = {"$ne": True}
+
+    if department and department != "All":
+        query["department"] = department
+    if team and team != "All":
+        query["team"] = team
+    if status and status != "All":
+        query["employee_status"] = status
+    if employment_type and employment_type != "All":
+        query["employment_type"] = employment_type
+    if tier_level and tier_level != "All":
+        query["tier_level"] = tier_level
+    if work_location and work_location != "All":
+        query["work_location"] = work_location
+    if inactive_type and inactive_type != "All":
+        query["inactive_type"] = inactive_type
+    if search:
+        query["$or"] = [
+            {"full_name": {"$regex": search, "$options": "i"}},
+            {"official_email": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}},
+            {"designation": {"$regex": search, "$options": "i"}},
+            {"custom_employee_id": {"$regex": search, "$options": "i"}},
+            {"biometric_id": {"$regex": search, "$options": "i"}}
+        ]
+
+    employees = await db.employees.find(query, {"_id": 0}).sort("created_at", -1).to_list(length=None)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Employees"
+
+    # Styled header (dark-blue background, bold white) — matches import template
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(IMPORT_TEMPLATE_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 22
+
+    # Data rows (mapped exactly to IMPORT_TEMPLATE_COLUMNS order)
+    for row_idx, e in enumerate(employees, start=2):
+        salary = e.get("monthly_salary")
+        try:
+            salary_val = float(salary) if salary is not None else 0
+        except (TypeError, ValueError):
+            salary_val = 0
+        row_values = [
+            e.get("full_name") or "",
+            e.get("custom_employee_id") or "",
+            e.get("biometric_id") or "",
+            e.get("official_email") or "",
+            e.get("phone_number") or "",
+            e.get("gender") or "",
+            e.get("date_of_birth") or "",
+            e.get("date_of_joining") or "",
+            e.get("department") or "",
+            e.get("team") or "",
+            e.get("designation") or "",
+            e.get("employment_type") or "",
+            e.get("tier_level") or "",
+            e.get("work_location") or "",
+            e.get("shift_type") or "",
+            salary_val,
+            e.get("user_role") or "",
+        ]
+        for col_idx, val in enumerate(row_values, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    # Column widths sized for content
+    widths = [22, 14, 14, 28, 14, 10, 14, 14, 18, 16, 22, 14, 12, 14, 12, 14, 14]
+    for col_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = w
+    ws.freeze_panes = "A2"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"employees-{get_ist_now().strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
 @api_router.post("/employees/bulk-import")
 async def bulk_import_employees(
     file: UploadFile = FastAPIFile(...),

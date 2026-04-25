@@ -233,3 +233,8 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - New reusable `<PageSizeSelector>` component at `/app/frontend/src/components/PageSizeSelector.js`.
   - 12 options: 25, 50, 75, 100, 150, 200, 250, 300, 350, 400, 450, 500. Default 25.
   - Applied to: `Employees.js`, `Attendance.js`, `EmployeeAttendance.js`, `AdminMissedPunch.js`, `StarReward.js`.
+- **2026-05-05** Employees Export – Full 17-column .xlsx (matches Bulk Import template).
+  - New endpoint: `GET /api/employees/export` (HR / SysAdmin / OfficeAdmin) honors current list filters and exports ALL matching rows (not just current page).
+  - Columns: Employee Name, Employee ID, Biometric ID, Email, Phone, Gender, DOB, DOJ, Department, Team, Designation, Employment Type, Tier Level, Work Location, Shift Type, Monthly Salary, User Role.
+  - Styled header (dark-blue #063c88, white bold), frozen header row, sized columns. Round-trip compatible with `/api/employees/bulk-import`.
+  - Frontend `Employees.js` Export button now calls the new endpoint with the current filters and downloads `.xlsx` (was previously CSV of only current page).
