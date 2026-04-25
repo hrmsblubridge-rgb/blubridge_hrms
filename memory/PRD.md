@@ -238,3 +238,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Columns: Employee Name, Employee ID, Biometric ID, Email, Phone, Gender, DOB, DOJ, Department, Team, Designation, Employment Type, Tier Level, Work Location, Shift Type, Monthly Salary, User Role.
   - Styled header (dark-blue #063c88, white bold), frozen header row, sized columns. Round-trip compatible with `/api/employees/bulk-import`.
   - Frontend `Employees.js` Export button now calls the new endpoint with the current filters and downloads `.xlsx` (was previously CSV of only current page).
+- **2026-05-05** Master Employee Data Reset (one-time migration).
+  - Hard-deleted all 59 prior employees + ALL transactional data (attendance 3,718, biometric punch logs 729, audit logs 7,865, leaves 17, late/early/missed-punch requests, notifications, onboarding, salary structures, operational checklists).
+  - Imported **82 employees** (90 rows from `Org of employees-2026-04-25.xlsx` minus 7 duplicate emails minus 1 NULL-dept row) via `/app/backend/scripts/seed_employees_from_excel.py`.
+  - Replaced `departments` master list with: Business & Product, Research Unit, Support Staff, **System Engineer** (new).
+  - Replaced `teams` master list with 20 teams (typo `Administation` → `Administration` normalized).
+  - Auto-generated `custom_employee_id` (EMP100+) for rows missing Employee ID; biometric_id left blank when absent.
+  - Preserved login users: `admin` (HR), `sysadmin`, `offadmin`. All employee logins removed; new employees can be activated through HR onboarding flow.
+  - Distribution: Research Unit 59 · Business & Product 11 · Support Staff 10 · System Engineer 2. Full-time 69 · Intern 13.
