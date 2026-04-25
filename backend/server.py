@@ -8755,7 +8755,7 @@ async def edit_missed_punch(request_id: str, data: MissedPunchCreate, current_us
 # ============== MISSED PUNCH BULK IMPORT ==============
 
 MP_IMPORT_COLUMNS = [
-    "Emp Mail ID", "Punch Date", "In Time", "Out Time",
+    "Emp Mail ID", "Punch Date", "Punch Type", "In Time", "Out Time",
     "Reason", "Status", "Applied Date", "Approved By", "Approval Date", "Comments"
 ]
 
@@ -8771,6 +8771,10 @@ MP_COLUMN_ALIASES: dict[str, str] = {
     "Punch Date": "date",
     "Date": "date",
     "Attendance Date": "date",
+    # punch type
+    "Punch Type": "punch_type",
+    "Type": "punch_type",
+    "Punch": "punch_type",
     # in time
     "In Time": "check_in",
     "Punch In": "check_in",
@@ -8807,6 +8811,19 @@ MP_COLUMN_ALIASES: dict[str, str] = {
     "Comments": "comments",
     "Approver Notes": "comments",
 }
+
+
+def _normalize_punch_type(value) -> Optional[str]:
+    """Normalize Punch Type to canonical 'Check-in' or 'Check-out'. Returns None
+    if blank, or 'INVALID' sentinel when unrecognized."""
+    if value in (None, ""):
+        return None
+    s = str(value).strip().lower().replace("_", "-").replace(" ", "")
+    if s in ("check-in", "checkin", "in", "punchin"):
+        return "Check-in"
+    if s in ("check-out", "checkout", "out", "punchout"):
+        return "Check-out"
+    return "INVALID"
 
 
 def _build_mp_alias_index() -> dict[str, str]:
@@ -8856,13 +8873,13 @@ async def download_mp_import_template(current_user: dict = Depends(get_current_u
     ws.row_dimensions[1].height = 22
 
     sample = [
-        ["employee@blubridge.com", "2026-04-22", "09:00", "18:00", "Forgot to punch out", "Approved", "2026-04-23", "Admin", "2026-04-23", "Verified by HR"],
-        ["another@blubridge.com", "22/04/2026", "09:30", "", "Biometric not working", "Pending", "2026-04-23", "", "", ""],
+        ["employee@blubridge.com", "2026-04-22", "Check-in", "09:00", "", "Forgot to punch in", "Approved", "2026-04-23", "Admin", "2026-04-23", "Verified by HR"],
+        ["another@blubridge.com", "22/04/2026", "Check-out", "", "18:30", "Forgot to punch out", "Pending", "2026-04-23", "", "", ""],
     ]
     for r_idx, row_vals in enumerate(sample, start=2):
         for c_idx, v in enumerate(row_vals, start=1):
             ws.cell(row=r_idx, column=c_idx, value=v)
-    widths = [30, 14, 12, 12, 30, 12, 14, 18, 14, 30]
+    widths = [30, 14, 14, 12, 12, 30, 12, 14, 18, 14, 30]
     for c_idx, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
 
@@ -8870,8 +8887,9 @@ async def download_mp_import_template(current_user: dict = Depends(get_current_u
     ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
     ws2.append(["Emp Mail ID", "Yes", "employee_id (via email)", "Aliases: Employee Email, Email, Email ID, Mail"])
     ws2.append(["Punch Date", "Yes", "date", "Aliases: Date, Attendance Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
-    ws2.append(["In Time", "One of In/Out required", "check_in_time", "Aliases: Punch In, Check In, Login Time. Format HH:MM (24h) or HH:MM AM/PM"])
-    ws2.append(["Out Time", "One of In/Out required", "check_out_time", "Aliases: Punch Out, Check Out, Logout Time. Format HH:MM (24h) or HH:MM AM/PM"])
+    ws2.append(["Punch Type", "Yes", "punch_type", "Aliases: Type, Punch. Accepted values: 'Check-in' or 'Check-out' (case-insensitive)."])
+    ws2.append(["In Time", "Required when Punch Type = Check-in", "check_in_time", "Aliases: Punch In, Check In, Login Time. Format HH:MM (24h) or HH:MM AM/PM. Ignored when Punch Type = Check-out."])
+    ws2.append(["Out Time", "Required when Punch Type = Check-out", "check_out_time", "Aliases: Punch Out, Check Out, Logout Time. Format HH:MM (24h) or HH:MM AM/PM. Ignored when Punch Type = Check-in."])
     ws2.append(["Reason", "Yes", "reason", "Aliases: Remarks, Notes. Free text"])
     ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending). Approved status auto-updates the attendance record."])
     ws2.append(["Applied Date", "No", "applied_at", "Stored as-is in extra_data"])
@@ -8913,7 +8931,7 @@ async def preview_mp_import(
     mapped = {h: c for h, c in column_mapping.items() if c}
     ignored = [h for h, c in column_mapping.items() if not c]
 
-    required_fields = ["email", "date"]
+    required_fields = ["email", "date", "punch_type"]
     detected_canonical = set(mapped.values())
     missing_required = [f for f in required_fields if f not in detected_canonical]
     # Need at least one of (check_in, check_out)
@@ -8963,12 +8981,14 @@ async def bulk_import_missed_punches(
     detected_canonical = {c for c in sheet_to_canon.values() if c}
     ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
 
-    if "email" not in detected_canonical or "date" not in detected_canonical:
+    if "email" not in detected_canonical or "date" not in detected_canonical or "punch_type" not in detected_canonical:
         missing = []
         if "email" not in detected_canonical:
             missing.append("Emp Mail ID")
         if "date" not in detected_canonical:
             missing.append("Punch Date")
+        if "punch_type" not in detected_canonical:
+            missing.append("Punch Type")
         raise HTTPException(status_code=400, detail=f"Missing mandatory column(s): {', '.join(missing)}")
     if "check_in" not in detected_canonical and "check_out" not in detected_canonical:
         raise HTTPException(status_code=400, detail="At least one of 'In Time' / 'Out Time' columns is required")
@@ -9046,17 +9066,32 @@ async def bulk_import_missed_punches(
             failed += 1
             errors.append({"row": idx, "email": email, "reason": f"Invalid Out Time format '{row.get('check_out')}' (use HH:MM 24h or HH:MM AM/PM)"})
             continue
-        if not check_in_time and not check_out_time:
-            failed += 1
-            errors.append({"row": idx, "email": email, "reason": "At least one of In Time / Out Time is required"})
-            continue
 
-        if check_in_time and check_out_time:
-            punch_type = "Both"
-        elif check_in_time:
-            punch_type = "Check-in"
-        else:
-            punch_type = "Check-out"
+        # Punch Type is mandatory and dictates which time field is used.
+        punch_norm = _normalize_punch_type(row.get("punch_type"))
+        if punch_norm is None:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Punch Type is required (use 'Check-in' or 'Check-out')"})
+            continue
+        if punch_norm == "INVALID":
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Punch Type '{row.get('punch_type')}' (use 'Check-in' or 'Check-out')"})
+            continue
+        punch_type = punch_norm
+
+        # Use only the time matching Punch Type; ignore the other.
+        if punch_type == "Check-in":
+            if not check_in_time:
+                failed += 1
+                errors.append({"row": idx, "email": email, "reason": "In Time is required when Punch Type is 'Check-in'"})
+                continue
+            check_out_time = None  # explicitly ignored
+        else:  # Check-out
+            if not check_out_time:
+                failed += 1
+                errors.append({"row": idx, "email": email, "reason": "Out Time is required when Punch Type is 'Check-out'"})
+                continue
+            check_in_time = None  # explicitly ignored
 
         reason = (str(row.get("reason")).strip() if row.get("reason") not in (None, "") else None)
         if not reason:

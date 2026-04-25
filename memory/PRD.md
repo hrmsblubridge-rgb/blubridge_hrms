@@ -278,6 +278,17 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Validation: invalid Leave Split or invalid boolean values are rejected per-row with clear error messages.
   - Verified with 6 scenarios: Full Day approved, Half Day auto-approve+LOP, blank split defaulting to Full Day with TRUE auto-approve, Half Day across 2 days = 1 day total, invalid `Quarter Day` rejected, invalid `MaybeLater` rejected.
 - **2026-05-05** Bulk Missed-Punch Import (Admin → Missed Punch Module).
+  - New endpoints: `GET /api/missed-punches/import-template`, `POST /api/missed-punches/import/preview`, `POST /api/missed-punches/bulk-import` (HR/SysAdmin only).
+  - `MP_COLUMN_ALIASES` config maps real-world headers (case-insensitive, whitespace-tolerant) to canonical fields (email, date, check_in, check_out, reason, status, applied_at, approved_by, approved_at, comments). Unknown columns ignored.
+  - Approved imports auto-update attendance via `_update_attendance_from_missed_punch`.
+  - Duplicate guard: DB and in-batch by (employee, date, punch_type).
+  - Frontend: "Import Missed Punch" button (HR-only) + dialog with preview chips + summary counters + error log CSV.
+- **2026-05-05** Bulk Missed-Punch Import — Punch Type column added (UI alignment).
+  - Added `Punch Type` column to template (placed right after `Punch Date`); aliases `Type`, `Punch`. Now mandatory.
+  - Accepts case-insensitive `Check-in` / `Check-out` (with variations like `CHECK-IN`, `check out`, `checkin`). Invalid values → row rejected.
+  - Business logic: `Check-in` uses In Time only; Out Time is ignored even when present. `Check-out` uses Out Time only; In Time is ignored. The required-time validation now matches the punch type.
+  - Updated Instructions sheet to document the new column and ignore behaviour.
+  - Verified with 8 scenarios + missing-column case: case variations, ignored-other-time behaviour, missing/invalid punch type, and missing required time per punch type.
   - New endpoints: `GET /api/missed-punches/import-template` (styled .xlsx with Instructions sheet), `POST /api/missed-punches/import/preview` (alias-mapping preview), `POST /api/missed-punches/bulk-import` (HR/SysAdmin only).
   - `MP_COLUMN_ALIASES` config maps real-world headers (case-insensitive, whitespace-tolerant): `Emp Mail ID`/`Employee Email` → `email`, `Punch Date`/`Date` → `date`, `In Time`/`Punch In`/`Login Time` → `check_in`, `Out Time`/`Punch Out`/`Logout Time` → `check_out`, `Reason`/`Remarks`/`Notes` → `reason`, `Status` → `status`, `Approved By`/`Approver` → `approved_by`, etc. Unknown columns are listed and ignored.
   - Validation: requires email + date + at least one of In/Out time + reason; auto-derives `punch_type` from In/Out presence (`Both`/`Check-in`/`Check-out`); accepts time formats `HH:MM`, `HH:MM:SS`, `HH:MM AM/PM`. Invalid times skipped per-row with clear errors.
