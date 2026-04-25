@@ -64,6 +64,7 @@ import {
   DialogDescription,
 } from '../components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { PageSizeSelector } from '../components/PageSizeSelector';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -96,7 +97,7 @@ const Employees = () => {
   const FIXED_DESIGNATIONS = ['AI Research scientist', 'AI Research - Intern', 'Research', 'Front Office', 'Junior Admin', 'Junior System admin', 'Business & Product - Product Team', 'System Engineer'];
   const [allEmployees, setAllEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, pages: 0 });
+  const [pagination, setPagination] = useState({ page: 1, limit: 25, total: 0, pages: 0 });
   
   // Initialize search from URL params
   const initialSearch = searchParams.get('search') || '';
@@ -242,7 +243,7 @@ const Employees = () => {
   }, [getAuthHeaders, pagination.page, pagination.limit, filters, inactiveTypeFilter]);
 
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
-  useEffect(() => { fetchData(); }, [pagination.page, filters.department, filters.team, filters.status, inactiveTypeFilter]);
+  useEffect(() => { fetchData(); }, [pagination.page, pagination.limit, filters.department, filters.team, filters.status, inactiveTypeFilter]);
 
   const handleSearch = () => { setPagination(prev => ({ ...prev, page: 1 })); fetchData(); };
   const handleReset = () => {
@@ -819,9 +820,16 @@ const Employees = () => {
             
             {/* Pagination */}
             <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <p className="text-sm text-slate-500">
-                Showing {((pagination.page - 1) * pagination.limit) + 1} to {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total}
-              </p>
+              <div className="flex items-center gap-4">
+                <p className="text-sm text-slate-500" data-testid="employees-pagination-info">
+                  Showing {pagination.total === 0 ? 0 : ((pagination.page - 1) * pagination.limit) + 1} to {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total}
+                </p>
+                <PageSizeSelector
+                  value={pagination.limit}
+                  onChange={(newLimit) => setPagination(prev => ({ ...prev, page: 1, limit: newLimit }))}
+                  testId="employees-rows-per-page"
+                />
+              </div>
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="outline" disabled={pagination.page <= 1} onClick={() => setPagination(prev => ({ ...prev, page: prev.page - 1 }))} className="rounded-lg" data-testid="prev-page">
                   <ChevronLeft className="w-4 h-4" />

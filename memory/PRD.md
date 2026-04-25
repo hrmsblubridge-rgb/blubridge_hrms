@@ -229,3 +229,7 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Fixed total-hours calculation for cross-midnight (wraps 24h).
   - 24 unit tests added in `/app/backend/tests/test_cross_midnight_attendance.py` (all pass) + validated end-to-end via curl for 5 scenarios (normal day shift, cross-midnight OUT, new-day after 05:00, multi-punch after midnight, split-batch sync).
   - No schema changes; backward compatible with existing records.
+- **2026-05-05** Configurable Page-Size Selector across Listing Pages.
+  - New reusable `<PageSizeSelector>` component at `/app/frontend/src/components/PageSizeSelector.js`.
+  - 12 options: 25, 50, 75, 100, 150, 200, 250, 300, 350, 400, 450, 500. Default 25.
+  - Applied to: `Employees.js`, `Attendance.js`, `EmployeeAttendance.js`, `AdminMissedPunch.js`, `StarReward.js`.

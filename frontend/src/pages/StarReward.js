@@ -12,6 +12,7 @@ import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
 import { MonthPicker } from '../components/ui/month-picker';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { PageSizeSelector } from '../components/PageSizeSelector';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -570,11 +571,21 @@ const StarReward = () => {
                     </tbody>
                   </table>
                 </div>
-                {totalPages > 1 && (
+                {filteredEmployees.length > 0 && (
                   <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
-                    <p className="text-sm text-slate-500">Page {currentPage} of {totalPages}</p>
+                    <div className="flex items-center gap-4">
+                      <p className="text-sm text-slate-500">
+                        Showing {filteredEmployees.length === 0 ? 0 : ((currentPage - 1) * tableFilters.pageSize) + 1}–{Math.min(currentPage * tableFilters.pageSize, filteredEmployees.length)} of {filteredEmployees.length}
+                      </p>
+                      <PageSizeSelector
+                        value={tableFilters.pageSize}
+                        onChange={(v) => { setTableFilters(prev => ({ ...prev, pageSize: v })); setCurrentPage(1); }}
+                        testId="star-reward-rows-per-page"
+                      />
+                    </div>
                     <div className="flex items-center gap-2">
                       <Button size="sm" variant="outline" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} className="rounded-lg">Prev</Button>
+                      <span className="text-sm text-slate-600 px-3">Page {currentPage} of {totalPages}</span>
                       <Button size="sm" variant="outline" disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => p + 1)} className="rounded-lg">Next</Button>
                     </div>
                   </div>

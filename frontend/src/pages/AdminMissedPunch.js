@@ -13,6 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/s
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
 } from '../components/ui/dialog';
+import { PageSizeSelector } from '../components/PageSizeSelector';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -244,17 +245,13 @@ const AdminMissedPunch = () => {
       <div className="flex items-center justify-between px-1" data-testid="pagination-controls">
         <div className="flex items-center gap-3">
           <span className="text-xs text-slate-500">Total: {total} records</span>
-          <Select value={String(perPage)} onValueChange={v => setPerPage(Number(v))}>
-            <SelectTrigger className="h-8 w-24 text-xs bg-white border-slate-200 rounded-lg" data-testid="per-page-select">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="10">10 / page</SelectItem>
-              <SelectItem value="25">25 / page</SelectItem>
-              <SelectItem value="50">50 / page</SelectItem>
-              <SelectItem value="100">100 / page</SelectItem>
-            </SelectContent>
-          </Select>
+          <PageSizeSelector
+            value={perPage}
+            onChange={(v) => setPerPage(v)}
+            testId="missed-punch-rows-per-page"
+            className="h-8 w-[88px] text-xs bg-white border-slate-200 rounded-lg"
+            showLabel={false}
+          />
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="h-8 w-8 p-0" data-testid="prev-page">

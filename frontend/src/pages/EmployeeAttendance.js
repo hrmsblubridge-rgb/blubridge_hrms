@@ -7,6 +7,7 @@ import { Badge } from '../components/ui/badge';
 import { DatePicker } from '../components/ui/date-picker';
 import { Button } from '../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { PageSizeSelector } from '../components/PageSizeSelector';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -189,9 +190,16 @@ const EmployeeAttendance = () => {
           </div>
           {totalRecords > 0 && (
             <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50" data-testid="emp-attendance-pagination">
-              <p className="text-sm text-slate-500" data-testid="emp-pagination-info">
-                Showing {startIndex + 1}–{endIndex} of {totalRecords} records
-              </p>
+              <div className="flex items-center gap-4">
+                <p className="text-sm text-slate-500" data-testid="emp-pagination-info">
+                  Showing {startIndex + 1}–{endIndex} of {totalRecords} records
+                </p>
+                <PageSizeSelector
+                  value={rowsPerPage}
+                  onChange={(v) => { setRowsPerPage(v); setCurrentPage(1); }}
+                  testId="emp-rows-per-page-select"
+                />
+              </div>
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="outline" disabled={safeCurrentPage <= 1} onClick={() => setCurrentPage(prev => prev - 1)} className="rounded-lg" data-testid="emp-attendance-prev-page">
                   <ChevronLeft className="w-4 h-4" />

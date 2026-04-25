@@ -24,6 +24,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from '../components/ui/badge';
 import { DatePicker } from '../components/ui/date-picker';
 import EmployeeLeaveDetail from '../components/EmployeeLeaveDetail';
+import { PageSizeSelector } from '../components/PageSizeSelector';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -40,7 +41,7 @@ const Attendance = () => {
   
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
 
   // Default: today's date (original behavior)
   const [filters, setFilters] = useState({
@@ -399,17 +400,11 @@ const Attendance = () => {
                 <p className="text-sm text-slate-500" data-testid="pagination-info">
                   Showing {startIndex + 1}–{endIndex} of {totalRecords} records
                 </p>
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-slate-500">Rows per page:</label>
-                  <Select value={String(rowsPerPage)} onValueChange={(v) => { setRowsPerPage(Number(v)); setCurrentPage(1); }}>
-                    <SelectTrigger className="w-[70px] h-8 rounded-lg text-sm" data-testid="rows-per-page-select"><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="10">10</SelectItem>
-                      <SelectItem value="25">25</SelectItem>
-                      <SelectItem value="50">50</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+                <PageSizeSelector
+                  value={rowsPerPage}
+                  onChange={(v) => { setRowsPerPage(v); setCurrentPage(1); }}
+                  testId="rows-per-page-select"
+                />
               </div>
               <div className="flex items-center gap-2">
                 <Button size="sm" variant="outline" disabled={safeCurrentPage <= 1} onClick={() => setCurrentPage(prev => prev - 1)} className="rounded-lg" data-testid="attendance-prev-page">
