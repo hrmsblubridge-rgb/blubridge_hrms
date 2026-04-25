@@ -8814,8 +8814,8 @@ MP_COLUMN_ALIASES: dict[str, str] = {
 
 
 def _normalize_punch_type(value) -> Optional[str]:
-    """Normalize Punch Type to canonical 'Check-in' or 'Check-out'. Returns None
-    if blank, or 'INVALID' sentinel when unrecognized."""
+    """Normalize Punch Type to canonical 'Check-in', 'Check-out', or 'Both'.
+    Returns None if blank, or 'INVALID' sentinel when unrecognized."""
     if value in (None, ""):
         return None
     s = str(value).strip().lower().replace("_", "-").replace(" ", "")
@@ -8823,6 +8823,8 @@ def _normalize_punch_type(value) -> Optional[str]:
         return "Check-in"
     if s in ("check-out", "checkout", "out", "punchout"):
         return "Check-out"
+    if s in ("both", "checkin+checkout", "in+out", "in&out"):
+        return "Both"
     return "INVALID"
 
 
@@ -8875,6 +8877,7 @@ async def download_mp_import_template(current_user: dict = Depends(get_current_u
     sample = [
         ["employee@blubridge.com", "2026-04-22", "Check-in", "09:00", "", "Forgot to punch in", "Approved", "2026-04-23", "Admin", "2026-04-23", "Verified by HR"],
         ["another@blubridge.com", "22/04/2026", "Check-out", "", "18:30", "Forgot to punch out", "Pending", "2026-04-23", "", "", ""],
+        ["third@blubridge.com", "23/04/2026", "Both", "09:15", "18:45", "Biometric down all day", "Approved", "2026-04-24", "Admin", "2026-04-24", ""],
     ]
     for r_idx, row_vals in enumerate(sample, start=2):
         for c_idx, v in enumerate(row_vals, start=1):
@@ -8887,9 +8890,9 @@ async def download_mp_import_template(current_user: dict = Depends(get_current_u
     ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
     ws2.append(["Emp Mail ID", "Yes", "employee_id (via email)", "Aliases: Employee Email, Email, Email ID, Mail"])
     ws2.append(["Punch Date", "Yes", "date", "Aliases: Date, Attendance Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
-    ws2.append(["Punch Type", "Yes", "punch_type", "Aliases: Type, Punch. Accepted values: 'Check-in' or 'Check-out' (case-insensitive)."])
-    ws2.append(["In Time", "Required when Punch Type = Check-in", "check_in_time", "Aliases: Punch In, Check In, Login Time. Format HH:MM (24h) or HH:MM AM/PM. Ignored when Punch Type = Check-out."])
-    ws2.append(["Out Time", "Required when Punch Type = Check-out", "check_out_time", "Aliases: Punch Out, Check Out, Logout Time. Format HH:MM (24h) or HH:MM AM/PM. Ignored when Punch Type = Check-in."])
+    ws2.append(["Punch Type", "Yes", "punch_type", "Aliases: Type, Punch. Accepted values: 'Check-in', 'Check-out', or 'Both' (case-insensitive)."])
+    ws2.append(["In Time", "Required for Check-in or Both", "check_in_time", "Aliases: Punch In, Check In, Login Time. Format HH:MM (24h) or HH:MM AM/PM. Ignored when Punch Type = Check-out."])
+    ws2.append(["Out Time", "Required for Check-out or Both", "check_out_time", "Aliases: Punch Out, Check Out, Logout Time. Format HH:MM (24h) or HH:MM AM/PM. Ignored when Punch Type = Check-in."])
     ws2.append(["Reason", "Yes", "reason", "Aliases: Remarks, Notes. Free text"])
     ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending). Approved status auto-updates the attendance record."])
     ws2.append(["Applied Date", "No", "applied_at", "Stored as-is in extra_data"])
@@ -9071,27 +9074,32 @@ async def bulk_import_missed_punches(
         punch_norm = _normalize_punch_type(row.get("punch_type"))
         if punch_norm is None:
             failed += 1
-            errors.append({"row": idx, "email": email, "reason": "Punch Type is required (use 'Check-in' or 'Check-out')"})
+            errors.append({"row": idx, "email": email, "reason": "Punch Type is required (use 'Check-in', 'Check-out', or 'Both')"})
             continue
         if punch_norm == "INVALID":
             failed += 1
-            errors.append({"row": idx, "email": email, "reason": f"Invalid Punch Type '{row.get('punch_type')}' (use 'Check-in' or 'Check-out')"})
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Punch Type '{row.get('punch_type')}' (use 'Check-in', 'Check-out', or 'Both')"})
             continue
         punch_type = punch_norm
 
-        # Use only the time matching Punch Type; ignore the other.
+        # Use only the time(s) matching Punch Type; ignore the other.
         if punch_type == "Check-in":
             if not check_in_time:
                 failed += 1
                 errors.append({"row": idx, "email": email, "reason": "In Time is required when Punch Type is 'Check-in'"})
                 continue
             check_out_time = None  # explicitly ignored
-        else:  # Check-out
+        elif punch_type == "Check-out":
             if not check_out_time:
                 failed += 1
                 errors.append({"row": idx, "email": email, "reason": "Out Time is required when Punch Type is 'Check-out'"})
                 continue
             check_in_time = None  # explicitly ignored
+        else:  # Both
+            if not check_in_time or not check_out_time:
+                failed += 1
+                errors.append({"row": idx, "email": email, "reason": "Both punch type requires both In Time and Out Time"})
+                continue
 
         reason = (str(row.get("reason")).strip() if row.get("reason") not in (None, "") else None)
         if not reason:
