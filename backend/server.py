@@ -8752,6 +8752,405 @@ async def edit_missed_punch(request_id: str, data: MissedPunchCreate, current_us
     updated = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
     return serialize_doc(updated)
 
+# ============== MISSED PUNCH BULK IMPORT ==============
+
+MP_IMPORT_COLUMNS = [
+    "Emp Mail ID", "Punch Date", "In Time", "Out Time",
+    "Reason", "Status", "Applied Date", "Approved By", "Approval Date", "Comments"
+]
+
+# Sheet-column aliases → canonical field names. Case-insensitive, whitespace-tolerant.
+MP_COLUMN_ALIASES: dict[str, str] = {
+    # email → employee
+    "Emp Mail ID": "email",
+    "Employee Email": "email",
+    "Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # date
+    "Punch Date": "date",
+    "Date": "date",
+    "Attendance Date": "date",
+    # in time
+    "In Time": "check_in",
+    "Punch In": "check_in",
+    "Check In": "check_in",
+    "Check-In": "check_in",
+    "Login Time": "check_in",
+    # out time
+    "Out Time": "check_out",
+    "Punch Out": "check_out",
+    "Check Out": "check_out",
+    "Check-Out": "check_out",
+    "Logout Time": "check_out",
+    # reason
+    "Reason": "reason",
+    "Remarks": "reason",
+    "Remark": "reason",
+    "Notes": "reason",
+    # status
+    "Status": "status",
+    "Request Status": "status",
+    # applied at
+    "Applied Date": "applied_at",
+    "Applied On": "applied_at",
+    "Date Applied": "applied_at",
+    # approved by
+    "Approved By": "approved_by",
+    "Approver": "approved_by",
+    "Approving Authority": "approved_by",
+    # approval date
+    "Approval Date": "approved_at",
+    "Approved On": "approved_at",
+    "Date Approved": "approved_at",
+    # comments
+    "Comments": "comments",
+    "Approver Notes": "comments",
+}
+
+
+def _build_mp_alias_index() -> dict[str, str]:
+    return {_normalize_header(k): v for k, v in MP_COLUMN_ALIASES.items()}
+
+
+def _parse_import_time(value) -> Optional[str]:
+    """Parse a time cell to canonical 24h "HH:MM" string. Returns None if blank/invalid."""
+    if value is None:
+        return None
+    # openpyxl may return time/datetime/timedelta objects
+    if isinstance(value, datetime):
+        return value.strftime("%H:%M")
+    if hasattr(value, "hour") and hasattr(value, "minute"):  # datetime.time
+        try:
+            return f"{value.hour:02d}:{value.minute:02d}"
+        except Exception:
+            pass
+    s = str(value).strip()
+    if not s:
+        return None
+    # Strip seconds / am-pm suffixes
+    for fmt in ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M:%S %p", "%I:%M%p"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%H:%M")
+        except ValueError:
+            continue
+    return None
+
+
+@api_router.get("/missed-punches/import-template")
+async def download_mp_import_template(current_user: dict = Depends(get_current_user)):
+    """Download styled .xlsx template for missed-punch bulk import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Missed Punch Import"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(MP_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["employee@blubridge.com", "2026-04-22", "09:00", "18:00", "Forgot to punch out", "Approved", "2026-04-23", "Admin", "2026-04-23", "Verified by HR"],
+        ["another@blubridge.com", "22/04/2026", "09:30", "", "Biometric not working", "Pending", "2026-04-23", "", "", ""],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [30, 14, 12, 12, 30, 12, 14, 18, 14, 30]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Emp Mail ID", "Yes", "employee_id (via email)", "Aliases: Employee Email, Email, Email ID, Mail"])
+    ws2.append(["Punch Date", "Yes", "date", "Aliases: Date, Attendance Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
+    ws2.append(["In Time", "One of In/Out required", "check_in_time", "Aliases: Punch In, Check In, Login Time. Format HH:MM (24h) or HH:MM AM/PM"])
+    ws2.append(["Out Time", "One of In/Out required", "check_out_time", "Aliases: Punch Out, Check Out, Logout Time. Format HH:MM (24h) or HH:MM AM/PM"])
+    ws2.append(["Reason", "Yes", "reason", "Aliases: Remarks, Notes. Free text"])
+    ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending). Approved status auto-updates the attendance record."])
+    ws2.append(["Applied Date", "No", "applied_at", "Stored as-is in extra_data"])
+    ws2.append(["Approved By", "No", "approved_by", "'Admin' or admin's username/email/full name → resolved to user ID"])
+    ws2.append(["Approval Date", "No", "approved_at", "Stored as-is when status = approved"])
+    ws2.append(["Comments", "No", "comments", "Aliases: Approver Notes. Stored in extra_data"])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=missed_punches_import_template.xlsx"}
+    )
+
+
+@api_router.post("/missed-punches/import/preview")
+async def preview_mp_import(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + sample rows for missed-punch import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    alias_index = _build_mp_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
+
+    required_fields = ["email", "date"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
+    # Need at least one of (check_in, check_out)
+    has_time = "check_in" in detected_canonical or "check_out" in detected_canonical
+    if not has_time:
+        missing_required.append("In Time or Out Time")
+
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else (str(v) if v is not None else None)) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "column_mapping": mapped,
+        "ignored_columns": ignored,
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
+        "sample_rows": sample,
+    }
+
+
+@api_router.post("/missed-punches/bulk-import")
+async def bulk_import_missed_punches(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-import missed-punch requests from .xlsx or .csv. Admin-only.
+
+    - Maps employee by email; skipped if not found.
+    - Requires at least one of In Time / Out Time per row.
+    - Approved rows automatically update the attendance record (matching the
+      manual approval flow via _update_attendance_from_missed_punch).
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    alias_index = _build_mp_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    if "email" not in detected_canonical or "date" not in detected_canonical:
+        missing = []
+        if "email" not in detected_canonical:
+            missing.append("Emp Mail ID")
+        if "date" not in detected_canonical:
+            missing.append("Punch Date")
+        raise HTTPException(status_code=400, detail=f"Missing mandatory column(s): {', '.join(missing)}")
+    if "check_in" not in detected_canonical and "check_out" not in detected_canonical:
+        raise HTTPException(status_code=400, detail="At least one of 'In Time' / 'Out Time' columns is required")
+
+    # Pre-fetch employees by email
+    email_to_emp: dict = {}
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1}):
+        email = (e.get("official_email") or "").strip().lower()
+        if email:
+            email_to_emp[email] = e
+
+    # Pre-fetch users + employees for Approved By resolution
+    approver_index: dict[str, str] = {}
+    async for u in db.users.find({}, {"_id": 0, "id": 1, "username": 1, "email": 1}):
+        if u.get("username"):
+            approver_index[_normalize_header(u["username"])] = u["id"]
+        if u.get("email"):
+            approver_index[_normalize_header(u["email"])] = u["id"]
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "official_email": 1}):
+        if e.get("full_name"):
+            approver_index.setdefault(_normalize_header(e["full_name"]), e["id"])
+        if e.get("official_email"):
+            approver_index.setdefault(_normalize_header(e["official_email"]), e["id"])
+
+    def _resolve_mp_approver(value) -> tuple[Optional[str], Optional[str]]:
+        if value in (None, ""):
+            return (None, None)
+        s = str(value).strip()
+        if not s:
+            return (None, None)
+        norm = _normalize_header(s)
+        if norm in ("admin", "administrator", "hr admin", "hr"):
+            return (current_user["id"], None)
+        if norm in approver_index:
+            return (approver_index[norm], None)
+        return (None, s)
+
+    total = len(rows)
+    success = 0
+    failed = 0
+    skipped_duplicates = 0
+    errors: List[dict] = []
+    inserts: List[dict] = []
+    approved_inserts: List[dict] = []  # records to push through attendance update
+    inbatch_keys: set = set()  # (employee_id, date, punch_type) seen earlier in this upload
+
+    for idx, raw_row in enumerate(rows, start=2):
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
+        if not email:
+            failed += 1
+            errors.append({"row": idx, "email": "", "reason": "Employee Email is blank"})
+            continue
+        emp = email_to_emp.get(email)
+        if not emp:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
+            continue
+
+        date_iso = _parse_import_date(row.get("date"))
+        if not date_iso:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Invalid Punch Date format"})
+            continue
+
+        check_in_time = _parse_import_time(row.get("check_in")) if row.get("check_in") not in (None, "") else None
+        check_out_time = _parse_import_time(row.get("check_out")) if row.get("check_out") not in (None, "") else None
+        # Validate: if a value was provided but couldn't be parsed → fail
+        if row.get("check_in") not in (None, "") and check_in_time is None:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid In Time format '{row.get('check_in')}' (use HH:MM 24h or HH:MM AM/PM)"})
+            continue
+        if row.get("check_out") not in (None, "") and check_out_time is None:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Out Time format '{row.get('check_out')}' (use HH:MM 24h or HH:MM AM/PM)"})
+            continue
+        if not check_in_time and not check_out_time:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "At least one of In Time / Out Time is required"})
+            continue
+
+        if check_in_time and check_out_time:
+            punch_type = "Both"
+        elif check_in_time:
+            punch_type = "Check-in"
+        else:
+            punch_type = "Check-out"
+
+        reason = (str(row.get("reason")).strip() if row.get("reason") not in (None, "") else None)
+        if not reason:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Reason is required"})
+            continue
+
+        status_norm = _normalize_status(row.get("status")) or "pending"
+        approver_id, approver_unresolved = _resolve_mp_approver(row.get("approved_by"))
+        applied_at = _parse_import_date(row.get("applied_at"))
+        approved_at = _parse_import_date(row.get("approved_at"))
+        comments = (str(row.get("comments")).strip() if row.get("comments") not in (None, "") else None)
+
+        # Duplicate guard (matches manual create rule): same employee + date + punch_type, non-rejected
+        existing = await db.missed_punches.find_one({
+            "employee_id": emp["id"],
+            "date": date_iso,
+            "punch_type": punch_type,
+            "status": {"$ne": "rejected"}
+        }, {"_id": 0, "id": 1})
+        if existing:
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Missed punch already exists for {date_iso} ({punch_type})"})
+            continue
+
+        # Also reject if an earlier row in THIS upload covers the same key
+        batch_key = (emp["id"], date_iso, punch_type)
+        if batch_key in inbatch_keys:
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Duplicate of an earlier row for {date_iso} ({punch_type})"})
+            continue
+        inbatch_keys.add(batch_key)
+
+        final_approved_by = approver_id
+        if status_norm == "approved" and not final_approved_by:
+            final_approved_by = current_user["id"]
+
+        doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp["id"],
+            "emp_name": emp.get("full_name", ""),
+            "team": emp.get("team", ""),
+            "department": emp.get("department", ""),
+            "date": date_iso,
+            "punch_type": punch_type,
+            "check_in_time": check_in_time,
+            "check_out_time": check_out_time,
+            "reason": reason,
+            "status": status_norm,
+            "approved_by": final_approved_by,
+            "applied_by_admin": True,
+            "extra_data": {
+                k: v for k, v in {
+                    "applied_at": applied_at,
+                    "approved_at": approved_at,
+                    "approver_unresolved": approver_unresolved,
+                    "comments": comments,
+                }.items() if v is not None
+            } or None,
+            "created_at": get_ist_now().isoformat(),
+        }
+        inserts.append(doc)
+        if status_norm == "approved":
+            approved_inserts.append(doc)
+        success += 1
+
+    if inserts:
+        chunk = 500
+        for i in range(0, len(inserts), chunk):
+            await db.missed_punches.insert_many([d.copy() for d in inserts[i:i + chunk]])
+
+    # Apply attendance updates for approved rows (matches the manual approve flow)
+    for doc in approved_inserts:
+        try:
+            await _update_attendance_from_missed_punch(doc)
+        except Exception as e:
+            errors.append({"row": "—", "email": doc.get("employee_id"), "reason": f"Attendance update warning: {str(e)[:120]}"})
+
+    await log_audit(
+        current_user["id"], "bulk_import", "missed_punches", None,
+        f"Missed punch bulk import: total={total} success={success} duplicates={skipped_duplicates} failed={failed}"
+    )
+
+    return {
+        "total": total,
+        "success": success,
+        "skipped_duplicates": skipped_duplicates,
+        "failed": failed,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
+        "errors": errors[:1000],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Help documentation — downloadable role-specific PDF
 # ---------------------------------------------------------------------------

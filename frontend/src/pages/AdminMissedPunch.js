@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Clock, Check, X, Plus, Search, Filter, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
+import { Clock, Check, X, Plus, Search, Filter, ChevronLeft, ChevronRight, Eye, Upload, Download } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
@@ -31,6 +31,14 @@ const AdminMissedPunch = () => {
   const [formData, setFormData] = useState({ employee_id: '', date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '', auto_approve: false });
   const [empSearch, setEmpSearch] = useState('');
   const [empDropdownOpen, setEmpDropdownOpen] = useState(false);
+
+  // Bulk Import state
+  const [showImport, setShowImport] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   // Filters
   const [filterFromDate, setFilterFromDate] = useState('');
@@ -90,6 +98,68 @@ const AdminMissedPunch = () => {
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to apply');
     }
+  };
+
+  // ----------------- Bulk Import handlers -----------------
+  const handleDownloadMpTemplate = async () => {
+    try {
+      const resp = await axios.get(`${API}/missed-punches/import-template`, { headers: getAuthHeaders(), responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([resp.data]));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'missed_punches_import_template.xlsx';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to download template');
+    }
+  };
+
+  const handlePreviewMpFile = async (file) => {
+    if (!file) { setImportPreview(null); return; }
+    setPreviewLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const resp = await axios.post(`${API}/missed-punches/import/preview`, fd, { headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' } });
+      setImportPreview(resp.data);
+    } catch (err) {
+      setImportPreview(null);
+      toast.error(err.response?.data?.detail || 'Failed to preview file');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleMpImportSubmit = async () => {
+    if (!importFile) { toast.error('Please select a .xlsx or .csv file'); return; }
+    setImportLoading(true);
+    setImportResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', importFile);
+      const resp = await axios.post(`${API}/missed-punches/bulk-import`, fd, { headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' } });
+      setImportResult(resp.data);
+      if (resp.data.success > 0) toast.success(`Imported ${resp.data.success} missed punch(es)`);
+      if (resp.data.failed > 0 || resp.data.skipped_duplicates > 0) toast.warning(`${resp.data.failed} failed, ${resp.data.skipped_duplicates} duplicate(s) skipped`);
+      fetchData();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Import failed');
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  const handleDownloadMpErrorLog = () => {
+    if (!importResult || !importResult.errors || importResult.errors.length === 0) return;
+    const headers = ['Row', 'Email', 'Reason'];
+    const rows = importResult.errors.map(e => [e.row, e.email || '', (e.reason || '').replace(/"/g, '""')]);
+    const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `mp-import-errors-${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
   };
 
   const handleApprove = async () => {
@@ -183,7 +253,14 @@ const AdminMissedPunch = () => {
             <p className="text-sm text-slate-500">Manage missed punch requests</p>
           </div>
         </div>
-        {isHR && <Button onClick={() => setShowApply(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-missed-punch-btn"><Plus className="w-4 h-4 mr-2" /> Apply for Employee</Button>}
+        {isHR && (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => { setImportFile(null); setImportResult(null); setImportPreview(null); setShowImport(true); }} className="rounded-xl border-[#063c88] text-[#063c88] hover:bg-[#063c88] hover:text-white" data-testid="admin-import-mp-btn">
+              <Upload className="w-4 h-4 mr-2" /> Import Missed Punch
+            </Button>
+            <Button onClick={() => setShowApply(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-missed-punch-btn"><Plus className="w-4 h-4 mr-2" /> Apply for Employee</Button>
+          </div>
+        )}
       </div>
 
       {/* Filters */}
@@ -382,6 +459,144 @@ const AdminMissedPunch = () => {
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowReject(false)}>Cancel</Button>
             <Button onClick={handleReject} className="bg-red-500 hover:bg-red-600 text-white" data-testid="confirm-reject">Reject</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Import Missed Punch Dialog */}
+      <Dialog open={showImport} onOpenChange={(o) => { setShowImport(o); if (!o) { setImportFile(null); setImportResult(null); setImportPreview(null); } }}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl max-w-2xl" data-testid="mp-import-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2" style={{ fontFamily: 'Outfit' }}>
+              <Upload className="w-5 h-5 text-[#063c88]" /> Import Missed Punch
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-slate-600">Upload an Excel/CSV file. Sheet column names can vary — they are auto-mapped to system fields. At least one of <span className="font-medium">In Time</span> / <span className="font-medium">Out Time</span> is required per row.</p>
+
+            <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50 border border-blue-200">
+              <p className="text-sm text-slate-700">Need the format? Download the sample template.</p>
+              <Button size="sm" variant="outline" onClick={handleDownloadMpTemplate} className="rounded-lg border-[#063c88] text-[#063c88]" data-testid="mp-import-template-btn">
+                <Download className="w-4 h-4 mr-1" /> Template
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Upload File (.xlsx or .csv)</label>
+              <Input
+                type="file"
+                accept=".xlsx,.csv"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null;
+                  setImportFile(f);
+                  setImportResult(null);
+                  setImportPreview(null);
+                  if (f) handlePreviewMpFile(f);
+                }}
+                className="rounded-lg cursor-pointer"
+                data-testid="mp-import-file-input"
+              />
+              {importFile && <p className="text-xs text-slate-500">Selected: <span className="font-medium">{importFile.name}</span></p>}
+            </div>
+
+            {previewLoading && <p className="text-sm text-slate-500">Detecting columns…</p>}
+
+            {importPreview && !importResult && (
+              <div className="border border-slate-200 rounded-lg p-3 bg-white space-y-2" data-testid="mp-import-preview">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-slate-700">Detected columns ({importPreview.headers.length}) · {importPreview.total_rows} row(s)</p>
+                  {importPreview.ready_to_import
+                    ? <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200">Ready to import</Badge>
+                    : <Badge className="bg-red-100 text-red-700 border-red-200">Missing required fields</Badge>}
+                </div>
+                {!importPreview.ready_to_import && (
+                  <p className="text-xs text-red-600">Missing required: {importPreview.missing_required.join(', ')}</p>
+                )}
+                <div className="space-y-1">
+                  <p className="text-xs text-slate-500 font-medium">Column mapping (sheet → system field)</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs">
+                    {Object.entries(importPreview.column_mapping || {}).map(([sheetCol, dbField]) => (
+                      <div key={sheetCol} className="flex items-center gap-2 px-2 py-1 rounded bg-emerald-50 border border-emerald-200">
+                        <span className="font-medium text-slate-700">{sheetCol}</span>
+                        <span className="text-emerald-600">→</span>
+                        <span className="text-emerald-700 font-mono">{dbField}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {importPreview.ignored_columns && importPreview.ignored_columns.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-amber-700 font-medium">Ignored columns (no matching field)</p>
+                    <div className="flex flex-wrap gap-1">
+                      {importPreview.ignored_columns.map(c => <span key={c} className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 text-xs">{c}</span>)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {importResult && (
+              <div className="space-y-3" data-testid="mp-import-result">
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="p-3 rounded-lg bg-slate-100 text-center">
+                    <p className="text-xs text-slate-500">Total</p>
+                    <p className="text-lg font-bold text-slate-900" data-testid="mp-import-total">{importResult.total}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-emerald-50 text-center">
+                    <p className="text-xs text-emerald-700">Success</p>
+                    <p className="text-lg font-bold text-emerald-700" data-testid="mp-import-success">{importResult.success}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-amber-50 text-center">
+                    <p className="text-xs text-amber-700">Duplicates</p>
+                    <p className="text-lg font-bold text-amber-700" data-testid="mp-import-duplicates">{importResult.skipped_duplicates}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-red-50 text-center">
+                    <p className="text-xs text-red-700">Failed</p>
+                    <p className="text-lg font-bold text-red-700" data-testid="mp-import-failed">{importResult.failed}</p>
+                  </div>
+                </div>
+                {importResult.ignored_columns && importResult.ignored_columns.length > 0 && (
+                  <div className="text-xs text-slate-600 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                    <span className="font-medium">Ignored sheet columns (unmapped):</span> {importResult.ignored_columns.join(', ')}
+                  </div>
+                )}
+                {importResult.errors && importResult.errors.length > 0 && (
+                  <div className="border border-slate-200 rounded-lg p-3 bg-white max-h-48 overflow-auto">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-medium text-slate-700">Errors / Skipped ({importResult.errors.length})</p>
+                      <Button size="sm" variant="outline" onClick={handleDownloadMpErrorLog} className="h-7 text-xs rounded-lg" data-testid="mp-import-download-errors-btn">
+                        <Download className="w-3 h-3 mr-1" /> Error log
+                      </Button>
+                    </div>
+                    <div className="space-y-1 text-xs">
+                      {importResult.errors.slice(0, 50).map((err, i) => (
+                        <div key={i} className="flex gap-2 text-slate-600">
+                          <span className="font-mono text-slate-400">Row {err.row}</span>
+                          <span className="font-mono text-slate-500">{err.email || '—'}</span>
+                          <span>{err.reason}</span>
+                        </div>
+                      ))}
+                      {importResult.errors.length > 50 && (
+                        <p className="text-slate-400 italic">…and {importResult.errors.length - 50} more (download log to see all)</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowImport(false)} className="rounded-lg" data-testid="mp-import-close-btn">Close</Button>
+            <Button
+              onClick={handleMpImportSubmit}
+              disabled={!importFile || importLoading || (importPreview && !importPreview.ready_to_import)}
+              className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg"
+              data-testid="mp-import-submit-btn"
+            >
+              {importLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (<><Upload className="w-4 h-4 mr-1" /> Upload &amp; Import</>)}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

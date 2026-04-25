@@ -277,3 +277,12 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Added `Auto Approve & Set LOP Status` column (aliases: Auto Approve, Auto Approve LOP) — accepts Yes/No, TRUE/FALSE, 1/0. When TRUE, the leave is force-approved (`status=approved`, `approved_by=current admin`, `is_lop=True`).
   - Validation: invalid Leave Split or invalid boolean values are rejected per-row with clear error messages.
   - Verified with 6 scenarios: Full Day approved, Half Day auto-approve+LOP, blank split defaulting to Full Day with TRUE auto-approve, Half Day across 2 days = 1 day total, invalid `Quarter Day` rejected, invalid `MaybeLater` rejected.
+- **2026-05-05** Bulk Missed-Punch Import (Admin → Missed Punch Module).
+  - New endpoints: `GET /api/missed-punches/import-template` (styled .xlsx with Instructions sheet), `POST /api/missed-punches/import/preview` (alias-mapping preview), `POST /api/missed-punches/bulk-import` (HR/SysAdmin only).
+  - `MP_COLUMN_ALIASES` config maps real-world headers (case-insensitive, whitespace-tolerant): `Emp Mail ID`/`Employee Email` → `email`, `Punch Date`/`Date` → `date`, `In Time`/`Punch In`/`Login Time` → `check_in`, `Out Time`/`Punch Out`/`Logout Time` → `check_out`, `Reason`/`Remarks`/`Notes` → `reason`, `Status` → `status`, `Approved By`/`Approver` → `approved_by`, etc. Unknown columns are listed and ignored.
+  - Validation: requires email + date + at least one of In/Out time + reason; auto-derives `punch_type` from In/Out presence (`Both`/`Check-in`/`Check-out`); accepts time formats `HH:MM`, `HH:MM:SS`, `HH:MM AM/PM`. Invalid times skipped per-row with clear errors.
+  - Value transformation: `Approved By` `"Admin"`/username/email/full_name → resolved user ID; status normalized to `approved`/`pending`/`rejected`.
+  - Approved imports automatically push attendance updates via existing `_update_attendance_from_missed_punch` (matches manual approval behavior).
+  - Duplicate guard: skips rows that match existing non-rejected DB record AND in-batch repeats by (employee, date, punch_type).
+  - Frontend: new "Import Missed Punch" button + dialog in `AdminMissedPunch.js` (HR-only) with template download, preview-after-pick (mapping chips green / ignored amber), summary counters, downloadable error log CSV.
+  - Verified with 8 scenarios: Both-punch approved as Admin, In-only with AM/PM time, Out-only with sysadmin approver, invalid time rejected, missing both times rejected, missing reason rejected, unknown email rejected, in-batch duplicate caught.
