@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle, Plus } from 'lucide-react';
+import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle, Plus, Upload, Download } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -37,6 +37,11 @@ const Leave = () => {
   const [employees, setEmployees] = useState([]);
   const [applyForm, setApplyForm] = useState({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false });
   const [filters, setFilters] = useState({ empName: '', team: 'All', fromDate: '', toDate: '', leaveType: 'All', status: 'All' });
+  // Bulk Import state
+  const [showImportDialog, setShowImportDialog] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   useEffect(() => {
     if (location.state?.tab) {
@@ -120,6 +125,51 @@ const Leave = () => {
     finally { setActionLoading(false); }
   };
 
+  const handleDownloadImportTemplate = async () => {
+    try {
+      const resp = await axios.get(`${API}/leaves/import-template`, { headers: getAuthHeaders(), responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([resp.data]));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'leaves_import_template.xlsx';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to download template');
+    }
+  };
+
+  const handleBulkImportSubmit = async () => {
+    if (!importFile) { toast.error('Please select a .xlsx or .csv file'); return; }
+    setImportLoading(true);
+    setImportResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', importFile);
+      const resp = await axios.post(`${API}/leaves/bulk-import`, fd, { headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' } });
+      setImportResult(resp.data);
+      if (resp.data.success > 0) toast.success(`Imported ${resp.data.success} leave(s)`);
+      if (resp.data.failed > 0 || resp.data.skipped_duplicates > 0) toast.warning(`${resp.data.failed} failed, ${resp.data.skipped_duplicates} duplicate(s) skipped`);
+      fetchData();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Import failed');
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  const handleDownloadErrorLog = () => {
+    if (!importResult || !importResult.errors || importResult.errors.length === 0) return;
+    const headers = ['Row', 'Email', 'Reason'];
+    const rows = importResult.errors.map(e => [e.row, e.email || '', (e.reason || '').replace(/"/g, '""')]);
+    const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `leave-import-errors-${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  };
+
   const confirmReject = async () => {
     if (!selectedLeave) return;
     setActionLoading(true);
@@ -166,9 +216,14 @@ const Leave = () => {
             <p className="text-sm text-slate-500">Manage employee leave requests</p>
           </div>
         </div>
-        <Button onClick={() => setShowApplyDialog(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-leave-btn">
-          <Plus className="w-4 h-4 mr-2" /> Apply for Employee
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => { setImportFile(null); setImportResult(null); setShowImportDialog(true); }} className="rounded-xl border-[#063c88] text-[#063c88] hover:bg-[#063c88] hover:text-white" data-testid="admin-import-leaves-btn">
+            <Upload className="w-4 h-4 mr-2" /> Import Leaves
+          </Button>
+          <Button onClick={() => setShowApplyDialog(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-leave-btn">
+            <Plus className="w-4 h-4 mr-2" /> Apply for Employee
+          </Button>
+        </div>
       </div>
 
       {/* Quick Stats */}
@@ -539,6 +594,92 @@ const Leave = () => {
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowApplyDialog(false)} className="rounded-lg">Cancel</Button>
             <Button onClick={handleApplyForEmployee} disabled={actionLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg">{actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Submit'}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Import Leaves Dialog */}
+      <Dialog open={showImportDialog} onOpenChange={(o) => { setShowImportDialog(o); if (!o) { setImportFile(null); setImportResult(null); } }}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl max-w-2xl" data-testid="leave-import-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2" style={{ fontFamily: 'Outfit' }}>
+              <Upload className="w-5 h-5 text-[#063c88]" /> Import Leaves
+            </DialogTitle>
+            <DialogDescription>Upload a .xlsx or .csv file to bulk-create leave records. Required columns: Employee Email, Leave Type, From Date, To Date.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50 border border-blue-200">
+              <p className="text-sm text-slate-700">Need the format? Download the sample template.</p>
+              <Button size="sm" variant="outline" onClick={handleDownloadImportTemplate} className="rounded-lg border-[#063c88] text-[#063c88]" data-testid="leave-import-template-btn">
+                <Download className="w-4 h-4 mr-1" /> Template
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Upload File (.xlsx or .csv)</Label>
+              <Input
+                type="file"
+                accept=".xlsx,.csv"
+                onChange={(e) => { setImportFile(e.target.files?.[0] || null); setImportResult(null); }}
+                className="rounded-lg cursor-pointer"
+                data-testid="leave-import-file-input"
+              />
+              {importFile && <p className="text-xs text-slate-500">Selected: <span className="font-medium">{importFile.name}</span></p>}
+            </div>
+
+            {importResult && (
+              <div className="space-y-3" data-testid="leave-import-result">
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="p-3 rounded-lg bg-slate-100 text-center">
+                    <p className="text-xs text-slate-500">Total</p>
+                    <p className="text-lg font-bold text-slate-900" data-testid="import-total">{importResult.total}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-emerald-50 text-center">
+                    <p className="text-xs text-emerald-700">Success</p>
+                    <p className="text-lg font-bold text-emerald-700" data-testid="import-success">{importResult.success}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-amber-50 text-center">
+                    <p className="text-xs text-amber-700">Duplicates</p>
+                    <p className="text-lg font-bold text-amber-700" data-testid="import-duplicates">{importResult.skipped_duplicates}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-red-50 text-center">
+                    <p className="text-xs text-red-700">Failed</p>
+                    <p className="text-lg font-bold text-red-700" data-testid="import-failed">{importResult.failed}</p>
+                  </div>
+                </div>
+
+                {importResult.errors && importResult.errors.length > 0 && (
+                  <div className="border border-slate-200 rounded-lg p-3 bg-white max-h-48 overflow-auto">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-medium text-slate-700">Errors / Skipped ({importResult.errors.length})</p>
+                      <Button size="sm" variant="outline" onClick={handleDownloadErrorLog} className="h-7 text-xs rounded-lg" data-testid="leave-import-download-errors-btn">
+                        <Download className="w-3 h-3 mr-1" /> Error log
+                      </Button>
+                    </div>
+                    <div className="space-y-1 text-xs">
+                      {importResult.errors.slice(0, 50).map((err, i) => (
+                        <div key={i} className="flex gap-2 text-slate-600">
+                          <span className="font-mono text-slate-400">Row {err.row}</span>
+                          <span className="font-mono text-slate-500">{err.email || '—'}</span>
+                          <span>{err.reason}</span>
+                        </div>
+                      ))}
+                      {importResult.errors.length > 50 && (
+                        <p className="text-slate-400 italic">…and {importResult.errors.length - 50} more (download log to see all)</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowImportDialog(false)} className="rounded-lg" data-testid="leave-import-close-btn">Close</Button>
+            <Button onClick={handleBulkImportSubmit} disabled={!importFile || importLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="leave-import-submit-btn">
+              {importLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (<><Upload className="w-4 h-4 mr-1" /> Upload &amp; Import</>)}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

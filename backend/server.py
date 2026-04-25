@@ -4091,6 +4091,330 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
     await log_audit(current_user["id"], "create", "leave", leave.id)
     return serialize_doc(doc)
 
+# ============== LEAVE BULK IMPORT ==============
+
+LEAVE_IMPORT_COLUMNS = [
+    "Employee Email", "Leave Type", "From Date", "To Date",
+    "Number of Days", "Reason", "Status"
+]
+
+# Canonical leave types used in the system. Anything not matching falls back to "General Leave".
+CANONICAL_LEAVE_TYPES = [
+    "Sick", "Casual", "Earned", "Maternity", "Annual",
+    "Emergency", "Preplanned", "General Leave"
+]
+
+
+def _normalize_leave_type(raw) -> str:
+    """Map an arbitrary leave-type string to a canonical value via case-insensitive
+    fuzzy match. Falls back to "General Leave" if no reasonable match is found."""
+    if raw is None:
+        return "General Leave"
+    s = str(raw).strip()
+    if not s:
+        return "General Leave"
+    # Strip common suffixes like "(SL)", "(CL)" etc.
+    cleaned = s.split("(")[0].strip()
+    cleaned_lower = cleaned.lower()
+
+    # Direct case-insensitive match (handles "sick", "Sick Leave", "sl" etc.)
+    for canon in CANONICAL_LEAVE_TYPES:
+        if cleaned_lower == canon.lower():
+            return canon
+    # "Sick Leave" → starts with "Sick"
+    for canon in CANONICAL_LEAVE_TYPES:
+        if cleaned_lower.startswith(canon.lower()) or canon.lower() in cleaned_lower:
+            return canon
+    # Fuzzy ratio
+    from difflib import SequenceMatcher
+    best = ("General Leave", 0.0)
+    for canon in CANONICAL_LEAVE_TYPES:
+        ratio = SequenceMatcher(None, cleaned_lower, canon.lower()).ratio()
+        if ratio > best[1]:
+            best = (canon, ratio)
+    return best[0] if best[1] >= 0.7 else "General Leave"
+
+
+def _parse_import_date(value) -> Optional[str]:
+    """Parse a date cell (datetime, date, or string in DD-MM-YYYY / DD/MM/YYYY /
+    YYYY-MM-DD) into canonical "YYYY-MM-DD". Returns None if invalid."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+    s = str(value).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_status(value) -> Optional[str]:
+    """Normalize Status to one of approved/pending/rejected. Returns None if blank."""
+    if value is None:
+        return None
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    if s in ("approved", "approve", "accept", "accepted"):
+        return "approved"
+    if s in ("pending", "open", "new", "in progress", "in-progress"):
+        return "pending"
+    if s in ("rejected", "reject", "denied", "declined"):
+        return "rejected"
+    return None  # unrecognized
+
+
+def _read_leave_import_rows(file_bytes: bytes, filename: str) -> tuple[List[str], List[dict]]:
+    """Read .xlsx or .csv into (headers, rows). Each row is a dict header→cell."""
+    name_lower = (filename or "").lower()
+    rows: List[dict] = []
+    if name_lower.endswith(".xlsx") or name_lower.endswith(".xlsm"):
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        ws = wb.active
+        headers = [str(ws.cell(1, c).value).strip() if ws.cell(1, c).value is not None else "" for c in range(1, ws.max_column + 1)]
+        for r in range(2, ws.max_row + 1):
+            row = {headers[c - 1]: ws.cell(r, c).value for c in range(1, ws.max_column + 1) if headers[c - 1]}
+            if any(v not in (None, "") for v in row.values()):
+                rows.append(row)
+        return headers, rows
+    if name_lower.endswith(".csv"):
+        text = file_bytes.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        headers = [h.strip() for h in (reader.fieldnames or [])]
+        for raw in reader:
+            row = {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+            if any(v not in (None, "") for v in row.values()):
+                rows.append(row)
+        return headers, rows
+    raise HTTPException(status_code=400, detail="Unsupported file format. Use .xlsx or .csv")
+
+
+@api_router.get("/leaves/import-template")
+async def download_leave_import_template(current_user: dict = Depends(get_current_user)):
+    """Download an .xlsx template for bulk leave import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Leaves Import"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(LEAVE_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["employee@blubridge.com", "Sick", "2026-04-10", "2026-04-12", 3, "Fever", "approved"],
+        ["another@blubridge.com", "Casual Leave (CL)", "10/04/2026", "10/04/2026", 1, "Personal", "pending"],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [30, 18, 14, 14, 14, 30, 12]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    # Instructions sheet
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Field", "Required", "Notes"])
+    ws2.append(["Employee Email", "Yes", "Must match an existing employee's official email"])
+    ws2.append(["Leave Type", "Yes", f"One of: {', '.join(CANONICAL_LEAVE_TYPES[:-1])}. Anything else falls back to 'General Leave'."])
+    ws2.append(["From Date", "Yes", "Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
+    ws2.append(["To Date", "Yes", "Must be >= From Date"])
+    ws2.append(["Number of Days", "No", "Auto-calculated from dates if blank"])
+    ws2.append(["Reason", "No", "Free text"])
+    ws2.append(["Status", "No", "approved / pending / rejected (default: pending)"])
+    for col_idx in range(1, 4):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 38
+    ws2.cell(1, 1).font = openpyxl.styles.Font(bold=True)
+    ws2.cell(1, 2).font = openpyxl.styles.Font(bold=True)
+    ws2.cell(1, 3).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=leaves_import_template.xlsx"}
+    )
+
+
+@api_router.post("/leaves/bulk-import")
+async def bulk_import_leaves(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-import leave records from .xlsx or .csv. Admin-only.
+
+    Behaviour (per agreed spec):
+    - Map by Employee Email; unknown emails are skipped with an error.
+    - Leave Type is fuzzy-matched against canonical types; unmatched → 'General Leave'.
+    - Validate date formats; auto-calc Number of Days when blank.
+    - Skip overlapping date ranges with existing non-rejected leaves (duplicate guard).
+    - Default Status when blank = 'pending'.
+    - No emails are sent for imported rows (silent bulk insert).
+    - Approved rows are marked applied_by_admin=true, approved_by=current admin.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    # Validate mandatory columns
+    mandatory = ["Employee Email", "Leave Type", "From Date", "To Date"]
+    missing_cols = [c for c in mandatory if c not in headers]
+    if missing_cols:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing mandatory column(s): {', '.join(missing_cols)}"
+        )
+
+    # Pre-fetch employees by email for O(1) lookup
+    emp_cursor = db.employees.find(
+        {"is_deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1}
+    )
+    email_to_emp: dict = {}
+    async for e in emp_cursor:
+        email = (e.get("official_email") or "").strip().lower()
+        if email:
+            email_to_emp[email] = e
+
+    total = len(rows)
+    success = 0
+    skipped_duplicates = 0
+    failed = 0
+    errors: List[dict] = []
+    inserts: List[dict] = []
+    # Track in-batch inserts per employee to also detect duplicates within the same upload
+    inbatch_ranges: dict[str, list[tuple[str, str]]] = {}
+
+    for idx, row in enumerate(rows, start=2):  # row 1 is the header
+        email = (str(row.get("Employee Email") or "")).strip().lower()
+        if not email:
+            failed += 1
+            errors.append({"row": idx, "email": "", "reason": "Employee Email is blank"})
+            continue
+
+        emp = email_to_emp.get(email)
+        if not emp:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
+            continue
+
+        from_date = _parse_import_date(row.get("From Date"))
+        to_date = _parse_import_date(row.get("To Date"))
+        if not from_date or not to_date:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Invalid From/To date format (use YYYY-MM-DD or DD-MM-YYYY)"})
+            continue
+
+        try:
+            sd = datetime.strptime(from_date, "%Y-%m-%d")
+            ed = datetime.strptime(to_date, "%Y-%m-%d")
+        except ValueError:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Invalid date values"})
+            continue
+
+        if sd > ed:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "From Date must be <= To Date"})
+            continue
+
+        # Number of Days — use provided if numeric, else auto-calc
+        provided_days = row.get("Number of Days")
+        try:
+            days = float(provided_days) if provided_days not in (None, "") else (ed - sd).days + 1
+        except (TypeError, ValueError):
+            days = (ed - sd).days + 1
+        duration_str = f"{int(days) if days == int(days) else days} day(s)"
+
+        leave_type = _normalize_leave_type(row.get("Leave Type"))
+        status_norm = _normalize_status(row.get("Status")) or "pending"
+        reason = (str(row.get("Reason")).strip() if row.get("Reason") not in (None, "") else None)
+
+        # Duplicate guard: any non-rejected overlapping leave for this employee?
+        overlap = await db.leaves.find_one({
+            "employee_id": emp["id"],
+            "status": {"$ne": "rejected"},
+            "start_date": {"$lte": to_date},
+            "end_date": {"$gte": from_date}
+        }, {"_id": 0, "id": 1})
+        if overlap:
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Overlaps with existing leave between {from_date} and {to_date}"})
+            continue
+
+        # Also check overlaps with rows added earlier in THIS batch
+        in_batch_overlap = False
+        for prev_from, prev_to in inbatch_ranges.get(emp["id"], []):
+            if prev_from <= to_date and prev_to >= from_date:
+                in_batch_overlap = True
+                break
+        if in_batch_overlap:
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Overlaps with another row in this upload between {from_date} and {to_date}"})
+            continue
+        inbatch_ranges.setdefault(emp["id"], []).append((from_date, to_date))
+
+        leave_doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp["id"],
+            "emp_name": emp.get("full_name", ""),
+            "team": emp.get("team", ""),
+            "department": emp.get("department", ""),
+            "leave_type": leave_type,
+            "leave_split": "Full Day",
+            "start_date": from_date,
+            "end_date": to_date,
+            "duration": duration_str,
+            "reason": reason,
+            "supporting_document_url": None,
+            "supporting_document_name": None,
+            "status": status_norm,
+            "is_lop": None,
+            "lop_remark": None,
+            "approved_by": current_user["id"] if status_norm == "approved" else None,
+            "applied_by_admin": True,
+            "created_at": get_ist_now().isoformat(),
+        }
+        inserts.append(leave_doc)
+        success += 1
+
+    # Batch insert in chunks of 500 for performance with 1000+ rows
+    if inserts:
+        chunk = 500
+        for i in range(0, len(inserts), chunk):
+            await db.leaves.insert_many([d.copy() for d in inserts[i:i + chunk]])
+
+    await log_audit(
+        current_user["id"], "bulk_import", "leaves", None,
+        f"Leave bulk import: total={total} success={success} duplicates={skipped_duplicates} failed={failed}"
+    )
+
+    return {
+        "total": total,
+        "success": success,
+        "skipped_duplicates": skipped_duplicates,
+        "failed": failed,
+        "errors": errors[:1000],  # cap to keep response manageable
+    }
+
+
 class LeaveApproveRequest(BaseModel):
     is_lop: Optional[bool] = None  # True=LOP, False=No LOP
     lop_remark: Optional[str] = None

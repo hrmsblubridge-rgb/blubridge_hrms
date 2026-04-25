@@ -246,3 +246,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Auto-generated `custom_employee_id` (EMP100+) for rows missing Employee ID; biometric_id left blank when absent.
   - Preserved login users: `admin` (HR), `sysadmin`, `offadmin`. All employee logins removed; new employees can be activated through HR onboarding flow.
   - Distribution: Research Unit 59 · Business & Product 11 · Support Staff 10 · System Engineer 2. Full-time 69 · Intern 13.
+- **2026-05-05** Bulk Leave Import (Admin → Leave Module).
+  - New endpoints: `GET /api/leaves/import-template` (styled .xlsx template with Instructions sheet) and `POST /api/leaves/bulk-import` (HR / SysAdmin only).
+  - Accepts `.xlsx` or `.csv` with 7 columns: Employee Email, Leave Type, From Date, To Date, Number of Days (optional), Reason (optional), Status (optional).
+  - Logic: maps employee by email; fuzzy-matches Leave Type to canonical types (Sick / Casual / Earned / Maternity / Annual / Emergency / Preplanned) with `General Leave` fallback; accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY date formats; auto-calculates Number of Days when blank; defaults Status to `pending`.
+  - Duplicate guard: skips rows that overlap existing non-rejected leaves AND rows that overlap with another row in the same upload batch.
+  - Batch insert in chunks of 500; silent (no email notifications fired); approved rows marked `applied_by_admin=true` with `approved_by` set to the admin.
+  - Frontend: new "Import Leaves" button + dialog in `Leave.js` with template download, file picker, summary counters (Total / Success / Duplicates / Failed), inline error preview, and downloadable error log CSV.
+  - Verified end-to-end with 8 scenarios covering valid/invalid emails, fuzzy matching, fallback, date format variants, blank fields, in-batch and DB overlap detection.
