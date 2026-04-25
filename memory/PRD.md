@@ -261,3 +261,13 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Response now includes `extra_columns_captured` array.
   - UI: updated dialog copy ("You can upload custom sheets with additional columns…"); auto-shows preview after file selection with grouped chips (Core green / Optional blue / Extra amber) and "Ready to import" badge; submit disabled when missing core columns.
   - Verified: file with 11 cols (4 core + 3 optional + 4 extras) → all extras stored as JSON in DB; file missing core column rejected with HTTP 400.
+- **2026-05-05** Bulk Leave Import — Column Alias Mapping & Value Transformation (final iteration).
+  - Added `LEAVE_COLUMN_ALIASES` config (case-insensitive, whitespace-tolerant): multiple sheet headers → canonical field. Examples: `Employee Email`/`Emp Mail ID`/`Email ID` → `email`, `From Date`/`Start Date`/`Leave From` → `start_date`, `Approved By`/`Approver`/`Approving Authority` → `approved_by`, `Comments`/`Remark`/`Notes` → `comments`, etc. Unknown columns are ignored (not extra-stored).
+  - Value transformations now applied during import:
+    - `Approved By`: `"Admin"`/`"administrator"`/`"hr"` → current admin user ID; otherwise tries username, email, or full_name match against `users` and `employees` collections, returning resolved ID. Unresolved names preserved in `extra_data.approver_unresolved`.
+    - `Status`: case-insensitive normalize → canonical lowercase `approved`/`pending`/`rejected` (matches existing system).
+    - `Comments` mapped to existing `lop_remark` column (no schema change).
+    - `Applied Date` and `Approval Date` parsed and stored under `extra_data` keys `applied_at`/`approved_at`.
+  - Preview & Result responses now expose `column_mapping` (sheet → DB field) and `ignored_columns`. UI renders mapping as green chips and ignored columns as amber chips.
+  - Template updated to use real-world friendly column names (`Emp Mail ID`, `From Date`, `To Date`, `No of Days`, etc.). Instructions sheet documents every alias.
+  - Verified end-to-end with a 12-column real-world sheet (11 aliases + 1 ignored): all mapped; `"Admin"` → admin user ID; `"sysadmin"` username → sysadmin ID; `"admin@blubridge.com"` email → admin ID; `APPROVED`/`Pending`/`Approved` cases all normalized; mixed date formats parsed; unmapped column reported.

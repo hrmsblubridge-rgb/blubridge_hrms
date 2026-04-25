@@ -660,25 +660,31 @@ const Leave = () => {
                   <p className="text-sm font-medium text-slate-700">Detected columns ({importPreview.headers.length}) · {importPreview.total_rows} row(s)</p>
                   {importPreview.ready_to_import
                     ? <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200">Ready to import</Badge>
-                    : <Badge className="bg-red-100 text-red-700 border-red-200">Missing core columns</Badge>}
+                    : <Badge className="bg-red-100 text-red-700 border-red-200">Missing required fields</Badge>}
                 </div>
                 {!importPreview.ready_to_import && (
-                  <p className="text-xs text-red-600">Missing required: {importPreview.missing_core.join(', ')}</p>
+                  <p className="text-xs text-red-600">Missing required fields: {importPreview.missing_required.join(', ')}</p>
                 )}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-                  <div>
-                    <p className="text-slate-500 mb-1">Core ({importPreview.core_detected.length})</p>
-                    <div className="flex flex-wrap gap-1">{importPreview.core_detected.map(c => <span key={c} className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">{c}</span>)}</div>
-                  </div>
-                  <div>
-                    <p className="text-slate-500 mb-1">Optional ({importPreview.optional_detected.length})</p>
-                    <div className="flex flex-wrap gap-1">{importPreview.optional_detected.map(c => <span key={c} className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">{c}</span>)}</div>
-                  </div>
-                  <div>
-                    <p className="text-slate-500 mb-1">Extra → stored as JSON ({importPreview.extra_detected.length})</p>
-                    <div className="flex flex-wrap gap-1">{importPreview.extra_detected.map(c => <span key={c} className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">{c}</span>)}</div>
+                <div className="space-y-1">
+                  <p className="text-xs text-slate-500 font-medium">Column mapping (sheet → system field)</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs">
+                    {Object.entries(importPreview.column_mapping || {}).map(([sheetCol, dbField]) => (
+                      <div key={sheetCol} className="flex items-center gap-2 px-2 py-1 rounded bg-emerald-50 border border-emerald-200">
+                        <span className="font-medium text-slate-700">{sheetCol}</span>
+                        <span className="text-emerald-600">→</span>
+                        <span className="text-emerald-700 font-mono">{dbField}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
+                {importPreview.ignored_columns && importPreview.ignored_columns.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-amber-700 font-medium">Ignored columns (no matching field)</p>
+                    <div className="flex flex-wrap gap-1">
+                      {importPreview.ignored_columns.map(c => <span key={c} className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 text-xs">{c}</span>)}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -703,9 +709,9 @@ const Leave = () => {
                   </div>
                 </div>
 
-                {importResult.extra_columns_captured && importResult.extra_columns_captured.length > 0 && (
+                {importResult.ignored_columns && importResult.ignored_columns.length > 0 && (
                   <div className="text-xs text-slate-600 bg-amber-50 border border-amber-200 rounded-lg p-2">
-                    <span className="font-medium">Extra columns stored as JSON:</span> {importResult.extra_columns_captured.join(', ')}
+                    <span className="font-medium">Ignored sheet columns (unmapped):</span> {importResult.ignored_columns.join(', ')}
                   </div>
                 )}
 

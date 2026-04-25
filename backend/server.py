@@ -4097,9 +4097,93 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
 # ============== LEAVE BULK IMPORT ==============
 
 LEAVE_IMPORT_COLUMNS = [
-    "Employee Email", "Leave Type", "From Date", "To Date",
-    "Number of Days", "Reason", "Status"
+    "Emp Mail ID", "Leave Type", "From Date", "To Date",
+    "No of Days", "Reason", "Status", "Applied Date", "Approved By",
+    "Approval Date", "Comments"
 ]
+
+# Sheet-column aliases → canonical internal field name. Matching is case-insensitive
+# and whitespace-tolerant (see _normalize_header).
+# Multiple sheet headers can map to the same canonical field — first match wins.
+LEAVE_COLUMN_ALIASES: dict[str, str] = {
+    # email
+    "Employee Email": "email",
+    "Emp Mail ID": "email",
+    "Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # leave type
+    "Leave Type": "leave_type",
+    "Type": "leave_type",
+    "Leave Category": "leave_type",
+    # dates
+    "From Date": "start_date",
+    "Start Date": "start_date",
+    "Leave From": "start_date",
+    "To Date": "end_date",
+    "End Date": "end_date",
+    "Leave To": "end_date",
+    # days
+    "Number of Days": "total_days",
+    "No of Days": "total_days",
+    "Days": "total_days",
+    "Total Days": "total_days",
+    # reason
+    "Reason": "reason",
+    "Purpose": "reason",
+    # status
+    "Status": "status",
+    "Leave Status": "status",
+    # applied at
+    "Applied Date": "applied_at",
+    "Applied On": "applied_at",
+    "Date Applied": "applied_at",
+    # approved by
+    "Approved By": "approved_by",
+    "Approver": "approved_by",
+    "Approving Authority": "approved_by",
+    # approval date
+    "Approval Date": "approved_at",
+    "Approved On": "approved_at",
+    "Date Approved": "approved_at",
+    # comments
+    "Comments": "comments",
+    "Remark": "comments",
+    "Remarks": "comments",
+    "Notes": "comments",
+}
+
+
+def _normalize_header(s) -> str:
+    """Lowercase + collapse internal whitespace + strip for tolerant matching."""
+    if s is None:
+        return ""
+    return " ".join(str(s).strip().split()).lower()
+
+
+def _build_alias_index() -> dict[str, str]:
+    """Lowercased+trimmed alias → canonical field key."""
+    return {_normalize_header(k): v for k, v in LEAVE_COLUMN_ALIASES.items()}
+
+
+def _remap_row(row: dict, alias_index: dict[str, str]) -> dict:
+    """Return a dict keyed by canonical field names. Unknown columns are dropped.
+
+    If multiple sheet columns map to the same canonical field, the first non-empty
+    value wins.
+    """
+    out: dict = {}
+    for header, value in row.items():
+        if header is None:
+            continue
+        canon = alias_index.get(_normalize_header(header))
+        if not canon:
+            continue
+        if canon in out and out[canon] not in (None, ""):
+            continue  # first non-empty value wins
+        out[canon] = value
+    return out
+
 
 # Canonical leave types used in the system. Anything not matching falls back to "General Leave".
 CANONICAL_LEAVE_TYPES = [
@@ -4216,31 +4300,34 @@ async def download_leave_import_template(current_user: dict = Depends(get_curren
     ws.row_dimensions[1].height = 22
 
     sample = [
-        ["employee@blubridge.com", "Sick", "2026-04-10", "2026-04-12", 3, "Fever", "approved"],
-        ["another@blubridge.com", "Casual Leave (CL)", "10/04/2026", "10/04/2026", 1, "Personal", "pending"],
+        ["employee@blubridge.com", "Sick", "2026-04-10", "2026-04-12", 3, "Fever", "Approved", "2026-04-09", "Admin", "2026-04-09", "Auto-approved by HR"],
+        ["another@blubridge.com", "Casual Leave (CL)", "10/04/2026", "10/04/2026", 1, "Personal", "Pending", "2026-04-09", "", "", ""],
     ]
     for r_idx, row_vals in enumerate(sample, start=2):
         for c_idx, v in enumerate(row_vals, start=1):
             ws.cell(row=r_idx, column=c_idx, value=v)
-    widths = [30, 18, 14, 14, 14, 30, 12]
+    widths = [30, 18, 14, 14, 12, 30, 12, 14, 18, 14, 30]
     for c_idx, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
 
     # Instructions sheet
     ws2 = wb.create_sheet("Instructions")
-    ws2.append(["Field", "Required", "Notes"])
-    ws2.append(["Employee Email", "Yes", "Must match an existing employee's official email"])
-    ws2.append(["Leave Type", "Yes", f"One of: {', '.join(CANONICAL_LEAVE_TYPES[:-1])}. Anything else falls back to 'General Leave'."])
-    ws2.append(["From Date", "Yes", "Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
-    ws2.append(["To Date", "Yes", "Must be >= From Date"])
-    ws2.append(["Number of Days", "No", "Auto-calculated from dates if blank"])
-    ws2.append(["Reason", "No", "Free text"])
-    ws2.append(["Status", "No", "approved / pending / rejected (default: pending)"])
-    for col_idx in range(1, 4):
-        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 38
-    ws2.cell(1, 1).font = openpyxl.styles.Font(bold=True)
-    ws2.cell(1, 2).font = openpyxl.styles.Font(bold=True)
-    ws2.cell(1, 3).font = openpyxl.styles.Font(bold=True)
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Emp Mail ID", "Yes", "email", "Aliases: Employee Email, Email, Email ID, Mail"])
+    ws2.append(["Leave Type", "Yes", "leave_type", "Aliases: Type, Leave Category. Sick/Casual/Earned/Maternity/Annual/Emergency/Preplanned. Anything else → 'General Leave'."])
+    ws2.append(["From Date", "Yes", "start_date", "Aliases: Start Date, Leave From. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
+    ws2.append(["To Date", "Yes", "end_date", "Aliases: End Date, Leave To. Must be >= From Date"])
+    ws2.append(["No of Days", "No", "total_days", "Aliases: Number of Days, Days, Total Days. Auto-calculated if blank"])
+    ws2.append(["Reason", "No", "reason", "Aliases: Purpose. Free text"])
+    ws2.append(["Status", "No", "status", "Aliases: Leave Status. Approved / Pending / Rejected (default: Pending)"])
+    ws2.append(["Applied Date", "No", "applied_at", "Aliases: Applied On, Date Applied. Stored in extra_data"])
+    ws2.append(["Approved By", "No", "approved_by", "Aliases: Approver, Approving Authority. 'Admin' or admin's username/email/full name → resolved to user ID"])
+    ws2.append(["Approval Date", "No", "approved_at", "Aliases: Approved On, Date Approved. Stored in extra_data"])
+    ws2.append(["Comments", "No", "comments", "Aliases: Remark, Remarks, Notes. Stored as the leave's lop_remark"])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
 
     output = io.BytesIO()
     wb.save(output)
@@ -4259,8 +4346,8 @@ async def preview_leave_import(
 ):
     """Preview detected columns + first 5 sample rows from an import file.
 
-    Returns which columns map to core/optional fields and which will be stored
-    as extra_data, so admin can verify before committing the import.
+    Returns the alias mapping (sheet column → DB field) so admin can verify
+    what will happen before committing the import.
     """
     if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
         raise HTTPException(status_code=403, detail="Permission denied")
@@ -4272,17 +4359,15 @@ async def preview_leave_import(
     headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
     headers = [h for h in headers if h]
 
-    core = {"Employee Email", "Leave Type", "From Date", "To Date"}
-    optional = {"Number of Days", "Reason", "Status"}
-    standard_lower = {h.lower() for h in (core | optional)}
+    alias_index = _build_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
 
-    detected_core = [h for h in headers if h in core]
-    detected_optional = [h for h in headers if h in optional]
-    detected_extra = [h for h in headers if h.lower() not in standard_lower]
+    required_fields = ["email", "leave_type", "start_date", "end_date"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
 
-    missing_core = [h for h in core if h not in headers]
-
-    # Sample first 5 rows
     sample = []
     for r in rows[:5]:
         sample.append({k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()})
@@ -4291,11 +4376,10 @@ async def preview_leave_import(
         "filename": file.filename,
         "total_rows": len(rows),
         "headers": headers,
-        "core_detected": detected_core,
-        "optional_detected": detected_optional,
-        "extra_detected": detected_extra,
-        "missing_core": missing_core,
-        "ready_to_import": len(missing_core) == 0,
+        "column_mapping": mapped,           # sheet-header → canonical field
+        "ignored_columns": ignored,         # unrecognized sheet columns
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
         "sample_rows": sample,
     }
 
@@ -4324,22 +4408,28 @@ async def bulk_import_leaves(
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
 
-    # Validate mandatory columns
-    mandatory = ["Employee Email", "Leave Type", "From Date", "To Date"]
-    missing_cols = [c for c in mandatory if c not in headers]
-    if missing_cols:
+    # Build alias index and remap headers → canonical fields
+    alias_index = _build_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    # Validate mandatory canonical fields
+    required_fields = ["email", "leave_type", "start_date", "end_date"]
+    missing_fields = [f for f in required_fields if f not in detected_canonical]
+    if missing_fields:
+        # Reverse-map for friendly error message (show common alias names)
+        canon_to_friendly = {
+            "email": "Employee Email / Emp Mail ID",
+            "leave_type": "Leave Type",
+            "start_date": "From Date",
+            "end_date": "To Date",
+        }
         raise HTTPException(
             status_code=400,
-            detail=f"Missing mandatory column(s): {', '.join(missing_cols)}"
+            detail=f"Missing mandatory column(s): {', '.join(canon_to_friendly[f] for f in missing_fields)}"
         )
-
-    # Identify standard vs extra columns. Anything not in the standard 7 will be
-    # captured into extra_data per row to preserve uploaded data.
-    standard_cols_lower = {c.lower() for c in (
-        "Employee Email", "Leave Type", "From Date", "To Date",
-        "Number of Days", "Reason", "Status"
-    )}
-    extra_cols = [h for h in headers if h and h.lower() not in standard_cols_lower]
 
     # Pre-fetch employees by email for O(1) lookup
     emp_cursor = db.employees.find(
@@ -4352,17 +4442,51 @@ async def bulk_import_leaves(
         if email:
             email_to_emp[email] = e
 
+    # Pre-fetch users for "Approved By" resolution (admins/HR + employees)
+    approver_index: dict[str, str] = {}  # normalized name/email → user_id
+    async for u in db.users.find({}, {"_id": 0, "id": 1, "username": 1, "email": 1, "role": 1}):
+        if u.get("username"):
+            approver_index[_normalize_header(u["username"])] = u["id"]
+        if u.get("email"):
+            approver_index[_normalize_header(u["email"])] = u["id"]
+    # Add employees by full_name and email so a manager's display name resolves too
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "official_email": 1}):
+        if e.get("full_name"):
+            key = _normalize_header(e["full_name"])
+            approver_index.setdefault(key, e["id"])
+        if e.get("official_email"):
+            approver_index.setdefault(_normalize_header(e["official_email"]), e["id"])
+
+    def _resolve_approver(value) -> tuple[Optional[str], Optional[str]]:
+        """Return (resolved_id, raw_unresolved). For 'Admin' or known names/usernames/
+        emails, returns (id, None). Otherwise returns (None, raw) so caller can
+        keep raw text as a fallback note."""
+        if value in (None, ""):
+            return (None, None)
+        s = str(value).strip()
+        if not s:
+            return (None, None)
+        norm = _normalize_header(s)
+        if norm in ("admin", "administrator", "hr admin", "hr"):
+            # Default to current admin doing the import
+            return (current_user["id"], None)
+        if norm in approver_index:
+            return (approver_index[norm], None)
+        return (None, s)
+
     total = len(rows)
     success = 0
     skipped_duplicates = 0
     failed = 0
     errors: List[dict] = []
     inserts: List[dict] = []
-    # Track in-batch inserts per employee to also detect duplicates within the same upload
     inbatch_ranges: dict[str, list[tuple[str, str]]] = {}
 
-    for idx, row in enumerate(rows, start=2):  # row 1 is the header
-        email = (str(row.get("Employee Email") or "")).strip().lower()
+    for idx, raw_row in enumerate(rows, start=2):  # row 1 is the header
+        # Remap sheet headers to canonical field names; unknown columns are dropped
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
         if not email:
             failed += 1
             errors.append({"row": idx, "email": "", "reason": "Employee Email is blank"})
@@ -4374,8 +4498,8 @@ async def bulk_import_leaves(
             errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
             continue
 
-        from_date = _parse_import_date(row.get("From Date"))
-        to_date = _parse_import_date(row.get("To Date"))
+        from_date = _parse_import_date(row.get("start_date"))
+        to_date = _parse_import_date(row.get("end_date"))
         if not from_date or not to_date:
             failed += 1
             errors.append({"row": idx, "email": email, "reason": "Invalid From/To date format (use YYYY-MM-DD or DD-MM-YYYY)"})
@@ -4395,31 +4519,23 @@ async def bulk_import_leaves(
             continue
 
         # Number of Days — use provided if numeric, else auto-calc
-        provided_days = row.get("Number of Days")
+        provided_days = row.get("total_days")
         try:
             days = float(provided_days) if provided_days not in (None, "") else (ed - sd).days + 1
         except (TypeError, ValueError):
             days = (ed - sd).days + 1
         duration_str = f"{int(days) if days == int(days) else days} day(s)"
 
-        leave_type = _normalize_leave_type(row.get("Leave Type"))
-        status_norm = _normalize_status(row.get("Status")) or "pending"
-        reason = (str(row.get("Reason")).strip() if row.get("Reason") not in (None, "") else None)
+        leave_type = _normalize_leave_type(row.get("leave_type"))
+        status_norm = _normalize_status(row.get("status")) or "pending"
+        reason = (str(row.get("reason")).strip() if row.get("reason") not in (None, "") else None)
+        comments = (str(row.get("comments")).strip() if row.get("comments") not in (None, "") else None)
+        applied_at = _parse_import_date(row.get("applied_at"))
+        approved_at = _parse_import_date(row.get("approved_at"))
 
-        # Capture any extra (non-standard) columns into extra_data, preserving values as-is.
-        # Datetime cells are stringified to keep the document JSON-friendly.
-        extra_payload = None
-        if extra_cols:
-            extra_payload = {}
-            for col in extra_cols:
-                val = row.get(col)
-                if val in (None, ""):
-                    continue
-                if isinstance(val, datetime):
-                    val = val.isoformat()
-                extra_payload[col] = val
-            if not extra_payload:
-                extra_payload = None
+        # Resolve Approved By (name / username / email / "Admin" → user_id)
+        approver_raw = row.get("approved_by")
+        approver_id, approver_unresolved = _resolve_approver(approver_raw)
 
         # Duplicate guard: any non-rejected overlapping leave for this employee?
         overlap = await db.leaves.find_one({
@@ -4445,6 +4561,11 @@ async def bulk_import_leaves(
             continue
         inbatch_ranges.setdefault(emp["id"], []).append((from_date, to_date))
 
+        # Final approved_by: resolved user id > current admin (when status approved) > None
+        final_approved_by = approver_id
+        if final_approved_by is None and status_norm == "approved":
+            final_approved_by = current_user["id"]
+
         leave_doc = {
             "id": str(uuid.uuid4()),
             "employee_id": emp["id"],
@@ -4461,10 +4582,17 @@ async def bulk_import_leaves(
             "supporting_document_name": None,
             "status": status_norm,
             "is_lop": None,
-            "lop_remark": None,
-            "approved_by": current_user["id"] if status_norm == "approved" else None,
+            "lop_remark": comments,  # Map sheet "Comments" → existing lop_remark column
+            "approved_by": final_approved_by,
             "applied_by_admin": True,
-            "extra_data": extra_payload,
+            # Preserve original sheet metadata that can't be mapped to a primary column
+            "extra_data": {
+                k: v for k, v in {
+                    "applied_at": applied_at,
+                    "approved_at": approved_at,
+                    "approver_unresolved": approver_unresolved,
+                }.items() if v is not None
+            } or None,
             "created_at": get_ist_now().isoformat(),
         }
         inserts.append(leave_doc)
@@ -4486,7 +4614,8 @@ async def bulk_import_leaves(
         "success": success,
         "skipped_duplicates": skipped_duplicates,
         "failed": failed,
-        "extra_columns_captured": extra_cols,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
         "errors": errors[:1000],  # cap to keep response manageable
     }
 
