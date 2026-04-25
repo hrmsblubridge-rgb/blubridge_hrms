@@ -4098,8 +4098,8 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
 
 LEAVE_IMPORT_COLUMNS = [
     "Emp Mail ID", "Leave Type", "From Date", "To Date",
-    "No of Days", "Reason", "Status", "Applied Date", "Approved By",
-    "Approval Date", "Comments"
+    "Leave Split", "Reason", "Status", "Applied Date", "Approved By",
+    "Approval Date", "Comments", "Auto Approve & Set LOP Status"
 ]
 
 # Sheet-column aliases → canonical internal field name. Matching is case-insensitive
@@ -4123,11 +4123,10 @@ LEAVE_COLUMN_ALIASES: dict[str, str] = {
     "To Date": "end_date",
     "End Date": "end_date",
     "Leave To": "end_date",
-    # days
-    "Number of Days": "total_days",
-    "No of Days": "total_days",
-    "Days": "total_days",
-    "Total Days": "total_days",
+    # leave split (replaces No of Days — system auto-calculates days)
+    "Leave Split": "leave_split",
+    "Split": "leave_split",
+    "Day Type": "leave_split",
     # reason
     "Reason": "reason",
     "Purpose": "reason",
@@ -4151,6 +4150,10 @@ LEAVE_COLUMN_ALIASES: dict[str, str] = {
     "Remark": "comments",
     "Remarks": "comments",
     "Notes": "comments",
+    # auto-approve & LOP
+    "Auto Approve & Set LOP Status": "auto_approve_lop",
+    "Auto Approve": "auto_approve_lop",
+    "Auto Approve LOP": "auto_approve_lop",
 }
 
 
@@ -4256,6 +4259,40 @@ def _normalize_status(value) -> Optional[str]:
     return None  # unrecognized
 
 
+def _normalize_leave_split(value) -> Optional[str]:
+    """Normalize Leave Split → 'Full Day' | 'First Half'. Returns None when blank,
+    or 'INVALID' sentinel when the value cannot be recognized so caller can reject."""
+    if value in (None, ""):
+        return None
+    s = str(value).strip().lower()
+    if s in ("full day", "full", "fullday", "full_day", "f"):
+        return "Full Day"
+    if s in ("half day", "half", "halfday", "half_day", "h", "first half", "1st half"):
+        return "First Half"
+    if s in ("second half", "2nd half"):
+        return "Second Half"
+    return "INVALID"
+
+
+def _normalize_bool(value) -> Optional[bool]:
+    """Convert an input cell to bool. Returns None when blank, 'INVALID' sentinel
+    string when the value can't be recognized."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value in (0, 1):
+            return bool(value)
+        return "INVALID"
+    s = str(value).strip().lower()
+    if s in ("yes", "y", "true", "t", "1"):
+        return True
+    if s in ("no", "n", "false", "f", "0"):
+        return False
+    return "INVALID"
+
+
 def _read_leave_import_rows(file_bytes: bytes, filename: str) -> tuple[List[str], List[dict]]:
     """Read .xlsx or .csv into (headers, rows). Each row is a dict header→cell."""
     name_lower = (filename or "").lower()
@@ -4300,13 +4337,13 @@ async def download_leave_import_template(current_user: dict = Depends(get_curren
     ws.row_dimensions[1].height = 22
 
     sample = [
-        ["employee@blubridge.com", "Sick", "2026-04-10", "2026-04-12", 3, "Fever", "Approved", "2026-04-09", "Admin", "2026-04-09", "Auto-approved by HR"],
-        ["another@blubridge.com", "Casual Leave (CL)", "10/04/2026", "10/04/2026", 1, "Personal", "Pending", "2026-04-09", "", "", ""],
+        ["employee@blubridge.com", "Sick", "2026-04-10", "2026-04-12", "Full Day", "Fever", "Approved", "2026-04-09", "Admin", "2026-04-09", "Auto-approved by HR", "No"],
+        ["another@blubridge.com", "Casual Leave (CL)", "10/04/2026", "10/04/2026", "Half Day", "Personal", "Pending", "2026-04-09", "", "", "", "Yes"],
     ]
     for r_idx, row_vals in enumerate(sample, start=2):
         for c_idx, v in enumerate(row_vals, start=1):
             ws.cell(row=r_idx, column=c_idx, value=v)
-    widths = [30, 18, 14, 14, 12, 30, 12, 14, 18, 14, 30]
+    widths = [30, 18, 14, 14, 14, 30, 12, 14, 18, 14, 30, 28]
     for c_idx, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
 
@@ -4317,13 +4354,14 @@ async def download_leave_import_template(current_user: dict = Depends(get_curren
     ws2.append(["Leave Type", "Yes", "leave_type", "Aliases: Type, Leave Category. Sick/Casual/Earned/Maternity/Annual/Emergency/Preplanned. Anything else → 'General Leave'."])
     ws2.append(["From Date", "Yes", "start_date", "Aliases: Start Date, Leave From. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
     ws2.append(["To Date", "Yes", "end_date", "Aliases: End Date, Leave To. Must be >= From Date"])
-    ws2.append(["No of Days", "No", "total_days", "Aliases: Number of Days, Days, Total Days. Auto-calculated if blank"])
+    ws2.append(["Leave Split", "No", "leave_split", "Aliases: Split, Day Type. Accepted: 'Full Day' or 'Half Day' (default Full Day). System auto-calculates total days."])
     ws2.append(["Reason", "No", "reason", "Aliases: Purpose. Free text"])
     ws2.append(["Status", "No", "status", "Aliases: Leave Status. Approved / Pending / Rejected (default: Pending)"])
     ws2.append(["Applied Date", "No", "applied_at", "Aliases: Applied On, Date Applied. Stored in extra_data"])
     ws2.append(["Approved By", "No", "approved_by", "Aliases: Approver, Approving Authority. 'Admin' or admin's username/email/full name → resolved to user ID"])
     ws2.append(["Approval Date", "No", "approved_at", "Aliases: Approved On, Date Approved. Stored in extra_data"])
     ws2.append(["Comments", "No", "comments", "Aliases: Remark, Remarks, Notes. Stored as the leave's lop_remark"])
+    ws2.append(["Auto Approve & Set LOP Status", "No", "auto_approve_lop", "Aliases: Auto Approve, Auto Approve LOP. Yes/No, TRUE/FALSE, 1/0. If TRUE → force-approve + set LOP flag."])
     for col_idx in range(1, 5):
         ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
     for c in range(1, 5):
@@ -4518,13 +4556,28 @@ async def bulk_import_leaves(
             errors.append({"row": idx, "email": email, "reason": "From Date must be <= To Date"})
             continue
 
-        # Number of Days — use provided if numeric, else auto-calc
-        provided_days = row.get("total_days")
-        try:
-            days = float(provided_days) if provided_days not in (None, "") else (ed - sd).days + 1
-        except (TypeError, ValueError):
+        # Leave Split (replaces No of Days). Days are auto-calculated from dates + split.
+        split_norm = _normalize_leave_split(row.get("leave_split"))
+        if split_norm == "INVALID":
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Leave Split value '{row.get('leave_split')}' (use Full Day or Half Day)"})
+            continue
+        leave_split = split_norm or "Full Day"  # default to Full Day when blank
+
+        # Auto-calc days from dates + split
+        if leave_split == "Full Day":
             days = (ed - sd).days + 1
+        else:  # Half Day variants count as 0.5
+            days = ((ed - sd).days + 1) * 0.5
         duration_str = f"{int(days) if days == int(days) else days} day(s)"
+
+        # Auto Approve & Set LOP flag
+        auto_lop_raw = row.get("auto_approve_lop")
+        auto_lop = _normalize_bool(auto_lop_raw)
+        if auto_lop == "INVALID":
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid 'Auto Approve & Set LOP Status' value '{auto_lop_raw}' (use Yes/No, TRUE/FALSE, 1/0)"})
+            continue
 
         leave_type = _normalize_leave_type(row.get("leave_type"))
         status_norm = _normalize_status(row.get("status")) or "pending"
@@ -4536,6 +4589,12 @@ async def bulk_import_leaves(
         # Resolve Approved By (name / username / email / "Admin" → user_id)
         approver_raw = row.get("approved_by")
         approver_id, approver_unresolved = _resolve_approver(approver_raw)
+
+        # If Auto Approve & Set LOP Status = TRUE, force-approve and apply LOP
+        is_lop_flag: Optional[bool] = None
+        if auto_lop is True:
+            status_norm = "approved"
+            is_lop_flag = True
 
         # Duplicate guard: any non-rejected overlapping leave for this employee?
         overlap = await db.leaves.find_one({
@@ -4573,7 +4632,7 @@ async def bulk_import_leaves(
             "team": emp.get("team", ""),
             "department": emp.get("department", ""),
             "leave_type": leave_type,
-            "leave_split": "Full Day",
+            "leave_split": leave_split,
             "start_date": from_date,
             "end_date": to_date,
             "duration": duration_str,
@@ -4581,7 +4640,7 @@ async def bulk_import_leaves(
             "supporting_document_url": None,
             "supporting_document_name": None,
             "status": status_norm,
-            "is_lop": None,
+            "is_lop": is_lop_flag,
             "lop_remark": comments,  # Map sheet "Comments" → existing lop_remark column
             "approved_by": final_approved_by,
             "applied_by_admin": True,

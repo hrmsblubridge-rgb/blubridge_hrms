@@ -271,3 +271,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Preview & Result responses now expose `column_mapping` (sheet → DB field) and `ignored_columns`. UI renders mapping as green chips and ignored columns as amber chips.
   - Template updated to use real-world friendly column names (`Emp Mail ID`, `From Date`, `To Date`, `No of Days`, etc.). Instructions sheet documents every alias.
   - Verified end-to-end with a 12-column real-world sheet (11 aliases + 1 ignored): all mapped; `"Admin"` → admin user ID; `"sysadmin"` username → sysadmin ID; `"admin@blubridge.com"` email → admin ID; `APPROVED`/`Pending`/`Approved` cases all normalized; mixed date formats parsed; unmapped column reported.
+- **2026-05-05** Bulk Leave Import — Leave Split + Auto Approve (UI alignment).
+  - Removed `No of Days` column from template + import logic; days are now auto-calculated from `From Date + To Date + Leave Split`.
+  - Added `Leave Split` column (aliases: Split, Day Type) — accepts `Full Day` / `Half Day` (case-insensitive); maps to system values `Full Day` / `First Half`. Half-day → 0.5 × range.
+  - Added `Auto Approve & Set LOP Status` column (aliases: Auto Approve, Auto Approve LOP) — accepts Yes/No, TRUE/FALSE, 1/0. When TRUE, the leave is force-approved (`status=approved`, `approved_by=current admin`, `is_lop=True`).
+  - Validation: invalid Leave Split or invalid boolean values are rejected per-row with clear error messages.
+  - Verified with 6 scenarios: Full Day approved, Half Day auto-approve+LOP, blank split defaulting to Full Day with TRUE auto-approve, Half Day across 2 days = 1 day total, invalid `Quarter Day` rejected, invalid `MaybeLater` rejected.
