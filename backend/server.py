@@ -8923,6 +8923,387 @@ async def edit_early_out_request(request_id: str, data: EarlyOutRequestCreate, c
     updated = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
     return serialize_doc(updated)
 
+# ============== EARLY OUT BULK IMPORT ==============
+
+EO_IMPORT_COLUMNS = [
+    "Email", "Request Date", "Actual Leave Time", "Expected End Time",
+    "Reason", "Status", "Action Type", "Remark", "Applied On", "Approved By", "Approved On",
+]
+
+# Sheet-column aliases → canonical field names. Case-insensitive, whitespace-tolerant.
+EO_COLUMN_ALIASES: dict[str, str] = {
+    # email
+    "Email": "email",
+    "Emp Mail ID": "email",
+    "Employee Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # date
+    "Request Date": "date",
+    "Request_date": "date",
+    "Date": "date",
+    "Attendance Date": "date",
+    "Early Out Date": "date",
+    # actual leave time (when employee actually left early)
+    "Actual Leave Time": "actual_time",
+    "Actual Time": "actual_time",
+    "Left At": "actual_time",
+    "Leave Time": "actual_time",
+    # expected end time (shift end)
+    "Expected End Time": "expected_time",
+    "Expected Time": "expected_time",
+    "Shift End": "expected_time",
+    # reason
+    "Reason": "reason",
+    "Remarks": "reason",
+    "Notes": "reason",
+    # status
+    "Status": "status",
+    "Request Status": "status",
+    # is_lop via Action_Type
+    "Action_Type": "action_type",
+    "Action Type": "action_type",
+    "ACTION_Type": "action_type",
+    "LOP Status": "action_type",
+    # remark / lop_remark
+    "Remark": "lop_remark",
+    "LOP Remark": "lop_remark",
+    "Approver Remark": "lop_remark",
+    # applied_at
+    "Applied On": "applied_at",
+    "Applied_on": "applied_at",
+    "Applied Date": "applied_at",
+    "Date Applied": "applied_at",
+    # approved_by
+    "Approved By": "approved_by",
+    "Approved_BY": "approved_by",
+    "Approved_by": "approved_by",
+    "Approver": "approved_by",
+    # approved_at
+    "Approved On": "approved_at",
+    "Approved_on": "approved_at",
+    "Approval Date": "approved_at",
+    "Date Approved": "approved_at",
+    # update timestamp (informational)
+    "Update At": "updated_at",
+    "Update_At": "updated_at",
+    "Updated At": "updated_at",
+    "Updated_at": "updated_at",
+    "Last Updated": "updated_at",
+}
+
+
+def _build_eo_alias_index() -> dict[str, str]:
+    return {_normalize_header(k): v for k, v in EO_COLUMN_ALIASES.items()}
+
+
+@api_router.get("/early-out-requests/import-template")
+async def download_eo_import_template(current_user: dict = Depends(get_current_user)):
+    """Download styled .xlsx template for early-out bulk import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Early Out Import"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(EO_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["employee@blubridge.com", "2026-04-22", "16:30", "18:00", "Doctor appointment", "Approved", "NO_LOP", "Approved", "2026-04-22 15:00:00", "Admin", "2026-04-23 10:00:00"],
+        ["another@blubridge.com", "22/04/2026", "", "", "Family emergency", "Pending", "", "", "2026-04-22 16:00:00", "", ""],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [30, 14, 14, 14, 30, 12, 12, 24, 20, 18, 20]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Email", "Yes", "employee_id (via email)", "Aliases: Emp Mail ID, Employee Email, Email ID, Mail"])
+    ws2.append(["Request Date", "Yes", "date", "Aliases: Request_date, Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, or Excel datetime"])
+    ws2.append(["Actual Leave Time", "Optional", "actual_time", "Aliases: Actual Time, Left At, Leave Time. Time when employee actually left. HH:MM (24h) or HH:MM AM/PM"])
+    ws2.append(["Expected End Time", "Optional", "expected_time", "Shift end time (e.g., 18:00). Leave blank if not tracked."])
+    ws2.append(["Reason", "Yes", "reason", "Aliases: Remarks, Notes. Free text"])
+    ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending)"])
+    ws2.append(["Action Type", "No", "is_lop", "Aliases: Action_Type, ACTION_Type, LOP Status. NO_LOP → false; LOP → true; NULL/blank → null"])
+    ws2.append(["Remark", "No", "lop_remark", "Free text approver note. 'NULL' is treated as blank."])
+    ws2.append(["Applied On", "No", "applied_at", "Aliases: Applied_on, Applied Date. Stored in extra_data"])
+    ws2.append(["Approved By", "No", "approved_by", "'Admin' or username/email/full name → resolved to user ID. Numeric IDs map to current admin."])
+    ws2.append(["Approved On", "No", "approved_at", "Aliases: Approved_on, Approval Date. Stored when status = approved"])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=early_out_import_template.xlsx"}
+    )
+
+
+@api_router.post("/early-out-requests/import/preview")
+async def preview_eo_import(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + sample rows for early-out import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    alias_index = _build_eo_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
+
+    required_fields = ["email", "date", "reason"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
+
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else (str(v) if v is not None else None)) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "column_mapping": mapped,
+        "ignored_columns": ignored,
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
+        "sample_rows": sample,
+    }
+
+
+@api_router.post("/early-out-requests/bulk-import")
+async def bulk_import_early_out(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-import early-out requests from .xlsx or .csv. Admin-only.
+
+    - Maps employee by email; skipped if not found.
+    - Required columns: Email, Request Date, Reason.
+    - Time columns optional (file may not contain them).
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    alias_index = _build_eo_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    missing = []
+    if "email" not in detected_canonical:
+        missing.append("Email")
+    if "date" not in detected_canonical:
+        missing.append("Request Date")
+    if "reason" not in detected_canonical:
+        missing.append("Reason")
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing mandatory column(s): {', '.join(missing)}")
+
+    # Pre-fetch employees by email
+    email_to_emp: dict = {}
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1}):
+        email = (e.get("official_email") or "").strip().lower()
+        if email:
+            email_to_emp[email] = e
+
+    # Pre-fetch users + employees for Approved By resolution
+    approver_index: dict[str, str] = {}
+    async for u in db.users.find({}, {"_id": 0, "id": 1, "username": 1, "email": 1}):
+        if u.get("username"):
+            approver_index[_normalize_header(u["username"])] = u["id"]
+        if u.get("email"):
+            approver_index[_normalize_header(u["email"])] = u["id"]
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "official_email": 1}):
+        if e.get("full_name"):
+            approver_index.setdefault(_normalize_header(e["full_name"]), e["id"])
+        if e.get("official_email"):
+            approver_index.setdefault(_normalize_header(e["official_email"]), e["id"])
+
+    def _resolve_eo_approver(value) -> tuple[Optional[str], Optional[str]]:
+        if value in (None, ""):
+            return (None, None)
+        s = str(value).strip()
+        if not s or s.upper() in ("NULL", "NONE", "N/A", "NA", "-"):
+            return (None, None)
+        if s.isdigit() or (s.replace(".", "", 1).isdigit()):
+            return (current_user["id"], s)
+        norm = _normalize_header(s)
+        if norm in ("admin", "administrator", "hr admin", "hr"):
+            return (current_user["id"], None)
+        if norm in approver_index:
+            return (approver_index[norm], None)
+        return (None, s)
+
+    def _clean_null(value) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        s = str(value).strip()
+        if not s or s.upper() in ("NULL", "NONE", "N/A", "NA", "-"):
+            return None
+        return s
+
+    total = len(rows)
+    success = 0
+    failed = 0
+    skipped_duplicates = 0
+    errors: List[dict] = []
+    inserts: List[dict] = []
+    inbatch_keys: set = set()
+
+    for idx, raw_row in enumerate(rows, start=2):
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
+        if not email:
+            failed += 1
+            errors.append({"row": idx, "email": "", "reason": "Email is blank"})
+            continue
+        emp = email_to_emp.get(email)
+        if not emp:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
+            continue
+
+        date_iso, _ = _parse_import_datetime(row.get("date")) if row.get("date") not in (None, "") else (None, None)
+        if not date_iso:
+            date_iso = _parse_import_date(row.get("date"))
+        if not date_iso:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Request Date: '{row.get('date')}'"})
+            continue
+
+        # Optional times
+        actual_time = None
+        if row.get("actual_time") not in (None, ""):
+            _, actual_time = _parse_import_datetime(row.get("actual_time"))
+            if not actual_time:
+                actual_time = _parse_import_time(row.get("actual_time"))
+
+        expected_time = None
+        if row.get("expected_time") not in (None, ""):
+            _, expected_time = _parse_import_datetime(row.get("expected_time"))
+            if not expected_time:
+                expected_time = _parse_import_time(row.get("expected_time"))
+
+        reason = _clean_null(row.get("reason"))
+        if not reason:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Reason is required"})
+            continue
+
+        status_norm = _normalize_status(row.get("status")) or "pending"
+        is_lop = _normalize_action_type(row.get("action_type"))
+        lop_remark = _clean_null(row.get("lop_remark"))
+
+        approver_id, approver_unresolved = _resolve_eo_approver(row.get("approved_by"))
+        applied_at_dt, applied_at_time = _parse_import_datetime(row.get("applied_at")) if row.get("applied_at") not in (None, "") else (None, None)
+        approved_at_dt, approved_at_time = _parse_import_datetime(row.get("approved_at")) if row.get("approved_at") not in (None, "") else (None, None)
+        applied_at_iso = f"{applied_at_dt}T{applied_at_time or '00:00'}" if applied_at_dt else None
+        approved_at_iso = f"{approved_at_dt}T{approved_at_time or '00:00'}" if approved_at_dt else None
+
+        updated_at_iso = None
+        if row.get("updated_at") not in (None, ""):
+            ud_d, ud_t = _parse_import_datetime(row.get("updated_at"))
+            if ud_d:
+                updated_at_iso = f"{ud_d}T{ud_t or '00:00'}"
+
+        # Duplicate guard: same employee + date, non-rejected
+        existing = await db.early_out_requests.find_one({
+            "employee_id": emp["id"],
+            "date": date_iso,
+            "status": {"$ne": "rejected"}
+        }, {"_id": 0, "id": 1})
+        if existing and status_norm != "rejected":
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Early-out request already exists for {date_iso}"})
+            continue
+
+        batch_key = (emp["id"], date_iso, status_norm)
+        if batch_key in inbatch_keys and status_norm != "rejected":
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Duplicate of an earlier row for {date_iso}"})
+            continue
+        inbatch_keys.add(batch_key)
+
+        final_approved_by = approver_id
+        if status_norm == "approved" and not final_approved_by:
+            final_approved_by = current_user["id"]
+
+        extra = {
+            k: v for k, v in {
+                "applied_at": applied_at_iso,
+                "approved_at": approved_at_iso,
+                "updated_at": updated_at_iso,
+                "approver_unresolved": approver_unresolved,
+            }.items() if v is not None
+        } or None
+
+        doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp["id"],
+            "emp_name": emp.get("full_name", ""),
+            "team": emp.get("team", ""),
+            "department": emp.get("department", ""),
+            "date": date_iso,
+            "expected_time": expected_time,
+            "actual_time": actual_time,
+            "reason": reason,
+            "status": status_norm,
+            "is_lop": is_lop,
+            "lop_remark": lop_remark,
+            "approved_by": final_approved_by,
+            "applied_by_admin": True,
+            "extra_data": extra,
+            "created_at": get_ist_now().isoformat(),
+        }
+        inserts.append(doc)
+        success += 1
+
+    if inserts:
+        chunk = 500
+        for i in range(0, len(inserts), chunk):
+            await db.early_out_requests.insert_many([d.copy() for d in inserts[i:i + chunk]])
+
+    return {
+        "total": total,
+        "success": success,
+        "skipped_duplicates": skipped_duplicates,
+        "failed": failed,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
+        "errors": errors,
+    }
+
 # ============== MISSED PUNCH REQUEST ROUTES ==============
 
 # ============== ATTENDANCE UPDATE HELPER ==============
