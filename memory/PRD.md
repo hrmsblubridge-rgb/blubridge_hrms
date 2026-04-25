@@ -254,3 +254,10 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Batch insert in chunks of 500; silent (no email notifications fired); approved rows marked `applied_by_admin=true` with `approved_by` set to the admin.
   - Frontend: new "Import Leaves" button + dialog in `Leave.js` with template download, file picker, summary counters (Total / Success / Duplicates / Failed), inline error preview, and downloadable error log CSV.
   - Verified end-to-end with 8 scenarios covering valid/invalid emails, fuzzy matching, fallback, date format variants, blank fields, in-batch and DB overlap detection.
+- **2026-05-05** Bulk Leave Import — Extended Column Capture (enhancement).
+  - Added optional `extra_data: dict` field to `LeaveRequest` model (additive, no schema migration required for MongoDB).
+  - New endpoint `POST /api/leaves/import/preview` returns detected headers classified into core/optional/extra plus first 5 sample rows so admin can verify before committing.
+  - `POST /api/leaves/bulk-import` now captures any non-standard columns into `extra_data` per-row JSON; standard fields continue to map normally; rejects file only if mandatory columns missing.
+  - Response now includes `extra_columns_captured` array.
+  - UI: updated dialog copy ("You can upload custom sheets with additional columns…"); auto-shows preview after file selection with grouped chips (Core green / Optional blue / Extra amber) and "Ready to import" badge; submit disabled when missing core columns.
+  - Verified: file with 11 cols (4 core + 3 optional + 4 extras) → all extras stored as JSON in DB; file missing core column rejected with HTTP 400.

@@ -42,6 +42,8 @@ const Leave = () => {
   const [importFile, setImportFile] = useState(null);
   const [importLoading, setImportLoading] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
     if (location.state?.tab) {
@@ -154,6 +156,22 @@ const Leave = () => {
       toast.error(e.response?.data?.detail || 'Import failed');
     } finally {
       setImportLoading(false);
+    }
+  };
+
+  const handlePreviewFile = async (file) => {
+    if (!file) { setImportPreview(null); return; }
+    setPreviewLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const resp = await axios.post(`${API}/leaves/import/preview`, fd, { headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' } });
+      setImportPreview(resp.data);
+    } catch (e) {
+      setImportPreview(null);
+      toast.error(e.response?.data?.detail || 'Failed to preview file');
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -599,13 +617,13 @@ const Leave = () => {
       </Dialog>
 
       {/* Bulk Import Leaves Dialog */}
-      <Dialog open={showImportDialog} onOpenChange={(o) => { setShowImportDialog(o); if (!o) { setImportFile(null); setImportResult(null); } }}>
+      <Dialog open={showImportDialog} onOpenChange={(o) => { setShowImportDialog(o); if (!o) { setImportFile(null); setImportResult(null); setImportPreview(null); } }}>
         <DialogContent className="bg-[#fffdf7] rounded-2xl max-w-2xl" data-testid="leave-import-dialog">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2" style={{ fontFamily: 'Outfit' }}>
               <Upload className="w-5 h-5 text-[#063c88]" /> Import Leaves
             </DialogTitle>
-            <DialogDescription>Upload a .xlsx or .csv file to bulk-create leave records. Required columns: Employee Email, Leave Type, From Date, To Date.</DialogDescription>
+            <DialogDescription>You can upload custom sheets with additional columns. Extra data will also be stored. Required core columns: Employee Email, Leave Type, From Date, To Date.</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
@@ -621,12 +639,48 @@ const Leave = () => {
               <Input
                 type="file"
                 accept=".xlsx,.csv"
-                onChange={(e) => { setImportFile(e.target.files?.[0] || null); setImportResult(null); }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null;
+                  setImportFile(f);
+                  setImportResult(null);
+                  setImportPreview(null);
+                  if (f) handlePreviewFile(f);
+                }}
                 className="rounded-lg cursor-pointer"
                 data-testid="leave-import-file-input"
               />
               {importFile && <p className="text-xs text-slate-500">Selected: <span className="font-medium">{importFile.name}</span></p>}
             </div>
+
+            {previewLoading && <p className="text-sm text-slate-500">Detecting columns…</p>}
+
+            {importPreview && !importResult && (
+              <div className="border border-slate-200 rounded-lg p-3 bg-white space-y-2" data-testid="leave-import-preview">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-slate-700">Detected columns ({importPreview.headers.length}) · {importPreview.total_rows} row(s)</p>
+                  {importPreview.ready_to_import
+                    ? <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200">Ready to import</Badge>
+                    : <Badge className="bg-red-100 text-red-700 border-red-200">Missing core columns</Badge>}
+                </div>
+                {!importPreview.ready_to_import && (
+                  <p className="text-xs text-red-600">Missing required: {importPreview.missing_core.join(', ')}</p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                  <div>
+                    <p className="text-slate-500 mb-1">Core ({importPreview.core_detected.length})</p>
+                    <div className="flex flex-wrap gap-1">{importPreview.core_detected.map(c => <span key={c} className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">{c}</span>)}</div>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 mb-1">Optional ({importPreview.optional_detected.length})</p>
+                    <div className="flex flex-wrap gap-1">{importPreview.optional_detected.map(c => <span key={c} className="px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">{c}</span>)}</div>
+                  </div>
+                  <div>
+                    <p className="text-slate-500 mb-1">Extra → stored as JSON ({importPreview.extra_detected.length})</p>
+                    <div className="flex flex-wrap gap-1">{importPreview.extra_detected.map(c => <span key={c} className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200">{c}</span>)}</div>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {importResult && (
               <div className="space-y-3" data-testid="leave-import-result">
@@ -648,6 +702,12 @@ const Leave = () => {
                     <p className="text-lg font-bold text-red-700" data-testid="import-failed">{importResult.failed}</p>
                   </div>
                 </div>
+
+                {importResult.extra_columns_captured && importResult.extra_columns_captured.length > 0 && (
+                  <div className="text-xs text-slate-600 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                    <span className="font-medium">Extra columns stored as JSON:</span> {importResult.extra_columns_captured.join(', ')}
+                  </div>
+                )}
 
                 {importResult.errors && importResult.errors.length > 0 && (
                   <div className="border border-slate-200 rounded-lg p-3 bg-white max-h-48 overflow-auto">
@@ -677,7 +737,12 @@ const Leave = () => {
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowImportDialog(false)} className="rounded-lg" data-testid="leave-import-close-btn">Close</Button>
-            <Button onClick={handleBulkImportSubmit} disabled={!importFile || importLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="leave-import-submit-btn">
+            <Button
+              onClick={handleBulkImportSubmit}
+              disabled={!importFile || importLoading || (importPreview && !importPreview.ready_to_import)}
+              className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg"
+              data-testid="leave-import-submit-btn"
+            >
               {importLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (<><Upload className="w-4 h-4 mr-1" /> Upload &amp; Import</>)}
             </Button>
           </DialogFooter>

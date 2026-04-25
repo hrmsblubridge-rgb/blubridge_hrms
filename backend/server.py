@@ -669,6 +669,9 @@ class LeaveRequest(BaseModel):
     lop_remark: Optional[str] = None
     approved_by: Optional[str] = None
     applied_by_admin: Optional[bool] = False
+    # Captures any non-standard columns from bulk imports (extended attributes).
+    # Additive — does not affect existing leave flows.
+    extra_data: Optional[dict] = None
     created_at: datetime = Field(default_factory=lambda: get_ist_now())
 
 class LeaveRequestCreate(BaseModel):
@@ -4249,6 +4252,54 @@ async def download_leave_import_template(current_user: dict = Depends(get_curren
     )
 
 
+@api_router.post("/leaves/import/preview")
+async def preview_leave_import(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + first 5 sample rows from an import file.
+
+    Returns which columns map to core/optional fields and which will be stored
+    as extra_data, so admin can verify before committing the import.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    core = {"Employee Email", "Leave Type", "From Date", "To Date"}
+    optional = {"Number of Days", "Reason", "Status"}
+    standard_lower = {h.lower() for h in (core | optional)}
+
+    detected_core = [h for h in headers if h in core]
+    detected_optional = [h for h in headers if h in optional]
+    detected_extra = [h for h in headers if h.lower() not in standard_lower]
+
+    missing_core = [h for h in core if h not in headers]
+
+    # Sample first 5 rows
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "core_detected": detected_core,
+        "optional_detected": detected_optional,
+        "extra_detected": detected_extra,
+        "missing_core": missing_core,
+        "ready_to_import": len(missing_core) == 0,
+        "sample_rows": sample,
+    }
+
+
 @api_router.post("/leaves/bulk-import")
 async def bulk_import_leaves(
     file: UploadFile = FastAPIFile(...),
@@ -4281,6 +4332,14 @@ async def bulk_import_leaves(
             status_code=400,
             detail=f"Missing mandatory column(s): {', '.join(missing_cols)}"
         )
+
+    # Identify standard vs extra columns. Anything not in the standard 7 will be
+    # captured into extra_data per row to preserve uploaded data.
+    standard_cols_lower = {c.lower() for c in (
+        "Employee Email", "Leave Type", "From Date", "To Date",
+        "Number of Days", "Reason", "Status"
+    )}
+    extra_cols = [h for h in headers if h and h.lower() not in standard_cols_lower]
 
     # Pre-fetch employees by email for O(1) lookup
     emp_cursor = db.employees.find(
@@ -4347,6 +4406,21 @@ async def bulk_import_leaves(
         status_norm = _normalize_status(row.get("Status")) or "pending"
         reason = (str(row.get("Reason")).strip() if row.get("Reason") not in (None, "") else None)
 
+        # Capture any extra (non-standard) columns into extra_data, preserving values as-is.
+        # Datetime cells are stringified to keep the document JSON-friendly.
+        extra_payload = None
+        if extra_cols:
+            extra_payload = {}
+            for col in extra_cols:
+                val = row.get(col)
+                if val in (None, ""):
+                    continue
+                if isinstance(val, datetime):
+                    val = val.isoformat()
+                extra_payload[col] = val
+            if not extra_payload:
+                extra_payload = None
+
         # Duplicate guard: any non-rejected overlapping leave for this employee?
         overlap = await db.leaves.find_one({
             "employee_id": emp["id"],
@@ -4390,6 +4464,7 @@ async def bulk_import_leaves(
             "lop_remark": None,
             "approved_by": current_user["id"] if status_norm == "approved" else None,
             "applied_by_admin": True,
+            "extra_data": extra_payload,
             "created_at": get_ist_now().isoformat(),
         }
         inserts.append(leave_doc)
@@ -4411,6 +4486,7 @@ async def bulk_import_leaves(
         "success": success,
         "skipped_duplicates": skipped_duplicates,
         "failed": failed,
+        "extra_columns_captured": extra_cols,
         "errors": errors[:1000],  # cap to keep response manageable
     }
 
