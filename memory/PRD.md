@@ -216,6 +216,14 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - `GET /api/help/download` - Download role-specific User Guide PDF (HR / SysAdmin / OfficeAdmin / Employee)
 
 ## Changelog
+- **2026-05-06** Bulk Missed-Punch Import — Combined Date+Time + Auto-detect Punch Type (Admin → Missed Punch).
+  - `In Time` / `Out Time` cells now accept combined Date+Time values (e.g., `18-03-2026 09:37`, `18/03/2026 23:30`, ISO, AM/PM, native Excel datetime).
+  - `Punch Date` column is now **optional** — date is auto-extracted from In/Out Time when not provided. If both column and combined value exist, explicit Punch Date wins; falls back to In Time's date, then Out Time's.
+  - `Punch Type` column is now **optional** — auto-detected from time presence: both → `Both`, only In → `Check-in`, only Out → `Check-out`.
+  - Cross-midnight rows (e.g., In `18-03-2026 23:30`, Out `19-03-2026 02:15`) are anchored to In Time's date, matching the live attendance cross-midnight rule.
+  - New helper `_parse_import_datetime()` in `server.py` handles 18 datetime formats. `_parse_import_time()` is now a thin wrapper.
+  - 12 new unit tests in `/app/backend/tests/test_mp_combined_datetime.py` — all pass. Verified end-to-end via curl with 3 real-world rows.
+  - Template Instructions sheet updated to reflect new flexibility.
 - **2026-04-21** Added Role-based Help Guide PDF download.
   - New file `/app/backend/help_docs.py` with step-by-step content for all 4 roles.
   - New endpoint `GET /api/help/download` returns role-aware PDF via reportlab.

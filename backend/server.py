@@ -8832,28 +8832,64 @@ def _build_mp_alias_index() -> dict[str, str]:
     return {_normalize_header(k): v for k, v in MP_COLUMN_ALIASES.items()}
 
 
-def _parse_import_time(value) -> Optional[str]:
-    """Parse a time cell to canonical 24h "HH:MM" string. Returns None if blank/invalid."""
+_COMBINED_DT_FORMATS = (
+    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+    "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M",
+    "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M",
+    "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M",
+    "%d-%m-%Y %I:%M %p", "%d-%m-%Y %I:%M:%S %p",
+    "%d/%m/%Y %I:%M %p", "%d/%m/%Y %I:%M:%S %p",
+    "%Y-%m-%d %I:%M %p", "%Y-%m-%d %I:%M:%S %p",
+    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+)
+
+
+def _parse_import_datetime(value) -> tuple[Optional[str], Optional[str]]:
+    """Parse a cell that may contain combined Date+Time, time-only, or date-only.
+    Returns (date_iso or None, time_hhmm or None)."""
     if value is None:
-        return None
-    # openpyxl may return time/datetime/timedelta objects
+        return (None, None)
     if isinstance(value, datetime):
-        return value.strftime("%H:%M")
-    if hasattr(value, "hour") and hasattr(value, "minute"):  # datetime.time
+        # If openpyxl returned a datetime, treat midnight as 'date-only'
+        d = value.strftime("%Y-%m-%d")
+        if value.hour == 0 and value.minute == 0 and value.second == 0:
+            return (d, None)
+        return (d, value.strftime("%H:%M"))
+    # datetime.time
+    if hasattr(value, "hour") and hasattr(value, "minute") and not hasattr(value, "year"):
         try:
-            return f"{value.hour:02d}:{value.minute:02d}"
+            return (None, f"{value.hour:02d}:{value.minute:02d}")
         except Exception:
-            pass
+            return (None, None)
     s = str(value).strip()
     if not s:
-        return None
-    # Strip seconds / am-pm suffixes
-    for fmt in ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M:%S %p", "%I:%M%p"):
+        return (None, None)
+    # Try combined Date+Time formats first
+    for fmt in _COMBINED_DT_FORMATS:
         try:
-            return datetime.strptime(s, fmt).strftime("%H:%M")
+            dt = datetime.strptime(s, fmt)
+            return (dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M"))
         except ValueError:
             continue
-    return None
+    # Try date-only
+    d = _parse_import_date(s)
+    if d:
+        return (d, None)
+    # Try time-only
+    for fmt in ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M:%S %p", "%I:%M%p"):
+        try:
+            return (None, datetime.strptime(s, fmt).strftime("%H:%M"))
+        except ValueError:
+            continue
+    return (None, None)
+
+
+def _parse_import_time(value) -> Optional[str]:
+    """Parse a time cell to canonical 24h "HH:MM" string. Returns None if blank/invalid.
+    Also accepts combined Date+Time cells - returns only the time part."""
+    _, t = _parse_import_datetime(value)
+    return t
 
 
 @api_router.get("/missed-punches/import-template")
@@ -8889,10 +8925,10 @@ async def download_mp_import_template(current_user: dict = Depends(get_current_u
     ws2 = wb.create_sheet("Instructions")
     ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
     ws2.append(["Emp Mail ID", "Yes", "employee_id (via email)", "Aliases: Employee Email, Email, Email ID, Mail"])
-    ws2.append(["Punch Date", "Yes", "date", "Aliases: Date, Attendance Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
-    ws2.append(["Punch Type", "Yes", "punch_type", "Aliases: Type, Punch. Accepted values: 'Check-in', 'Check-out', or 'Both' (case-insensitive)."])
-    ws2.append(["In Time", "Required for Check-in or Both", "check_in_time", "Aliases: Punch In, Check In, Login Time. Format HH:MM (24h) or HH:MM AM/PM. Ignored when Punch Type = Check-out."])
-    ws2.append(["Out Time", "Required for Check-out or Both", "check_out_time", "Aliases: Punch Out, Check Out, Logout Time. Format HH:MM (24h) or HH:MM AM/PM. Ignored when Punch Type = Check-in."])
+    ws2.append(["Punch Date", "Optional", "date", "Aliases: Date, Attendance Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY. If omitted, date is auto-extracted from combined Date+Time in 'In Time'/'Out Time'."])
+    ws2.append(["Punch Type", "Optional", "punch_type", "Aliases: Type, Punch. Accepted: 'Check-in', 'Check-out', 'Both'. If omitted, auto-detected: both times → Both, only In → Check-in, only Out → Check-out."])
+    ws2.append(["In Time", "At least one of In/Out required", "check_in_time", "Aliases: Punch In, Check In, Login Time. Accepts HH:MM, HH:MM AM/PM, OR combined 'DD-MM-YYYY HH:MM' (date+time). For cross-midnight shifts, In Time's date is used as the anchor Punch Date."])
+    ws2.append(["Out Time", "At least one of In/Out required", "check_out_time", "Aliases: Punch Out, Check Out, Logout Time. Accepts HH:MM, HH:MM AM/PM, OR combined 'DD-MM-YYYY HH:MM'."])
     ws2.append(["Reason", "Yes", "reason", "Aliases: Remarks, Notes. Free text"])
     ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending). Approved status auto-updates the attendance record."])
     ws2.append(["Applied Date", "No", "applied_at", "Stored as-is in extra_data"])
@@ -8934,10 +8970,10 @@ async def preview_mp_import(
     mapped = {h: c for h, c in column_mapping.items() if c}
     ignored = [h for h, c in column_mapping.items() if not c]
 
-    required_fields = ["email", "date", "punch_type"]
+    required_fields = ["email"]
     detected_canonical = set(mapped.values())
     missing_required = [f for f in required_fields if f not in detected_canonical]
-    # Need at least one of (check_in, check_out)
+    # Need at least one of (check_in, check_out) - date & punch_type can be auto-derived from these
     has_time = "check_in" in detected_canonical or "check_out" in detected_canonical
     if not has_time:
         missing_required.append("In Time or Out Time")
@@ -8984,15 +9020,8 @@ async def bulk_import_missed_punches(
     detected_canonical = {c for c in sheet_to_canon.values() if c}
     ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
 
-    if "email" not in detected_canonical or "date" not in detected_canonical or "punch_type" not in detected_canonical:
-        missing = []
-        if "email" not in detected_canonical:
-            missing.append("Emp Mail ID")
-        if "date" not in detected_canonical:
-            missing.append("Punch Date")
-        if "punch_type" not in detected_canonical:
-            missing.append("Punch Type")
-        raise HTTPException(status_code=400, detail=f"Missing mandatory column(s): {', '.join(missing)}")
+    if "email" not in detected_canonical:
+        raise HTTPException(status_code=400, detail="Missing mandatory column: Emp Mail ID")
     if "check_in" not in detected_canonical and "check_out" not in detected_canonical:
         raise HTTPException(status_code=400, detail="At least one of 'In Time' / 'Out Time' columns is required")
 
@@ -9052,34 +9081,54 @@ async def bulk_import_missed_punches(
             errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
             continue
 
-        date_iso = _parse_import_date(row.get("date"))
+        # Parse In Time / Out Time cells - they may contain combined Date+Time, time-only,
+        # or date-only values. Extract date+time parts independently.
+        in_raw = row.get("check_in")
+        out_raw = row.get("check_out")
+        in_date, in_time = _parse_import_datetime(in_raw) if in_raw not in (None, "") else (None, None)
+        out_date, out_time = _parse_import_datetime(out_raw) if out_raw not in (None, "") else (None, None)
+
+        # Validate: if a value was provided but couldn't be parsed at all → fail
+        if in_raw not in (None, "") and in_date is None and in_time is None:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid In Time format '{in_raw}' (use HH:MM, DD-MM-YYYY HH:MM, etc.)"})
+            continue
+        if out_raw not in (None, "") and out_date is None and out_time is None:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Out Time format '{out_raw}' (use HH:MM, DD-MM-YYYY HH:MM, etc.)"})
+            continue
+
+        # Derive Punch Date: prefer explicit Punch Date column → fallback to In Time's date → Out Time's date
+        date_iso = _parse_import_date(row.get("date")) if row.get("date") not in (None, "") else None
+        if not date_iso:
+            date_iso = in_date or out_date
         if not date_iso:
             failed += 1
-            errors.append({"row": idx, "email": email, "reason": "Invalid Punch Date format"})
+            errors.append({"row": idx, "email": email, "reason": "Punch Date is required (provide either 'Punch Date' column or combined Date+Time in 'In Time'/'Out Time')"})
             continue
 
-        check_in_time = _parse_import_time(row.get("check_in")) if row.get("check_in") not in (None, "") else None
-        check_out_time = _parse_import_time(row.get("check_out")) if row.get("check_out") not in (None, "") else None
-        # Validate: if a value was provided but couldn't be parsed → fail
-        if row.get("check_in") not in (None, "") and check_in_time is None:
-            failed += 1
-            errors.append({"row": idx, "email": email, "reason": f"Invalid In Time format '{row.get('check_in')}' (use HH:MM 24h or HH:MM AM/PM)"})
-            continue
-        if row.get("check_out") not in (None, "") and check_out_time is None:
-            failed += 1
-            errors.append({"row": idx, "email": email, "reason": f"Invalid Out Time format '{row.get('check_out')}' (use HH:MM 24h or HH:MM AM/PM)"})
-            continue
+        check_in_time = in_time
+        check_out_time = out_time
 
-        # Punch Type is mandatory and dictates which time field is used.
-        punch_norm = _normalize_punch_type(row.get("punch_type"))
-        if punch_norm is None:
-            failed += 1
-            errors.append({"row": idx, "email": email, "reason": "Punch Type is required (use 'Check-in', 'Check-out', or 'Both')"})
-            continue
+        # Derive Punch Type: explicit value wins, else auto-detect from time presence
+        raw_punch = row.get("punch_type")
+        punch_norm = _normalize_punch_type(raw_punch)
         if punch_norm == "INVALID":
             failed += 1
-            errors.append({"row": idx, "email": email, "reason": f"Invalid Punch Type '{row.get('punch_type')}' (use 'Check-in', 'Check-out', or 'Both')"})
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Punch Type '{raw_punch}' (use 'Check-in', 'Check-out', or 'Both')"})
             continue
+        if punch_norm is None:
+            # Auto-detect
+            if check_in_time and check_out_time:
+                punch_norm = "Both"
+            elif check_in_time:
+                punch_norm = "Check-in"
+            elif check_out_time:
+                punch_norm = "Check-out"
+            else:
+                failed += 1
+                errors.append({"row": idx, "email": email, "reason": "Cannot determine Punch Type - In Time or Out Time is required"})
+                continue
         punch_type = punch_norm
 
         # Use only the time(s) matching Punch Type; ignore the other.
