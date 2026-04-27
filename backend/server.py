@@ -22,6 +22,7 @@ import time
 import io
 import csv
 import openpyxl
+import settings_module
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1341,6 +1342,9 @@ def minutes_to_time_24h(minutes: int) -> str:
 def get_shift_timings(employee: dict) -> dict:
     """Get shift timings for an employee based on their shift type"""
     shift_type = employee.get('shift_type', 'General')
+    # Grace minutes (defaults 0) come from the Settings module via sync
+    late_grace = int(employee.get('late_grace_minutes', 0) or 0)
+    early_grace = int(employee.get('early_out_grace_minutes', 0) or 0)
     
     if shift_type == "Custom":
         login_time = employee.get('custom_login_time')
@@ -1359,7 +1363,9 @@ def get_shift_timings(employee: dict) -> dict:
             return {
                 "login_time": login_time,
                 "logout_time": logout_time,
-                "total_hours": total_hours
+                "total_hours": total_hours,
+                "late_grace_minutes": late_grace,
+                "early_out_grace_minutes": early_grace,
             }
         return None
     
@@ -1367,7 +1373,9 @@ def get_shift_timings(employee: dict) -> dict:
     return {
         "login_time": shift_def["login_time"],
         "logout_time": shift_def["logout_time"],
-        "total_hours": shift_def["total_hours"]
+        "total_hours": shift_def["total_hours"],
+        "late_grace_minutes": late_grace,
+        "early_out_grace_minutes": early_grace,
     }
 
 def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_timings: dict) -> dict:
@@ -1385,7 +1393,7 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
         "total_hours_decimal": 0.0
     }
     
-    # Flexible shift - only check total hours
+    # Flexible shift - only check total hours (honors early_out grace)
     if shift_timings.get("login_time") is None:
         if check_in_24h and check_out_24h:
             in_mins = parse_time_24h_to_minutes(check_in_24h)
@@ -1398,17 +1406,21 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
             
             result["total_hours_decimal"] = total_mins / 60
             required_hours = shift_timings.get("total_hours", 8)
+            early_grace = int(shift_timings.get("early_out_grace_minutes", 0) or 0)
+            required_worked = required_hours - (early_grace / 60.0)
             
-            if result["total_hours_decimal"] < required_hours:
+            if result["total_hours_decimal"] < required_worked:
                 result["status"] = AttendanceStatus.LOSS_OF_PAY
                 result["is_lop"] = True
-                result["lop_reason"] = f"Insufficient hours: {result['total_hours_decimal']:.2f}h < {required_hours}h required"
+                result["lop_reason"] = f"Insufficient hours: {result['total_hours_decimal']:.2f}h < {required_worked}h required"
         return result
     
     # Fixed shift - strict rules apply
     expected_login = parse_time_24h_to_minutes(shift_timings["login_time"])
     expected_logout = parse_time_24h_to_minutes(shift_timings["logout_time"])
     required_hours = shift_timings["total_hours"]
+    late_grace = int(shift_timings.get("late_grace_minutes", 0) or 0)
+    early_grace = int(shift_timings.get("early_out_grace_minutes", 0) or 0)
     
     if not check_in_24h:
         result["status"] = AttendanceStatus.NOT_LOGGED
@@ -1416,8 +1428,8 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
     
     actual_login = parse_time_24h_to_minutes(check_in_24h)
     
-    # Check for late login (STRICT - even 1 minute late = LOP)
-    if actual_login > expected_login:
+    # Check for late login (respects late_grace_minutes; 0 means any minute past start is LATE)
+    if actual_login > expected_login + late_grace:
         late_mins = actual_login - expected_login
         result["status"] = AttendanceStatus.LOSS_OF_PAY
         result["is_lop"] = True
@@ -1433,7 +1445,7 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
             result["total_hours_decimal"] = total_mins / 60
         return result
     
-    # Check for early logout (STRICT - even 1 minute early = LOP)
+    # Check for early logout (using worked_hours vs total_hours - grace)
     if check_out_24h:
         actual_logout = parse_time_24h_to_minutes(check_out_24h)
         
@@ -1444,18 +1456,12 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
             total_mins = actual_logout - actual_login
         result["total_hours_decimal"] = total_mins / 60
         
-        if actual_logout < expected_logout:
-            early_mins = expected_logout - actual_logout
+        required_worked = required_hours - (early_grace / 60.0)
+        if result["total_hours_decimal"] < required_worked:
+            short_mins = int(round((required_worked - result["total_hours_decimal"]) * 60))
             result["status"] = AttendanceStatus.LOSS_OF_PAY
             result["is_lop"] = True
-            result["lop_reason"] = f"Early logout by {early_mins} minute(s). Expected: {shift_timings['logout_time']}, Actual: {check_out_24h}"
-            return result
-        
-        # Check total hours requirement
-        if result["total_hours_decimal"] < required_hours:
-            result["status"] = AttendanceStatus.LOSS_OF_PAY
-            result["is_lop"] = True
-            result["lop_reason"] = f"Insufficient hours: {result['total_hours_decimal']:.2f}h < {required_hours}h required"
+            result["lop_reason"] = f"Early out / short hours by {short_mins} minute(s). Worked: {result['total_hours_decimal']:.2f}h, Required: {required_worked:.2f}h"
             return result
         
         # All conditions met - Present
@@ -2992,7 +2998,7 @@ async def bulk_import_employees(
                     email=email,
                     username=username,
                     password=temp_password,
-                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://help-guides-download.preview.emergentagent.com')}/login"
+                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://bulk-hr-admin.preview.emergentagent.com')}/login"
                 )
             )
             
@@ -10378,6 +10384,22 @@ async def download_help_guide(
 
 
 # Include router
+# Register centralized Settings module routes
+settings_services = settings_module.register(api_router, {
+    "db": db,
+    "get_current_user": get_current_user,
+    "log_audit": log_audit,
+    "get_ist_now": get_ist_now,
+    "serialize_doc": serialize_doc,
+    "parse_time_24h_to_minutes": parse_time_24h_to_minutes,
+    "UserRole": UserRole,
+    "ADMIN_ROLES": ADMIN_ROLES,
+    "SYSTEM_ROLES": SYSTEM_ROLES,
+    "EmployeeStatus": EmployeeStatus,
+    "calculate_attendance_status": calculate_attendance_status,
+    "get_shift_timings": get_shift_timings,
+})
+
 app.include_router(api_router)
 
 # CORS

@@ -64,6 +64,7 @@ const allNavItems = [
   { path: '/reports', label: 'Reports', icon: FileText, roles: ['hr'] },
   { path: '/role-management', label: 'Role Management', icon: Shield, roles: ['hr', 'system_admin'] },
   { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText, roles: ['hr', 'system_admin'] },
+  { path: '/settings', label: 'Settings', icon: Settings, roles: ['hr', 'system_admin'] },
 ];
 
 const Layout = ({ children }) => {

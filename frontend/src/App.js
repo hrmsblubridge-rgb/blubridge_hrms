@@ -38,6 +38,7 @@ import AdminEarlyOut from "./pages/AdminEarlyOut";
 import AdminMissedPunch from "./pages/AdminMissedPunch";
 import RoleManagement from "./pages/RoleManagement";
 import OperationalChecklist from "./pages/OperationalChecklist";
+import Settings from "./pages/Settings";
 import "./App.css";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -167,6 +168,7 @@ function App() {
           <Route path="/audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
           <Route path="/role-management" element={<AdminRoute><RoleManagement /></AdminRoute>} />
           <Route path="/operational-checklist" element={<AdminRoute><OperationalChecklist /></AdminRoute>} />
+          <Route path="/settings" element={<AdminRoute><Settings /></AdminRoute>} />
           <Route path="/late-requests" element={<AdminRoute><AdminLateRequests /></AdminRoute>} />
           <Route path="/early-out-requests" element={<AdminRoute><AdminEarlyOut /></AdminRoute>} />
           <Route path="/missed-punches" element={<AdminRoute><AdminMissedPunch /></AdminRoute>} />

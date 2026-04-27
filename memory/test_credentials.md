@@ -1,21 +1,12 @@
-# Test Credentials
+# HRMS Test Credentials
 
-## HR Admin
-- Username: `admin`
-- Password: `pass123`
+## Admin Accounts
+- **HR Admin**: `admin` / `pass123` (role: hr)
+- **System Admin**: `sysadmin` / `pass123` (role: system_admin)
+- **Office Admin**: `offadmin` / `pass123` (role: office_admin)
 
-## System Admin
-- Username: `sysadmin`
-- Password: `pass123`
+## Employee Account
+- **Employee**: `spartasolace1` / `spar@1230`
 
-## Office Admin
-- Username: `offadmin`
-- Password: `pass123`
-
-## Employee (spartan)
-- Username: `spartasolace1`
-- Password: `spar@1230`
-
-## Default Employee
-- Username: `user`
-- Password: `user`
+Base URL: https://bulk-hr-admin.preview.emergentagent.com
+Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "..."}
