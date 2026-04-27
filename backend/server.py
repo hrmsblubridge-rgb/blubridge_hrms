@@ -7,6 +7,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import asyncio
+import re
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Literal
@@ -2235,7 +2236,18 @@ async def delete_cloudinary_asset(
 
 @api_router.post("/auth/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
-    user = await db.users.find_one({"username": request.username}, {"_id": 0})
+    # Case-insensitive username/email match + trim whitespace (users often type with capital letter / autofill trailing space)
+    raw_identifier = (request.username or "").strip()
+    if not raw_identifier:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    safe_regex = re.escape(raw_identifier)
+    user = await db.users.find_one(
+        {"$or": [
+            {"username": {"$regex": f"^{safe_regex}$", "$options": "i"}},
+            {"email": {"$regex": f"^{safe_regex}$", "$options": "i"}},
+        ]},
+        {"_id": 0},
+    )
     if not user:
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not user.get("is_active", True):
