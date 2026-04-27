@@ -8,6 +8,7 @@
 ## Employee Accounts
 - **Employee**: `spartasolace1` / `spar@1230`
 - **Employee**: `vijayan.k` / `pass123` (created 2026-04-27, onboarding approved)
+- **Employee**: `kasper` / `pass123` (kasper@blubridge.com, EMP0050, reactivated 2026-04-27)
 
 Base URL: https://bulk-hr-admin.preview.emergentagent.com
 Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "..."}
