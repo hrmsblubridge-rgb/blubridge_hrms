@@ -300,23 +300,29 @@ const Dashboard = () => {
       const fromDate = filters.fromDate ? formatDateForAPI(filters.fromDate) : today;
       const toDate = filters.toDate ? formatDateForAPI(filters.toDate) : today;
       
-      let statusFilter = '';
-      switch (statusType) {
-        case 'logged_in': statusFilter = 'Login'; break;
-        case 'logout': statusFilter = 'Completed'; break;
-        case 'early_out': statusFilter = 'Early Out'; break;
-        case 'late_login': statusFilter = 'Late Login'; break;
-        default:
-          setAttendanceDetails(leaveList);
-          setLoadingDetails(false);
-          return;
+      // Status sets must match /api/dashboard/stats counting logic (server.py ~line 4298)
+      const STATUS_SETS = {
+        logged_in: ['Login', 'Completed', 'Late Login', 'Early Out', 'Present', 'Loss of Pay'],
+        logout: ['Completed', 'Early Out', 'Present', 'Loss of Pay'],
+        early_out: ['Early Out'],
+        late_login: ['Late Login'],
+      };
+      const allowed = STATUS_SETS[statusType];
+      if (!allowed) {
+        setAttendanceDetails(leaveList);
+        setLoadingDetails(false);
+        return;
       }
       
+      // Fetch without status filter then apply the same union the backend uses
       const response = await axios.get(`${API}/attendance`, {
         headers: getAuthHeaders(),
-        params: { status: statusFilter, from_date: fromDate, to_date: toDate }
+        params: { from_date: fromDate, to_date: toDate, limit: 500 }
       });
-      setAttendanceDetails(response.data);
+      const records = Array.isArray(response.data)
+        ? response.data
+        : (response.data?.attendance_records || []);
+      setAttendanceDetails(records.filter((r) => allowed.includes(r.status)));
     } catch (error) {
       console.error('Failed to fetch attendance details:', error);
       toast.error('Failed to load attendance details');
