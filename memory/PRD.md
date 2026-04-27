@@ -216,6 +216,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - `GET /api/help/download` - Download role-specific User Guide PDF (HR / SysAdmin / OfficeAdmin / Employee)
 
 ## Changelog
+- **2026-04-27** Skip Onboarding for Existing Employees + Case-Insensitive Login.
+  - **Migration (one-time DB update)**: All 51 Active employees + their 51 linked user accounts now have `onboarding_status = "approved"` and `is_first_login = false`. They land directly on `/employee/dashboard` after login — no onboarding gate. 49 employees and 7 orphaned `onboarding` collection records were updated.
+  - **New-employee path preserved**: Default `onboarding_status = PENDING` on the `Employee` / `User` models is untouched, so any employee created via `POST /api/employees` (or bulk-import) from now on still goes through the normal onboarding flow.
+  - **Inactive employees deliberately skipped** — they remain with their existing onboarding status.
+  - **Case-insensitive login** (`POST /api/auth/login` in `server.py`): username is now matched case-insensitively against both `username` and `email`, and trimmed of whitespace. Fixes "Invalid credentials" when users type `Kasper` instead of `kasper`, or log in with their email. Wrong passwords still correctly rejected.
 - **2026-04-27** Disabled Manual Check-in for Employees + Provisioned `vijayan.k` login.
   - `/app/frontend/src/pages/EmployeeDashboard.js`: Removed the "Clock In" / "Clock Out" buttons and the `handleClockIn` / `handleClockOut` handlers. Time Tracker card now always shows a read-only "Biometric Attendance — Your check-in/out is synced from the biometric device" panel (or "Day Completed" card when applicable). Employees can no longer manually punch attendance.
   - Backup: Admin-side attendance pages are unchanged (manual punch/edit remains available to HR/SysAdmin).
