@@ -142,12 +142,25 @@ const Dashboard = () => {
       if (filters.fromDate) statsParams.from_date = formatDateForAPI(filters.fromDate);
       if (filters.toDate) statsParams.to_date = formatDateForAPI(filters.toDate);
       
-      const [statsRes, leaveRes, teamsRes] = await Promise.all([
+      const [statsRes, leaveRes, teamsRes, deptsRes] = await Promise.all([
         axios.get(`${API}/dashboard/stats`, { headers: getAuthHeaders(), params: statsParams }),
         axios.get(`${API}/dashboard/leave-list`, { headers: getAuthHeaders(), params: statsParams }),
-        axios.get(`${API}/teams`, { headers: getAuthHeaders() })
+        axios.get(`${API}/teams`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/departments`, { headers: getAuthHeaders() })
       ]);
-      setStats(statsRes.data);
+      // Frontend-only grouping: Research Unit stays as-is; everything else = Support Staff
+      const deptList = Array.isArray(deptsRes.data) ? deptsRes.data : [];
+      const researchCount = deptList
+        .filter((d) => (d.name || '').toLowerCase() === 'research unit')
+        .reduce((s, d) => s + (d.employee_count || 0), 0);
+      const supportCount = deptList
+        .filter((d) => (d.name || '').toLowerCase() !== 'research unit')
+        .reduce((s, d) => s + (d.employee_count || 0), 0);
+      setStats({
+        ...statsRes.data,
+        total_research_unit: researchCount,
+        total_support_staff: supportCount,
+      });
       setLeaveList(leaveRes.data);
       setTeams(teamsRes.data);
     } catch (error) {
