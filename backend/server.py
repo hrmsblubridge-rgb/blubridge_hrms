@@ -5194,7 +5194,7 @@ async def get_star_history(employee_id: str, current_user: dict = Depends(get_cu
 
 @api_router.get("/teams")
 async def get_teams(department: Optional[str] = None, current_user: dict = Depends(get_current_user)):
-    query = {}
+    query = {"is_deleted": {"$ne": True}}
     if department and department != "All":
         query["department"] = department
     
@@ -5227,7 +5227,7 @@ async def get_team(team_id: str, current_user: dict = Depends(get_current_user))
 
 @api_router.get("/departments")
 async def get_departments(current_user: dict = Depends(get_current_user)):
-    departments = await db.departments.find({}, {"_id": 0}).to_list(100)
+    departments = await db.departments.find({"is_deleted": {"$ne": True}}, {"_id": 0}).to_list(100)
     
     # Calculate actual counts
     for dept in departments:
