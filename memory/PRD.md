@@ -216,6 +216,17 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - `GET /api/help/download` - Download role-specific User Guide PDF (HR / SysAdmin / OfficeAdmin / Employee)
 
 ## Changelog
+- **2026-04-27** Centralized HRMS Settings Module (6 tabs: Departments, Teams, Designations, Holidays, Shifts, Assign Shifts).
+  - New file `/app/backend/settings_module.py` (~990 lines) exposes all CRUD + service layer (`resolve_shift_for_employee`, `_sync_shift_to_employee`, `_apply_active_shifts_now`). Registered via `settings_module.register(api_router, deps)` in `server.py`.
+  - New endpoints (prefix `/api/settings`): `departments`, `teams`, `designations`, `holidays`, `shifts`, `shifts/assign`, `shifts/bulk-assign`, `shifts/assignments`, `shifts/resolve`, `attendance/recompute`.
+  - Existing `departments` / `teams` / `holidays` collections preserved (no recreation). Designations auto-seeded from existing employee values. Soft-delete for all new entities; renames propagate to child records.
+  - New `shifts` collection fields: `id, name, start_time, total_hours, late_grace_minutes, early_out_grace_minutes, status, description, is_deleted`.
+  - New `employee_shifts` collection fields: `id, employee_id, shift_id, effective_from, effective_to, assigned_by, is_deleted` with history + overlap handling.
+  - Attendance Rule Engine updated in `server.py` (`get_shift_timings` + `calculate_attendance_status`): late = `actual > start + late_grace`; early-out uses `worked_hours < total_hours − early_grace/60` (no shift-end-time dependency). Grace=0 means any minute past start is LATE (10:01 → LATE verified).
+  - `POST /api/settings/attendance/recompute` recalculates Late, Early-out, Worked Hours and Holiday flag (sets `extra_pay_flag` when worked on a holiday). Locked records (`is_manual_override` / `is_approved_correction`) are skipped.
+  - Frontend `/app/frontend/src/pages/Settings.js` (~1300 lines) provides the 6-tab UI with Add/Edit/Delete dialogs, multi-chip filters on Assign Shifts, and a "Recompute Attendance" button. Sidebar entry added in `Layout.js` (roles: hr, system_admin); route wired in `App.js`.
+  - 14 new pytest tests in `/app/backend/tests/test_settings_module.py` — all pass. RBAC, backward compatibility with legacy `/api/departments|teams|holidays`, bulk-assign by dept/team/designation filter, and attendance recompute all verified.
+
 - **2026-05-06** Bulk Missed-Punch Import — Combined Date+Time + Auto-detect Punch Type (Admin → Missed Punch).
   - `In Time` / `Out Time` cells now accept combined Date+Time values (e.g., `18-03-2026 09:37`, `18/03/2026 23:30`, ISO, AM/PM, native Excel datetime).
   - `Punch Date` column is now **optional** — date is auto-extracted from In/Out Time when not provided. If both column and combined value exist, explicit Punch Date wins; falls back to In Time's date, then Out Time's.
