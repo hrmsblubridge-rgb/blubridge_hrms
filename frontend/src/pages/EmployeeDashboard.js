@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarCheck, CalendarX, Clock, AlertTriangle, LogIn, LogOut as LogOutIcon, CalendarDays, User, FileText, Star, TrendingUp, Activity } from 'lucide-react';
-import { Button } from '../components/ui/button';
+import { CalendarCheck, CalendarX, Clock, Clock4, AlertTriangle, CalendarDays, User, FileText, Star, TrendingUp, Activity } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -14,7 +13,6 @@ const EmployeeDashboard = () => {
   const navigate = useNavigate();
   const [dashboardData, setDashboardData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [clockLoading, setClockLoading] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
 
   // Mock working hours data for chart
@@ -43,32 +41,6 @@ const EmployeeDashboard = () => {
   useEffect(() => { fetchDashboard(); }, [fetchDashboard]);
   useEffect(() => { const timer = setInterval(() => setCurrentTime(new Date()), 1000); return () => clearInterval(timer); }, []);
 
-  const handleClockIn = async () => {
-    try {
-      setClockLoading(true);
-      await axios.post(`${API}/employee/clock-in`, {}, { headers: getAuthHeaders() });
-      toast.success('Clocked in successfully!');
-      fetchDashboard();
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to clock in');
-    } finally {
-      setClockLoading(false);
-    }
-  };
-
-  const handleClockOut = async () => {
-    try {
-      setClockLoading(true);
-      await axios.post(`${API}/employee/clock-out`, {}, { headers: getAuthHeaders() });
-      toast.success('Clocked out successfully!');
-      fetchDashboard();
-    } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to clock out');
-    } finally {
-      setClockLoading(false);
-    }
-  };
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
@@ -81,7 +53,6 @@ const EmployeeDashboard = () => {
   }
 
   const todayStatus = dashboardData?.today_attendance;
-  const isLoggedIn = todayStatus?.status === 'Login';
   const isCompleted = todayStatus?.status === 'Completed' || todayStatus?.check_out;
 
   return (
@@ -150,43 +121,19 @@ const EmployeeDashboard = () => {
               </div>
             </div>
 
-            {/* Clock Button */}
+            {/* Attendance is biometric-based only — manual check-in disabled */}
             {isCompleted ? (
-              <div className="text-center p-4 rounded-xl bg-blue-50 border border-blue-200">
+              <div className="text-center p-4 rounded-xl bg-blue-50 border border-blue-200" data-testid="day-completed-card">
                 <CalendarCheck className="w-8 h-8 text-[#063c88] mx-auto mb-2" />
                 <p className="text-[#063c88] font-medium">Day Completed</p>
                 <p className="text-xs text-blue-600 mt-1">Great work today!</p>
               </div>
-            ) : isLoggedIn ? (
-              <Button
-                onClick={handleClockOut}
-                disabled={clockLoading}
-                className="w-full h-14 bg-red-500 hover:bg-red-600 text-white rounded-xl text-lg font-medium shadow-lg shadow-red-500/20"
-                data-testid="clock-out-btn"
-              >
-                {clockLoading ? (
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <LogOutIcon className="w-5 h-5 mr-2" /> Clock Out
-                  </>
-                )}
-              </Button>
             ) : (
-              <Button
-                onClick={handleClockIn}
-                disabled={clockLoading}
-                className="w-full h-14 bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl text-lg font-medium shadow-lg shadow-[#063c88]/20"
-                data-testid="clock-in-btn"
-              >
-                {clockLoading ? (
-                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                ) : (
-                  <>
-                    <LogIn className="w-5 h-5 mr-2" /> Clock In
-                  </>
-                )}
-              </Button>
+              <div className="text-center p-4 rounded-xl bg-slate-50 border border-slate-200" data-testid="biometric-only-card">
+                <Clock4 className="w-8 h-8 text-slate-500 mx-auto mb-2" />
+                <p className="text-slate-700 font-medium">Biometric Attendance</p>
+                <p className="text-xs text-slate-500 mt-1">Your check-in/out is synced from the biometric device</p>
+              </div>
             )}
           </div>
         </div>

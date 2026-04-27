@@ -216,6 +216,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - `GET /api/help/download` - Download role-specific User Guide PDF (HR / SysAdmin / OfficeAdmin / Employee)
 
 ## Changelog
+- **2026-04-27** Disabled Manual Check-in for Employees + Provisioned `vijayan.k` login.
+  - `/app/frontend/src/pages/EmployeeDashboard.js`: Removed the "Clock In" / "Clock Out" buttons and the `handleClockIn` / `handleClockOut` handlers. Time Tracker card now always shows a read-only "Biometric Attendance — Your check-in/out is synced from the biometric device" panel (or "Day Completed" card when applicable). Employees can no longer manually punch attendance.
+  - Backup: Admin-side attendance pages are unchanged (manual punch/edit remains available to HR/SysAdmin).
+  - New employee user created via DB script: `vijayan.k` / `pass123`, role `employee`, `onboarding_status=approved`, `is_active=true`, `is_first_login=false`. Linked to new employee record `VJK001` (full_name: Vijayan K, department: Support Staff). Verified end-to-end: login returns token, lands on `/employee/dashboard`, biometric card renders, clock buttons absent.
+  - `/app/memory/test_credentials.md` updated with the new credential.
 - **2026-04-27** Centralized HRMS Settings Module (6 tabs: Departments, Teams, Designations, Holidays, Shifts, Assign Shifts).
   - New file `/app/backend/settings_module.py` (~990 lines) exposes all CRUD + service layer (`resolve_shift_for_employee`, `_sync_shift_to_employee`, `_apply_active_shifts_now`). Registered via `settings_module.register(api_router, deps)` in `server.py`.
   - New endpoints (prefix `/api/settings`): `departments`, `teams`, `designations`, `holidays`, `shifts`, `shifts/assign`, `shifts/bulk-assign`, `shifts/assignments`, `shifts/resolve`, `attendance/recompute`.
