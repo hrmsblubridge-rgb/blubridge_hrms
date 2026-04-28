@@ -5696,21 +5696,61 @@ async def get_dashboard_leave_list(
 
 # ============== REPORTS ROUTES ==============
 
+def _normalize_date_to_int(ds: Optional[str]) -> Optional[int]:
+    """Convert any common date string to YYYYMMDD int for sortable comparison.
+    Accepts DD-MM-YYYY, YYYY-MM-DD, DD/MM/YYYY, YYYY/MM/DD, ISO strings."""
+    if not ds:
+        return None
+    s = ds.strip().split("T")[0].replace("/", "-")
+    parts = s.split("-")
+    if len(parts) != 3:
+        return None
+    try:
+        a, b, c = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    if len(parts[0]) == 4:        # YYYY-MM-DD
+        return a * 10000 + b * 100 + c
+    if len(parts[2]) == 4:        # DD-MM-YYYY
+        return c * 10000 + b * 100 + a
+    return None
+
+
 @api_router.get("/reports/attendance")
 async def get_attendance_report(
     from_date: str,
     to_date: str,
     department: Optional[str] = None,
     team: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    status: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
-    query = {"date": {"$gte": from_date, "$lte": to_date}}
+    query = {}
     if team and team != "All":
         query["team"] = team
     if department and department != "All":
         query["department"] = department
-    
-    records = await db.attendance.find(query, {"_id": 0}).to_list(10000)
+    if employee_name and employee_name.strip():
+        # Anchor and case-insensitive — matches both partial typing and exact
+        # autocomplete selections of full name.
+        query["emp_name"] = {"$regex": re.escape(employee_name.strip()), "$options": "i"}
+    if status and status != "All":
+        query["status"] = status
+
+    # Date format mismatch fix: attendance.date is stored DD-MM-YYYY but the
+    # frontend's DatePicker emits YYYY-MM-DD. Compare normalized integer keys.
+    f_int = _normalize_date_to_int(from_date)
+    t_int = _normalize_date_to_int(to_date)
+
+    records = await db.attendance.find(query, {"_id": 0}).to_list(20000)
+    if f_int is not None or t_int is not None:
+        lo = f_int if f_int is not None else 0
+        hi = t_int if t_int is not None else 99999999
+        records = [r for r in records if (lambda v: v is not None and lo <= v <= hi)(_normalize_date_to_int(r.get("date")))]
+
+    # Stable sort by date asc for predictable export order
+    records.sort(key=lambda r: _normalize_date_to_int(r.get("date")) or 0)
     return [serialize_doc(r) for r in records]
 
 @api_router.get("/reports/leaves")
@@ -5719,15 +5759,39 @@ async def get_leave_report(
     to_date: str,
     department: Optional[str] = None,
     team: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    leave_type: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
-    query = {"start_date": {"$gte": from_date, "$lte": to_date}}
+    query = {}
     if team and team != "All":
         query["team"] = team
     if department and department != "All":
         query["department"] = department
-    
-    records = await db.leaves.find(query, {"_id": 0}).to_list(10000)
+    if employee_name and employee_name.strip():
+        query["emp_name"] = {"$regex": re.escape(employee_name.strip()), "$options": "i"}
+    if leave_type and leave_type != "All":
+        query["leave_type"] = leave_type
+
+    f_int = _normalize_date_to_int(from_date)
+    t_int = _normalize_date_to_int(to_date)
+
+    records = await db.leaves.find(query, {"_id": 0}).to_list(20000)
+    if f_int is not None or t_int is not None:
+        lo = f_int if f_int is not None else 0
+        hi = t_int if t_int is not None else 99999999
+        # A leave overlaps the window if its [start_date, end_date] intersects [lo, hi]
+        def _in_window(rec):
+            s = _normalize_date_to_int(rec.get("start_date"))
+            e = _normalize_date_to_int(rec.get("end_date") or rec.get("start_date"))
+            if s is None and e is None:
+                return False
+            s = s if s is not None else e
+            e = e if e is not None else s
+            return s <= hi and e >= lo
+        records = [r for r in records if _in_window(r)]
+
+    records.sort(key=lambda r: _normalize_date_to_int(r.get("start_date")) or 0)
     return [serialize_doc(r) for r in records]
 
 @api_router.get("/reports/employees")
