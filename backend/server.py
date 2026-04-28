@@ -91,6 +91,20 @@ def is_sunday_ddmmyyyy(date_str: str) -> bool:
     except (ValueError, TypeError):
         return False
 
+# Temporary onboarding-skip window. New employees created within this
+# window (inclusive of both endpoints, evaluated in IST) are auto-approved
+# so they can log in and land directly on the employee dashboard without
+# going through the onboarding flow. Outside this window the standard
+# onboarding flow auto-resumes (no further code changes needed).
+ONBOARDING_SKIP_WINDOW_START = datetime(2026, 4, 28, 0, 0, 0, tzinfo=IST)
+ONBOARDING_SKIP_WINDOW_END = datetime(2026, 5, 3, 23, 59, 59, tzinfo=IST)
+
+def should_skip_onboarding_now() -> bool:
+    """Return True if the current IST time falls within the temporary
+    skip-onboarding window."""
+    now = get_ist_now()
+    return ONBOARDING_SKIP_WINDOW_START <= now <= ONBOARDING_SKIP_WINDOW_END
+
 def add_hours_to_24h(time_24h: str, hours: float) -> Optional[str]:
     """Return HH:MM string for time_24h + hours (wraps modulo 24)."""
     if not time_24h or hours is None:
@@ -3053,6 +3067,19 @@ async def bulk_import_employees(
                     login_url=f"{os.environ.get('FRONTEND_URL', 'https://bulk-hr-admin.preview.emergentagent.com')}/login"
                 )
             )
+
+            # Temporary policy: skip onboarding within configured window so
+            # bulk-imported employees can log in directly.
+            if should_skip_onboarding_now():
+                _now_iso = get_ist_now().isoformat()
+                await db.employees.update_one(
+                    {"id": employee.id},
+                    {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "onboarding_completed_at": _now_iso}}
+                )
+                await db.users.update_many(
+                    {"employee_id": employee.id},
+                    {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "is_first_login": False}}
+                )
             
             # Add to existing sets to prevent duplicates in same batch
             existing_emails.add(email.lower())
@@ -3342,6 +3369,23 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     checklist_doc['created_at'] = checklist_doc['created_at'].isoformat()
     checklist_doc['updated_at'] = checklist_doc['updated_at'].isoformat()
     await db.operational_checklists.insert_one(checklist_doc.copy())
+
+    # Temporary policy: during the configured window, new employees skip the
+    # onboarding flow entirely and land on the dashboard right after login.
+    if should_skip_onboarding_now():
+        now_iso = get_ist_now().isoformat()
+        await db.employees.update_one(
+            {"id": employee.id},
+            {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "onboarding_completed_at": now_iso}}
+        )
+        await db.users.update_many(
+            {"employee_id": employee.id},
+            {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "is_first_login": False}}
+        )
+        await db.onboarding.update_one(
+            {"employee_id": employee.id},
+            {"$set": {"status": OnboardingStatus.APPROVED, "approved_at": now_iso, "updated_at": now_iso}}
+        )
     
     result = serialize_doc(doc)
     if data.login_enabled:
