@@ -81,6 +81,27 @@ def attendance_shift_offset(time_24h: str) -> Optional[int]:
         return mins + 1440
     return mins
 
+def is_sunday_ddmmyyyy(date_str: str) -> bool:
+    """Return True if a DD-MM-YYYY date string falls on a Sunday."""
+    if not date_str:
+        return False
+    try:
+        d = datetime.strptime(date_str, "%d-%m-%Y")
+        return d.weekday() == 6
+    except (ValueError, TypeError):
+        return False
+
+def add_hours_to_24h(time_24h: str, hours: float) -> Optional[str]:
+    """Return HH:MM string for time_24h + hours (wraps modulo 24)."""
+    if not time_24h or hours is None:
+        return None
+    try:
+        h, m = map(int, time_24h.split(":"))
+    except (ValueError, AttributeError):
+        return None
+    total_minutes = (h * 60 + m + int(round(float(hours) * 60))) % (24 * 60)
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(
@@ -222,6 +243,8 @@ class AttendanceStatus:
     NOT_LOGGED = "Not Logged"
     LOGIN = "Login"
     COMPLETED = "Completed"
+    SUNDAY = "Sunday"
+    WORKED_ON_SUNDAY = "Worked on Sunday"
 
 # ============== ONBOARDING ENUMS ==============
 
@@ -1379,23 +1402,46 @@ def get_shift_timings(employee: dict) -> dict:
         "early_out_grace_minutes": early_grace,
     }
 
-def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_timings: dict) -> dict:
+def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_timings: dict, attendance_date: Optional[str] = None) -> dict:
     """
-    Calculate attendance status based on strict LOP rules:
-    - Late login (even 1 minute) = LOP
-    - Early logout (even 1 minute) = LOP
-    - Insufficient hours = LOP
-    - No grace period
+    Calculate attendance status with effective-start (early-arrival) handling:
+      * effective_start_time = actual punch-in (always)
+      * expected_logout = effective_start_time + required_hours (dynamic)
+      * Late entry still applies LOP based on existing late_grace_minutes
+      * Early-out / short-hours uses TOTAL WORKED HOURS vs required_hours;
+        an employee who completes >= required_hours is NEVER flagged
+        early-out, regardless of clock time.
+      * Sundays: status = "Sunday" (no LOP). If they punch on Sunday →
+        "Worked on Sunday" (no LOP).
     """
     result = {
         "status": AttendanceStatus.PRESENT,
         "is_lop": False,
         "lop_reason": None,
-        "total_hours_decimal": 0.0
+        "total_hours_decimal": 0.0,
+        "expected_logout": None,
     }
-    
+
+    # Sunday guard: never flag late/early/LOP/absent on Sundays.
+    if attendance_date and is_sunday_ddmmyyyy(attendance_date):
+        result["expected_logout"] = None
+        if check_in_24h:
+            result["status"] = AttendanceStatus.WORKED_ON_SUNDAY
+            if check_out_24h:
+                in_mins = parse_time_24h_to_minutes(check_in_24h)
+                out_mins = parse_time_24h_to_minutes(check_out_24h)
+                total_mins = (out_mins - in_mins) if out_mins >= in_mins else (24 * 60 - in_mins + out_mins)
+                result["total_hours_decimal"] = total_mins / 60
+        else:
+            result["status"] = AttendanceStatus.SUNDAY
+        return result
+
+    required_hours = shift_timings.get("total_hours", 8) if shift_timings else 8
+
     # Flexible shift - only check total hours (honors early_out grace)
-    if shift_timings.get("login_time") is None:
+    if not shift_timings or shift_timings.get("login_time") is None:
+        if check_in_24h:
+            result["expected_logout"] = add_hours_to_24h(check_in_24h, required_hours)
         if check_in_24h and check_out_24h:
             in_mins = parse_time_24h_to_minutes(check_in_24h)
             out_mins = parse_time_24h_to_minutes(check_out_24h)
@@ -1406,8 +1452,7 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
                 total_mins = out_mins - in_mins
             
             result["total_hours_decimal"] = total_mins / 60
-            required_hours = shift_timings.get("total_hours", 8)
-            early_grace = int(shift_timings.get("early_out_grace_minutes", 0) or 0)
+            early_grace = int((shift_timings or {}).get("early_out_grace_minutes", 0) or 0)
             required_worked = required_hours - (early_grace / 60.0)
             
             if result["total_hours_decimal"] < required_worked:
@@ -1418,8 +1463,6 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
     
     # Fixed shift - strict rules apply
     expected_login = parse_time_24h_to_minutes(shift_timings["login_time"])
-    expected_logout = parse_time_24h_to_minutes(shift_timings["logout_time"])
-    required_hours = shift_timings["total_hours"]
     late_grace = int(shift_timings.get("late_grace_minutes", 0) or 0)
     early_grace = int(shift_timings.get("early_out_grace_minutes", 0) or 0)
     
@@ -1428,44 +1471,41 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
         return result
     
     actual_login = parse_time_24h_to_minutes(check_in_24h)
+    # Dynamic expected logout: punch-in + required_hours (always)
+    result["expected_logout"] = add_hours_to_24h(check_in_24h, required_hours)
     
     # Check for late login (respects late_grace_minutes; 0 means any minute past start is LATE)
-    if actual_login > expected_login + late_grace:
-        late_mins = actual_login - expected_login
-        result["status"] = AttendanceStatus.LOSS_OF_PAY
-        result["is_lop"] = True
-        result["lop_reason"] = f"Late login by {late_mins} minute(s). Expected: {shift_timings['login_time']}, Actual: {check_in_24h}"
-        
-        # Still calculate hours if checked out
-        if check_out_24h:
-            actual_logout = parse_time_24h_to_minutes(check_out_24h)
-            if actual_logout < actual_login:
-                total_mins = 24 * 60 - actual_login + actual_logout
-            else:
-                total_mins = actual_logout - actual_login
-            result["total_hours_decimal"] = total_mins / 60
-        return result
+    is_late = actual_login > expected_login + late_grace
     
-    # Check for early logout (using worked_hours vs total_hours - grace)
+    # Compute total hours if checked out
+    total_hours_decimal = 0.0
     if check_out_24h:
         actual_logout = parse_time_24h_to_minutes(check_out_24h)
-        
-        # Calculate total hours
         if actual_logout < actual_login:
             total_mins = 24 * 60 - actual_login + actual_logout
         else:
             total_mins = actual_logout - actual_login
-        result["total_hours_decimal"] = total_mins / 60
-        
+        total_hours_decimal = total_mins / 60
+        result["total_hours_decimal"] = total_hours_decimal
+
+    if is_late:
+        late_mins = actual_login - expected_login
+        result["status"] = AttendanceStatus.LOSS_OF_PAY
+        result["is_lop"] = True
+        result["lop_reason"] = f"Late login by {late_mins} minute(s). Expected: {shift_timings['login_time']}, Actual: {check_in_24h}"
+        return result
+    
+    # Not late — check early logout / short hours using TOTAL WORKED vs REQUIRED.
+    # Employees who complete >= required hours are NEVER flagged as early-out,
+    # regardless of clock time (early-arrival is preserved).
+    if check_out_24h:
         required_worked = required_hours - (early_grace / 60.0)
-        if result["total_hours_decimal"] < required_worked:
-            short_mins = int(round((required_worked - result["total_hours_decimal"]) * 60))
+        if total_hours_decimal < required_worked:
+            short_mins = int(round((required_worked - total_hours_decimal) * 60))
             result["status"] = AttendanceStatus.LOSS_OF_PAY
             result["is_lop"] = True
-            result["lop_reason"] = f"Early out / short hours by {short_mins} minute(s). Worked: {result['total_hours_decimal']:.2f}h, Required: {required_worked:.2f}h"
+            result["lop_reason"] = f"Early out / short hours by {short_mins} minute(s). Worked: {total_hours_decimal:.2f}h, Required: {required_worked:.2f}h"
             return result
-        
-        # All conditions met - Present
         result["status"] = AttendanceStatus.PRESENT
     else:
         # Only logged in, not logged out yet
@@ -3935,6 +3975,8 @@ async def get_attendance(
                         continue
                     key = (emp["id"], to_ddmmyyyy(cur))
                     if key not in existing_keys:
+                        # Sundays are non-working — mark as "Sunday", never Absent.
+                        stub_status = AttendanceStatus.SUNDAY if cur.weekday() == 6 else AttendanceStatus.ABSENT
                         stubs.append({
                             "id": f"stub-{emp['id']}-{to_ddmmyyyy(cur)}",
                             "employee_id": emp["id"],
@@ -3948,7 +3990,7 @@ async def get_attendance(
                             "check_out_24h": None,
                             "total_hours": None,
                             "total_hours_decimal": None,
-                            "status": AttendanceStatus.ABSENT,
+                            "status": stub_status,
                             "is_lop": False,
                             "lop_reason": None,
                             "shift_type": emp.get("shift_type", "General"),
@@ -4283,10 +4325,21 @@ async def import_biometric_attendance(
         status = AttendanceStatus.LOGIN
         is_lop = False
         lop_reason = None
+        dynamic_expected_logout = None
 
         shift_timings = get_shift_timings(employee)
 
-        if in_24h and out_24h:
+        # Sunday handling
+        if is_sunday_ddmmyyyy(date_str):
+            if in_24h and out_24h:
+                in_m = parse_time_24h_to_minutes(in_24h)
+                out_m = parse_time_24h_to_minutes(out_24h)
+                total_hours_decimal = round((out_m - in_m) / 60, 2) if out_m > in_m else round((24 * 60 - in_m + out_m) / 60, 2)
+                total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            status = AttendanceStatus.WORKED_ON_SUNDAY if in_24h else AttendanceStatus.SUNDAY
+            is_lop = False
+            lop_reason = None
+        elif in_24h and out_24h:
             in_mins = parse_time_24h_to_minutes(in_24h)
             out_mins = parse_time_24h_to_minutes(out_24h)
             if out_mins > in_mins:
@@ -4298,16 +4351,19 @@ async def import_biometric_attendance(
             status = AttendanceStatus.PRESENT
 
             if shift_timings:
-                status_result = calculate_attendance_status(in_24h, out_24h, shift_timings)
+                status_result = calculate_attendance_status(in_24h, out_24h, shift_timings, attendance_date=date_str)
                 status = status_result.get("status", status)
                 is_lop = status_result.get("is_lop", False)
                 lop_reason = status_result.get("lop_reason")
+                dynamic_expected_logout = status_result.get("expected_logout")
                 if status_result.get("total_hours_decimal"):
                     total_hours_decimal = status_result["total_hours_decimal"]
                     total_hours_str = calculate_total_hours_str(total_hours_decimal)
         elif in_24h and not out_24h:
-            # Single punch - no out time
+            # Single punch - no out time. Compute dynamic expected_logout = IN + required_hours
             if shift_timings:
+                req_h = shift_timings.get("total_hours", 8)
+                dynamic_expected_logout = add_hours_to_24h(in_24h, req_h)
                 expected_login = shift_timings.get("login_time")
                 if expected_login:
                     expected_mins = parse_time_24h_to_minutes(expected_login)
@@ -4332,6 +4388,10 @@ async def import_biometric_attendance(
                 "lop_reason": lop_reason,
                 "source": "biometric",
                 "device_ip": device_ip,
+                # Dynamic expected_logout (punch_in + required_hours) overrides
+                # any static shift logout previously stored. Falls back to the
+                # shift's logout_time when no IN punch yet.
+                "expected_logout": dynamic_expected_logout if dynamic_expected_logout else (shift_timings.get("logout_time") if shift_timings else None),
             },
             "$setOnInsert": {
                 "id": str(uuid.uuid4()),
@@ -4342,7 +4402,6 @@ async def import_biometric_attendance(
                 "date": date_str,
                 "shift_type": employee.get("shift_type", "General"),
                 "expected_login": shift_timings.get("login_time") if shift_timings else None,
-                "expected_logout": shift_timings.get("logout_time") if shift_timings else None,
                 "created_at": get_ist_now().isoformat()
             }
         }
@@ -4467,13 +4526,24 @@ async def recompute_attendance_from_punches(
         status = AttendanceStatus.LOGIN
         is_lop = False
         lop_reason = None
+        dynamic_expected_logout = None
 
         if emp_id not in emp_cache:
             emp_cache[emp_id] = await db.employees.find_one({"id": emp_id}, {"_id": 0}) or {}
         employee = emp_cache[emp_id]
         shift_timings = get_shift_timings(employee) if employee else None
 
-        if in_24h and out_24h:
+        # Sunday handling: never LOP, mark "Sunday" / "Worked on Sunday"
+        if is_sunday_ddmmyyyy(date_str):
+            if in_24h and out_24h:
+                im = parse_time_24h_to_minutes(in_24h)
+                om = parse_time_24h_to_minutes(out_24h)
+                total_hours_decimal = round((om - im) / 60, 2) if om > im else round((24 * 60 - im + om) / 60, 2)
+                total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            status = AttendanceStatus.WORKED_ON_SUNDAY if in_24h else AttendanceStatus.SUNDAY
+            is_lop = False
+            lop_reason = None
+        elif in_24h and out_24h:
             in_mins = parse_time_24h_to_minutes(in_24h)
             out_mins = parse_time_24h_to_minutes(out_24h)
             if out_mins > in_mins:
@@ -4483,15 +4553,18 @@ async def recompute_attendance_from_punches(
             total_hours_str = calculate_total_hours_str(total_hours_decimal)
             status = AttendanceStatus.PRESENT
             if shift_timings:
-                sr = calculate_attendance_status(in_24h, out_24h, shift_timings)
+                sr = calculate_attendance_status(in_24h, out_24h, shift_timings, attendance_date=date_str)
                 status = sr.get("status", status)
                 is_lop = sr.get("is_lop", False)
                 lop_reason = sr.get("lop_reason")
+                dynamic_expected_logout = sr.get("expected_logout")
                 if sr.get("total_hours_decimal"):
                     total_hours_decimal = sr["total_hours_decimal"]
                     total_hours_str = calculate_total_hours_str(total_hours_decimal)
         elif in_24h and not out_24h:
             if shift_timings:
+                req_h = shift_timings.get("total_hours", 8)
+                dynamic_expected_logout = add_hours_to_24h(in_24h, req_h)
                 expected_login = shift_timings.get("login_time")
                 if expected_login:
                     em = parse_time_24h_to_minutes(expected_login)
@@ -4513,6 +4586,7 @@ async def recompute_attendance_from_punches(
                 "is_lop": is_lop,
                 "lop_reason": lop_reason,
                 "source": "biometric",
+                "expected_logout": dynamic_expected_logout if dynamic_expected_logout else (shift_timings.get("logout_time") if shift_timings else None),
             },
             "$setOnInsert": {
                 "id": str(uuid.uuid4()),
@@ -4523,7 +4597,6 @@ async def recompute_attendance_from_punches(
                 "date": date_str,
                 "shift_type": (employee or {}).get("shift_type", "General"),
                 "expected_login": shift_timings.get("login_time") if shift_timings else None,
-                "expected_logout": shift_timings.get("logout_time") if shift_timings else None,
                 "created_at": get_ist_now().isoformat(),
             }
         }
