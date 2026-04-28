@@ -1284,7 +1284,7 @@ async def notify_roles(roles: list, title: str, message: str, notif_type: str = 
 def serialize_doc(doc: dict) -> dict:
     if not doc:
         return doc
-    if 'created_at' in doc and not isinstance(doc['created_at'], str):
+    if 'created_at' in doc and doc['created_at'] is not None and not isinstance(doc['created_at'], str):
         doc['created_at'] = doc['created_at'].isoformat()
     if 'updated_at' in doc and not isinstance(doc['updated_at'], str):
         doc['updated_at'] = doc['updated_at'].isoformat()
@@ -3853,18 +3853,118 @@ async def get_attendance(
     attendance = await db.attendance.find(query, {"_id": 0}).sort("date", -1).to_list(5000)
     
     # Filter by date range in Python (DD-MM-YYYY strings don't sort lexicographically)
+    def parse_ddmmyyyy(ds):
+        try:
+            parts = ds.split("-")
+            return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+        except:
+            return 0
+
     if from_date or to_date:
-        def parse_ddmmyyyy(ds):
-            try:
-                parts = ds.split("-")
-                return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
-            except:
-                return 0
-        
         from_val = parse_ddmmyyyy(from_date) if from_date else 0
         to_val = parse_ddmmyyyy(to_date) if to_date else 99999999
         
         attendance = [a for a in attendance if from_val <= parse_ddmmyyyy(a.get("date", "")) <= to_val]
+    
+    # Gap-fill missing dates with "Absent" stub records (Issue 2 fix).
+    # Only applies when both from_date & to_date are provided AND no specific status
+    # filter is requested (an "Absent" filter would defeat its purpose). The
+    # response shape (field names / order) is preserved exactly.
+    if from_date and to_date and (not status or status in ("All", "", "Absent")):
+        try:
+            f_d = datetime.strptime(from_date, "%d-%m-%Y").date()
+            t_d = datetime.strptime(to_date, "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            f_d = t_d = None
+
+        if f_d and t_d and f_d <= t_d:
+            # Determine candidate employees: union of those already in `attendance`
+            # plus any employees matching the supplied filters (so we still
+            # surface "Absent" days for filtered employees with NO records).
+            emp_query = {"is_deleted": {"$ne": True}}
+            if employee_name:
+                emp_query["full_name"] = {"$regex": employee_name, "$options": "i"}
+            if team and team != "All":
+                emp_query["team"] = team
+            if department and department != "All":
+                emp_query["department"] = department
+
+            employees_for_fill = await db.employees.find(
+                emp_query,
+                {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1,
+                 "shift_type": 1, "date_of_joining": 1, "employee_status": 1,
+                 "inactive_date": 1, "attendance_tracking_enabled": 1}
+            ).to_list(5000)
+
+            existing_keys = {(a.get("employee_id"), a.get("date")) for a in attendance}
+
+            def to_ddmmyyyy(d):
+                return d.strftime("%d-%m-%Y")
+
+            def parse_doj(s):
+                if not s:
+                    return None
+                # Accept ISO strings or DD-MM-YYYY
+                try:
+                    if "T" in s or "-" in s and len(s.split("-")[0]) == 4:
+                        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+                except Exception:
+                    pass
+                try:
+                    return datetime.strptime(s.split("T")[0], "%Y-%m-%d").date()
+                except Exception:
+                    pass
+                try:
+                    return datetime.strptime(s, "%d-%m-%Y").date()
+                except Exception:
+                    return None
+
+            stubs = []
+            for emp in employees_for_fill:
+                if emp.get("attendance_tracking_enabled") is False:
+                    continue
+                doj = parse_doj(emp.get("date_of_joining"))
+                inactive = parse_doj(emp.get("inactive_date")) if emp.get("employee_status") == "Inactive" else None
+                cur = f_d
+                while cur <= t_d:
+                    if doj and cur < doj:
+                        cur += timedelta(days=1)
+                        continue
+                    if inactive and cur > inactive:
+                        cur += timedelta(days=1)
+                        continue
+                    key = (emp["id"], to_ddmmyyyy(cur))
+                    if key not in existing_keys:
+                        stubs.append({
+                            "id": f"stub-{emp['id']}-{to_ddmmyyyy(cur)}",
+                            "employee_id": emp["id"],
+                            "emp_name": emp.get("full_name", ""),
+                            "team": emp.get("team", ""),
+                            "department": emp.get("department", ""),
+                            "date": to_ddmmyyyy(cur),
+                            "check_in": None,
+                            "check_out": None,
+                            "check_in_24h": None,
+                            "check_out_24h": None,
+                            "total_hours": None,
+                            "total_hours_decimal": None,
+                            "status": AttendanceStatus.ABSENT,
+                            "is_lop": False,
+                            "lop_reason": None,
+                            "shift_type": emp.get("shift_type", "General"),
+                            "expected_login": None,
+                            "expected_logout": None,
+                            "created_at": None,
+                            "_synthetic": True,
+                        })
+                    cur += timedelta(days=1)
+
+            if stubs:
+                # Apply same status filter to stubs if user explicitly asked for "Absent"
+                if status == "Absent":
+                    attendance = [s for s in stubs]
+                else:
+                    attendance.extend(stubs)
     
     # Sort by date descending (proper chronological order)
     def date_sort_key(a):
@@ -4117,7 +4217,10 @@ async def import_biometric_attendance(
     
     # Process grouped punches - atomic upsert per employee+date
     for (emp_id, date_str), data in grouped.items():
-        punches = sorted(data["punches"])
+        # Dedupe by minute — biometric devices commonly re-sync the same punch
+        # many times. Without dedupe a single physical punch can be incorrectly
+        # treated as both IN and OUT.
+        punches = sorted({p.replace(second=0, microsecond=0) for p in data["punches"]})
         employee = data["employee"]
         device_ip = data["ip"]
 
@@ -4262,6 +4365,185 @@ async def import_biometric_attendance(
         "skipped": skipped,
         "unmapped": unmapped,
         "unmappedDeviceUserIds": list(unmapped_ids) if unmapped_ids else []
+    }
+
+@api_router.post("/attendance/recompute-from-punches")
+async def recompute_attendance_from_punches(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    employee_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Re-derive check_in (MIN) and check_out (MAX) for each (employee, date) by
+    scanning raw biometric_punch_logs. Useful when historical attendance rows
+    show only an IN time even though multiple punches exist on the device.
+    Single-punch days keep check_out = NULL (do NOT duplicate IN as OUT).
+    Does NOT change schema, response shape, or status calculation rules."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Aggregate raw logs into (emp_id, date) -> [punch_24h, ...]
+    match_stage = {"logs.status": "mapped"}
+    if employee_id:
+        match_stage["logs.employee_id"] = employee_id
+
+    pipeline = [
+        {"$unwind": "$logs"},
+        {"$match": match_stage},
+        {"$group": {
+            "_id": {"employee_id": "$logs.employee_id", "date": "$logs.date"},
+            "punches": {"$push": "$logs.recordTime"},
+        }},
+    ]
+    cursor = db.biometric_punch_logs.aggregate(pipeline, allowDiskUse=True)
+
+    def _parse(rt):
+        if not isinstance(rt, str):
+            return None
+        try:
+            dt = datetime.fromisoformat(rt.replace("Z", "+00:00"))
+            return dt.astimezone(IST)
+        except Exception:
+            return None
+
+    def parse_ddmmyyyy(ds):
+        try:
+            parts = ds.split("-")
+            return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+        except Exception:
+            return 0
+
+    f_val = parse_ddmmyyyy(from_date) if from_date else 0
+    t_val = parse_ddmmyyyy(to_date) if to_date else 99999999
+
+    # Pre-fetch employee data for shift recalculation
+    emp_cache = {}
+
+    updated = 0
+    skipped_locked = 0
+    no_change = 0
+    examined = 0
+
+    async for grp in cursor:
+        emp_id = grp["_id"]["employee_id"]
+        date_str = grp["_id"]["date"]
+        if from_date or to_date:
+            v = parse_ddmmyyyy(date_str)
+            if not (f_val <= v <= t_val):
+                continue
+        examined += 1
+
+        parsed = [p for p in (_parse(rt) for rt in grp.get("punches", [])) if p]
+        # Dedupe by minute (devices commonly re-sync the same punch many times).
+        unique = sorted({p.replace(second=0, microsecond=0) for p in parsed})
+        if not unique:
+            continue
+        in_dt = unique[0]
+        out_dt = unique[-1] if len(unique) > 1 else None
+
+        in_24h = in_dt.strftime("%H:%M")
+        in_12h = in_dt.strftime("%I:%M %p")
+        out_24h = out_dt.strftime("%H:%M") if out_dt else None
+        out_12h = out_dt.strftime("%I:%M %p") if out_dt else None
+
+        existing = await db.attendance.find_one(
+            {"employee_id": emp_id, "date": date_str},
+            {"_id": 0}
+        )
+
+        # Respect manual overrides / approved corrections
+        if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")):
+            skipped_locked += 1
+            continue
+
+        # No-op short-circuit
+        if existing and existing.get("check_in_24h") == in_24h and existing.get("check_out_24h") == out_24h:
+            no_change += 1
+            continue
+
+        # Compute total hours and status
+        total_hours_decimal = 0.0
+        total_hours_str = None
+        status = AttendanceStatus.LOGIN
+        is_lop = False
+        lop_reason = None
+
+        if emp_id not in emp_cache:
+            emp_cache[emp_id] = await db.employees.find_one({"id": emp_id}, {"_id": 0}) or {}
+        employee = emp_cache[emp_id]
+        shift_timings = get_shift_timings(employee) if employee else None
+
+        if in_24h and out_24h:
+            in_mins = parse_time_24h_to_minutes(in_24h)
+            out_mins = parse_time_24h_to_minutes(out_24h)
+            if out_mins > in_mins:
+                total_hours_decimal = round((out_mins - in_mins) / 60, 2)
+            else:
+                total_hours_decimal = round((24 * 60 - in_mins + out_mins) / 60, 2)
+            total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            status = AttendanceStatus.PRESENT
+            if shift_timings:
+                sr = calculate_attendance_status(in_24h, out_24h, shift_timings)
+                status = sr.get("status", status)
+                is_lop = sr.get("is_lop", False)
+                lop_reason = sr.get("lop_reason")
+                if sr.get("total_hours_decimal"):
+                    total_hours_decimal = sr["total_hours_decimal"]
+                    total_hours_str = calculate_total_hours_str(total_hours_decimal)
+        elif in_24h and not out_24h:
+            if shift_timings:
+                expected_login = shift_timings.get("login_time")
+                if expected_login:
+                    em = parse_time_24h_to_minutes(expected_login)
+                    am = parse_time_24h_to_minutes(in_24h)
+                    if am > em:
+                        is_lop = True
+                        lop_reason = f"Late login by {am - em} minute(s). Expected: {expected_login}, Actual: {in_24h}"
+                        status = AttendanceStatus.LOSS_OF_PAY
+
+        update_doc = {
+            "$set": {
+                "check_in": in_12h,
+                "check_in_24h": in_24h,
+                "check_out": out_12h,
+                "check_out_24h": out_24h,
+                "total_hours": total_hours_str,
+                "total_hours_decimal": total_hours_decimal,
+                "status": status,
+                "is_lop": is_lop,
+                "lop_reason": lop_reason,
+                "source": "biometric",
+            },
+            "$setOnInsert": {
+                "id": str(uuid.uuid4()),
+                "employee_id": emp_id,
+                "emp_name": (employee or {}).get("full_name", ""),
+                "team": (employee or {}).get("team", ""),
+                "department": (employee or {}).get("department", ""),
+                "date": date_str,
+                "shift_type": (employee or {}).get("shift_type", "General"),
+                "expected_login": shift_timings.get("login_time") if shift_timings else None,
+                "expected_logout": shift_timings.get("logout_time") if shift_timings else None,
+                "created_at": get_ist_now().isoformat(),
+            }
+        }
+        await db.attendance.update_one(
+            {"employee_id": emp_id, "date": date_str},
+            update_doc,
+            upsert=True,
+        )
+        updated += 1
+
+    await log_audit(
+        current_user["id"], "recompute_attendance_in_out", "attendance", None,
+        f"Recompute IN/OUT from punches: examined={examined}, updated={updated}, unchanged={no_change}, locked={skipped_locked}"
+    )
+
+    return {
+        "examined": examined,
+        "updated": updated,
+        "unchanged": no_change,
+        "skipped_locked": skipped_locked,
     }
 
 @api_router.get("/attendance/stats")
