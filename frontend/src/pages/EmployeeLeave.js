@@ -63,7 +63,7 @@ const EmployeeLeave = () => {
   };
 
   const handleApplyLeave = async () => {
-    if (!form.leave_type || !form.start_date || !form.end_date || !form.reason) {
+    if (!form.leave_type || !form.start_date || !form.reason) {
       toast.error('Please fill all fields');
       return;
     }
@@ -71,17 +71,16 @@ const EmployeeLeave = () => {
       toast.error('Reason must be at least 10 characters');
       return;
     }
-    if (form.end_date < form.start_date) {
-      toast.error('End date cannot be before start date');
-      return;
-    }
     try {
       setFormLoading(true);
+      // Single-day leave: silently mirror end_date = start_date so the
+      // existing backend contract keeps working unchanged.
+      const payload = { ...form, end_date: form.start_date };
       if (editingId) {
-        await axios.put(`${API}/employee/leaves/${editingId}`, form, { headers: getAuthHeaders() });
+        await axios.put(`${API}/employee/leaves/${editingId}`, payload, { headers: getAuthHeaders() });
         toast.success('Leave updated');
       } else {
-        await axios.post(`${API}/employee/leaves/apply`, form, { headers: getAuthHeaders() });
+        await axios.post(`${API}/employee/leaves/apply`, payload, { headers: getAuthHeaders() });
         toast.success('Leave application submitted');
       }
       setShowApplyDialog(false);
@@ -278,31 +277,17 @@ const EmployeeLeave = () => {
                 </Select>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label className="text-sm font-medium text-slate-700">Start Date</Label>
-                <Input
-                  type="date"
-                  value={form.start_date}
-                  onChange={(e) => setForm({ ...form, start_date: e.target.value })}
-                  max={form.leave_type === 'Sick' ? new Date().toISOString().split('T')[0] : undefined}
-                  min={form.leave_type === 'Casual' ? (() => { let d = new Date(); let days = 0; while (days < 4) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0) days++; } return d.toISOString().split('T')[0]; })() : undefined}
-                  className="mt-1.5 rounded-lg"
-                  data-testid="start-date-input"
-                />
-              </div>
-              <div>
-                <Label className="text-sm font-medium text-slate-700">End Date</Label>
-                <Input
-                  type="date"
-                  value={form.end_date}
-                  onChange={(e) => setForm({ ...form, end_date: e.target.value })}
-                  min={form.start_date || undefined}
-                  max={form.leave_type === 'Sick' ? new Date().toISOString().split('T')[0] : undefined}
-                  className="mt-1.5 rounded-lg"
-                  data-testid="end-date-input"
-                />
-              </div>
+            <div>
+              <Label className="text-sm font-medium text-slate-700">Leave Date</Label>
+              <Input
+                type="date"
+                value={form.start_date}
+                onChange={(e) => setForm({ ...form, start_date: e.target.value })}
+                max={form.leave_type === 'Sick' ? new Date().toISOString().split('T')[0] : undefined}
+                min={form.leave_type === 'Casual' ? (() => { let d = new Date(); let days = 0; while (days < 4) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0) days++; } return d.toISOString().split('T')[0]; })() : undefined}
+                className="mt-1.5 rounded-lg"
+                data-testid="leave-date-input"
+              />
             </div>
             <div>
               <Label className="text-sm font-medium text-slate-700">Reason (min 10 characters)</Label>

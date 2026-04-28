@@ -117,10 +117,13 @@ const Leave = () => {
   };
 
   const handleApplyForEmployee = async () => {
-    if (!applyForm.employee_id || !applyForm.start_date || !applyForm.end_date || !applyForm.reason || applyForm.reason.trim().length < 10) { toast.error('Fill all fields (reason min 10 chars)'); return; }
+    if (!applyForm.employee_id || !applyForm.start_date || !applyForm.reason || applyForm.reason.trim().length < 10) { toast.error('Fill all fields (reason min 10 chars)'); return; }
     setActionLoading(true);
     try {
-      await axios.post(`${API}/leaves`, applyForm, { headers: getAuthHeaders() });
+      // Single-day leave: silently mirror end_date = start_date so the
+      // existing backend contract keeps working unchanged.
+      const payload = { ...applyForm, end_date: applyForm.start_date };
+      await axios.post(`${API}/leaves`, payload, { headers: getAuthHeaders() });
       toast.success(applyForm.auto_approve ? 'Leave applied & approved' : 'Leave applied for employee');
       setShowApplyDialog(false); setApplyForm({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false }); fetchData();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
@@ -625,9 +628,9 @@ const Leave = () => {
                 </Select>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div><Label>Start Date</Label><Input type="date" value={applyForm.start_date} onChange={e => setApplyForm({ ...applyForm, start_date: e.target.value })} className="mt-1.5 rounded-lg" /></div>
-              <div><Label>End Date</Label><Input type="date" value={applyForm.end_date} onChange={e => setApplyForm({ ...applyForm, end_date: e.target.value })} className="mt-1.5 rounded-lg" /></div>
+            <div>
+              <Label>Leave Date</Label>
+              <Input type="date" value={applyForm.start_date} onChange={e => setApplyForm({ ...applyForm, start_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="admin-apply-leave-date" />
             </div>
             <div><Label>Reason (min 10 chars)</Label><Textarea value={applyForm.reason} onChange={e => setApplyForm({ ...applyForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Reason for leave..." /></div>
             <div className="flex items-center gap-4 pt-2">
