@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarDays, Plus, Clock, CheckCircle2, XCircle, Edit2, Paperclip, Upload } from 'lucide-react';
+import { CalendarDays, Plus, Clock, CheckCircle2, XCircle, Edit2, Paperclip, Upload, Eye } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -24,6 +24,7 @@ const EmployeeLeave = () => {
   const [docFile, setDocFile] = useState(null);
   const [docUploading, setDocUploading] = useState(false);
   const [form, setForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' });
+  const [viewReason, setViewReason] = useState(null); // { reason, leave_type, start_date, end_date }
 
   const fetchData = useCallback(async () => {
     try {
@@ -210,7 +211,22 @@ const EmployeeLeave = () => {
                       <td className="text-slate-600">{leave.start_date}</td>
                       <td className="text-slate-600">{leave.end_date}</td>
                       <td className="text-slate-600">{leave.duration}</td>
-                      <td className="text-slate-600 max-w-[200px] truncate">{leave.reason}</td>
+                      <td className="text-slate-600">
+                        {leave.reason ? (
+                          <div className="flex items-center gap-2 max-w-[240px]">
+                            <span className="truncate" title={leave.reason}>{leave.reason}</span>
+                            <button
+                              type="button"
+                              onClick={() => setViewReason({ reason: leave.reason, leave_type: leave.leave_type, start_date: leave.start_date, end_date: leave.end_date })}
+                              className="shrink-0 text-slate-500 hover:text-[#063c88] transition-colors"
+                              title="View full reason"
+                              data-testid={`view-reason-${leave.id || index}`}
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ) : '-'}
+                      </td>
                       <td>{leave.supporting_document_url ? <a href={leave.supporting_document_url} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline text-xs flex items-center gap-1"><Paperclip className="w-3 h-3" />{leave.supporting_document_name || 'View'}</a> : '-'}</td>
                       <td><Badge className={getStatusBadge(leave.status)}>{leave.status}</Badge></td>
                       <td>{leave.is_lop === true ? <Badge className="badge-error">LOP</Badge> : leave.is_lop === false ? <Badge className="badge-success">No LOP</Badge> : '-'}</td>
@@ -309,6 +325,29 @@ const EmployeeLeave = () => {
             <Button onClick={handleApplyLeave} disabled={formLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="submit-leave-btn">
               {formLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Submit'}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Full Reason Dialog */}
+      <Dialog open={!!viewReason} onOpenChange={(open) => !open && setViewReason(null)}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl sm:max-w-lg" data-testid="view-reason-dialog">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Leave Reason</DialogTitle>
+            {viewReason && (
+              <DialogDescription>
+                {viewReason.leave_type} · {viewReason.start_date}
+                {viewReason.end_date && viewReason.end_date !== viewReason.start_date ? ` to ${viewReason.end_date}` : ''}
+              </DialogDescription>
+            )}
+          </DialogHeader>
+          <div className="mt-2 p-4 rounded-xl bg-slate-50 border border-slate-200 max-h-[50vh] overflow-y-auto">
+            <p className="text-sm text-slate-800 whitespace-pre-wrap break-words" data-testid="view-reason-text">
+              {viewReason?.reason || '-'}
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setViewReason(null)} className="rounded-lg" data-testid="close-reason-dialog">Close</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
