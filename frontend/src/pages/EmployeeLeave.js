@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
+import { Pagination } from '../components/Pagination';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -25,6 +26,8 @@ const EmployeeLeave = () => {
   const [docUploading, setDocUploading] = useState(false);
   const [form, setForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' });
   const [viewReason, setViewReason] = useState(null); // { reason, leave_type, start_date, end_date }
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
 
   const fetchData = useCallback(async () => {
     try {
@@ -203,7 +206,7 @@ const EmployeeLeave = () => {
                 {leaves.length === 0 ? (
                   <tr><td colSpan="10" className="text-center py-12 text-slate-500">No leave records found</td></tr>
                 ) : (
-                  leaves.map((leave, index) => (
+                  leaves.slice((page - 1) * pageSize, page * pageSize).map((leave, index) => (
                     <tr key={index}>
                       <td className="font-medium text-slate-900">{leave.leave_type}</td>
                       <td className="text-slate-600">{leave.leave_split || 'Full Day'}</td>
@@ -235,6 +238,14 @@ const EmployeeLeave = () => {
                 )}
               </tbody>
             </table>
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={leaves.length}
+              onPageChange={setPage}
+              onPageSizeChange={(s) => { setPageSize(s); setPage(1); }}
+              testid="emp-leave-pagination"
+            />
           </div>
         )}
       </div>

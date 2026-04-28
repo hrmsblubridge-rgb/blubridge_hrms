@@ -14,6 +14,7 @@ import { Textarea } from '../components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
+import { Pagination } from '../components/Pagination';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -220,6 +221,20 @@ const Leave = () => {
 
   const pendingLeaves = sortedLeaves.filter(l => l.status === 'pending');
   const historyLeaves = sortedLeaves.filter(l => l.status !== 'pending');
+
+  // Pagination state — independent per tab so user can browse them in parallel
+  const [pendingPage, setPendingPage] = useState(1);
+  const [pendingPageSize, setPendingPageSize] = useState(10);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyPageSize, setHistoryPageSize] = useState(10);
+
+  // Reset to page 1 whenever filters / search change so the user always lands on results
+  useEffect(() => { setPendingPage(1); setHistoryPage(1); }, [filters, sortField, sortOrder]);
+
+  const pendingTotal = pendingLeaves.length;
+  const historyTotal = historyLeaves.length;
+  const pendingPaginated = pendingLeaves.slice((pendingPage - 1) * pendingPageSize, pendingPage * pendingPageSize);
+  const historyPaginated = historyLeaves.slice((historyPage - 1) * historyPageSize, historyPage * historyPageSize);
   const SortIcon = ({ field }) => sortField !== field ? null : sortOrder === 'asc' ? <ChevronUp className="w-4 h-4 inline ml-1" /> : <ChevronDown className="w-4 h-4 inline ml-1" />;
   const getStatusBadge = (status) => ({ 'pending': 'badge-warning', 'approved': 'badge-success', 'rejected': 'badge-error' }[status] || 'badge-neutral');
   const canApprove = ['hr'].includes(user?.role);
@@ -366,10 +381,10 @@ const Leave = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {pendingLeaves.length === 0 ? (
+                    {pendingPaginated.length === 0 ? (
                       <tr><td colSpan="7" className="text-center py-12 text-slate-500">No pending requests</td></tr>
                     ) : (
-                      pendingLeaves.map((leave) => (
+                      pendingPaginated.map((leave) => (
                         <tr key={leave.id}>
                           <td>
                             <button className="p-2 hover:bg-slate-100 rounded-lg transition-colors" onClick={() => handleViewLeave(leave)}>
@@ -398,6 +413,14 @@ const Leave = () => {
                     )}
                   </tbody>
                 </table>
+                <Pagination
+                  page={pendingPage}
+                  pageSize={pendingPageSize}
+                  total={pendingTotal}
+                  onPageChange={setPendingPage}
+                  onPageSizeChange={(s) => { setPendingPageSize(s); setPendingPage(1); }}
+                  testid="leave-pending-pagination"
+                />
               </div>
             )}
           </TabsContent>
@@ -418,10 +441,10 @@ const Leave = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {historyLeaves.length === 0 ? (
+                  {historyPaginated.length === 0 ? (
                     <tr><td colSpan="8" className="text-center py-12 text-slate-500">No history records</td></tr>
                   ) : (
-                    historyLeaves.map((leave) => (
+                    historyPaginated.map((leave) => (
                       <tr key={leave.id}>
                         <td>
                           <button className="p-2 hover:bg-slate-100 rounded-lg transition-colors" onClick={() => handleViewLeave(leave)}>
@@ -464,6 +487,14 @@ const Leave = () => {
                   )}
                 </tbody>
               </table>
+              <Pagination
+                page={historyPage}
+                pageSize={historyPageSize}
+                total={historyTotal}
+                onPageChange={setHistoryPage}
+                onPageSizeChange={(s) => { setHistoryPageSize(s); setHistoryPage(1); }}
+                testid="leave-history-pagination"
+              />
             </div>
           </TabsContent>
         </Tabs>
