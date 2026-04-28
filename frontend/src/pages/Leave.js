@@ -610,8 +610,6 @@ const Leave = () => {
                   <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="Sick">Sick Leave</SelectItem>
-                    <SelectItem value="Casual">Casual Leave</SelectItem>
-                    <SelectItem value="Annual">Annual Leave</SelectItem>
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
                   </SelectContent>
