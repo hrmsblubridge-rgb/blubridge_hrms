@@ -61,13 +61,27 @@ const Reports = () => {
       if (response.data.length > 0) {
         let headers, rows;
         if (activeTab === 'attendance') {
-          headers = ['Employee', 'Team', 'Department', 'Date', 'Check-In', 'Check-Out', 'Status'];
-          rows = response.data.map(r => [r.emp_name, r.team, r.department || '', r.date, r.check_in || '-', r.check_out || '-', r.status]);
+          headers = ['Employee', 'Team', 'Department', 'Date', 'Check-In', 'Check-Out', 'Total Login Hours', 'Status'];
+          rows = response.data.map(r => [
+            r.emp_name,
+            r.team,
+            r.department || '',
+            r.date,
+            r.check_in || '-',
+            r.check_out || '-',
+            r.total_hours || '-',
+            r.status,
+          ]);
         } else {
           headers = ['Employee', 'Team', 'Department', 'Type', 'Start', 'End', 'Duration', 'Status'];
           rows = response.data.map(r => [r.emp_name, r.team, r.department || '', r.leave_type, r.start_date, r.end_date, r.duration, r.status]);
         }
-        const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
+        // CSV-safe quoting (preserves commas and quotes within cells)
+        const esc = (v) => {
+          const s = (v === null || v === undefined) ? '' : String(v);
+          return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+        };
+        const csv = [headers, ...rows].map(row => row.map(esc).join(',')).join('\n');
         const blob = new Blob([csv], { type: 'text/csv' });
         const a = document.createElement('a');
         a.href = window.URL.createObjectURL(blob);
