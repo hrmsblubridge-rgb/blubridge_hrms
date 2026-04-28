@@ -8,6 +8,7 @@ import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Badge } from '../components/ui/badge';
 import { DatePicker } from '../components/ui/date-picker';
+import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -145,7 +146,13 @@ const Reports = () => {
             </div>
             <div>
               <label className="text-sm text-slate-600 mb-2 block font-medium">Employee Name</label>
-              <Input placeholder="Enter name" value={leaveFilters.empName} onChange={(e) => setLeaveFilters({ ...leaveFilters, empName: e.target.value })} className="rounded-lg" data-testid="leave-filter-empname" />
+              <EmployeeAutocomplete
+                value={leaveFilters.empName}
+                onChange={(val) => setLeaveFilters({ ...leaveFilters, empName: val })}
+                onSelect={(emp) => setLeaveFilters({ ...leaveFilters, empName: emp.full_name })}
+                placeholder="Type to search employees..."
+                data-testid="leave-filter-empname"
+              />
             </div>
             <div>
               <label className="text-sm text-slate-600 mb-2 block font-medium">Leave Type</label>
@@ -192,7 +199,13 @@ const Reports = () => {
             </div>
             <div>
               <label className="text-sm text-slate-600 mb-2 block font-medium">Employee Name</label>
-              <Input placeholder="Enter name" value={attendanceFilters.empName} onChange={(e) => setAttendanceFilters({ ...attendanceFilters, empName: e.target.value })} className="rounded-lg" data-testid="attendance-filter-empname" />
+              <EmployeeAutocomplete
+                value={attendanceFilters.empName}
+                onChange={(val) => setAttendanceFilters({ ...attendanceFilters, empName: val })}
+                onSelect={(emp) => setAttendanceFilters({ ...attendanceFilters, empName: emp.full_name })}
+                placeholder="Type to search employees..."
+                data-testid="attendance-filter-empname"
+              />
             </div>
             <div>
               <label className="text-sm text-slate-600 mb-2 block font-medium">Status</label>
