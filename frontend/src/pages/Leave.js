@@ -411,11 +411,12 @@ const Leave = () => {
                     <th>Date</th>
                     <th>Duration</th>
                     <th>Status</th>
+                    <th className="w-44">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {historyLeaves.length === 0 ? (
-                    <tr><td colSpan="7" className="text-center py-12 text-slate-500">No history records</td></tr>
+                    <tr><td colSpan="8" className="text-center py-12 text-slate-500">No history records</td></tr>
                   ) : (
                     historyLeaves.map((leave) => (
                       <tr key={leave.id}>
@@ -430,6 +431,31 @@ const Leave = () => {
                         <td className="text-slate-600">{leave.start_date}</td>
                         <td className="text-slate-600">{leave.duration}</td>
                         <td><Badge className={getStatusBadge(leave.status)}>{leave.status}</Badge></td>
+                        <td>
+                          <div className="flex items-center gap-2">
+                            {leave.status === 'approved' ? (
+                              <Button
+                                size="sm"
+                                onClick={() => openRejectDialog(leave)}
+                                className="bg-red-500 hover:bg-red-600 text-white h-8 px-3 rounded-lg"
+                                data-testid={`history-reject-btn-${leave.id}`}
+                                title="Override approved → rejected"
+                              >
+                                <XCircle className="w-3.5 h-3.5 mr-1" /> Reject
+                              </Button>
+                            ) : leave.status === 'rejected' ? (
+                              <Button
+                                size="sm"
+                                onClick={() => openApproveDialog(leave)}
+                                className="bg-emerald-500 hover:bg-emerald-600 text-white h-8 px-3 rounded-lg"
+                                data-testid={`history-approve-btn-${leave.id}`}
+                                title="Override rejected → approved"
+                              >
+                                <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Approve
+                              </Button>
+                            ) : null}
+                          </div>
+                        </td>
                       </tr>
                     ))
                   )}
