@@ -5825,7 +5825,10 @@ async def export_attendance_report(
     if f_int is None or t_int is None or f_int > t_int:
         raise HTTPException(status_code=400, detail="Invalid date range")
 
-    # Resolve target employees
+    # Resolve target employees with status-aware filtering:
+    #   - Always include currently Active employees.
+    #   - Include employees who left during/after the report start date.
+    #   - Exclude employees whose last working day is BEFORE the report start.
     emp_query = {"is_deleted": {"$ne": True}}
     if team and team != "All":
         emp_query["team"] = team
@@ -5836,8 +5839,23 @@ async def export_attendance_report(
 
     employees = await db.employees.find(
         emp_query,
-        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1}
+        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1,
+         "employee_status": 1, "inactive_date": 1, "last_day_payable": 1, "date_of_joining": 1}
     ).to_list(5000)
+
+    def _is_employee_in_range(emp):
+        # Active employees: always include
+        if emp.get("employee_status") != "Inactive":
+            return True
+        # Inactive employees: include only if their last working day is on/after report start
+        last_day_raw = emp.get("last_day_payable") or emp.get("inactive_date")
+        last_day_int = _normalize_date_to_int(last_day_raw)
+        if last_day_int is None:
+            # No reliable exit date — fall back to including (data integrity safety)
+            return True
+        return last_day_int >= f_int
+
+    employees = [e for e in employees if _is_employee_in_range(e)]
     employees.sort(key=lambda e: (e.get("full_name") or "").lower())
 
     emp_ids = [e["id"] for e in employees]
@@ -5908,6 +5926,9 @@ async def export_attendance_report(
 
     bold = Font(bold=True)
     fill = PatternFill("solid", fgColor="FFEFEFEF")
+    # Subtle, professional flag colors that read well in Excel.
+    LATE_FILL = PatternFill("solid", fgColor="FFFCE4D6")     # light orange
+    EARLY_FILL = PatternFill("solid", fgColor="FFFFF2CC")    # light yellow
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
     thin = Side(border_style="thin", color="FFCCCCCC")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -5941,10 +5962,20 @@ async def export_attendance_report(
         for d_idx, d in enumerate(date_list):
             start_col = FIXED_COLS + 1 + d_idx * PER_DATE_COLS
             vals = cells_for_day(emp["id"], d)
+            in_val, out_val, late_val, early_val, _hours_val, _status_val = vals
+            is_late = late_val == "Yes"
+            is_early = early_val == "Yes"
             for i, v in enumerate(vals):
                 c = ws.cell(row=row, column=start_col + i, value=v if v != "" else None)
                 c.alignment = center
                 c.border = border
+                # Cell-level shading only on the relevant columns:
+                #   - Late entry  → light orange on In Time + Late-in marker
+                #   - Early exit  → light yellow on Out Time + Early Out marker
+                if is_late and i in (0, 2):
+                    c.fill = LATE_FILL
+                if is_early and i in (1, 3):
+                    c.fill = EARLY_FILL
 
     # Column widths
     ws.column_dimensions["A"].width = 6
