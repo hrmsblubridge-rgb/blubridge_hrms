@@ -5797,6 +5797,148 @@ async def get_attendance_report(
     records.sort(key=lambda r: _normalize_date_to_int(r.get("date")) or 0)
     return [serialize_doc(r) for r in records]
 
+
+@api_router.get("/reports/attendance/export")
+async def export_attendance_report(
+    from_date: str,
+    to_date: str,
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Export Attendance report in the wide pivot format that matches the
+    reference template:
+      Columns:  S.No | Name | Team | Department | <date> | <date> | ...
+      Rows:     one per employee
+      Cell:     multi-line summary for that day:
+                  - "Not Login"                   → no record
+                  - "Sunday (Not Login)"          → Sunday with no punch
+                  - "Login" only (1 punch)        → in_time + "Login"
+                  - Full day                      → in_time + out_time + hours + "Logout"
+                  - Late full day                 → in_time + out_time + "Yes" + hours + "Logout"
+
+    Uses the same filters as the JSON report so day-wise / month-wise / custom
+    range exports stay consistent. Header row is bold, columns auto-fit.
+    """
+    f_int = _normalize_date_to_int(from_date)
+    t_int = _normalize_date_to_int(to_date)
+    if f_int is None or t_int is None or f_int > t_int:
+        raise HTTPException(status_code=400, detail="Invalid date range")
+
+    # Resolve target employees (filter mirrors /reports/attendance)
+    emp_query = {"is_deleted": {"$ne": True}}
+    if team and team != "All":
+        emp_query["team"] = team
+    if department and department != "All":
+        emp_query["department"] = department
+    if employee_name and employee_name.strip():
+        emp_query["full_name"] = {"$regex": re.escape(employee_name.strip()), "$options": "i"}
+
+    employees = await db.employees.find(
+        emp_query,
+        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1, "date_of_joining": 1, "employee_status": 1, "inactive_date": 1}
+    ).to_list(5000)
+    employees.sort(key=lambda e: (e.get("full_name") or "").lower())
+
+    # Fetch attendance for the window and the selected employees
+    emp_ids = [e["id"] for e in employees]
+    att_query = {"employee_id": {"$in": emp_ids}}
+    if status and status != "All":
+        att_query["status"] = status
+    att_records = await db.attendance.find(att_query, {"_id": 0}).to_list(50000)
+
+    # Index attendance by (emp_id, date_str_DDMMYYYY)
+    att_map = {}
+    for r in att_records:
+        v = _normalize_date_to_int(r.get("date"))
+        if v is None or not (f_int <= v <= t_int):
+            continue
+        att_map[(r["employee_id"], r["date"])] = r
+
+    # Build the date list (inclusive) using YYYY-MM-DD as header text
+    f_d = datetime.strptime(from_date.split("T")[0].replace("/", "-"), "%Y-%m-%d") if len(from_date.split("T")[0].split("-")[0]) == 4 else datetime.strptime(from_date.split("T")[0], "%d-%m-%Y")
+    t_d = datetime.strptime(to_date.split("T")[0].replace("/", "-"), "%Y-%m-%d") if len(to_date.split("T")[0].split("-")[0]) == 4 else datetime.strptime(to_date.split("T")[0], "%d-%m-%Y")
+    date_list = []
+    cur = f_d.date()
+    while cur <= t_d.date():
+        date_list.append(cur)
+        cur += timedelta(days=1)
+
+    def cell_for(emp_id: str, d) -> str:
+        date_dd = d.strftime("%d-%m-%Y")
+        rec = att_map.get((emp_id, date_dd))
+        is_sun = d.weekday() == 6
+        if not rec or not (rec.get("check_in") or rec.get("check_in_24h")):
+            return "Sunday (Not Login)" if is_sun else "Not Login"
+        in_t = rec.get("check_in") or ""
+        out_t = rec.get("check_out") or ""
+        hours = rec.get("total_hours") or ""
+        # Late marker: LOP from late login (status / lop_reason)
+        is_late = bool(rec.get("is_lop")) and "Late login" in (rec.get("lop_reason") or "")
+        if not out_t:
+            return f"{in_t}\nLogin" if in_t else ("Sunday (Not Login)" if is_sun else "Not Login")
+        # Convert "11h 36m" → "11:36" to match reference
+        h_clean = hours
+        if hours and "h" in hours:
+            try:
+                hh = int(hours.split("h")[0].strip())
+                mm_part = hours.split("h")[1]
+                mm = int(mm_part.replace("m", "").strip()) if mm_part.strip() else 0
+                h_clean = f"{hh:02d}:{mm:02d}"
+            except Exception:
+                h_clean = hours
+        if is_late:
+            return f"{in_t}\n{out_t}\nYes\n{h_clean}\nLogout"
+        return f"{in_t}\n{out_t}\n{h_clean}\nLogout"
+
+    # Build XLSX
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+
+    headers = ["S.No", "Name", "Team", "Department"] + [d.strftime("%Y-%m-%d") for d in date_list]
+    ws.append(headers)
+    bold = Font(bold=True)
+    fill = PatternFill("solid", fgColor="FFEFEFEF")
+    center_top = Alignment(horizontal="center", vertical="top", wrap_text=True)
+    for col_idx in range(1, len(headers) + 1):
+        c = ws.cell(row=1, column=col_idx)
+        c.font = bold
+        c.fill = fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+
+    for idx, emp in enumerate(employees, 1):
+        row = [idx, emp.get("full_name", ""), emp.get("team") or "Unassigned", emp.get("department") or ""]
+        for d in date_list:
+            row.append(cell_for(emp["id"], d))
+        ws.append(row)
+        for col_idx in range(5, len(row) + 1):
+            ws.cell(row=idx + 1, column=col_idx).alignment = center_top
+
+    # Column widths
+    ws.column_dimensions["A"].width = 6
+    ws.column_dimensions["B"].width = 28
+    ws.column_dimensions["C"].width = 28
+    ws.column_dimensions["D"].width = 18
+    from openpyxl.utils import get_column_letter
+    for i in range(5, len(headers) + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 14
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"attendance_report_{from_date}_to_{to_date}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fname}"}
+    )
+
+
 @api_router.get("/reports/leaves")
 async def get_leave_report(
     from_date: str,

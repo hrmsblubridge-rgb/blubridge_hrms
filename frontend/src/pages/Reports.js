@@ -42,40 +42,60 @@ const Reports = () => {
     try {
       setLoading(true);
       const filters = activeTab === 'leave' ? leaveFilters : attendanceFilters;
-      const endpoint = activeTab === 'leave' ? '/reports/leaves' : '/reports/attendance';
-      
+
+      // Attendance: download wide-pivot XLSX directly from backend (matches reference template)
+      if (activeTab === 'attendance') {
+        if (!filters.fromDate || !filters.toDate) {
+          toast.error('Please select From and To dates');
+          setLoading(false);
+          return;
+        }
+        const params = {
+          from_date: filters.fromDate,
+          to_date: filters.toDate,
+          employee_name: filters.empName || undefined,
+          team: filters.team !== 'All' ? filters.team : undefined,
+          department: filters.department !== 'All' ? filters.department : undefined,
+          status: filters.status !== 'All' ? filters.status : undefined,
+        };
+        const resp = await axios.get(`${API}/reports/attendance/export`, {
+          headers: getAuthHeaders(),
+          params,
+          responseType: 'blob',
+        });
+        const blob = new Blob([resp.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const a = document.createElement('a');
+        a.href = window.URL.createObjectURL(blob);
+        a.download = `attendance_report_${filters.fromDate}_to_${filters.toDate}.xlsx`;
+        a.click();
+        // Also fetch JSON for on-screen preview (lightweight)
+        try {
+          const previewParams = { ...params };
+          const previewResp = await axios.get(`${API}/reports/attendance`, { headers: getAuthHeaders(), params: previewParams });
+          setReportData(previewResp.data);
+        } catch (_) { /* preview optional */ }
+        toast.success('Attendance report exported');
+        setLoading(false);
+        return;
+      }
+
+      // Leave report: existing CSV path (untouched)
+      const endpoint = '/reports/leaves';
       const params = {
         from_date: filters.fromDate || undefined,
         to_date: filters.toDate || undefined,
         employee_name: filters.empName || undefined,
         team: filters.team !== 'All' ? filters.team : undefined,
-        department: filters.department !== 'All' ? filters.department : undefined
+        department: filters.department !== 'All' ? filters.department : undefined,
+        leave_type: filters.leaveType !== 'All' ? filters.leaveType : undefined,
       };
-
-      if (activeTab === 'leave') params.leave_type = filters.leaveType !== 'All' ? filters.leaveType : undefined;
-      else params.status = filters.status !== 'All' ? filters.status : undefined;
 
       const response = await axios.get(`${API}${endpoint}`, { headers: getAuthHeaders(), params });
       setReportData(response.data);
       
       if (response.data.length > 0) {
-        let headers, rows;
-        if (activeTab === 'attendance') {
-          headers = ['Employee', 'Team', 'Department', 'Date', 'Check-In', 'Check-Out', 'Total Login Hours', 'Status'];
-          rows = response.data.map(r => [
-            r.emp_name,
-            r.team,
-            r.department || '',
-            r.date,
-            r.check_in || '-',
-            r.check_out || '-',
-            r.total_hours || '-',
-            r.status,
-          ]);
-        } else {
-          headers = ['Employee', 'Team', 'Department', 'Type', 'Start', 'End', 'Duration', 'Status'];
-          rows = response.data.map(r => [r.emp_name, r.team, r.department || '', r.leave_type, r.start_date, r.end_date, r.duration, r.status]);
-        }
+        const headers = ['Employee', 'Team', 'Department', 'Type', 'Start', 'End', 'Duration', 'Status'];
+        const rows = response.data.map(r => [r.emp_name, r.team, r.department || '', r.leave_type, r.start_date, r.end_date, r.duration, r.status]);
         // CSV-safe quoting (preserves commas and quotes within cells)
         const esc = (v) => {
           const s = (v === null || v === undefined) ? '' : String(v);
