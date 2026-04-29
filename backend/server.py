@@ -5809,25 +5809,23 @@ async def export_attendance_report(
     current_user: dict = Depends(get_current_user)
 ):
     """Export Attendance report in the wide pivot format that matches the
-    reference template:
-      Columns:  S.No | Name | Team | Department | <date> | <date> | ...
-      Rows:     one per employee
-      Cell:     multi-line summary for that day:
-                  - "Not Login"                   → no record
-                  - "Sunday (Not Login)"          → Sunday with no punch
-                  - "Login" only (1 punch)        → in_time + "Login"
-                  - Full day                      → in_time + out_time + hours + "Logout"
-                  - Late full day                 → in_time + out_time + "Yes" + hours + "Logout"
+    reference template, with each attendance field in its OWN dedicated cell:
 
-    Uses the same filters as the JSON report so day-wise / month-wise / custom
-    range exports stay consistent. Header row is bold, columns auto-fit.
+      Row 1 (date header, merged across 6 cols per day):
+          S.No | Name | Team | Department | <date> | <date> | ...
+      Row 2 (sub-header per date, 6 columns):
+          (blank x4) | In Time | Out Time | Late-in | Early Out | Total Hours | Status | ...
+      Row 3+ (data rows, one per employee).
+
+    No multi-line cells. No combined values. Each atomic field is a discrete
+    column. Compatible with day-wise / month-wise / custom range exports.
     """
     f_int = _normalize_date_to_int(from_date)
     t_int = _normalize_date_to_int(to_date)
     if f_int is None or t_int is None or f_int > t_int:
         raise HTTPException(status_code=400, detail="Invalid date range")
 
-    # Resolve target employees (filter mirrors /reports/attendance)
+    # Resolve target employees
     emp_query = {"is_deleted": {"$ne": True}}
     if team and team != "All":
         emp_query["team"] = team
@@ -5838,18 +5836,16 @@ async def export_attendance_report(
 
     employees = await db.employees.find(
         emp_query,
-        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1, "date_of_joining": 1, "employee_status": 1, "inactive_date": 1}
+        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1}
     ).to_list(5000)
     employees.sort(key=lambda e: (e.get("full_name") or "").lower())
 
-    # Fetch attendance for the window and the selected employees
     emp_ids = [e["id"] for e in employees]
     att_query = {"employee_id": {"$in": emp_ids}}
     if status and status != "All":
         att_query["status"] = status
     att_records = await db.attendance.find(att_query, {"_id": 0}).to_list(50000)
 
-    # Index attendance by (emp_id, date_str_DDMMYYYY)
     att_map = {}
     for r in att_records:
         v = _normalize_date_to_int(r.get("date"))
@@ -5857,29 +5853,35 @@ async def export_attendance_report(
             continue
         att_map[(r["employee_id"], r["date"])] = r
 
-    # Build the date list (inclusive) using YYYY-MM-DD as header text
-    f_d = datetime.strptime(from_date.split("T")[0].replace("/", "-"), "%Y-%m-%d") if len(from_date.split("T")[0].split("-")[0]) == 4 else datetime.strptime(from_date.split("T")[0], "%d-%m-%Y")
-    t_d = datetime.strptime(to_date.split("T")[0].replace("/", "-"), "%Y-%m-%d") if len(to_date.split("T")[0].split("-")[0]) == 4 else datetime.strptime(to_date.split("T")[0], "%d-%m-%Y")
+    # Build the date list (inclusive)
+    def _parse(ds):
+        ds = ds.split("T")[0].replace("/", "-")
+        if len(ds.split("-")[0]) == 4:
+            return datetime.strptime(ds, "%Y-%m-%d").date()
+        return datetime.strptime(ds, "%d-%m-%Y").date()
+    f_d, t_d = _parse(from_date), _parse(to_date)
     date_list = []
-    cur = f_d.date()
-    while cur <= t_d.date():
+    cur = f_d
+    while cur <= t_d:
         date_list.append(cur)
         cur += timedelta(days=1)
 
-    def cell_for(emp_id: str, d) -> str:
+    SUB_HEADERS = ["In Time", "Out Time", "Late-in", "Early Out", "Total Hours", "Status"]
+    PER_DATE_COLS = len(SUB_HEADERS)
+    FIXED_COLS = 4
+
+    def cells_for_day(emp_id: str, d):
+        """Return a 6-tuple (in, out, late, early, hours, status) for one day."""
         date_dd = d.strftime("%d-%m-%Y")
         rec = att_map.get((emp_id, date_dd))
         is_sun = d.weekday() == 6
         if not rec or not (rec.get("check_in") or rec.get("check_in_24h")):
-            return "Sunday (Not Login)" if is_sun else "Not Login"
+            status_text = "Sunday (Not Login)" if is_sun else "Not Login"
+            return ("", "", "", "", "", status_text)
         in_t = rec.get("check_in") or ""
         out_t = rec.get("check_out") or ""
         hours = rec.get("total_hours") or ""
-        # Late marker: LOP from late login (status / lop_reason)
-        is_late = bool(rec.get("is_lop")) and "Late login" in (rec.get("lop_reason") or "")
-        if not out_t:
-            return f"{in_t}\nLogin" if in_t else ("Sunday (Not Login)" if is_sun else "Not Login")
-        # Convert "11h 36m" → "11:36" to match reference
+        # Convert "11h 36m" → "11:36"
         h_clean = hours
         if hours and "h" in hours:
             try:
@@ -5889,44 +5891,71 @@ async def export_attendance_report(
                 h_clean = f"{hh:02d}:{mm:02d}"
             except Exception:
                 h_clean = hours
-        if is_late:
-            return f"{in_t}\n{out_t}\nYes\n{h_clean}\nLogout"
-        return f"{in_t}\n{out_t}\n{h_clean}\nLogout"
+        lop_reason = rec.get("lop_reason") or ""
+        is_late = bool(rec.get("is_lop")) and "Late login" in lop_reason
+        is_early = bool(rec.get("is_lop")) and ("Early out" in lop_reason or "short hours" in lop_reason)
+        if not out_t:
+            return (in_t, "", "Yes" if is_late else "", "", "", "Login")
+        return (in_t, out_t, "Yes" if is_late else "", "Yes" if is_early else "", h_clean, "Logout")
 
     # Build XLSX
     from openpyxl import Workbook
-    from openpyxl.styles import Font, Alignment, PatternFill
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
     wb = Workbook()
     ws = wb.active
     ws.title = "Sheet1"
 
-    headers = ["S.No", "Name", "Team", "Department"] + [d.strftime("%Y-%m-%d") for d in date_list]
-    ws.append(headers)
     bold = Font(bold=True)
     fill = PatternFill("solid", fgColor="FFEFEFEF")
-    center_top = Alignment(horizontal="center", vertical="top", wrap_text=True)
-    for col_idx in range(1, len(headers) + 1):
-        c = ws.cell(row=1, column=col_idx)
-        c.font = bold
-        c.fill = fill
-        c.alignment = Alignment(horizontal="center", vertical="center")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin = Side(border_style="thin", color="FFCCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
+    # Row 1 — fixed column headers + per-date merged date headers
+    fixed_headers = ["S.No", "Name", "Team", "Department"]
+    for i, h in enumerate(fixed_headers, 1):
+        c = ws.cell(row=1, column=i, value=h)
+        c.font = bold; c.fill = fill; c.alignment = center; c.border = border
+        ws.merge_cells(start_row=1, start_column=i, end_row=2, end_column=i)
+        ws.cell(row=2, column=i).border = border
+
+    for d_idx, d in enumerate(date_list):
+        start_col = FIXED_COLS + 1 + d_idx * PER_DATE_COLS
+        end_col = start_col + PER_DATE_COLS - 1
+        c = ws.cell(row=1, column=start_col, value=d.strftime("%Y-%m-%d"))
+        c.font = bold; c.fill = fill; c.alignment = center; c.border = border
+        ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+        # Sub-headers in row 2
+        for i, sh in enumerate(SUB_HEADERS):
+            sc = ws.cell(row=2, column=start_col + i, value=sh)
+            sc.font = bold; sc.fill = fill; sc.alignment = center; sc.border = border
+
+    # Data rows starting row 3
     for idx, emp in enumerate(employees, 1):
-        row = [idx, emp.get("full_name", ""), emp.get("team") or "Unassigned", emp.get("department") or ""]
-        for d in date_list:
-            row.append(cell_for(emp["id"], d))
-        ws.append(row)
-        for col_idx in range(5, len(row) + 1):
-            ws.cell(row=idx + 1, column=col_idx).alignment = center_top
+        row = 2 + idx  # row 3 onwards
+        ws.cell(row=row, column=1, value=idx).border = border
+        ws.cell(row=row, column=2, value=emp.get("full_name", "")).border = border
+        ws.cell(row=row, column=3, value=emp.get("team") or "Unassigned").border = border
+        ws.cell(row=row, column=4, value=emp.get("department") or "").border = border
+        for d_idx, d in enumerate(date_list):
+            start_col = FIXED_COLS + 1 + d_idx * PER_DATE_COLS
+            vals = cells_for_day(emp["id"], d)
+            for i, v in enumerate(vals):
+                c = ws.cell(row=row, column=start_col + i, value=v if v != "" else None)
+                c.alignment = center
+                c.border = border
 
     # Column widths
     ws.column_dimensions["A"].width = 6
-    ws.column_dimensions["B"].width = 28
-    ws.column_dimensions["C"].width = 28
-    ws.column_dimensions["D"].width = 18
-    from openpyxl.utils import get_column_letter
-    for i in range(5, len(headers) + 1):
-        ws.column_dimensions[get_column_letter(i)].width = 14
+    ws.column_dimensions["B"].width = 24
+    ws.column_dimensions["C"].width = 24
+    ws.column_dimensions["D"].width = 16
+    for i in range(FIXED_COLS + 1, FIXED_COLS + len(date_list) * PER_DATE_COLS + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 11
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 22
+    ws.freeze_panes = "E3"
 
     buf = io.BytesIO()
     wb.save(buf)
