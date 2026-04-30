@@ -194,6 +194,23 @@ const Employees = () => {
     employmentTypes: [], employeeStatuses: [], tierLevels: [], workLocations: [], userRoles: []
   });
 
+  // Dynamic Shifts (driven by Settings → Shift Configuration). The dropdown
+  // in Add/Edit Employee is sourced from this list — no hardcoded shifts.
+  const [settingsShifts, setSettingsShifts] = useState([]);
+
+  const fetchSettingsShifts = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/settings/shifts`, { headers: getAuthHeaders() });
+      const list = Array.isArray(res.data) ? res.data : [];
+      // Show only ACTIVE shifts by default (inactive ones are kept available
+      // for displaying historical assignments — see Edit flow handling below).
+      setSettingsShifts(list);
+    } catch (err) {
+      console.error('Failed to fetch settings shifts:', err);
+      setSettingsShifts([]);
+    }
+  }, [getAuthHeaders]);
+
   const fetchConfig = useCallback(async () => {
     try {
       const [types, statuses, tiers, locations, roles] = await Promise.all([
@@ -250,6 +267,7 @@ const Employees = () => {
   }, [getAuthHeaders, pagination.page, pagination.limit, filters, inactiveTypeFilter]);
 
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
+  useEffect(() => { fetchSettingsShifts(); }, [fetchSettingsShifts]);
   useEffect(() => { fetchData(); }, [pagination.page, pagination.limit, filters.department, filters.team, filters.status, inactiveTypeFilter]);
 
   const handleSearch = () => { setPagination(prev => ({ ...prev, page: 1 })); fetchData(); };
@@ -269,10 +287,62 @@ const Employees = () => {
     });
   };
 
-  const handleAdd = () => { resetForm(); setShowAddSheet(true); };
+  // Render the contents of a Settings-driven Shift dropdown. The list comes
+  // from /api/settings/shifts (active only). The currently-selected shift
+  // — if it points to an inactive / removed Settings entry — is always
+  // rendered (disabled) so existing employees don't lose their assignment
+  // visually. "Custom" remains an explicit ad-hoc option.
+  const renderShiftOptions = () => {
+    const active = (settingsShifts || []).filter(s => (s.status || 'active') === 'active' && !s.is_deleted);
+    const activeNames = new Set(active.map(s => s.name));
+    const currentValue = form.shift_type;
+    const currentIsInactive =
+      currentValue && currentValue !== 'Custom' && !activeNames.has(currentValue);
+
+    const fmtHours = (h) => {
+      const total = Number(h || 0);
+      const hh = Math.floor(total);
+      const mm = Math.round((total - hh) * 60);
+      return mm ? `${hh}h ${mm}m` : `${hh}h`;
+    };
+
+    if (active.length === 0 && !currentIsInactive) {
+      return (
+        <>
+          <SelectItem value="__no_shifts__" disabled>
+            No shifts available — create one in Settings → Shifts
+          </SelectItem>
+          <SelectItem value="Custom">Custom</SelectItem>
+        </>
+      );
+    }
+
+    return (
+      <>
+        {active.map((s) => (
+          <SelectItem key={s.id} value={s.name}>
+            {s.name} ({s.start_time}, {fmtHours(s.total_hours)})
+          </SelectItem>
+        ))}
+        {currentIsInactive && (
+          <SelectItem value={currentValue} disabled>
+            {currentValue} (inactive — kept for record integrity)
+          </SelectItem>
+        )}
+        <SelectItem value="Custom">Custom (one-off)</SelectItem>
+      </>
+    );
+  };
+
+  const handleAdd = () => { resetForm(); fetchSettingsShifts(); setShowAddSheet(true); };
   
   const handleEdit = (employee) => {
     setSelectedEmployee(employee);
+    fetchSettingsShifts();
+    // If employee has an `active_shift_name`, prefer it for the dropdown so
+    // the centrally-configured shift assignment is reflected. Otherwise fall
+    // back to the legacy `shift_type` string.
+    const shiftValue = employee.active_shift_name || employee.shift_type || 'General';
     setForm({
       full_name: employee.full_name || '', official_email: employee.official_email || '',
       phone_number: employee.phone_number || '', gender: employee.gender || '',
@@ -281,7 +351,7 @@ const Employees = () => {
       tier_level: employee.tier_level || 'Mid', reporting_manager_id: employee.reporting_manager_id || '',
       department: employee.department || '', team: employee.team || '',
       work_location: employee.work_location || 'Office', leave_policy: employee.leave_policy || 'Standard',
-      shift_type: employee.shift_type || 'General', custom_login_time: employee.custom_login_time || '',
+      shift_type: shiftValue, custom_login_time: employee.custom_login_time || '',
       custom_logout_time: employee.custom_logout_time || '', monthly_salary: employee.monthly_salary || 0,
       attendance_tracking_enabled: employee.attendance_tracking_enabled ?? true,
       user_role: employee.user_role || 'employee', login_enabled: employee.login_enabled ?? true,
@@ -1079,14 +1149,9 @@ const Employees = () => {
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Shift Type</Label>
                     <Select value={form.shift_type} onValueChange={(val) => setForm(prev => ({ ...prev, shift_type: val }))}>
-                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="add-shift-type"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="General">General (9 AM - 6 PM)</SelectItem>
-                        <SelectItem value="Morning">Morning (6 AM - 3 PM)</SelectItem>
-                        <SelectItem value="Evening">Evening (2 PM - 11 PM)</SelectItem>
-                        <SelectItem value="Night">Night (10 PM - 7 AM)</SelectItem>
-                        <SelectItem value="Flexible">Flexible</SelectItem>
-                        <SelectItem value="Custom">Custom</SelectItem>
+                        {renderShiftOptions()}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1295,14 +1360,9 @@ const Employees = () => {
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Shift Type</Label>
                     <Select value={form.shift_type} onValueChange={(val) => setForm(prev => ({ ...prev, shift_type: val }))}>
-                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="add-shift-type"><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="General">General (9 AM - 6 PM)</SelectItem>
-                        <SelectItem value="Morning">Morning (6 AM - 3 PM)</SelectItem>
-                        <SelectItem value="Evening">Evening (2 PM - 11 PM)</SelectItem>
-                        <SelectItem value="Night">Night (10 PM - 7 AM)</SelectItem>
-                        <SelectItem value="Flexible">Flexible</SelectItem>
-                        <SelectItem value="Custom">Custom</SelectItem>
+                        {renderShiftOptions()}
                       </SelectContent>
                     </Select>
                   </div>

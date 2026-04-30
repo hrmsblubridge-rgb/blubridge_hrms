@@ -1419,6 +1419,55 @@ def get_shift_timings(employee: dict) -> dict:
         "early_out_grace_minutes": early_grace,
     }
 
+
+async def _apply_settings_shift_to_employee_payload(payload: dict, shift_identifier: Optional[str]) -> dict:
+    """If `shift_identifier` matches a shift configured in Settings (by id OR
+    by name), expand the payload with all the legacy fields the existing
+    attendance engine expects (`shift_type='Custom'`, `custom_login_time`,
+    `custom_logout_time`, `custom_total_hours`, grace minutes, `active_shift_*`).
+
+    The Add-Employee form sends the picked shift in `shift_type`; this helper
+    transparently turns that name into a fully-resolved Settings-shift binding
+    on the employee record. If the identifier doesn't match any Settings
+    shift, the payload is returned unchanged (legacy behaviour preserved).
+    """
+    if not shift_identifier or shift_identifier in ("Custom",):
+        if shift_identifier == "Custom":
+            # Plain "Custom" means the user is explicitly opting out of central
+            # shift config — clear the binding so reports / dashboards don't
+            # mis-attribute the previous Settings shift to this employee.
+            payload["active_shift_id"] = None
+            payload["active_shift_name"] = None
+        return payload
+
+    # Try id first, then name. Honour soft-delete + active status from settings.
+    shift = await db.shifts.find_one(
+        {"$or": [{"id": shift_identifier}, {"name": shift_identifier}],
+         "is_deleted": {"$ne": True}},
+        {"_id": 0},
+    )
+    if not shift:
+        return payload
+
+    login = shift["start_time"]
+    total = float(shift["total_hours"])
+    total_mins = int(round(total * 60))
+    login_mins = parse_time_24h_to_minutes(login) or 0
+    logout_mins = (login_mins + total_mins) % (24 * 60)
+    logout = f"{logout_mins // 60:02d}:{logout_mins % 60:02d}"
+
+    payload.update({
+        "shift_type": "Custom",
+        "custom_login_time": login,
+        "custom_logout_time": logout,
+        "custom_total_hours": total,
+        "late_grace_minutes": int(shift.get("late_grace_minutes", 0) or 0),
+        "early_out_grace_minutes": int(shift.get("early_out_grace_minutes", 0) or 0),
+        "active_shift_id": shift["id"],
+        "active_shift_name": shift["name"],
+    })
+    return payload
+
 def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_timings: dict, attendance_date: Optional[str] = None) -> dict:
     """
     Calculate attendance status with effective-start (early-arrival) handling:
@@ -3215,6 +3264,8 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
             "biometric_id": data.biometric_id,
             "updated_at": get_ist_now().isoformat()
         }
+        # If the picked shift_type matches a Settings shift, expand all derived fields
+        update_data = await _apply_settings_shift_to_employee_payload(update_data, data.shift_type)
         
         await db.employees.update_one({"id": employee_id}, {"$set": update_data})
         
@@ -3306,6 +3357,8 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     doc = employee.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     doc['updated_at'] = doc['updated_at'].isoformat()
+    # If the picked shift_type matches a Settings shift, expand all derived fields
+    doc = await _apply_settings_shift_to_employee_payload(doc, data.shift_type)
     await db.employees.insert_one(doc.copy())
     
     # Update team member count
@@ -3469,7 +3522,11 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
         raise HTTPException(status_code=400, detail="No data to update")
     
     update_data["updated_at"] = get_ist_now().isoformat()
-    
+
+    # If shift_type matches a Settings shift, expand all derived fields so
+    # the employee record stays consistent with central shift configuration.
+    update_data = await _apply_settings_shift_to_employee_payload(update_data, update_data.get("shift_type"))
+
     # Handle team change
     old_team = existing.get("team")
     new_team = update_data.get("team")
