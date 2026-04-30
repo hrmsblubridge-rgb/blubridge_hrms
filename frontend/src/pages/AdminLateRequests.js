@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Clock, Search, Check, X, Plus, Eye, AlertTriangle } from 'lucide-react';
+import { Clock, Search, Check, X, Plus, Eye, AlertTriangle, Pencil } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
@@ -28,6 +28,8 @@ const AdminLateRequests = () => {
   const [showApprove, setShowApprove] = useState(false);
   const [showReject, setShowReject] = useState(false);
   const [showApply, setShowApply] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [editForm, setEditForm] = useState({ date: '', expected_time: '', actual_time: '', reason: '' });
   const [actionLoading, setActionLoading] = useState(false);
   const [lopChoice, setLopChoice] = useState('no_lop');
   const [lopRemark, setLopRemark] = useState('');
@@ -82,12 +84,42 @@ const AdminLateRequests = () => {
     finally { setActionLoading(false); }
   };
 
-  const renderTable = (data, showActions) => (
+  const openEdit = (r) => {
+    setSelected(r);
+    setEditForm({
+      date: r.date || '',
+      expected_time: r.expected_time || '',
+      actual_time: r.actual_time || '',
+      reason: r.reason || '',
+    });
+    setShowEdit(true);
+  };
+
+  const handleEdit = async () => {
+    if (!selected) return;
+    if (!editForm.date || !editForm.reason) { toast.error('Date and reason are required'); return; }
+    setActionLoading(true);
+    try {
+      // Backend expects LateRequestCreate shape — include employee_id from record
+      await axios.put(`${API}/late-requests/${selected.id}`, {
+        employee_id: selected.employee_id,
+        date: editForm.date,
+        expected_time: editForm.expected_time,
+        actual_time: editForm.actual_time,
+        reason: editForm.reason,
+      }, { headers: getAuthHeaders() });
+      toast.success('Request updated');
+      setShowEdit(false); setShowDetail(false); fetchData();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Failed to update'); }
+    finally { setActionLoading(false); }
+  };
+
+  const renderTable = (data, isPending) => (
     <div className="overflow-x-auto">
       <table className="table-premium">
-        <thead><tr><th>Employee</th><th>Team</th><th>Date</th><th>Expected</th><th>Actual</th><th>Reason</th><th>Status</th><th>LOP</th>{showActions && <th>Actions</th>}</tr></thead>
+        <thead><tr><th>Employee</th><th>Team</th><th>Date</th><th>Expected</th><th>Actual</th><th>Reason</th><th>Status</th><th>LOP</th>{isHR && <th>Actions</th>}</tr></thead>
         <tbody>
-          {data.length === 0 ? <tr><td colSpan={showActions ? 9 : 8} className="text-center py-12 text-slate-500">No records</td></tr> : data.map(r => (
+          {data.length === 0 ? <tr><td colSpan={isHR ? 9 : 8} className="text-center py-12 text-slate-500">No records</td></tr> : data.map(r => (
             <tr key={r.id}>
               <td className="font-medium text-slate-900">{r.emp_name}</td>
               <td className="text-slate-600">{r.team}</td>
@@ -97,11 +129,14 @@ const AdminLateRequests = () => {
               <td className="text-slate-600 max-w-[180px] truncate">{r.reason}</td>
               <td><Badge className={getStatusBadge(r.status)}>{r.status}</Badge></td>
               <td>{r.is_lop === true ? <Badge className="badge-error">LOP</Badge> : r.is_lop === false ? <Badge className="badge-success">No LOP</Badge> : '-'}</td>
-              {showActions && <td>
+              {isHR && <td>
                 <div className="flex gap-1">
-                  <Button size="sm" variant="outline" onClick={() => { setSelected(r); setShowDetail(true); }} className="rounded-lg h-8 px-2"><Eye className="w-3 h-3" /></Button>
-                  <Button size="sm" onClick={() => { setSelected(r); setLopChoice('no_lop'); setLopRemark(''); setShowApprove(true); }} className="bg-emerald-500 hover:bg-emerald-600 text-white h-8 px-2 rounded-lg"><Check className="w-3 h-3" /></Button>
-                  <Button size="sm" onClick={() => { setSelected(r); setShowReject(true); }} className="bg-red-500 hover:bg-red-600 text-white h-8 px-2 rounded-lg"><X className="w-3 h-3" /></Button>
+                  <Button size="sm" variant="outline" onClick={() => { setSelected(r); setShowDetail(true); }} className="rounded-lg h-8 px-2" data-testid={`view-late-${r.id}`}><Eye className="w-3 h-3" /></Button>
+                  <Button size="sm" variant="outline" onClick={() => openEdit(r)} className="rounded-lg h-8 px-2 border-blue-300 text-blue-700 hover:bg-blue-50" data-testid={`edit-late-${r.id}`} title="Edit"><Pencil className="w-3 h-3" /></Button>
+                  {isPending && <>
+                    <Button size="sm" onClick={() => { setSelected(r); setLopChoice('no_lop'); setLopRemark(''); setShowApprove(true); }} className="bg-emerald-500 hover:bg-emerald-600 text-white h-8 px-2 rounded-lg" data-testid={`approve-late-${r.id}`}><Check className="w-3 h-3" /></Button>
+                    <Button size="sm" onClick={() => { setSelected(r); setShowReject(true); }} className="bg-red-500 hover:bg-red-600 text-white h-8 px-2 rounded-lg" data-testid={`reject-late-${r.id}`}><X className="w-3 h-3" /></Button>
+                  </>}
                 </div>
               </td>}
             </tr>
@@ -131,7 +166,7 @@ const AdminLateRequests = () => {
               <TabsTrigger value="history" className="px-6 py-4 rounded-none data-[state=active]:bg-[#063c88] data-[state=active]:text-white">History ({filteredHistory.length})</TabsTrigger>
             </TabsList>
           </div>
-          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(filteredPending, isHR)}</TabsContent>
+          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(filteredPending, true)}</TabsContent>
           <TabsContent value="history" className="mt-0">{renderTable(filteredHistory, false)}</TabsContent>
         </Tabs>
       </div>
@@ -197,6 +232,34 @@ const AdminLateRequests = () => {
             </div>
           </div>
           <DialogFooter><Button variant="outline" onClick={() => setShowApply(false)} className="rounded-lg">Cancel</Button><Button onClick={handleApplyForEmployee} disabled={actionLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg">{actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Submit'}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* Edit Dialog (HR) - any status */}
+      <Dialog open={showEdit} onOpenChange={setShowEdit}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl sm:max-w-lg" data-testid="edit-late-dialog">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }} className="flex items-center gap-2">
+              <Pencil className="w-5 h-5 text-[#063c88]" /> Edit Late Request
+            </DialogTitle>
+            <DialogDescription>Update the request — status & approval remain unchanged.</DialogDescription>
+          </DialogHeader>
+          {selected && (
+            <div className="space-y-4 py-2">
+              <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — <Badge className={getStatusBadge(selected.status)}>{selected.status}</Badge></p>
+              <div><Label>Date</Label><Input type="date" value={editForm.date} onChange={e => setEditForm({ ...editForm, date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-late-date" /></div>
+              <div className="grid grid-cols-2 gap-4">
+                <div><Label>Expected Time</Label><Input type="time" value={editForm.expected_time} onChange={e => setEditForm({ ...editForm, expected_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-late-expected" /></div>
+                <div><Label>Actual Time</Label><Input type="time" value={editForm.actual_time} onChange={e => setEditForm({ ...editForm, actual_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-late-actual" /></div>
+              </div>
+              <div><Label>Reason</Label><Textarea value={editForm.reason} onChange={e => setEditForm({ ...editForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" data-testid="edit-late-reason" /></div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEdit(false)} disabled={actionLoading} className="rounded-lg">Cancel</Button>
+            <Button onClick={handleEdit} disabled={actionLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="confirm-edit-late">
+              {actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Save Changes'}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

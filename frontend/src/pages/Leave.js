@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle, Plus, Upload, Download } from 'lucide-react';
+import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle, Plus, Upload, Download, Pencil } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -35,6 +35,8 @@ const Leave = () => {
   const [lopChoice, setLopChoice] = useState('no_lop');
   const [lopRemark, setLopRemark] = useState('');
   const [showApplyDialog, setShowApplyDialog] = useState(false);
+  const [showEditDialog, setShowEditDialog] = useState(false);
+  const [editForm, setEditForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '' });
   const [employees, setEmployees] = useState([]);
   const [applyForm, setApplyForm] = useState({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false });
   const [filters, setFilters] = useState({ empName: '', team: 'All', fromDate: '', toDate: '', leaveType: 'All', status: 'All' });
@@ -128,6 +130,41 @@ const Leave = () => {
       toast.success(applyForm.auto_approve ? 'Leave applied & approved' : 'Leave applied for employee');
       setShowApplyDialog(false); setApplyForm({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false }); fetchData();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+    finally { setActionLoading(false); }
+  };
+
+  const openEditLeave = (leave) => {
+    setSelectedLeave(leave);
+    setEditForm({
+      leave_type: leave.leave_type || 'Sick',
+      leave_split: leave.leave_split || 'Full Day',
+      start_date: leave.start_date || '',
+      end_date: leave.end_date || leave.start_date || '',
+      reason: leave.reason || '',
+    });
+    setShowEditDialog(true);
+  };
+
+  const handleEditLeave = async () => {
+    if (!selectedLeave) return;
+    if (!editForm.start_date || !editForm.reason || editForm.reason.trim().length < 10) {
+      toast.error('Date and reason (min 10 chars) are required');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      // Single-day leave — backend recomputes duration from these
+      const payload = {
+        leave_type: editForm.leave_type,
+        leave_split: editForm.leave_split,
+        start_date: editForm.start_date,
+        end_date: editForm.start_date,
+        reason: editForm.reason,
+      };
+      await axios.put(`${API}/leaves/${selectedLeave.id}`, payload, { headers: getAuthHeaders() });
+      toast.success('Leave updated');
+      setShowEditDialog(false); setShowDetailSheet(false); fetchData();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Failed to update leave'); }
     finally { setActionLoading(false); }
   };
 
@@ -299,6 +336,10 @@ const Leave = () => {
             <Input type="date" value={filters.fromDate} onChange={(e) => setFilters({ ...filters, fromDate: e.target.value })} className="rounded-lg" data-testid="filter-from" />
           </div>
           <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">To</label>
+            <Input type="date" value={filters.toDate} onChange={(e) => setFilters({ ...filters, toDate: e.target.value })} className="rounded-lg" data-testid="filter-to" />
+          </div>
+          <div>
             <label className="text-sm text-slate-600 mb-1.5 block font-medium">Leave Type</label>
             <Select value={filters.leaveType} onValueChange={(v) => setFilters({ ...filters, leaveType: v })}>
               <SelectTrigger className="rounded-lg" data-testid="filter-leave-type"><SelectValue /></SelectTrigger>
@@ -319,10 +360,6 @@ const Leave = () => {
                 {teams.map((team) => <SelectItem key={team.id} value={team.name}>{team.name}</SelectItem>)}
               </SelectContent>
             </Select>
-          </div>
-          <div>
-            <label className="text-sm text-slate-600 mb-1.5 block font-medium">To</label>
-            <Input type="date" value={filters.toDate} onChange={(e) => setFilters({ ...filters, toDate: e.target.value })} className="rounded-lg" data-testid="filter-to" />
           </div>
           <div>
             <label className="text-sm text-slate-600 mb-1.5 block font-medium">Status</label>
@@ -399,6 +436,9 @@ const Leave = () => {
                           <td>
                             {canApprove && (
                               <div className="flex gap-2">
+                                <Button size="sm" variant="outline" onClick={() => openEditLeave(leave)} className="border-blue-300 text-blue-700 hover:bg-blue-50 h-8 px-3 rounded-lg" data-testid={`edit-leave-${leave.id}`} title="Edit">
+                                  <Pencil className="w-4 h-4" />
+                                </Button>
                                 <Button size="sm" onClick={() => openApproveDialog(leave)} className="bg-emerald-500 hover:bg-emerald-600 text-white h-8 px-3 rounded-lg" data-testid={`approve-btn-${leave.id}`}>
                                   <Check className="w-4 h-4" />
                                 </Button>
@@ -459,6 +499,18 @@ const Leave = () => {
                         <td><Badge className={getStatusBadge(leave.status)}>{leave.status}</Badge></td>
                         <td>
                           <div className="flex items-center gap-2">
+                            {canApprove && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openEditLeave(leave)}
+                                className="border-blue-300 text-blue-700 hover:bg-blue-50 h-8 px-3 rounded-lg"
+                                data-testid={`history-edit-btn-${leave.id}`}
+                                title="Edit"
+                              >
+                                <Pencil className="w-3.5 h-3.5 mr-1" /> Edit
+                              </Button>
+                            )}
                             {leave.status === 'approved' ? (
                               <Button
                                 size="sm"
@@ -808,6 +860,59 @@ const Leave = () => {
               data-testid="leave-import-submit-btn"
             >
               {importLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (<><Upload className="w-4 h-4 mr-1" /> Upload &amp; Import</>)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Leave Dialog (HR) - any status */}
+      <Dialog open={showEditDialog} onOpenChange={setShowEditDialog}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl sm:max-w-lg" data-testid="edit-leave-dialog">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }} className="flex items-center gap-2">
+              <Pencil className="w-5 h-5 text-[#063c88]" /> Edit Leave Request
+            </DialogTitle>
+            <DialogDescription>Update the leave details. Approval status remains unchanged — use the Approve / Reject buttons to change it.</DialogDescription>
+          </DialogHeader>
+          {selectedLeave && (
+            <div className="space-y-4 py-2">
+              <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selectedLeave.emp_name}</span> — <Badge className={getStatusBadge(selectedLeave.status)}>{selectedLeave.status}</Badge></p>
+              <div className="grid grid-cols-2 gap-4">
+                <div><Label>Leave Type</Label>
+                  <Select value={editForm.leave_type} onValueChange={v => setEditForm({ ...editForm, leave_type: v })}>
+                    <SelectTrigger className="mt-1.5 rounded-lg" data-testid="edit-leave-type"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Sick">Sick Leave</SelectItem>
+                      <SelectItem value="Emergency">Emergency</SelectItem>
+                      <SelectItem value="Preplanned">Preplanned</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div><Label>Leave Split</Label>
+                  <Select value={editForm.leave_split} onValueChange={v => setEditForm({ ...editForm, leave_split: v })}>
+                    <SelectTrigger className="mt-1.5 rounded-lg" data-testid="edit-leave-split"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Full Day">Full Day</SelectItem>
+                      <SelectItem value="First Half">First Half</SelectItem>
+                      <SelectItem value="Second Half">Second Half</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div>
+                <Label>Leave Date</Label>
+                <Input type="date" value={editForm.start_date} onChange={e => setEditForm({ ...editForm, start_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-leave-date" />
+              </div>
+              <div>
+                <Label>Reason (min 10 chars)</Label>
+                <Textarea value={editForm.reason} onChange={e => setEditForm({ ...editForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" data-testid="edit-leave-reason" />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEditDialog(false)} disabled={actionLoading} className="rounded-lg">Cancel</Button>
+            <Button onClick={handleEditLeave} disabled={actionLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="confirm-edit-leave">
+              {actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Save Changes'}
             </Button>
           </DialogFooter>
         </DialogContent>

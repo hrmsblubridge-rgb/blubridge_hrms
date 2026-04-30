@@ -300,21 +300,31 @@ const Dashboard = () => {
       const fromDate = filters.fromDate ? formatDateForAPI(filters.fromDate) : today;
       const toDate = filters.toDate ? formatDateForAPI(filters.toDate) : today;
       
-      // Status sets must match /api/dashboard/stats counting logic (server.py ~line 4298)
-      const STATUS_SETS = {
-        logged_in: ['Login', 'Completed', 'Late Login', 'Early Out', 'Present', 'Loss of Pay'],
-        logout: ['Completed', 'Early Out', 'Present', 'Loss of Pay'],
-        early_out: ['Early Out'],
-        late_login: ['Late Login'],
+      // Strict mutually-exclusive client-side classification — MUST mirror
+      // backend `classify_attendance_bucket` in server.py so dashboard tiles
+      // and the records table always line up.
+      const hasIn = (r) => Boolean(r.check_in || r.check_in_24h);
+      const hasOut = (r) => Boolean(r.check_out || r.check_out_24h);
+      const isShortDay = (r) =>
+        r.status === 'Early Out' || r.status === 'Loss of Pay' || r.is_lop === true;
+      const isLateLogin = (r) =>
+        r.status === 'Late Login' ||
+        (r.lop_reason || '').toLowerCase().includes('late login');
+
+      const STATUS_PREDICATE = {
+        logged_in: (r) => hasIn(r) && !hasOut(r),
+        logout: (r) => hasIn(r) && hasOut(r) && !isShortDay(r),
+        early_out: (r) => hasIn(r) && hasOut(r) && isShortDay(r),
+        late_login: (r) => isLateLogin(r),
       };
-      const allowed = STATUS_SETS[statusType];
-      if (!allowed) {
+      const predicate = STATUS_PREDICATE[statusType];
+      if (!predicate) {
         setAttendanceDetails(leaveList);
         setLoadingDetails(false);
         return;
       }
       
-      // Fetch without status filter then apply the same union the backend uses
+      // Fetch without status filter then apply the same predicate the backend uses
       const response = await axios.get(`${API}/attendance`, {
         headers: getAuthHeaders(),
         params: { from_date: fromDate, to_date: toDate, limit: 500 }
@@ -322,7 +332,7 @@ const Dashboard = () => {
       const records = Array.isArray(response.data)
         ? response.data
         : (response.data?.attendance_records || []);
-      setAttendanceDetails(records.filter((r) => allowed.includes(r.status)));
+      setAttendanceDetails(records.filter(predicate));
     } catch (error) {
       console.error('Failed to fetch attendance details:', error);
       toast.error('Failed to load attendance details');

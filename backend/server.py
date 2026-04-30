@@ -3064,7 +3064,7 @@ async def bulk_import_employees(
                     email=email,
                     username=username,
                     password=temp_password,
-                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://bulk-hr-admin.preview.emergentagent.com')}/login"
+                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://hrms-admin-hub.preview.emergentagent.com')}/login"
                 )
             )
 
@@ -3137,10 +3137,18 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
-    # Check for duplicate email among active employees
-    existing_active = await db.employees.find_one({"official_email": data.official_email, "is_deleted": {"$ne": True}})
-    if existing_active:
-        raise HTTPException(status_code=400, detail="Employee with this email already exists")
+    # Case-insensitive duplicate guards (Email + Biometric ID)
+    email_norm = (data.official_email or "").strip()
+    bio_norm = (data.biometric_id or "").strip() if data.biometric_id else ""
+
+    # Check for duplicate email among active employees (case-insensitive)
+    if email_norm:
+        existing_active = await db.employees.find_one({
+            "official_email": {"$regex": f"^{re.escape(email_norm)}$", "$options": "i"},
+            "is_deleted": {"$ne": True},
+        })
+        if existing_active:
+            raise HTTPException(status_code=400, detail="Employee with this Email already exists")
     
     # Validate uniqueness of custom_employee_id
     if data.custom_employee_id:
@@ -3148,14 +3156,20 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         if existing_cid:
             raise HTTPException(status_code=400, detail=f"Employee ID '{data.custom_employee_id}' already exists")
     
-    # Validate uniqueness of biometric_id
-    if data.biometric_id:
-        existing_bio = await db.employees.find_one({"biometric_id": data.biometric_id, "is_deleted": {"$ne": True}})
+    # Validate uniqueness of biometric_id (case-insensitive)
+    if bio_norm:
+        existing_bio = await db.employees.find_one({
+            "biometric_id": {"$regex": f"^{re.escape(bio_norm)}$", "$options": "i"},
+            "is_deleted": {"$ne": True},
+        })
         if existing_bio:
-            raise HTTPException(status_code=400, detail=f"Biometric ID '{data.biometric_id}' already exists")
+            raise HTTPException(status_code=400, detail="Employee with this Biometric ID already exists")
     
-    # Check if there's a deleted employee with same email - reactivate instead
-    existing_deleted = await db.employees.find_one({"official_email": data.official_email, "is_deleted": True})
+    # Check if there's a deleted employee with same email - reactivate instead (case-insensitive)
+    existing_deleted = await db.employees.find_one({
+        "official_email": {"$regex": f"^{re.escape(email_norm)}$", "$options": "i"},
+        "is_deleted": True,
+    }) if email_norm else None
     
     username = data.official_email.split('@')[0]
     name_part = data.full_name.replace(' ', '').lower()[:4]
@@ -3421,11 +3435,15 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
     if not existing:
         raise HTTPException(status_code=404, detail="Employee not found")
     
-    # Check for duplicate email if changing
-    if data.official_email and data.official_email != existing.get("official_email"):
-        dup = await db.employees.find_one({"official_email": data.official_email, "id": {"$ne": employee_id}, "is_deleted": {"$ne": True}})
+    # Check for duplicate email if changing (case-insensitive)
+    if data.official_email and (data.official_email or "").strip().lower() != (existing.get("official_email") or "").strip().lower():
+        dup = await db.employees.find_one({
+            "official_email": {"$regex": f"^{re.escape(data.official_email.strip())}$", "$options": "i"},
+            "id": {"$ne": employee_id},
+            "is_deleted": {"$ne": True},
+        })
         if dup:
-            raise HTTPException(status_code=400, detail="Employee with this email already exists")
+            raise HTTPException(status_code=400, detail="Employee with this Email already exists")
     
     # Check uniqueness of custom_employee_id if changing
     if data.custom_employee_id and data.custom_employee_id != existing.get("custom_employee_id"):
@@ -3433,11 +3451,15 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
         if dup_cid:
             raise HTTPException(status_code=400, detail=f"Employee ID '{data.custom_employee_id}' already exists")
     
-    # Check uniqueness of biometric_id if changing
-    if data.biometric_id and data.biometric_id != existing.get("biometric_id"):
-        dup_bio = await db.employees.find_one({"biometric_id": data.biometric_id, "id": {"$ne": employee_id}, "is_deleted": {"$ne": True}})
+    # Check uniqueness of biometric_id if changing (case-insensitive)
+    if data.biometric_id and (data.biometric_id or "").strip().lower() != (existing.get("biometric_id") or "").strip().lower():
+        dup_bio = await db.employees.find_one({
+            "biometric_id": {"$regex": f"^{re.escape(data.biometric_id.strip())}$", "$options": "i"},
+            "id": {"$ne": employee_id},
+            "is_deleted": {"$ne": True},
+        })
         if dup_bio:
-            raise HTTPException(status_code=400, detail=f"Biometric ID '{data.biometric_id}' already exists")
+            raise HTTPException(status_code=400, detail="Employee with this Biometric ID already exists")
     
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
     if not update_data:
@@ -4664,6 +4686,46 @@ async def recompute_attendance_from_punches(
     }
 
 @api_router.get("/attendance/stats")
+def classify_attendance_bucket(rec: dict) -> str:
+    """Classify attendance record into a STRICTLY mutually exclusive bucket
+    that drives the Dashboard "Today's Attendance Status" tiles.
+
+    Buckets (strict, mutually exclusive):
+      - 'logged_in'  → has IN, no OUT (still working)
+      - 'completed'  → has IN + OUT, full hours (no LOP, no Early Out flag)
+      - 'early_out'  → has IN + OUT, hours short (Early Out / Loss of Pay)
+      - 'no_login'   → no IN at all (synthetic Absent / Sunday / no record)
+
+    'Late Login' is a SECONDARY flag (see is_late_login_record) and overlays
+    on top of these buckets — it is NOT a primary category here.
+    """
+    has_in = bool(rec.get("check_in") or rec.get("check_in_24h"))
+    has_out = bool(rec.get("check_out") or rec.get("check_out_24h"))
+    status = (rec.get("status") or "").strip()
+    is_lop = bool(rec.get("is_lop"))
+
+    if not has_in:
+        return "no_login"
+    if not has_out:
+        return "logged_in"
+    # Has both IN + OUT — split by short-hours / LOP
+    if status in (AttendanceStatus.EARLY_OUT, AttendanceStatus.LOSS_OF_PAY) or is_lop:
+        return "early_out"
+    return "completed"
+
+
+def is_late_login_record(rec: dict) -> bool:
+    """Secondary flag — true if the record represents a late-login day,
+    regardless of whether the employee subsequently completed the day."""
+    if not rec:
+        return False
+    if (rec.get("status") or "").strip() == AttendanceStatus.LATE_LOGIN:
+        return True
+    if "late login" in (rec.get("lop_reason") or "").lower():
+        return True
+    return False
+
+
 async def get_attendance_stats(
     date: Optional[str] = None, 
     from_date: Optional[str] = None,
@@ -4700,24 +4762,45 @@ async def get_attendance_stats(
     else:
         filtered = []
     
-    # Count stats from filtered records
-    logged_in = sum(1 for a in filtered if a.get("status") in ["Login", "Completed", "Late Login", "Early Out", "Present", "Loss of Pay"])
-    not_logged = total_employees - logged_in
-    early_out = sum(1 for a in filtered if a.get("status") == "Early Out")
-    late_login = sum(1 for a in filtered if a.get("status") == "Late Login")
-    lop_count = sum(1 for a in filtered if a.get("is_lop") == True)
-    logout = sum(1 for a in filtered if a.get("status") in ["Completed", "Early Out", "Present", "Loss of Pay"])
-    present = sum(1 for a in filtered if a.get("status") in ["Present", "Completed"] and not a.get("is_lop"))
-    
+    # Strict mutually-exclusive bucketing — single source of truth.
+    # The frontend tile clicks fetch the same records and apply the same
+    # classification so counts and detail lists ALWAYS line up.
+    logged_in = 0
+    completed = 0
+    early_out = 0
+    late_login = 0
+    lop_count = 0
+    employees_with_in = set()
+
+    for a in filtered:
+        bucket = classify_attendance_bucket(a)
+        if bucket == "logged_in":
+            logged_in += 1
+            employees_with_in.add(a.get("employee_id"))
+        elif bucket == "completed":
+            completed += 1
+            employees_with_in.add(a.get("employee_id"))
+        elif bucket == "early_out":
+            early_out += 1
+            employees_with_in.add(a.get("employee_id"))
+        if is_late_login_record(a):
+            late_login += 1
+        if a.get("is_lop"):
+            lop_count += 1
+
+    # "Not Logged / Leaves" = employees with no IN punch in the queried window.
+    # For a single date this equals (active_employees − employees_with_in).
+    not_logged = max(0, total_employees - len(employees_with_in))
+
     return {
         "total_employees": total_employees,
         "logged_in": logged_in,
-        "not_logged": max(0, not_logged),
+        "not_logged": not_logged,
         "early_out": early_out,
         "late_login": late_login,
-        "logout": logout,
+        "logout": completed,  # frontend "Completed" tile reads `logout`
         "lop_count": lop_count,
-        "present": present
+        "present": completed,
     }
 
 # ============== LEAVE ROUTES ==============
@@ -5403,6 +5486,57 @@ async def bulk_import_leaves(
 class LeaveApproveRequest(BaseModel):
     is_lop: Optional[bool] = None  # True=LOP, False=No LOP
     lop_remark: Optional[str] = None
+
+class LeaveAdminEdit(BaseModel):
+    """Admin/HR-side edit payload for a leave record. All fields optional —
+    only supplied keys are written. Status is intentionally NOT editable here
+    (use approve/reject endpoints) so approval logic stays the single source
+    of truth."""
+    leave_type: Optional[str] = None
+    leave_split: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@api_router.put("/leaves/{leave_id}")
+async def admin_edit_leave(leave_id: str, data: LeaveAdminEdit, current_user: dict = Depends(get_current_user)):
+    """HR/Admin can edit ANY leave (Pending / Approved / Rejected). Updates
+    the same record in place — no duplication. Audit fields are written so
+    edits are traceable. Approval status is preserved untouched."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+
+    update = {k: v for k, v in data.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Recompute duration if dates / split changed
+    new_split = update.get("leave_split", leave.get("leave_split", "Full Day"))
+    new_start = update.get("start_date", leave.get("start_date"))
+    new_end = update.get("end_date", leave.get("end_date"))
+    try:
+        if new_split in ("First Half", "Second Half"):
+            update["duration"] = "0.5 day(s)"
+        elif new_start and new_end:
+            sd = datetime.strptime(new_start, "%Y-%m-%d")
+            ed = datetime.strptime(new_end, "%Y-%m-%d")
+            update["duration"] = f"{(ed - sd).days + 1} day(s)"
+    except ValueError:
+        pass  # leave duration as-is on bad date format
+
+    update["edited_by"] = current_user["id"]
+    update["edited_at"] = get_ist_now().isoformat()
+
+    await db.leaves.update_one({"id": leave_id}, {"$set": update})
+    await log_audit(current_user["id"], "edit", "leave", leave_id)
+    updated = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    return serialize_doc(updated)
+
+
 
 @api_router.put("/leaves/{leave_id}/approve")
 async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = None, current_user: dict = Depends(get_current_user)):
@@ -9421,9 +9555,20 @@ async def edit_late_request(request_id: str, data: LateRequestCreate, current_us
     rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="Request not found")
-    if rec["status"] != "pending":
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    # Employees may only edit their own pending requests; HR/Admin can edit any status
+    if not is_admin and rec.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Can only edit pending requests")
-    await db.late_requests.update_one({"id": request_id}, {"$set": {"date": data.date, "reason": data.reason, "expected_time": data.expected_time, "actual_time": data.actual_time}})
+    update = {
+        "date": data.date,
+        "reason": data.reason,
+        "expected_time": data.expected_time,
+        "actual_time": data.actual_time,
+        "edited_by": current_user["id"],
+        "edited_at": get_ist_now().isoformat(),
+    }
+    await db.late_requests.update_one({"id": request_id}, {"$set": update})
+    await log_audit(current_user["id"], "edit", "late_request", request_id)
     updated = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
     return serialize_doc(updated)
 
@@ -9904,9 +10049,19 @@ async def edit_early_out_request(request_id: str, data: EarlyOutRequestCreate, c
     rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="Request not found")
-    if rec["status"] != "pending":
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    if not is_admin and rec.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Can only edit pending requests")
-    await db.early_out_requests.update_one({"id": request_id}, {"$set": {"date": data.date, "reason": data.reason, "expected_time": data.expected_time, "actual_time": data.actual_time}})
+    update = {
+        "date": data.date,
+        "reason": data.reason,
+        "expected_time": data.expected_time,
+        "actual_time": data.actual_time,
+        "edited_by": current_user["id"],
+        "edited_at": get_ist_now().isoformat(),
+    }
+    await db.early_out_requests.update_one({"id": request_id}, {"$set": update})
+    await log_audit(current_user["id"], "edit", "early_out_request", request_id)
     updated = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
     return serialize_doc(updated)
 
@@ -10525,13 +10680,20 @@ async def edit_missed_punch(request_id: str, data: MissedPunchCreate, current_us
     rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
     if not rec:
         raise HTTPException(status_code=404, detail="Request not found")
-    if rec["status"] != "pending":
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    if not is_admin and rec.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Can only edit pending requests")
-    await db.missed_punches.update_one({"id": request_id}, {"$set": {
-        "date": data.date, "punch_type": data.punch_type,
-        "check_in_time": data.check_in_time, "check_out_time": data.check_out_time,
-        "reason": data.reason
-    }})
+    update = {
+        "date": data.date,
+        "punch_type": data.punch_type,
+        "check_in_time": data.check_in_time,
+        "check_out_time": data.check_out_time,
+        "reason": data.reason,
+        "edited_by": current_user["id"],
+        "edited_at": get_ist_now().isoformat(),
+    }
+    await db.missed_punches.update_one({"id": request_id}, {"$set": update})
+    await log_audit(current_user["id"], "edit", "missed_punch", request_id)
     updated = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
     return serialize_doc(updated)
 

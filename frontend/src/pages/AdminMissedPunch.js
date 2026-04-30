@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Clock, Check, X, Plus, Search, Filter, ChevronLeft, ChevronRight, Eye, Upload, Download } from 'lucide-react';
+import { Clock, Check, X, Plus, Search, Filter, ChevronLeft, ChevronRight, Eye, Upload, Download, Pencil } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
@@ -27,6 +27,9 @@ const AdminMissedPunch = () => {
   const [showApply, setShowApply] = useState(false);
   const [showApprove, setShowApprove] = useState(false);
   const [showReject, setShowReject] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [editForm, setEditForm] = useState({ date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '' });
+  const [editLoading, setEditLoading] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [formData, setFormData] = useState({ employee_id: '', date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '', auto_approve: false });
   const [empSearch, setEmpSearch] = useState('');
@@ -191,6 +194,41 @@ const AdminMissedPunch = () => {
     } catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
   };
 
+  const openEdit = (r) => {
+    setSelected(r);
+    // Backend stores datetimes — strip timezone for <input type="datetime-local">
+    const trim = (v) => (v ? String(v).slice(0, 16) : '');
+    setEditForm({
+      date: r.date || '',
+      punch_type: r.punch_type || 'Check-in',
+      check_in_time: trim(r.check_in_time),
+      check_out_time: trim(r.check_out_time),
+      reason: r.reason || '',
+    });
+    setShowEdit(true);
+  };
+
+  const handleEdit = async () => {
+    if (!selected) return;
+    if (!editForm.date || !editForm.reason) { toast.error('Date and reason are required'); return; }
+    setEditLoading(true);
+    try {
+      await axios.put(`${API}/missed-punches/${selected.id}`, {
+        employee_id: selected.employee_id,
+        date: editForm.date,
+        punch_type: editForm.punch_type,
+        check_in_time: editForm.check_in_time || null,
+        check_out_time: editForm.check_out_time || null,
+        reason: editForm.reason,
+      }, { headers: getAuthHeaders() });
+      toast.success('Request updated');
+      setShowEdit(false);
+      setSelected(null);
+      fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed to update'); }
+    finally { setEditLoading(false); }
+  };
+
   const filteredEmployees = employees.filter(e =>
     empSearch && e.full_name?.toLowerCase().includes(empSearch.toLowerCase())
   ).slice(0, 8);
@@ -237,9 +275,16 @@ const AdminMissedPunch = () => {
               <td className="px-4 py-3 text-slate-600">{formatTime(r.check_out_time)}</td>
               <td className="px-4 py-3"><Badge className={`${statusColor[r.status]} border text-xs`}>{r.status}</Badge></td>
               <td className="px-4 py-3">
-                <Button variant="ghost" size="sm" onClick={() => setSelected(r)} className="text-xs h-7" data-testid={`view-${r.id}`}>
-                  <Eye className="w-3.5 h-3.5 mr-1" /> View
-                </Button>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => setSelected(r)} className="text-xs h-7" data-testid={`view-${r.id}`}>
+                    <Eye className="w-3.5 h-3.5 mr-1" /> View
+                  </Button>
+                  {isHR && (
+                    <Button variant="outline" size="sm" onClick={() => openEdit(r)} className="text-xs h-7 px-2 border-blue-300 text-blue-700 hover:bg-blue-50" data-testid={`edit-mp-${r.id}`} title="Edit">
+                      <Pencil className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
+                </div>
               </td>
             </tr>
           ))}
@@ -604,6 +649,57 @@ const AdminMissedPunch = () => {
               data-testid="mp-import-submit-btn"
             >
               {importLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (<><Upload className="w-4 h-4 mr-1" /> Upload &amp; Import</>)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog (HR) - any status */}
+      <Dialog open={showEdit} onOpenChange={setShowEdit}>
+        <DialogContent className="sm:max-w-lg" data-testid="edit-mp-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Pencil className="w-5 h-5 text-[#063c88]" /> Edit Missed Punch</DialogTitle>
+          </DialogHeader>
+          {selected && (
+            <div className="space-y-4 py-2">
+              <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — <Badge className={`${statusColor[selected.status]} border text-xs`}>{selected.status}</Badge></p>
+              <div>
+                <label className="text-xs font-medium text-slate-700 mb-1 block">Date</label>
+                <Input type="date" value={editForm.date} onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-date" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-700 mb-1 block">Punch Type</label>
+                <Select value={editForm.punch_type} onValueChange={v => setEditForm(f => ({ ...f, punch_type: v }))}>
+                  <SelectTrigger className="bg-slate-50 rounded-xl" data-testid="edit-mp-type"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Check-in">Check-in</SelectItem>
+                    <SelectItem value="Check-out">Check-out</SelectItem>
+                    <SelectItem value="Both">Both</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {(editForm.punch_type === 'Check-in' || editForm.punch_type === 'Both') && (
+                <div>
+                  <label className="text-xs font-medium text-slate-700 mb-1 block">Check-in Date &amp; Time</label>
+                  <Input type="datetime-local" value={editForm.check_in_time} onChange={e => setEditForm(f => ({ ...f, check_in_time: e.target.value }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-checkin" />
+                </div>
+              )}
+              {(editForm.punch_type === 'Check-out' || editForm.punch_type === 'Both') && (
+                <div>
+                  <label className="text-xs font-medium text-slate-700 mb-1 block">Check-out Date &amp; Time</label>
+                  <Input type="datetime-local" value={editForm.check_out_time} onChange={e => setEditForm(f => ({ ...f, check_out_time: e.target.value }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-checkout" />
+                </div>
+              )}
+              <div>
+                <label className="text-xs font-medium text-slate-700 mb-1 block">Reason</label>
+                <Textarea value={editForm.reason} onChange={e => setEditForm(f => ({ ...f, reason: e.target.value }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-reason" />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEdit(false)} disabled={editLoading}>Cancel</Button>
+            <Button onClick={handleEdit} disabled={editLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white" data-testid="confirm-edit-mp">
+              {editLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Save Changes'}
             </Button>
           </DialogFooter>
         </DialogContent>
