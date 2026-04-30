@@ -348,6 +348,7 @@ const Leave = () => {
                 <SelectItem value="Sick">Sick</SelectItem>
                 <SelectItem value="Emergency">Emergency</SelectItem>
                 <SelectItem value="Preplanned">Preplanned</SelectItem>
+                <SelectItem value="Optional">Optional</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -695,6 +696,7 @@ const Leave = () => {
                     <SelectItem value="Sick">Sick Leave</SelectItem>
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
+                    <SelectItem value="Optional">Optional</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -885,6 +887,7 @@ const Leave = () => {
                       <SelectItem value="Sick">Sick Leave</SelectItem>
                       <SelectItem value="Emergency">Emergency</SelectItem>
                       <SelectItem value="Preplanned">Preplanned</SelectItem>
+                      <SelectItem value="Optional">Optional</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

@@ -4996,9 +4996,10 @@ def _remap_row(row: dict, alias_index: dict[str, str]) -> dict:
 
 
 # Canonical leave types used in the system. Anything not matching falls back to "General Leave".
+# "Optional" is intentionally a constraint-free type — see create_leave for behaviour.
 CANONICAL_LEAVE_TYPES = [
     "Sick", "Casual", "Earned", "Maternity", "Annual",
-    "Emergency", "Preplanned", "General Leave"
+    "Emergency", "Preplanned", "Optional", "General Leave"
 ]
 
 

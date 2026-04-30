@@ -197,6 +197,7 @@ const Reports = () => {
                   <SelectItem value="Sick">Sick</SelectItem>
                   <SelectItem value="Preplanned">Preplanned</SelectItem>
                   <SelectItem value="Emergency">Emergency</SelectItem>
+                  <SelectItem value="Optional">Optional</SelectItem>
                 </SelectContent>
               </Select>
             </div>

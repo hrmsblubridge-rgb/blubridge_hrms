@@ -267,12 +267,14 @@ const EmployeeLeave = () => {
                     <SelectItem value="Sick">Sick Leave</SelectItem>
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
+                    <SelectItem value="Optional">Optional</SelectItem>
                   </SelectContent>
                 </Select>
                 {/* Leave rule hints */}
                 {form.leave_type === 'Sick' && <p className="text-[11px] text-amber-600 mt-1">Sick leave: past & current dates only</p>}
                 {form.leave_type === 'Casual' && <p className="text-[11px] text-blue-600 mt-1">Casual leave: min 4 working days in advance (excl. Sundays)</p>}
                 {form.leave_type === 'Emergency' && <p className="text-[11px] text-emerald-600 mt-1">Emergency leave: no date restrictions</p>}
+                {form.leave_type === 'Optional' && <p className="text-[11px] text-violet-600 mt-1">Optional leave: no balance / policy restrictions — pick any date</p>}
               </div>
               <div>
                 <Label className="text-sm font-medium text-slate-700">Leave Split</Label>
