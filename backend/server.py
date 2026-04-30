@@ -10454,115 +10454,188 @@ async def bulk_import_early_out(
 # ============== ATTENDANCE UPDATE HELPER ==============
 
 async def _update_attendance_from_missed_punch(rec):
-    """JOB 3: Update attendance record when missed punch is approved.
-    Writes to check_in/check_in_24h (punch-in) and check_out/check_out_24h (punch-out)
-    to match the biometric attendance schema the frontend reads."""
+    """Production Missed-Punch Approval Engine.
+
+    Applies an APPROVED missed-punch correction to the FINAL attendance row
+    for (employee_id, date) WITHOUT touching raw biometric logs.
+
+    Behaviour (per business spec):
+      • Type 'Check-in' → REPLACE check_in / check_in_24h only.
+      • Type 'Check-out' → REPLACE check_out / check_out_24h only.
+      • Type 'Both' → REPLACE both pairs (requires both times).
+      • Hard replace — corrected times always win over biometric values
+        (the request was approved by HR, that's the whole point).
+      • If no attendance row exists for the date → INSERT one.
+      • Recomputes total_hours (cross-midnight aware) and shift-based
+        status (Present / Loss of Pay / Login / Worked on Sunday) via the
+        existing `calculate_attendance_status` engine.
+      • Sets `source = 'corrected'` and `missed_punch_corrected = True`.
+      • Writes a full before/after audit row to `attendance_corrections`.
+      • Idempotent: if the record already contains the exact target values
+        attributed to the same request_id, no rewrite is performed.
+
+    Raw biometric logs (`biometric_punch_logs`) are NEVER touched.
+    """
+
     emp_id = rec.get("employee_id")
     date = rec.get("date")
-    punch_type = rec.get("punch_type")
+    punch_type = (rec.get("punch_type") or "").strip()
     check_in_raw = rec.get("check_in_time")
     check_out_raw = rec.get("check_out_time")
+    request_id = rec.get("id")
 
-    attendance = await db.attendance.find_one({"employee_id": emp_id, "date": date})
+    if not emp_id or not date or not punch_type:
+        return  # malformed request — abort safely
 
-    update_fields = {}
-    log_changes = []
-
-    if punch_type in ("Check-in", "Both") and check_in_raw:
-        time_24h = check_in_raw.split("T")[-1][:5] if "T" in check_in_raw else check_in_raw[:5]
-        # Convert to 12h format for check_in field
+    def _to_24h(raw: Optional[str]) -> Optional[str]:
+        """Accept 'YYYY-MM-DDTHH:MM' / 'HH:MM' / 'HH:MM:SS' / 'HH:MM AM/PM'."""
+        if not raw:
+            return None
+        s = str(raw).strip()
+        if "T" in s:
+            s = s.split("T")[-1]
         try:
-            from datetime import datetime as _dt
-            t = _dt.strptime(time_24h, "%H:%M")
-            time_12h = t.strftime("%I:%M %p")
-        except Exception:
-            time_12h = time_24h
-        update_fields["check_in"] = time_12h
-        update_fields["check_in_24h"] = time_24h
-        update_fields["status"] = "present"
-        log_changes.append(("check_in", attendance.get("check_in") if attendance else None, time_12h))
+            return datetime.strptime(s[:5], "%H:%M").strftime("%H:%M")
+        except ValueError:
+            pass
+        try:  # AM/PM
+            return datetime.strptime(s, "%I:%M %p").strftime("%H:%M")
+        except ValueError:
+            return None
 
-    if punch_type in ("Check-out", "Both") and check_out_raw:
-        time_24h = check_out_raw.split("T")[-1][:5] if "T" in check_out_raw else check_out_raw[:5]
+    def _to_12h(t24: Optional[str]) -> Optional[str]:
+        if not t24:
+            return None
         try:
-            from datetime import datetime as _dt
-            t = _dt.strptime(time_24h, "%H:%M")
-            time_12h = t.strftime("%I:%M %p")
-        except Exception:
-            time_12h = time_24h
-        update_fields["check_out"] = time_12h
-        update_fields["check_out_24h"] = time_24h
-        update_fields["status"] = "present"
-        log_changes.append(("check_out", attendance.get("check_out") if attendance else None, time_12h))
+            return datetime.strptime(t24, "%H:%M").strftime("%I:%M %p")
+        except ValueError:
+            return None
 
-    if not update_fields:
+    new_in_24h = _to_24h(check_in_raw) if punch_type in ("Check-in", "Both") else None
+    new_out_24h = _to_24h(check_out_raw) if punch_type in ("Check-out", "Both") else None
+
+    # Type-specific validation — refuse silently if the request is incoherent
+    # (validation already enforced at create-time; this is belt-and-braces).
+    if punch_type == "Check-in" and not new_in_24h:
+        return
+    if punch_type == "Check-out" and not new_out_24h:
+        return
+    if punch_type == "Both" and not (new_in_24h and new_out_24h):
         return
 
-    update_fields["missed_punch_corrected"] = True
+    existing = await db.attendance.find_one({"employee_id": emp_id, "date": date}, {"_id": 0})
+    employee = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        return
 
-    if attendance:
-        set_fields = {}
-        for k, v in update_fields.items():
-            if k in ("check_in", "check_in_24h"):
-                existing = attendance.get(k)
-                if not existing or existing in ("", "-", None):
-                    set_fields[k] = v
-            elif k in ("check_out", "check_out_24h"):
-                existing = attendance.get(k)
-                if not existing or existing in ("", "-", None):
-                    set_fields[k] = v
-            else:
-                set_fields[k] = v
-        if set_fields:
-            # Recalculate total hours if both in and out are now available
-            final_in = set_fields.get("check_in_24h") or attendance.get("check_in_24h")
-            final_out = set_fields.get("check_out_24h") or attendance.get("check_out_24h")
-            if final_in and final_out:
-                try:
-                    in_mins = parse_time_24h_to_minutes(final_in)
-                    out_mins = parse_time_24h_to_minutes(final_out)
-                    diff = out_mins - in_mins
-                    if diff > 0:
-                        hours = diff / 60
-                        set_fields["total_hours"] = f"{int(hours)}h {int(diff % 60)}m"
-                        set_fields["total_hours_decimal"] = round(hours, 2)
-                except Exception:
-                    pass
-            await db.attendance.update_one({"employee_id": emp_id, "date": date}, {"$set": set_fields})
+    old_in = existing.get("check_in") if existing else None
+    old_in_24h = existing.get("check_in_24h") if existing else None
+    old_out = existing.get("check_out") if existing else None
+    old_out_24h = existing.get("check_out_24h") if existing else None
+    old_status = existing.get("status") if existing else None
+
+    # Compose the post-correction in/out (always REPLACE on type-targeted fields)
+    final_in_24h = new_in_24h if new_in_24h is not None else old_in_24h
+    final_out_24h = new_out_24h if new_out_24h is not None else old_out_24h
+
+    # Idempotency — skip when the same request has already produced the same
+    # state. We compare both raw strings AND the source-of-correction id.
+    if (
+        existing
+        and existing.get("source") == "corrected"
+        and existing.get("missed_punch_request_id") == request_id
+        and ((new_in_24h is None) or existing.get("check_in_24h") == new_in_24h)
+        and ((new_out_24h is None) or existing.get("check_out_24h") == new_out_24h)
+    ):
+        return
+
+    # Recompute shift-aware status (handles cross-midnight, Sundays, LOP rules)
+    shift_timings = get_shift_timings(employee) if employee else None
+    status_result = (
+        calculate_attendance_status(final_in_24h, final_out_24h, shift_timings or {}, attendance_date=date)
+        if final_in_24h
+        else {"status": AttendanceStatus.NOT_LOGGED, "is_lop": False, "lop_reason": None, "total_hours_decimal": 0.0, "expected_logout": None}
+    )
+
+    total_hours_decimal = float(status_result.get("total_hours_decimal") or 0.0)
+    total_hours_str = calculate_total_hours_str(total_hours_decimal) if total_hours_decimal else None
+
+    payload = {
+        "status": status_result.get("status", AttendanceStatus.PRESENT),
+        "is_lop": bool(status_result.get("is_lop")),
+        "lop_reason": status_result.get("lop_reason"),
+        "expected_logout": status_result.get("expected_logout"),
+        "total_hours_decimal": round(total_hours_decimal, 2),
+        "total_hours": total_hours_str,
+        "source": "corrected",
+        "missed_punch_corrected": True,
+        "missed_punch_request_id": request_id,
+        "missed_punch_corrected_at": get_ist_now().isoformat(),
+        "missed_punch_corrected_by": rec.get("approved_by"),
+    }
+    if new_in_24h:
+        payload["check_in_24h"] = new_in_24h
+        payload["check_in"] = _to_12h(new_in_24h)
+    if new_out_24h:
+        payload["check_out_24h"] = new_out_24h
+        payload["check_out"] = _to_12h(new_out_24h)
+
+    if existing:
+        await db.attendance.update_one(
+            {"employee_id": emp_id, "date": date},
+            {"$set": payload},
+        )
     else:
-        emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
-        if emp:
-            new_att = {
-                "id": str(uuid.uuid4()),
-                "employee_id": emp_id,
-                "emp_name": emp.get("full_name", ""),
-                "date": date,
-                "check_in": update_fields.get("check_in", ""),
-                "check_in_24h": update_fields.get("check_in_24h", ""),
-                "check_out": update_fields.get("check_out", ""),
-                "check_out_24h": update_fields.get("check_out_24h", ""),
-                "status": "present",
-                "department": emp.get("department", ""),
-                "team": emp.get("team", ""),
-                "source": "missed_punch",
-                "missed_punch_corrected": True
-            }
-            # Calculate total hours if both available
-            if new_att["check_in_24h"] and new_att["check_out_24h"]:
-                try:
-                    in_mins = parse_time_24h_to_minutes(new_att["check_in_24h"])
-                    out_mins = parse_time_24h_to_minutes(new_att["check_out_24h"])
-                    diff = out_mins - in_mins
-                    if diff > 0:
-                        new_att["total_hours"] = f"{int(diff // 60)}h {int(diff % 60)}m"
-                        new_att["total_hours_decimal"] = round(diff / 60, 2)
-                except Exception:
-                    pass
-            await db.attendance.insert_one(new_att.copy())
+        new_doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp_id,
+            "emp_name": employee.get("full_name", ""),
+            "team": employee.get("team", ""),
+            "department": employee.get("department", ""),
+            "date": date,
+            "shift_type": employee.get("shift_type", "General"),
+            "expected_login": (shift_timings or {}).get("login_time"),
+            "created_at": get_ist_now().isoformat(),
+            **payload,
+        }
+        await db.attendance.insert_one(new_doc.copy())
 
-    # Audit log
-    for field, old_val, new_val in log_changes:
-        logger.info(f"Missed punch correction: emp={emp_id}, date={date}, field={field}, old={old_val}, new={new_val}, request={rec.get('id')}")
+    # Audit trail — separate collection so it survives even if attendance is later edited
+    try:
+        audit_doc = {
+            "id": str(uuid.uuid4()),
+            "request_id": request_id,
+            "employee_id": emp_id,
+            "emp_name": employee.get("full_name", ""),
+            "date": date,
+            "punch_type": punch_type,
+            "old_check_in": old_in,
+            "old_check_in_24h": old_in_24h,
+            "old_check_out": old_out,
+            "old_check_out_24h": old_out_24h,
+            "old_status": old_status,
+            "new_check_in": payload.get("check_in", old_in),
+            "new_check_in_24h": payload.get("check_in_24h", old_in_24h),
+            "new_check_out": payload.get("check_out", old_out),
+            "new_check_out_24h": payload.get("check_out_24h", old_out_24h),
+            "new_status": payload["status"],
+            "new_total_hours": payload.get("total_hours"),
+            "approved_by": rec.get("approved_by"),
+            "approved_at": rec.get("approved_at"),
+            "source_before": (existing or {}).get("source", "biometric") if existing else "none",
+            "source_after": "corrected",
+            "created_at": get_ist_now().isoformat(),
+        }
+        await db.attendance_corrections.insert_one(audit_doc.copy())
+    except Exception as e:  # never let audit failure roll back the correction itself
+        logger.warning(f"Missed-punch audit insert failed for request {request_id}: {e}")
+
+    logger.info(
+        f"Missed punch applied: emp={emp_id} date={date} type={punch_type} "
+        f"in {old_in_24h}->{payload.get('check_in_24h', old_in_24h)} "
+        f"out {old_out_24h}->{payload.get('check_out_24h', old_out_24h)} "
+        f"status {old_status}->{payload['status']} request={request_id}"
+    )
 
 @api_router.get("/missed-punches")
 async def get_missed_punches(
@@ -11262,6 +11335,16 @@ async def ensure_indexes():
             unique=True,
             name="unique_employee_date"
         )
+    except Exception:
+        pass
+
+    # Missed-punch correction audit trail — keyed lookups by request_id and
+    # by employee+date for forensics. Non-unique (a single request can cause
+    # multiple audit rows if re-applied via bulk-import edge cases).
+    try:
+        await db.attendance_corrections.create_index([("request_id", 1)])
+        await db.attendance_corrections.create_index([("employee_id", 1), ("date", 1)])
+        await db.attendance_corrections.create_index([("created_at", -1)])
     except Exception:
         pass
     
