@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { LogOut as LogOutIcon, Search, Check, X, Plus, Eye, AlertTriangle, Pencil } from 'lucide-react';
+import { LogOut as LogOutIcon, Search, Check, X, Plus, Eye, AlertTriangle, Pencil, Undo2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
@@ -113,6 +113,17 @@ const AdminEarlyOut = () => {
     finally { setActionLoading(false); }
   };
 
+  const handleReset = async (r) => {
+    if (!r) return;
+    const ok = window.confirm(`Reset this ${r.status} early-out request for ${r.emp_name} back to Pending?`);
+    if (!ok) return;
+    try {
+      await axios.post(`${API}/early-out-requests/${r.id}/reset`, { reason: 'manual reset' }, { headers: getAuthHeaders() });
+      toast.success('Request reset to Pending');
+      fetchData();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Failed to reset'); }
+  };
+
   const renderTable = (data, isPending) => (
     <div className="overflow-x-auto">
       <table className="table-premium">
@@ -136,6 +147,9 @@ const AdminEarlyOut = () => {
                     <Button size="sm" onClick={() => { setSelected(r); setLopChoice('no_lop'); setLopRemark(''); setShowApprove(true); }} className="bg-emerald-500 hover:bg-emerald-600 text-white h-8 px-2 rounded-lg" data-testid={`approve-eo-${r.id}`}><Check className="w-3 h-3" /></Button>
                     <Button size="sm" onClick={() => { setSelected(r); setShowReject(true); }} className="bg-red-500 hover:bg-red-600 text-white h-8 px-2 rounded-lg" data-testid={`reject-eo-${r.id}`}><X className="w-3 h-3" /></Button>
                   </>}
+                  {!isPending && (
+                    <Button size="sm" variant="outline" onClick={() => handleReset(r)} className="rounded-lg h-8 px-2 border-amber-300 text-amber-700 hover:bg-amber-50" data-testid={`reset-eo-${r.id}`} title="Reset to Pending"><Undo2 className="w-3 h-3" /></Button>
+                  )}
                 </div>
               </td>}
             </tr>

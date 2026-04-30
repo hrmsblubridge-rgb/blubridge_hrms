@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Clock, Check, X, Plus, Search, Filter, ChevronLeft, ChevronRight, Eye, Upload, Download, Pencil } from 'lucide-react';
+import { Clock, Check, X, Plus, Search, Filter, ChevronLeft, ChevronRight, Eye, Upload, Download, Pencil, Undo2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
@@ -229,6 +229,21 @@ const AdminMissedPunch = () => {
     finally { setEditLoading(false); }
   };
 
+  const handleReset = async (r) => {
+    if (!r) return;
+    const ok = window.confirm(
+      `Reset this ${r.status} missed-punch for ${r.emp_name} (${r.date}) back to Pending?\n\n` +
+      `This will:\n• Restore the original biometric attendance values for that day\n• Clear approval & "applied" flags on the request\n• Allow you to re-process from a clean slate`
+    );
+    if (!ok) return;
+    try {
+      await axios.post(`${API}/missed-punches/${r.id}/reset`, { reason: 'manual reset' }, { headers: getAuthHeaders() });
+      toast.success('Request reset & attendance rolled back');
+      setSelected(null);
+      fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed to reset'); }
+  };
+
   const filteredEmployees = employees.filter(e =>
     empSearch && e.full_name?.toLowerCase().includes(empSearch.toLowerCase())
   ).slice(0, 8);
@@ -282,6 +297,11 @@ const AdminMissedPunch = () => {
                   {isHR && (
                     <Button variant="outline" size="sm" onClick={() => openEdit(r)} className="text-xs h-7 px-2 border-blue-300 text-blue-700 hover:bg-blue-50" data-testid={`edit-mp-${r.id}`} title="Edit">
                       <Pencil className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
+                  {isHR && r.status !== 'pending' && (
+                    <Button variant="outline" size="sm" onClick={() => handleReset(r)} className="text-xs h-7 px-2 border-amber-300 text-amber-700 hover:bg-amber-50" data-testid={`reset-mp-${r.id}`} title="Reset to Pending — rolls back attendance">
+                      <Undo2 className="w-3.5 h-3.5" />
                     </Button>
                   )}
                 </div>

@@ -5645,6 +5645,264 @@ async def reject_leave(leave_id: str, current_user: dict = Depends(get_current_u
     
     return serialize_doc(leave)
 
+
+# ============== UNIVERSAL REQUEST RESET ENGINE ==============
+#
+# `Reset to Pending` flips a processed request back to its initial state and
+# fully reverses any side-effects (attendance corrections, LOP flags, etc.).
+# Then HR can re-process the request from a clean slate — Approve / Reject /
+# edit LOP — without stacking effects on top of an already-applied state.
+#
+# Audit collection: `request_resets`. Every reset writes a row containing
+# `request_type`, `request_id`, `previous_status`, `previous_snapshot`,
+# `reset_by`, `reset_at`, `reason`, and (for missed-punches) the attendance
+# rollback details.
+
+class RequestResetBody(BaseModel):
+    reason: Optional[str] = None
+
+
+async def _log_request_reset(request_type: str, request_id: str, prev_snapshot: dict,
+                              attendance_rollback: Optional[dict], current_user: dict, reason: Optional[str]):
+    """Single source of truth for the reset audit trail. Failures are logged
+    but never propagate — audit must NEVER block the actual reset."""
+    try:
+        doc = {
+            "id": str(uuid.uuid4()),
+            "request_type": request_type,
+            "request_id": request_id,
+            "previous_status": prev_snapshot.get("status"),
+            "previous_snapshot": prev_snapshot,
+            "attendance_rollback": attendance_rollback,
+            "reset_by": current_user["id"],
+            "reset_at": get_ist_now().isoformat(),
+            "reason": reason,
+        }
+        await db.request_resets.insert_one(doc.copy())
+    except Exception as e:
+        logger.warning(f"Failed to write request_resets audit row for {request_type}/{request_id}: {e}")
+
+
+@api_router.post("/leaves/{leave_id}/reset")
+async def reset_leave(leave_id: str, body: RequestResetBody = RequestResetBody(),
+                       current_user: dict = Depends(get_current_user)):
+    """Reset a Leave request back to `pending`. Side-effects on payroll /
+    attendance are computed dynamically from `is_lop` and `status`, so
+    clearing those fields is sufficient to undo the impact."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+
+    if leave.get("status") == "pending" and leave.get("is_lop") is None and not leave.get("approved_by"):
+        # Already at initial state — idempotent no-op
+        return serialize_doc(leave)
+
+    snapshot = dict(leave)
+    await db.leaves.update_one(
+        {"id": leave_id},
+        {
+            "$set": {
+                "status": "pending",
+                "reset_at": get_ist_now().isoformat(),
+                "reset_by": current_user["id"],
+            },
+            "$unset": {
+                "approved_by": "",
+                "approved_at": "",
+                "is_lop": "",
+                "lop_remark": "",
+                "rejection_reason": "",
+            },
+        },
+    )
+
+    await _log_request_reset("leave", leave_id, snapshot, None, current_user, body.reason)
+    await log_audit(current_user["id"], "reset", "leave", leave_id)
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    return serialize_doc(leave)
+
+
+@api_router.post("/late-requests/{request_id}/reset")
+async def reset_late_request(request_id: str, body: RequestResetBody = RequestResetBody(),
+                              current_user: dict = Depends(get_current_user)):
+    """Reset a Late Request back to `pending`."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    if rec.get("status") == "pending" and rec.get("is_lop") is None and not rec.get("approved_by"):
+        return serialize_doc(rec)
+
+    snapshot = dict(rec)
+    await db.late_requests.update_one(
+        {"id": request_id},
+        {
+            "$set": {"status": "pending", "reset_at": get_ist_now().isoformat(), "reset_by": current_user["id"]},
+            "$unset": {"approved_by": "", "approved_at": "", "is_lop": "", "lop_remark": "", "rejection_reason": ""},
+        },
+    )
+    await _log_request_reset("late_request", request_id, snapshot, None, current_user, body.reason)
+    await log_audit(current_user["id"], "reset", "late_request", request_id)
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+
+@api_router.post("/early-out-requests/{request_id}/reset")
+async def reset_early_out_request(request_id: str, body: RequestResetBody = RequestResetBody(),
+                                   current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    if rec.get("status") == "pending" and rec.get("is_lop") is None and not rec.get("approved_by"):
+        return serialize_doc(rec)
+
+    snapshot = dict(rec)
+    await db.early_out_requests.update_one(
+        {"id": request_id},
+        {
+            "$set": {"status": "pending", "reset_at": get_ist_now().isoformat(), "reset_by": current_user["id"]},
+            "$unset": {"approved_by": "", "approved_at": "", "is_lop": "", "lop_remark": "", "rejection_reason": ""},
+        },
+    )
+    await _log_request_reset("early_out_request", request_id, snapshot, None, current_user, body.reason)
+    await log_audit(current_user["id"], "reset", "early_out_request", request_id)
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+
+@api_router.post("/missed-punches/{request_id}/reset")
+async def reset_missed_punch(request_id: str, body: RequestResetBody = RequestResetBody(),
+                              current_user: dict = Depends(get_current_user)):
+    """Reset a Missed Punch request back to `pending` AND restore the
+    pre-correction attendance state.
+
+    Uses the most recent `attendance_corrections` row (keyed by request_id)
+    as the source of truth for old check_in / check_out / status. Recomputes
+    total_hours via `calculate_attendance_status` from the restored values
+    so the attendance row is in a fully consistent post-rollback state.
+    """
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    snapshot = dict(rec)
+    rollback_info: Optional[dict] = None
+
+    # Find the most recent applied audit row for this request
+    audit = await db.attendance_corrections.find_one(
+        {"request_id": request_id}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+
+    if audit:
+        emp_id = audit.get("employee_id") or rec.get("employee_id")
+        date = audit.get("date") or rec.get("date")
+        existing_att = await db.attendance.find_one({"employee_id": emp_id, "date": date}, {"_id": 0})
+
+        old_in_24h = audit.get("old_check_in_24h")
+        old_out_24h = audit.get("old_check_out_24h")
+        old_in = audit.get("old_check_in")
+        old_out = audit.get("old_check_out")
+        old_status = audit.get("old_status")
+        source_before = audit.get("source_before") or "biometric"
+
+        employee = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+        shift_timings = get_shift_timings(employee) if employee else None
+
+        # Recompute status / total_hours from the restored times so dashboards / payroll are consistent
+        if old_in_24h:
+            recomputed = calculate_attendance_status(
+                old_in_24h, old_out_24h, shift_timings or {}, attendance_date=date
+            )
+            new_status_after_rollback = recomputed.get("status") or old_status or AttendanceStatus.PRESENT
+            total_hours_decimal = float(recomputed.get("total_hours_decimal") or 0.0)
+            total_hours_str = calculate_total_hours_str(total_hours_decimal) if total_hours_decimal else None
+            is_lop = bool(recomputed.get("is_lop"))
+            lop_reason = recomputed.get("lop_reason")
+        else:
+            new_status_after_rollback = AttendanceStatus.NOT_LOGGED
+            total_hours_decimal = 0.0
+            total_hours_str = None
+            is_lop = False
+            lop_reason = None
+
+        if existing_att and source_before == "none":
+            # Attendance row only existed BECAUSE of this correction — delete it
+            await db.attendance.delete_one({"employee_id": emp_id, "date": date})
+            rollback_info = {"action": "deleted", "employee_id": emp_id, "date": date}
+        elif existing_att:
+            payload = {
+                "check_in": old_in,
+                "check_in_24h": old_in_24h,
+                "check_out": old_out,
+                "check_out_24h": old_out_24h,
+                "status": new_status_after_rollback,
+                "total_hours": total_hours_str,
+                "total_hours_decimal": round(total_hours_decimal, 2),
+                "is_lop": is_lop,
+                "lop_reason": lop_reason,
+                "source": source_before,
+                "missed_punch_corrected": False,
+                "missed_punch_reverted_at": get_ist_now().isoformat(),
+                "missed_punch_reverted_by": current_user["id"],
+            }
+            await db.attendance.update_one(
+                {"employee_id": emp_id, "date": date},
+                {
+                    "$set": payload,
+                    "$unset": {
+                        "missed_punch_request_id": "",
+                        "missed_punch_corrected_at": "",
+                        "missed_punch_corrected_by": "",
+                    },
+                },
+            )
+            rollback_info = {"action": "restored", "employee_id": emp_id, "date": date,
+                             "from_state": {"check_in_24h": existing_att.get("check_in_24h"),
+                                            "check_out_24h": existing_att.get("check_out_24h"),
+                                            "status": existing_att.get("status")},
+                             "to_state": {"check_in_24h": old_in_24h,
+                                          "check_out_24h": old_out_24h,
+                                          "status": new_status_after_rollback}}
+
+        # Mark all audit rows for this request as reverted (don't delete — keep history)
+        await db.attendance_corrections.update_many(
+            {"request_id": request_id, "reverted_at": {"$exists": False}},
+            {"$set": {"reverted_at": get_ist_now().isoformat(), "reverted_by": current_user["id"]}},
+        )
+
+    # Reset the request itself — clear approval + correction-applied flags
+    await db.missed_punches.update_one(
+        {"id": request_id},
+        {
+            "$set": {"status": "pending", "reset_at": get_ist_now().isoformat(), "reset_by": current_user["id"]},
+            "$unset": {
+                "approved_by": "",
+                "approved_at": "",
+                "rejection_reason": "",
+                "correction_applied_at": "",
+                "correction_applied_by": "",
+                "is_applied": "",
+            },
+        },
+    )
+
+    await _log_request_reset("missed_punch", request_id, snapshot, rollback_info, current_user, body.reason)
+    await log_audit(current_user["id"], "reset", "missed_punch", request_id)
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+
+
+
 # ============== STAR REWARDS ROUTES ==============
 
 @api_router.get("/star-rewards")

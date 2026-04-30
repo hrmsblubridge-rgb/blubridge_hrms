@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle, Plus, Upload, Download, Pencil } from 'lucide-react';
+import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle, Plus, Upload, Download, Pencil, Undo2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -166,6 +166,22 @@ const Leave = () => {
       setShowEditDialog(false); setShowDetailSheet(false); fetchData();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to update leave'); }
     finally { setActionLoading(false); }
+  };
+
+  const handleResetLeave = async (leave) => {
+    // Universal Reset — flips a processed leave back to `pending` AND clears
+    // any approval / LOP state. Confirms first because this reverses payroll
+    // / attendance impact computed from is_lop.
+    if (!leave) return;
+    const ok = window.confirm(
+      `Reset this ${leave.status} leave for ${leave.emp_name} back to Pending?\n\nThis clears approval, LOP, and rejection details so the request can be re-processed from scratch.`
+    );
+    if (!ok) return;
+    try {
+      await axios.post(`${API}/leaves/${leave.id}/reset`, { reason: 'manual reset' }, { headers: getAuthHeaders() });
+      toast.success('Leave reset to Pending');
+      fetchData();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Failed to reset leave'); }
   };
 
   const handleDownloadImportTemplate = async () => {
@@ -533,6 +549,18 @@ const Leave = () => {
                                 <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> Approve
                               </Button>
                             ) : null}
+                            {canApprove && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleResetLeave(leave)}
+                                className="border-amber-300 text-amber-700 hover:bg-amber-50 h-8 px-3 rounded-lg"
+                                data-testid={`history-reset-btn-${leave.id}`}
+                                title="Reset to Pending — clears approval, LOP, and reprocesses from scratch"
+                              >
+                                <Undo2 className="w-3.5 h-3.5 mr-1" /> Reset
+                              </Button>
+                            )}
                           </div>
                         </td>
                       </tr>
