@@ -436,63 +436,90 @@ COMPANY_POLICIES = [
     },
     {
         "id": "policy_research",
-        "name": "Research Unit Policy",
+        "name": "Research Publication Bonus Policy",
         "category": "Department",
         "version": "1.0",
-        "effective_date": "2026-01-01",
-        "applicable_to": "Research & Development Team",
+        "effective_date": "2025-12-15",
+        "applicable_to": "All interns and employees in the Research Unit",
         "content": {
-            "overview": "Guidelines for the Research & Development unit focusing on innovation, intellectual property, and research standards.",
+            "overview": "This Policy outlines the structure and eligibility for the Research Publication Bonus awarded to individuals contributing to publications under the BluBridge affiliation. It encourages original research, fosters innovation, and rewards successful publication, peer review, and citation efforts that strengthen BluBridge's research excellence.",
             "sections": [
                 {
-                    "title": "Research Standards",
+                    "title": "1. Objective",
+                    "text": "This Policy outlines the structure and eligibility for the Research Publication Bonus awarded to individuals contributing to publications under the BluBridge affiliation. It encourages original research, fosters innovation, and rewards successful publication, peer review, and citation efforts that strengthen BluBridge's research excellence."
+                },
+                {
+                    "title": "2. Scope",
+                    "text": "This Policy applies to all interns and employees in the Research Unit who author, co-author, or contribute to any research paper submitted, accepted, or published under the BluBridge Technologies Private Limited affiliation."
+                },
+                {
+                    "title": "3. Bonus Structure",
+                    "text": "The total eligible Research Publication Bonus per paper, per person is \u20b9 99,000 (Rupees Ninety-Nine Thousand only), disbursed in stages based on specific publication milestones and citation performance. Each stage's bonus will be released upon successful verification of the corresponding milestone.",
+                    "table": {
+                        "headers": ["Milestone", "Description", "Bonus (\u20b9)", "Condition of Payment"],
+                        "rows": [
+                            [
+                                "A. At Publishing",
+                                "Upon successful publication or acceptance of the paper on arXiv (authenticated pre-print).",
+                                "10,000",
+                                "Released upon arXiv posting and verification of BluBridge affiliation."
+                            ],
+                            [
+                                "B. Peer Review (Conference / Journal)",
+                                "Upon completion of peer review or acceptance in an approved international conference or journal.",
+                                "45,000",
+                                "Released after peer-review acknowledgement or presentation confirmation."
+                            ],
+                            [
+                                "C. Citation-Based Bonus\n(Based on total citations achieved within the first year after publication)",
+                                "\u2022 1 \u2013 9 citations\n\u2022 10 \u2013 19 citations\n\u2022 20 and above citations",
+                                "5,000\n19,500\n19,500",
+                                "Released upon reaching this citation range.\nReleased upon reaching this citation range.\nReleased upon reaching this citation range."
+                            ],
+                            [
+                                "Total Potential Bonus (Per Paper, Per Author):",
+                                "",
+                                "\u20b999,000",
+                                ""
+                            ]
+                        ]
+                    },
+                    "footer": "The list of recommended publication and presentation venues is provided in Appendix A of this Policy for reference and compliance."
+                },
+                {
+                    "title": "4. Eligibility & Conditions",
                     "items": [
-                        "All research must follow ethical guidelines approved by Ethics Committee",
-                        "Data integrity: Maintain original data for minimum 5 years",
-                        "Peer review required before publication",
-                        "Regular progress presentations (bi-weekly)",
-                        "Collaboration with external institutions requires HR approval"
+                        "Each BluBridge-affiliated author is independently eligible to receive the full \u20b9 99,000 Performance Bonus per published paper.",
+                        "The publication must clearly mention BluBridge Technologies Pvt. Ltd. as an official author affiliation.",
+                        "The employee or intern must be on active engagement or payroll at the time of bonus disbursement.",
+                        "Proof of publication, arXiv link, acceptance communication, and verified citation data must be submitted to the Super Team Lead and Management.",
+                        "Citation-based payouts occur once the verified citation count enters an eligible range within the first year after publication.",
+                        "All approvals are subject to validation by the Super Team Lead and Management.",
+                        "The Company reserves the right to revise, defer, or withdraw this Policy based on organizational or research priorities."
                     ]
                 },
                 {
-                    "title": "Intellectual Property",
-                    "items": [
-                        "All inventions during employment are company property",
-                        "Patent filing assistance provided by legal team",
-                        "Inventor bonus: ₹1,00,000 for granted patents",
-                        "Publication rights: Company retains first right, employee credit given",
-                        "NDA required for all confidential research projects"
-                    ]
+                    "title": "5. Effective Date and Validity",
+                    "text": "This Policy is effective from 15 December 2025 and will remain in force until amended, superseded, versioned, or withdrawn by BluBridge Technologies Private Limited. The Company reserves the right to modify, update, withdraw, or reissue this Policy in line with organizational, operational, or research-related requirements."
                 },
                 {
-                    "title": "Research Funding & Resources",
-                    "items": [
-                        "Annual research budget allocation based on project proposals",
-                        "Equipment requests: Submit through R&D portal",
-                        "Lab access: 24/7 with badge entry",
-                        "External collaboration budget: Up to ₹5,00,000 per project",
-                        "Conference travel: 2 international + 2 domestic per year"
-                    ]
-                },
-                {
-                    "title": "Project Management",
-                    "items": [
-                        "Quarterly milestone reviews mandatory",
-                        "Project documentation in central repository",
-                        "Status reports: Weekly to project lead, monthly to management",
-                        "Project handover documentation required on completion",
-                        "Knowledge sharing sessions: Monthly"
-                    ]
-                },
-                {
-                    "title": "Safety & Compliance",
-                    "items": [
-                        "Lab safety training: Annual renewal required",
-                        "Hazardous materials: Follow MSDS guidelines",
-                        "Equipment certification: Annual calibration",
-                        "Incident reporting: Immediate notification to safety officer",
-                        "Compliance audits: Quarterly internal reviews"
-                    ]
+                    "title": "Appendix A \u2014 Recognized Publication and Presentation Venues",
+                    "table": {
+                        "headers": ["Category", "Name of Venue / Repository", "Type", "Remarks / Scope"],
+                        "rows": [
+                            ["Publishing (Pre-Print Repository)", "arXiv (relevant CS sections)", "Open Repository", "For authenticated pre-print publishing under BluBridge affiliation"],
+                            ["Conferences & Journals", "NeurIPS \u2013 Neural Information Processing Systems", "International Conference", "Machine Learning and AI Research"],
+                            ["", "ICML \u2013 International Conference on Machine Learning", "International Conference", "Core ML Research"],
+                            ["", "ICLR \u2013 International Conference on Learning Representations", "International Conference", "Representation Learning / Deep Networks"],
+                            ["", "AAAI \u2013 Association for the Advancement of AI", "International Conference", "General AI Applications"],
+                            ["", "IJCAI \u2013 International Joint Conference on Artificial Intelligence", "International Conference", "Cross-domain AI Research"],
+                            ["", "ACL \u2013 Association for Computational Linguistics", "International Conference", "NLP and Language Models"],
+                            ["", "JMLR \u2013 Journal of Machine Learning Research", "Peer-Reviewed Journal", "ML Research and Theory"],
+                            ["", "TPAMI \u2013 IEEE Transactions on Pattern Analysis and Machine Intelligence", "Peer-Reviewed Journal", "Vision, AI, and Pattern Recognition"],
+                            ["", "AIJ \u2013 Artificial Intelligence Journal", "Peer-Reviewed Journal", "General AI and Methodologies"],
+                            ["", "Nature Machine Intelligence", "Peer-Reviewed Journal", "Foundational and Applied AI Research"]
+                        ]
+                    }
                 }
             ]
         }
@@ -8972,11 +8999,19 @@ DEPARTMENT_RESTRICTED_POLICIES = {
     "policy_research": {"Research Unit"},
 }
 
+# Policies that are completely hidden from every user (including admins).
+# To re-enable a policy, simply remove its id from this set.
+HIDDEN_POLICIES = {"policy_it"}
+
 async def _is_policy_visible_to_user(policy_id: str, current_user: dict) -> bool:
     """Decide if a policy is visible to the current user.
-    Admin roles see everything. Employees only see policies whose
-    department restriction matches their employee.department.
+    Hidden policies are invisible to everyone.
+    Admin roles see all non-hidden policies.
+    Employees only see department-restricted policies whose allowlist
+    contains their employee.department.
     """
+    if policy_id in HIDDEN_POLICIES:
+        return False
     restricted_to = DEPARTMENT_RESTRICTED_POLICIES.get(policy_id)
     if not restricted_to:
         return True

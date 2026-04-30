@@ -63,7 +63,7 @@ async def test_non_research_employee_does_not_see_research_policy():
 
 @pytest.mark.asyncio
 async def test_leave_policy_visible_to_everyone():
-    """Non-restricted policies must be visible to all users."""
+    """Non-restricted, non-hidden policies must be visible to all users."""
     emp_id = f"test-emp-{uuid.uuid4()}"
     await server.db.employees.insert_one({
         "id": emp_id,
@@ -75,9 +75,17 @@ async def test_leave_policy_visible_to_everyone():
     try:
         user = {"id": "u3", "role": "employee", "employee_id": emp_id}
         assert await server._is_policy_visible_to_user("policy_leave", user) is True
-        assert await server._is_policy_visible_to_user("policy_it", user) is True
     finally:
         await server.db.employees.delete_one({"id": emp_id})
+
+
+@pytest.mark.asyncio
+async def test_hidden_policy_invisible_to_everyone():
+    """Policies in HIDDEN_POLICIES must be hidden from everyone, including admins."""
+    admin = {"id": "admin", "role": "hr"}
+    employee = {"id": "u4", "role": "employee", "employee_id": "any"}
+    assert await server._is_policy_visible_to_user("policy_it", admin) is False
+    assert await server._is_policy_visible_to_user("policy_it", employee) is False
 
 
 @pytest.mark.asyncio

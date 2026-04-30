@@ -209,41 +209,85 @@ const Policies = () => {
                           <span className="font-medium text-slate-900">{section.title}</span>
                         </div>
                       </AccordionTrigger>
-                      <AccordionContent className="px-4 pb-4">
-                        {Array.isArray(section.items) && section.items[0]?.type ? (
-                          // Leave type table format
-                          <div className="overflow-x-auto">
+                      <AccordionContent className="px-4 pb-4 space-y-3">
+                        {section.text && (
+                          <p className="text-slate-700 whitespace-pre-line leading-relaxed">
+                            {section.text}
+                          </p>
+                        )}
+                        {section.table && Array.isArray(section.table.headers) && Array.isArray(section.table.rows) && (
+                          <div className="overflow-x-auto rounded-md border border-slate-200">
                             <table className="w-full text-sm">
-                              <thead>
-                                <tr className="border-b border-slate-200">
-                                  <th className="text-left py-2 font-medium text-slate-700">Type</th>
-                                  <th className="text-center py-2 font-medium text-slate-700">Days</th>
-                                  <th className="text-left py-2 font-medium text-slate-700">Description</th>
+                              <thead className="bg-slate-50">
+                                <tr>
+                                  {section.table.headers.map((h, hi) => (
+                                    <th
+                                      key={hi}
+                                      className="text-left px-3 py-2 font-semibold text-slate-700 border-b border-slate-200 align-top"
+                                    >
+                                      {h}
+                                    </th>
+                                  ))}
                                 </tr>
                               </thead>
                               <tbody>
-                                {section.items.map((item, i) => (
-                                  <tr key={i} className="border-b border-slate-100 last:border-0">
-                                    <td className="py-2 font-medium text-slate-900">{item.type}</td>
-                                    <td className="py-2 text-center">
-                                      <Badge className="bg-blue-100 text-blue-700">{item.days}</Badge>
-                                    </td>
-                                    <td className="py-2 text-slate-600">{item.description}</td>
+                                {section.table.rows.map((row, ri) => (
+                                  <tr key={ri} className="border-b border-slate-100 last:border-0 align-top">
+                                    {row.map((cell, ci) => (
+                                      <td
+                                        key={ci}
+                                        className="px-3 py-2 text-slate-700 whitespace-pre-line align-top"
+                                      >
+                                        {cell}
+                                      </td>
+                                    ))}
                                   </tr>
                                 ))}
                               </tbody>
                             </table>
                           </div>
-                        ) : (
-                          // List format
-                          <ul className="space-y-2">
-                            {section.items.map((item, i) => (
-                              <li key={i} className="flex items-start gap-2">
-                                <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
-                                <span className="text-slate-600">{item}</span>
-                              </li>
-                            ))}
-                          </ul>
+                        )}
+                        {Array.isArray(section.items) && section.items.length > 0 && (
+                          section.items[0]?.type ? (
+                            // Leave type table format
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm">
+                                <thead>
+                                  <tr className="border-b border-slate-200">
+                                    <th className="text-left py-2 font-medium text-slate-700">Type</th>
+                                    <th className="text-center py-2 font-medium text-slate-700">Days</th>
+                                    <th className="text-left py-2 font-medium text-slate-700">Description</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {section.items.map((item, i) => (
+                                    <tr key={i} className="border-b border-slate-100 last:border-0">
+                                      <td className="py-2 font-medium text-slate-900">{item.type}</td>
+                                      <td className="py-2 text-center">
+                                        <Badge className="bg-blue-100 text-blue-700">{item.days}</Badge>
+                                      </td>
+                                      <td className="py-2 text-slate-600">{item.description}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            // List format
+                            <ul className="space-y-2">
+                              {section.items.map((item, i) => (
+                                <li key={i} className="flex items-start gap-2">
+                                  <CheckCircle2 className="w-4 h-4 text-emerald-500 mt-0.5 flex-shrink-0" />
+                                  <span className="text-slate-600">{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )
+                        )}
+                        {section.footer && (
+                          <p className="text-xs italic text-slate-500 pt-1">
+                            {section.footer}
+                          </p>
                         )}
                       </AccordionContent>
                     </AccordionItem>
