@@ -216,6 +216,10 @@ Auto-created on employee creation + backfilled for existing employees on startup
 - `GET /api/help/download` - Download role-specific User Guide PDF (HR / SysAdmin / OfficeAdmin / Employee)
 
 ## Changelog
+- **2026-05-07 (Bug fix — Rows-per-page in Employee Attendance)** Fixed `ReferenceError: setRowsPerPage is not defined` crash on `/employee/attendance`.
+  - Root cause: `rowsPerPage` was declared as a `const = 10` in `EmployeeAttendance.js` (line 25) but the `PageSizeSelector`'s `onChange` handler called `setRowsPerPage(v)`, which didn't exist. Picking any value from the rows-per-page dropdown triggered the full React error overlay.
+  - Fix: replaced the const with a `useState(10)` hook — `const [rowsPerPage, setRowsPerPage] = useState(10);`.
+  - Verified via Playwright: dropdown opens (12 size options 25/50/75…500), value change fires **with 0 JS runtime errors captured**. Audited siblings (`Attendance.js`, `AdminMissedPunch.js`, `StarReward.js`, `Employees.js`) — all already use stateful pagination, no recurrence elsewhere.
 - **2026-05-07 (Payroll Attendance Code Mapping — HR-defined leave entry codes)** Re-mapped the Payroll → Attendance View grid status codes so leave entries surface their leave-type and split directly in each cell. Old generic codes (Present Full / Present Half / Present + Approved Leave / Office Holiday) were renamed so the new HR-mandated abbreviations have no collision.
   - **Backend** (`server.py`): new module-level `_leave_code_for_status(leave_type, leave_split)` helper deterministically maps each (canonical leave type, split) to the user-facing code. Sections 5A / 5B / 6A / 6B / 6C / 6D of the payroll attendance engine were updated:
     - Worked-day codes renamed: `PF → P`, `PH → HD`. `OH (Office Holiday)` renamed to `H` (matches the future-date code, no longer split between past/future).

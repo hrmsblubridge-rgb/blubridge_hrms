@@ -22,7 +22,7 @@ const EmployeeAttendance = () => {
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
-  const rowsPerPage = 10;
+  const [rowsPerPage, setRowsPerPage] = useState(10);
 
   const fetchAttendance = useCallback(async () => {
     try {
