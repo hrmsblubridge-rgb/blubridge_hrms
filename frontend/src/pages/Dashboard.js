@@ -102,13 +102,19 @@ const Dashboard = () => {
   const [showDetailSheet, setShowDetailSheet] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [teams, setTeams] = useState([]);
-  const [filters, setFilters] = useState({
-    fromDate: '',
-    toDate: '',
-    leaveType: 'All'
-  });
-  
-  // Chart filter state
+  // Draft vs. Applied filter pattern (main filter bar only)
+  // --------------------------------
+  // `draftFilters` = what the user is typing/picking RIGHT NOW. Updates on
+  //   every change event, BUT does NOT trigger any API / loader.
+  // `appliedFilters` = the filter state actually used by the API. Updated
+  //   only when the user clicks "Apply Filter" (or Reset). `fetchData`
+  //   depends on THIS alone, so no stray refetches.
+  const EMPTY_FILTERS = { fromDate: '', toDate: '', leaveType: 'All' };
+  const [draftFilters, setDraftFilters] = useState(EMPTY_FILTERS);
+  const [appliedFilters, setAppliedFilters] = useState(EMPTY_FILTERS);
+
+  // Chart filters stay on the existing "auto-apply" UX — small dropdowns
+  // above the chart and the chart itself is inexpensive to re-render.
   const [chartFilters, setChartFilters] = useState({
     team: 'All',
     dateRange: 'this_week',
@@ -139,8 +145,8 @@ const Dashboard = () => {
     try {
       setLoading(true);
       const statsParams = {};
-      if (filters.fromDate) statsParams.from_date = formatDateForAPI(filters.fromDate);
-      if (filters.toDate) statsParams.to_date = formatDateForAPI(filters.toDate);
+      if (appliedFilters.fromDate) statsParams.from_date = formatDateForAPI(appliedFilters.fromDate);
+      if (appliedFilters.toDate) statsParams.to_date = formatDateForAPI(appliedFilters.toDate);
       
       const [statsRes, leaveRes, teamsRes, deptsRes] = await Promise.all([
         axios.get(`${API}/dashboard/stats`, { headers: getAuthHeaders(), params: statsParams }),
@@ -169,7 +175,7 @@ const Dashboard = () => {
     } finally {
       setLoading(false);
     }
-  }, [getAuthHeaders, filters.fromDate, filters.toDate]);
+  }, [getAuthHeaders, appliedFilters.fromDate, appliedFilters.toDate]);
 
   useEffect(() => {
     fetchData();
@@ -297,8 +303,8 @@ const Dashboard = () => {
     
     try {
       const today = new Date().toLocaleDateString('en-GB').split('/').join('-');
-      const fromDate = filters.fromDate ? formatDateForAPI(filters.fromDate) : today;
-      const toDate = filters.toDate ? formatDateForAPI(filters.toDate) : today;
+      const fromDate = appliedFilters.fromDate ? formatDateForAPI(appliedFilters.fromDate) : today;
+      const toDate = appliedFilters.toDate ? formatDateForAPI(appliedFilters.toDate) : today;
       
       // Strict mutually-exclusive client-side classification — MUST mirror
       // backend `classify_attendance_bucket` in server.py so dashboard tiles
@@ -342,15 +348,21 @@ const Dashboard = () => {
   };
 
   const handleFilter = () => {
-    fetchData();
+    // Commit the draft to applied — this will cause fetchData to re-memoize
+    // (its deps include appliedFilters.*) and the effect below fires the API.
+    setAppliedFilters(draftFilters);
     if (activeAttendanceTab !== 'not_logged') {
-      fetchAttendanceByStatus(activeAttendanceTab);
+      // Detail fetch reads appliedFilters via closure — safe because it runs
+      // AFTER React has committed the state update below on re-render.
+      setTimeout(() => fetchAttendanceByStatus(activeAttendanceTab), 0);
     }
     toast.success('Filters applied');
   };
 
   const handleReset = () => {
-    setFilters({ fromDate: '', toDate: '', leaveType: 'All' });
+    // Clear both drafts AND applied state, and reload default data
+    setDraftFilters(EMPTY_FILTERS);
+    setAppliedFilters(EMPTY_FILTERS);
     toast.info('Filters reset');
   };
 
@@ -594,8 +606,8 @@ const Dashboard = () => {
             <span className="text-sm text-slate-600 font-medium">From:</span>
             <Input
               type="date"
-              value={filters.fromDate}
-              onChange={(e) => setFilters({ ...filters, fromDate: e.target.value })}
+              value={draftFilters.fromDate}
+              onChange={(e) => setDraftFilters({ ...draftFilters, fromDate: e.target.value })}
               className="w-40 bg-white rounded-lg"
               data-testid="filter-from-date"
             />
@@ -604,15 +616,15 @@ const Dashboard = () => {
             <span className="text-sm text-slate-600 font-medium">To:</span>
             <Input
               type="date"
-              value={filters.toDate}
-              onChange={(e) => setFilters({ ...filters, toDate: e.target.value })}
+              value={draftFilters.toDate}
+              onChange={(e) => setDraftFilters({ ...draftFilters, toDate: e.target.value })}
               className="w-40 bg-white rounded-lg"
               data-testid="filter-to-date"
             />
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-600 font-medium">Leave Type:</span>
-            <Select value={filters.leaveType} onValueChange={(v) => setFilters({ ...filters, leaveType: v })}>
+            <Select value={draftFilters.leaveType} onValueChange={(v) => setDraftFilters({ ...draftFilters, leaveType: v })}>
               <SelectTrigger className="w-32 bg-white rounded-lg" data-testid="filter-leave-type">
                 <SelectValue />
               </SelectTrigger>
