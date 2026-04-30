@@ -43,6 +43,7 @@ const navItems = [
   { path: '/employee/early-out', label: 'Early Out', icon: LogOutIcon },
   { path: '/employee/missed-punch', label: 'Missed Punch', icon: Fingerprint },
   { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper },
+  { path: '/employee/policies', label: 'Policies', icon: BookOpen },
   { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap },
   { path: '/employee/documents', label: 'My Documents', icon: FileText },
   { path: '/employee/tickets', label: 'Support Tickets', icon: MessageSquarePlus },
