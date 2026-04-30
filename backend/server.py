@@ -10637,6 +10637,21 @@ async def _update_attendance_from_missed_punch(rec):
         f"status {old_status}->{payload['status']} request={request_id}"
     )
 
+    # Mark the source request as APPLIED — explicit flag the historical
+    # backfill / payroll / dashboards can rely on without joining audit rows.
+    if request_id:
+        try:
+            await db.missed_punches.update_one(
+                {"id": request_id},
+                {"$set": {
+                    "correction_applied_at": get_ist_now().isoformat(),
+                    "correction_applied_by": rec.get("approved_by") or "system",
+                    "is_applied": True,
+                }},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to stamp correction_applied_at on missed_punch {request_id}: {e}")
+
 @api_router.get("/missed-punches")
 async def get_missed_punches(
     status: Optional[str] = None,
@@ -10750,6 +10765,153 @@ async def reject_missed_punch(request_id: str, current_user: dict = Depends(get_
         raise HTTPException(status_code=404, detail="Request not found")
     rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
     return serialize_doc(rec)
+
+
+class BackfillBody(BaseModel):
+    """Optional knobs for the historical backfill endpoint."""
+    dry_run: bool = False             # if True, don't actually mutate anything — return counts only
+    batch_size: int = 500             # process up to N requests per call
+    from_date: Optional[str] = None   # YYYY-MM-DD inclusive (filter on missed_punches.date)
+    to_date: Optional[str] = None     # YYYY-MM-DD inclusive
+    employee_id: Optional[str] = None # restrict to a single employee
+    force: bool = False               # re-apply even if already marked applied (still idempotent in the engine)
+
+
+@api_router.post("/missed-punches/backfill")
+async def backfill_missed_punches(body: BackfillBody = BackfillBody(), current_user: dict = Depends(get_current_user)):
+    """Historical Backfill Engine.
+
+    Iterates over APPROVED missed-punch requests whose corrections were never
+    propagated to the final attendance table and applies them via the same
+    `_update_attendance_from_missed_punch` engine the live approval flow uses.
+
+    Idempotency is enforced on three layers:
+      1. Server-side filter: skip requests already stamped with
+         `correction_applied_at` (unless `force=True`).
+      2. Skip requests that already have an `attendance_corrections` row
+         keyed by request_id.
+      3. The engine itself is idempotent — re-applying the same target state
+         from the same request_id is a no-op (no extra audit row written).
+
+    Raw biometric logs are NEVER touched. Reports / payroll automatically
+    pick up the corrected values because they read the same final
+    `attendance` collection the engine writes to.
+    """
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    q = {"status": "approved"}
+    if not body.force:
+        q["$or"] = [
+            {"correction_applied_at": {"$exists": False}},
+            {"correction_applied_at": None},
+        ]
+    if body.employee_id:
+        q["employee_id"] = body.employee_id
+    if body.from_date or body.to_date:
+        date_q = {}
+        if body.from_date:
+            date_q["$gte"] = body.from_date
+        if body.to_date:
+            date_q["$lte"] = body.to_date
+        q["date"] = date_q
+
+    candidates = await db.missed_punches.find(q, {"_id": 0}).limit(max(1, min(body.batch_size, 5000))).to_list(5000)
+
+    stats = {
+        "candidates": len(candidates),
+        "applied": 0,
+        "skipped_already_applied": 0,
+        "skipped_invalid": 0,
+        "errors": [],
+        "dry_run": body.dry_run,
+    }
+
+    for rec in candidates:
+        rid = rec.get("id")
+        # Skip if audit row already exists for this request (defence-in-depth)
+        if not body.force and rid:
+            prior = await db.attendance_corrections.find_one({"request_id": rid}, {"_id": 0})
+            if prior:
+                # Heal the source flag if missing (legacy data)
+                if not rec.get("correction_applied_at") and not body.dry_run:
+                    await db.missed_punches.update_one(
+                        {"id": rid},
+                        {"$set": {
+                            "correction_applied_at": prior.get("created_at") or get_ist_now().isoformat(),
+                            "correction_applied_by": prior.get("approved_by") or "system_backfill",
+                            "is_applied": True,
+                        }},
+                    )
+                stats["skipped_already_applied"] += 1
+                continue
+
+        # Validate the request has the times required by its punch_type —
+        # malformed historical rows must be flagged, not silently swallowed.
+        ptype = (rec.get("punch_type") or "").strip()
+        if ptype == "Check-in" and not rec.get("check_in_time"):
+            stats["skipped_invalid"] += 1
+            stats["errors"].append({"id": rid, "reason": "Check-in request missing check_in_time"})
+            continue
+        if ptype == "Check-out" and not rec.get("check_out_time"):
+            stats["skipped_invalid"] += 1
+            stats["errors"].append({"id": rid, "reason": "Check-out request missing check_out_time"})
+            continue
+        if ptype == "Both" and not (rec.get("check_in_time") and rec.get("check_out_time")):
+            stats["skipped_invalid"] += 1
+            stats["errors"].append({"id": rid, "reason": "Both request missing one or both times"})
+            continue
+
+        if body.dry_run:
+            stats["applied"] += 1
+            continue
+
+        rec_for_engine = dict(rec)
+        # Backfill-attribution for the audit row
+        rec_for_engine["approved_by"] = rec.get("approved_by") or "system_backfill"
+        rec_for_engine["approved_at"] = rec.get("approved_at") or get_ist_now().isoformat()
+
+        try:
+            await _update_attendance_from_missed_punch(rec_for_engine)
+            stats["applied"] += 1
+        except Exception as e:
+            stats["errors"].append({"id": rid, "reason": str(e)})
+
+    await log_audit(
+        current_user["id"], "backfill", "missed_punches",
+        f"applied={stats['applied']}, skipped={stats['skipped_already_applied']}, "
+        f"invalid={stats['skipped_invalid']}, dry_run={body.dry_run}",
+    )
+    return stats
+
+
+@api_router.get("/missed-punches/backfill/status")
+async def backfill_status(current_user: dict = Depends(get_current_user)):
+    """Quick health snapshot for the backfill engine — used by an admin UI
+    so HR can see how much work is outstanding before kicking off a run."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    total_approved = await db.missed_punches.count_documents({"status": "approved"})
+    pending_apply = await db.missed_punches.count_documents({
+        "status": "approved",
+        "$or": [
+            {"correction_applied_at": {"$exists": False}},
+            {"correction_applied_at": None},
+        ],
+    })
+    audit_rows = await db.attendance_corrections.count_documents({})
+    last_correction = await db.attendance_corrections.find_one(
+        {}, {"_id": 0, "request_id": 1, "created_at": 1, "employee_id": 1, "date": 1},
+        sort=[("created_at", -1)],
+    )
+    return {
+        "total_approved_requests": total_approved,
+        "pending_correction_apply": pending_apply,
+        "applied_correction_audit_rows": audit_rows,
+        "last_correction": last_correction,
+    }
+
+
 
 @api_router.put("/missed-punches/{request_id}")
 async def edit_missed_punch(request_id: str, data: MissedPunchCreate, current_user: dict = Depends(get_current_user)):
