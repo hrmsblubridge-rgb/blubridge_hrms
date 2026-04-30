@@ -102,20 +102,31 @@ const Payroll = () => {
   };
 
   const getStatusDisplay = (status, isLop) => {
-    // New payroll engine status codes
-    if (status === 'PF') return { code: 'PF', color: 'text-emerald-600 font-semibold', bg: '' };
-    if (status === 'PH') return { code: 'PH', color: 'text-blue-600 font-semibold', bg: 'bg-blue-50' };
-    if (status === 'PA') return { code: 'PA', color: 'text-emerald-500 font-semibold', bg: 'bg-emerald-50' };
+    // New payroll engine status codes (2026-05-07 HR mapping)
+    // Worked / Attendance codes
+    if (status === 'P') return { code: 'P', color: 'text-emerald-600 font-semibold', bg: '' };
+    if (status === 'HD') return { code: 'HD', color: 'text-blue-600 font-semibold', bg: 'bg-blue-50' };
     if (status === 'WO') return { code: 'WO', color: 'text-slate-400', bg: 'bg-slate-50' };
-    if (status === 'OH') return { code: 'OH', color: 'text-indigo-500', bg: 'bg-indigo-50' };
+    if (status === 'H') return { code: 'H', color: 'text-indigo-500', bg: 'bg-indigo-50' };
     if (status === 'LC') return { code: 'LC', color: 'text-orange-600 font-semibold', bg: 'bg-orange-50' };
     if (status === 'MP') return { code: 'MP', color: 'text-yellow-600 font-semibold', bg: 'bg-yellow-50' };
+    // Leave-entry codes
+    if (status === 'PF') return { code: 'PF', color: 'text-purple-600 font-semibold', bg: 'bg-purple-50' };
+    if (status === 'PH') return { code: 'PH', color: 'text-purple-500 font-semibold', bg: 'bg-purple-50' };
+    if (status === 'SF') return { code: 'SF', color: 'text-rose-600 font-semibold', bg: 'bg-rose-50' };
+    if (status === 'SH') return { code: 'SH', color: 'text-rose-500 font-semibold', bg: 'bg-rose-50' };
+    if (status === 'EF') return { code: 'EF', color: 'text-red-700 font-semibold', bg: 'bg-red-50' };
+    if (status === 'EH') return { code: 'EH', color: 'text-red-500 font-semibold', bg: 'bg-red-50' };
+    if (status === 'PA') return { code: 'PA', color: 'text-emerald-600 font-semibold', bg: 'bg-emerald-50' };
+    if (status === 'PP') return { code: 'PP', color: 'text-emerald-500 font-semibold', bg: 'bg-emerald-50' };
+    if (status === 'OH') return { code: 'OH', color: 'text-cyan-600 font-semibold', bg: 'bg-cyan-50' };
+    // Other
     if (status === 'LOP') return { code: 'LOP', color: 'text-red-600 font-bold', bg: 'bg-red-50' };
     if (status === 'R') return { code: 'R', color: 'text-gray-500', bg: 'bg-gray-100' };
     if (status === 'BLANK') return { code: '', color: '', bg: 'bg-gray-50' };
-    if (status === 'H') return { code: 'H', color: 'text-indigo-500', bg: 'bg-indigo-50' };
     if (status === 'Su') return { code: 'Su', color: 'text-slate-400', bg: 'bg-slate-50' };
-    // Legacy codes (backward compatibility)
+    if (status === 'NA') return { code: 'NA', color: 'text-slate-400', bg: 'bg-slate-50' };
+    // Legacy codes (backward compatibility for historical records)
     if (status === 'Sunday') return { code: 'Su', color: 'text-slate-400', bg: 'bg-slate-50' };
     if (isLop || status === 'Loss of Pay') return { code: 'LOP', color: 'text-red-600 font-bold', bg: 'bg-red-50' };
     if (status === 'Present' || status === 'Completed') return { code: 'P', color: 'text-emerald-600 font-semibold', bg: '' };
@@ -311,18 +322,25 @@ const Payroll = () => {
           </div>
           <div className="flex flex-wrap gap-4 text-xs mt-4">
             {[
-              { code: 'PF', label: 'Present Full', color: 'emerald' },
-              { code: 'PH', label: 'Present Half', color: 'blue' },
-              { code: 'PA', label: 'Present (Approved Leave)', color: 'emerald' },
+              { code: 'P', label: 'Present (Full Day)', color: 'emerald' },
+              { code: 'HD', label: 'Half-Day Worked', color: 'blue' },
               { code: 'WO', label: 'Week Off', color: 'slate' },
-              { code: 'OH', label: 'Office Holiday', color: 'indigo' },
-              { code: 'LC', label: 'Late Coming', color: 'orange' },
-              { code: 'LOP', label: 'Loss of Pay', color: 'red' },
+              { code: 'H', label: 'Holiday (Office)', color: 'indigo' },
+              { code: 'LC', label: 'Late Coming / Early Leaving', color: 'orange' },
               { code: 'MP', label: 'Missed Punch', color: 'yellow' },
+              { code: 'PF', label: 'Pre-Planned Leave (Full)', color: 'purple' },
+              { code: 'PH', label: 'Pre-Planned Leave (Half)', color: 'purple' },
+              { code: 'SF', label: 'Sick Leave (Full)', color: 'rose' },
+              { code: 'SH', label: 'Sick Leave (Half)', color: 'rose' },
+              { code: 'EF', label: 'Emergency Leave (Full)', color: 'red' },
+              { code: 'EH', label: 'Emergency Leave (Half)', color: 'red' },
+              { code: 'PA', label: 'Paid Leave (Full)', color: 'emerald' },
+              { code: 'PP', label: 'Paid Leave (Half)', color: 'emerald' },
+              { code: 'OH', label: 'Optional Holiday', color: 'cyan' },
+              { code: 'LOP', label: 'Loss of Pay', color: 'red' },
               { code: 'A', label: 'Absent', color: 'amber' },
               { code: 'Su', label: 'Sunday (Future)', color: 'slate' },
-              { code: 'H', label: 'Holiday (Future)', color: 'indigo' },
-              { code: 'R', label: 'Relieved', color: 'gray' },
+              { code: 'R', label: 'Resigned / Terminated', color: 'gray' },
             ].map((item, i) => (
               <div key={i} className="flex items-center gap-1">
                 <span className={`text-${item.color}-600 font-semibold`}>{item.code}</span>

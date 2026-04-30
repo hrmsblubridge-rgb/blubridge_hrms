@@ -1666,6 +1666,36 @@ def _calc_hours_worked(att_record: dict) -> float:
             return diff / 60
     return 0
 
+
+def _leave_code_for_status(leave_type: str, leave_split: str) -> str:
+    """Map a (leave_type, leave_split) pair to the user-facing payroll grid code.
+
+    Used only for approved-non-LOP leave-day rows in the payroll Attendance View
+    grid. The mapping (per HR instruction 2026-05-07) is:
+
+        Pre-Planned   Full → PF | Half → PH
+        Sick          Full → SF | Half → SH
+        Emergency     Full → EF | Half → EH
+        Optional      Any  → OH        (Optional Holiday — no half/full split)
+        Casual / Earned / Annual / Maternity / Paternity / Bereavement /
+        General Leave Full → PA | Half → PP   (Paid Leave bucket)
+    """
+    lt = (leave_type or "").strip().lower()
+    is_half = (leave_split or "").strip().lower() in (
+        "first half", "second half", "half day", "half"
+    )
+    if lt.startswith("pre-planned") or lt.startswith("preplanned"):
+        return "PH" if is_half else "PF"
+    if lt.startswith("sick"):
+        return "SH" if is_half else "SF"
+    if lt.startswith("emergency"):
+        return "EH" if is_half else "EF"
+    if lt.startswith("optional"):
+        # Optional Holiday — single code regardless of split
+        return "OH"
+    # Everything else → Paid Leave bucket
+    return "PP" if is_half else "PA"
+
 async def _prefetch_payroll_data(employee_ids: list, year: int, month_num: int, days_in_month: int) -> dict:
     """Batch-prefetch all payroll-related data for a set of employees in one month."""
     # 1. Attendance (both date formats)
@@ -1948,11 +1978,11 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 detail["total_hours"] = att.get("total_hours")
                 hw = _calc_hours_worked(att)
                 if hw >= full_hours:
-                    detail["status"] = "PF"
+                    detail["status"] = "P"
                     extra_pay += 1
                     detail["extra_value"] = 1
                 elif hw >= half_hours:
-                    detail["status"] = "PH"
+                    detail["status"] = "HD"
                     extra_pay += 0.5
                     detail["extra_value"] = 0.5
                 else:
@@ -1972,17 +2002,17 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 detail["total_hours"] = att.get("total_hours")
                 hw = _calc_hours_worked(att)
                 if hw >= full_hours:
-                    detail["status"] = "PF"
+                    detail["status"] = "P"
                     extra_pay += 1
                     detail["extra_value"] = 1
                 elif hw >= half_hours:
-                    detail["status"] = "PH"
+                    detail["status"] = "HD"
                     extra_pay += 0.5
                     detail["extra_value"] = 0.5
                 else:
-                    detail["status"] = "OH"
+                    detail["status"] = "H"
             else:
-                detail["status"] = "OH"
+                detail["status"] = "H"
 
             attendance_details.append(detail)
             continue
@@ -2009,10 +2039,8 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                         lop += 0.5
                         detail["lop_value"] = 0.5
                 else:
-                    if split == "Full Day":
-                        detail["status"] = "PA"
-                    else:
-                        detail["status"] = "PH"
+                    # Map leave-type + split to granular abbreviation.
+                    detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
             elif ls == "pending":
                 if split == "Full Day":
                     lop += 1
@@ -2041,14 +2069,16 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
 
             if split in ("First Half", "Second Half"):
                 if ls == "approved" and is_lop_flag is not True:
-                    detail["status"] = "PF"
+                    # Half-day approved leave + worked the other half → present full
+                    detail["status"] = "P"
                 else:
-                    detail["status"] = "PH"
+                    # Half-day leave was rejected/pending/LOP → 0.5 LOP, show as HD
+                    detail["status"] = "HD"
                     detail["is_lop"] = True
                     lop += 0.5
                     detail["lop_value"] = 0.5
             else:
-                detail["status"] = "PF"
+                detail["status"] = "P"
 
             attendance_details.append(detail)
             continue
@@ -2066,17 +2096,17 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 # --- Without Checkout ---
                 if current_date == today:
                     if date_iso in late_approved_dates:
-                        detail["status"] = "PF"
+                        detail["status"] = "P"
                     else:
-                        detail["status"] = "PF"
+                        detail["status"] = "P"
                 else:
                     # Past day, no checkout = missed out-punch
                     if ci24:
                         ci_mins = parse_time_24h_to_minutes(ci24)
                         if ci_mins is not None and ci_mins < 600:
-                            detail["status"] = "PF"
+                            detail["status"] = "P"
                         else:
-                            detail["status"] = "PH"
+                            detail["status"] = "HD"
                             detail["is_lop"] = True
                             lop += 0.5
                             detail["lop_value"] = 0.5
@@ -2095,17 +2125,17 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                             is_late = True
 
                 if hw >= full_hours and not is_late:
-                    detail["status"] = "PF"
+                    detail["status"] = "P"
                 elif hw >= full_hours and is_late:
                     if date_iso in late_approved_dates:
-                        detail["status"] = "PF"
+                        detail["status"] = "P"
                     else:
                         detail["status"] = "LC"
                         detail["is_lop"] = True
                         lop += 0.5
                         detail["lop_value"] = 0.5
                 elif hw >= half_hours:
-                    detail["status"] = "PH"
+                    detail["status"] = "HD"
                     detail["is_lop"] = True
                     lop += 0.5
                     detail["lop_value"] = 0.5
@@ -2119,7 +2149,7 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
 
         # --- SECTION 6D: NO ATTENDANCE (and no leave) ---
         if date_iso in mp_approved_dates:
-            detail["status"] = "PF"
+            detail["status"] = "P"
         elif date_iso in mp_pending_dates:
             detail["status"] = "MP"
         else:
@@ -2147,8 +2177,10 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     lop_deduction = monthly_salary - net_salary
 
     # Derived counts for backward compatibility
-    present_count = sum(1 for d in attendance_details if d["status"] in ("PF", "PA"))
-    leave_count = sum(1 for d in attendance_details if d["status"] == "PA")
+    _present_codes = ("P", "HD", "PF", "PH", "SF", "SH", "EF", "EH", "PA", "PP", "OH")
+    _leave_codes = ("PF", "PH", "SF", "SH", "EF", "EH", "PA", "PP", "OH")
+    present_count = sum(1 for d in attendance_details if d["status"] in _present_codes)
+    leave_count = sum(1 for d in attendance_details if d["status"] in _leave_codes)
     absent_count = sum(1 for d in attendance_details if d["status"] == "A")
 
     return {
