@@ -8966,6 +8966,35 @@ async def get_my_documents(current_user: dict = Depends(get_current_user)):
 
 # ============== POLICIES ROUTES ==============
 
+# Policies whose visibility is restricted by department.
+# Map: policy_id -> set of department names allowed (admins always see them)
+DEPARTMENT_RESTRICTED_POLICIES = {
+    "policy_research": {"Research Unit"},
+}
+
+async def _is_policy_visible_to_user(policy_id: str, current_user: dict) -> bool:
+    """Decide if a policy is visible to the current user.
+    Admin roles see everything. Employees only see policies whose
+    department restriction matches their employee.department.
+    """
+    restricted_to = DEPARTMENT_RESTRICTED_POLICIES.get(policy_id)
+    if not restricted_to:
+        return True
+    # Admins (hr, system_admin, office_admin) always see restricted policies
+    if current_user.get("role") in ALL_ADMIN_ROLES:
+        return True
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        return False
+    employee = await db.employees.find_one(
+        {"id": employee_id, "is_deleted": {"$ne": True}},
+        {"_id": 0, "department": 1},
+    )
+    if not employee:
+        return False
+    return employee.get("department") in restricted_to
+
+
 @api_router.get("/policies")
 async def get_policies(current_user: dict = Depends(get_current_user)):
     """Get all company policies"""
@@ -8997,7 +9026,12 @@ async def get_policies(current_user: dict = Depends(get_current_user)):
             )
         policies = await db.policies.find({}, {"_id": 0}).to_list(20)
     
-    return [serialize_doc(p) for p in policies]
+    # Apply department-based visibility filter
+    visible_policies = []
+    for policy in policies:
+        if await _is_policy_visible_to_user(policy.get("id"), current_user):
+            visible_policies.append(policy)
+    return [serialize_doc(p) for p in visible_policies]
 
 @api_router.get("/policies/{policy_id}")
 async def get_policy(policy_id: str, current_user: dict = Depends(get_current_user)):
@@ -9005,6 +9039,8 @@ async def get_policy(policy_id: str, current_user: dict = Depends(get_current_us
     policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
+    if not await _is_policy_visible_to_user(policy_id, current_user):
+        raise HTTPException(status_code=403, detail="You do not have access to this policy")
     return serialize_doc(policy)
 
 @api_router.put("/policies/{policy_id}")
