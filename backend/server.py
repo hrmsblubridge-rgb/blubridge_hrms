@@ -324,50 +324,68 @@ COMPANY_HOLIDAYS_2026 = [
 COMPANY_POLICIES = [
     {
         "id": "policy_leave",
-        "name": "Leave Policy",
+        "name": "Notice \u2013 List of Holidays",
         "category": "HR",
-        "version": "2.0",
+        "version": "2026.1",
         "effective_date": "2026-01-01",
-        "applicable_to": "All Employees",
+        "applicable_to": "All Employees & Interns",
         "content": {
-            "overview": "This policy outlines the leave entitlements and procedures for all employees at BluBridge.",
+            "overview": "This is to formally notify all employees and interns that the holidays listed below are company-declared holidays for the calendar year 2026.",
             "sections": [
                 {
-                    "title": "Leave Types & Entitlements",
-                    "items": [
-                        {"type": "Casual Leave (CL)", "days": 12, "description": "For personal matters, can be taken in half-day increments"},
-                        {"type": "Sick Leave (SL)", "days": 10, "description": "For illness, medical certificate required for 3+ consecutive days"},
-                        {"type": "Earned Leave (EL)", "days": 18, "description": "Vacation leave, accrued monthly, can be carried forward (max 30 days)"},
-                        {"type": "Maternity Leave", "days": 182, "description": "For female employees, as per government regulations"},
-                        {"type": "Paternity Leave", "days": 10, "description": "For male employees on birth of child"},
-                        {"type": "Bereavement Leave", "days": 5, "description": "On death of immediate family member"}
-                    ]
+                    "title": "Operating Framework",
+                    "text": "As a research-focused organization, we follow a flexible operating framework to ensure uninterrupted access to research infrastructure and learning environments. Accordingly, the declaration of holidays is for reference and compensation purposes only and does not imply a mandatory office closure.\n\nEmployees and interns may, based on individual preference and project requirements, choose to either avail leave or remain actively engaged in research and learning activities on these days. Those who choose to remain actively engaged shall be eligible for additional compensation, in accordance with the Holiday Work / Extra Pay Policy and the terms governing their respective engagement.\n\nEngagement in research and learning activities on declared holidays is purely voluntary, and no employee or intern is obligated to avail leave on the listed dates."
                 },
                 {
-                    "title": "Leave Application Process",
-                    "items": [
-                        "Apply through HRMS portal at least 3 days in advance for planned leaves",
-                        "Emergency leaves must be notified to manager within 2 hours of shift start",
-                        "Manager approval required for all leaves",
-                        "HR approval required for leaves exceeding 5 consecutive days"
-                    ]
+                    "title": "A. Standard Holidays",
+                    "table": {
+                        "headers": ["Sl. No", "Holiday", "Date", "Day"],
+                        "rows": [
+                            ["1", "New Year's Day", "01-Jan-2026", "Thursday"],
+                            ["2", "Republic Day", "26-Jan-2026", "Monday"],
+                            ["3", "Tamil New Year (Puthandu)", "14-Apr-2026", "Tuesday"],
+                            ["4", "May Day (Labour Day)", "01-May-2026", "Friday"],
+                            ["5", "Independence Day", "15-Aug-2026", "Saturday"],
+                            ["6", "Gandhi Jayanthi", "02-Oct-2026", "Friday"]
+                        ]
+                    }
                 },
                 {
-                    "title": "Leave Restrictions",
-                    "items": [
-                        "No leave during probation period except sick leave",
-                        "Leave cannot be combined with public holidays without prior approval",
-                        "Unapproved absence will be marked as Loss of Pay (LOP)",
-                        "Maximum 3 casual leaves per month"
-                    ]
+                    "title": "B. Optional Festival Holiday Bucket",
+                    "text": "Employees and interns may choose any four (4) days only from the list below in a calendar year.",
+                    "table": {
+                        "headers": ["Sl. No", "Festival", "Date", "Day"],
+                        "rows": [
+                            ["1", "Pongal", "15-Jan-2026", "Thursday"],
+                            ["2", "Thiruvallur Day", "16-Jan-2026", "Friday"],
+                            ["3", "Ramzan*", "21-Mar-2026*", "Saturday*"],
+                            ["4", "Mahavir Jayanti", "31-Mar-2026", "Tuesday"],
+                            ["5", "Good Friday", "03-Apr-2026", "Friday"],
+                            ["6", "Bakrid*", "27-May-2026*", "Wednesday*"],
+                            ["7", "Muharram*", "06-Jul-2026*", "Monday*"],
+                            ["8", "Vinayaka Chaturthi", "22-Aug-2026", "Saturday"],
+                            ["9", "Diwali", "09-Nov-2026", "Monday"],
+                            ["10", "Christmas Day", "25-Dec-2026", "Friday"]
+                        ]
+                    },
+                    "footer": "* Dates marked are subject to change based on official or lunar calendar announcements."
                 },
                 {
-                    "title": "Leave Encashment",
-                    "items": [
-                        "Unused Earned Leave can be encashed at year-end (max 10 days)",
-                        "Encashment calculated at basic salary rate",
-                        "Leave encashment processed in January salary"
-                    ]
+                    "title": "Mid-Year Joiner Eligibility \u2014 Optional Festival Holiday Bucket",
+                    "text": "For employees and interns joining during the course of the calendar year, eligibility under the Optional Festival Holiday Bucket shall apply on a pro-rated basis according to the date of joining, as set out below. Optional festival holidays may be chosen only from the declared Optional Festival Holiday Bucket, cannot be carried forward, shall lapse if not used within the same calendar year, and remain subject to prior intimation, approval, and organizational requirements. This clarification applies only to the Optional Festival Holiday Bucket and does not affect the Standard Holidays declared by the Company.",
+                    "table": {
+                        "headers": ["Joining Period", "Maximum Optional Festival Holidays Eligible"],
+                        "rows": [
+                            ["01 January to 31 March", "4 Days"],
+                            ["01 April to 30 June", "3 Days"],
+                            ["01 July to 30 September", "2 Days"],
+                            ["01 October to 31 December", "1 Day"]
+                        ]
+                    }
+                },
+                {
+                    "title": "Important Clarification",
+                    "text": "The holiday framework consists of six (6) standard holidays and up to four (4) optional festival holidays in a calendar year, subject to the eligibility framework applicable to mid-year joiners. All holidays are non-mandatory, the office remains accessible for research and learning activities at all times, and this list is issued solely for internal reference and planning purposes, subject to organizational requirements."
                 }
             ]
         }
