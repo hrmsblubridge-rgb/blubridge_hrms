@@ -811,6 +811,15 @@ class RequestApproveBody(BaseModel):
     is_lop: Optional[bool] = None
     lop_remark: Optional[str] = None
     model_config = ConfigDict(extra="ignore")
+
+class StarRewardCreate(BaseModel):
+    employee_id: str
+    stars: int
+    reason: str
+    type: str = "performance"
+
+class StarReward(BaseModel):
+    model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     employee_id: str
     stars: int
@@ -819,12 +828,6 @@ class RequestApproveBody(BaseModel):
     awarded_by: str
     month: str
     created_at: datetime = Field(default_factory=lambda: get_ist_now())
-
-class StarRewardCreate(BaseModel):
-    employee_id: str
-    stars: int
-    reason: str
-    type: str = "performance"
 
 class Team(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -4685,7 +4688,6 @@ async def recompute_attendance_from_punches(
         "skipped_locked": skipped_locked,
     }
 
-@api_router.get("/attendance/stats")
 def classify_attendance_bucket(rec: dict) -> str:
     """Classify attendance record into a STRICTLY mutually exclusive bucket
     that drives the Dashboard "Today's Attendance Status" tiles.
@@ -4726,6 +4728,7 @@ def is_late_login_record(rec: dict) -> bool:
     return False
 
 
+@api_router.get("/attendance/stats")
 async def get_attendance_stats(
     date: Optional[str] = None, 
     from_date: Optional[str] = None,
