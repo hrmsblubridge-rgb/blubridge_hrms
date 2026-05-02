@@ -139,7 +139,7 @@ const Attendance = () => {
     }
   };
 
-  const { sortedRows: sortedAttendance, sortField, sortDir: sortOrder, toggleSort: handleSort } = useTableSort(attendance, 'emp_name', 'asc');
+  const { sortedRows: sortedAttendance, sortField, sortDir: sortOrder, toggleSort: handleSort } = useTableSort(attendance);
 
   // Pagination computed values
   const totalRecords = sortedAttendance.length;

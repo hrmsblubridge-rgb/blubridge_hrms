@@ -71,37 +71,32 @@ const _compare = (a, b, dir) => {
 };
 
 export function useTableSort(rows, defaultField = null, defaultDir = 'asc') {
-  const [sortField, setSortField] = useState(defaultField);
-  const [sortDir, setSortDir] = useState(defaultDir);
+  // Single state object so the 3-state machine transitions atomically and
+  // cannot drift between sortField/sortDir.
+  //   { field: null, dir: 'asc' }  → neutral (original order)
+  //   { field: 'x',  dir: 'asc' }  → ascending
+  //   { field: 'x',  dir: 'desc' } → descending
+  const [sort, setSort] = useState({ field: defaultField, dir: defaultDir });
 
-  // 3-state cycle per column:
-  //   click 1 → ASC, click 2 → DESC, click 3 → reset (default order).
+  // Strict 3-state cycle per column:
+  //   neutral → ASC → DESC → neutral → ASC → ...
   // Switching to a different column always restarts the cycle at ASC.
   const toggleSort = useCallback((field) => {
-    setSortField((prevField) => {
-      if (prevField !== field) {
-        setSortDir('asc');
-        return field;
-      }
-      // Same column — advance the cycle synchronously
-      let nextField = field;
-      setSortDir((curDir) => {
-        if (curDir === 'asc') return 'desc';
-        // curDir === 'desc' → reset
-        nextField = null;
-        return 'asc';
-      });
-      return nextField;
+    setSort((prev) => {
+      if (prev.field !== field) return { field, dir: 'asc' };
+      if (prev.dir === 'asc') return { field, dir: 'desc' };
+      // prev.dir === 'desc' → reset to neutral (original order)
+      return { field: null, dir: 'asc' };
     });
   }, []);
 
-  const resetSort = useCallback(() => {
-    setSortField(null);
-    setSortDir('asc');
-  }, []);
+  const resetSort = useCallback(() => setSort({ field: null, dir: 'asc' }), []);
 
-  // CRITICAL: when sortField is null we return the SAME `rows` reference (i.e.
-  // the original order from the source dataset) — we never mutate `rows`.
+  const { field: sortField, dir: sortDir } = sort;
+
+  // CRITICAL: when sortField is null we return the SAME `rows` reference,
+  // exactly preserving the source dataset's original order. We never mutate
+  // `rows` — the slice() before sort() guarantees a copy when sorting.
   const sortedRows = useMemo(() => {
     if (!Array.isArray(rows) || !sortField) return rows;
     const copy = rows.slice();
@@ -109,7 +104,16 @@ export function useTableSort(rows, defaultField = null, defaultDir = 'asc') {
     return copy;
   }, [rows, sortField, sortDir]);
 
-  return { sortedRows, sortField, sortDir, toggleSort, resetSort, setSortField, setSortDir };
+  return {
+    sortedRows,
+    sortField,
+    sortDir,
+    toggleSort,
+    resetSort,
+    // Compat shims for legacy callers
+    setSortField: (f) => setSort((p) => ({ field: f, dir: p.dir })),
+    setSortDir: (d) => setSort((p) => ({ field: p.field, dir: d })),
+  };
 }
 
 /**

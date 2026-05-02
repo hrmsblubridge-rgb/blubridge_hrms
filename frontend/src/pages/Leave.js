@@ -260,7 +260,7 @@ const Leave = () => {
     }
   };
 
-  const { sortedRows: sortedLeaves, sortField, sortDir: sortOrder, toggleSort: handleSort } = useTableSort(leaves, 'emp_name', 'asc');
+  const { sortedRows: sortedLeaves, sortField, sortDir: sortOrder, toggleSort: handleSort } = useTableSort(leaves);
 
   const pendingLeaves = sortedLeaves.filter(l => l.status === 'pending');
   const historyLeaves = sortedLeaves.filter(l => l.status !== 'pending');

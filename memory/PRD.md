@@ -442,3 +442,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Sort hook + SortableTh applied to: Employees, Attendance, AdminMissedPunch, AdminLateRequests, AdminEarlyOut, Leave, EmployeeAttendance, EmployeeLateRequest, EmployeeEarlyOut, EmployeeMissedPunch, EmployeeLeave, Reports.
   - Skipped intentionally (high regression risk / non-table layouts): Payroll (custom frozen-column table), Holidays (card-grid, not a table), StarReward (nested team-employees structure with its own pagination — separate follow-up).
   - All touched files lint clean; no backend / API / pagination / filtering / search / row-action changes.
+
+- **2026-05-02** Hardened the 3-state sort cycle (`useTableSort`).
+  - Replaced two split state slices (`sortField` + `sortDir`) with a single atomic state object `{ field, dir }`. The previous split version had a closure-mutation race in nested `setState` updaters that could miss the reset transition under React 18 strict mode.
+  - State machine now strictly cycles `neutral → ASC → DESC → neutral → …` per column with atomic transitions. Switching to a different column always restarts at ASC.
+  - `sortedRows` returns the SAME `rows` reference when neutral — guaranteeing the EXACT original API/dataset order on click-3 with zero mutation. The `slice()` only happens when actually sorting.
+  - `<SortableTh>` icon already maps cleanly: `null/different field` → `ChevronsUpDown` neutral; `field=this, dir=asc` → `ChevronUp`; `field=this, dir=desc` → `ChevronDown`.
+  - Removed pre-set default sort fields from `Attendance.js` and `Leave.js` so click-3 reset returns to true API order.
+  - Programmatic 3-state cycle test (7 cases, neutral / asc / desc / reset / restart / switch / reset-after-switch) all pass via `node /tmp/test_sort.mjs`.
