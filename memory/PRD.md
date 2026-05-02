@@ -435,3 +435,10 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Applied to highest-traffic admin tables: `Employees.js` (full row sort), `Attendance.js` (replaced legacy localeCompare sort with the new hook for proper date/time sorting), `AdminMissedPunch.js` (new — was unsorted previously).
   - **No backend/API/business-logic changes**; pagination, filtering, search, row actions, modals, and existing flows fully preserved. Lint clean across all touched files.
   - Remaining tables (Leave/Payroll/Holidays/Reports/etc.) continue to work as-is and can be migrated to the same hook in a follow-up — they already get the sticky header + premium scrollbar for free via CSS.
+
+- **2026-05-02** Datatable Precision Fix — completed the global enhancement.
+  - **3-state sort cycle**: `useTableSort` now cycles `asc → desc → reset (original order)` per column. When sortField is null we return the source `rows` reference unchanged, preserving original order without mutating the dataset.
+  - **True body-only scroll**: `frontend/src/index.css` now applies `overflow-y: auto; max-height: calc(100vh - 280px)` automatically to every `.overflow-x-auto` that contains a `.table-premium` (via `:has()` selector — no per-table CSS class). Combined with the existing sticky `<thead th>`, only the table body scrolls inside the wrapper while the header stays pinned. Page itself no longer scrolls long tables.
+  - Sort hook + SortableTh applied to: Employees, Attendance, AdminMissedPunch, AdminLateRequests, AdminEarlyOut, Leave, EmployeeAttendance, EmployeeLateRequest, EmployeeEarlyOut, EmployeeMissedPunch, EmployeeLeave, Reports.
+  - Skipped intentionally (high regression risk / non-table layouts): Payroll (custom frozen-column table), Holidays (card-grid, not a table), StarReward (nested team-employees structure with its own pagination — separate follow-up).
+  - All touched files lint clean; no backend / API / pagination / filtering / search / row-action changes.

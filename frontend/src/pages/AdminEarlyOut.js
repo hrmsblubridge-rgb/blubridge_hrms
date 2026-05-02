@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -124,12 +125,24 @@ const AdminEarlyOut = () => {
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed to reset'); }
   };
 
-  const renderTable = (data, isPending) => (
+  const EarlyOutTable = ({ data, isPending }) => {
+    const { sortedRows, sortField, sortDir, toggleSort } = useTableSort(data);
+    return (
     <div className="overflow-x-auto">
       <table className="table-premium">
-        <thead><tr><th>Employee</th><th>Team</th><th>Date</th><th>Expected</th><th>Actual</th><th>Reason</th><th>Status</th><th>LOP</th>{isHR && <th>Actions</th>}</tr></thead>
+        <thead><tr>
+          <SortableTh field="emp_name" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Employee</SortableTh>
+          <SortableTh field="team" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Team</SortableTh>
+          <SortableTh field="date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
+          <SortableTh field="expected_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Expected</SortableTh>
+          <SortableTh field="actual_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Actual</SortableTh>
+          <SortableTh field="reason" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Reason</SortableTh>
+          <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
+          <SortableTh field="is_lop" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>LOP</SortableTh>
+          {isHR && <th>Actions</th>}
+        </tr></thead>
         <tbody>
-          {data.length === 0 ? <tr><td colSpan={isHR ? 9 : 8} className="text-center py-12 text-slate-500">No records</td></tr> : data.map(r => (
+          {sortedRows.length === 0 ? <tr><td colSpan={isHR ? 9 : 8} className="text-center py-12 text-slate-500">No records</td></tr> : sortedRows.map(r => (
             <tr key={r.id}>
               <td className="font-medium text-slate-900">{r.emp_name}</td>
               <td className="text-slate-600">{r.team}</td>
@@ -157,7 +170,8 @@ const AdminEarlyOut = () => {
         </tbody>
       </table>
     </div>
-  );
+    );
+  };
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="admin-early-out-page">
@@ -179,8 +193,8 @@ const AdminEarlyOut = () => {
               <TabsTrigger value="history" className="px-6 py-4 rounded-none data-[state=active]:bg-[#063c88] data-[state=active]:text-white">History ({filteredHistory.length})</TabsTrigger>
             </TabsList>
           </div>
-          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(filteredPending, true)}</TabsContent>
-          <TabsContent value="history" className="mt-0">{renderTable(filteredHistory, false)}</TabsContent>
+          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : <EarlyOutTable data={filteredPending} isPending={true} />}</TabsContent>
+          <TabsContent value="history" className="mt-0"><EarlyOutTable data={filteredHistory} isPending={false} /></TabsContent>
         </Tabs>
       </div>
 

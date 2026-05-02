@@ -8,6 +8,7 @@ import { DatePicker } from '../components/ui/date-picker';
 import { Button } from '../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { PageSizeSelector } from '../components/PageSizeSelector';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -59,13 +60,14 @@ const EmployeeAttendance = () => {
     leave: attendance.filter(a => a.status === 'Leave' || (a.status && a.status.includes('Leave'))).length,
   };
 
-  // Pagination computed
-  const totalRecords = attendance.length;
+  // Sort + pagination — sort first, then slice
+  const { sortedRows: sortedAttendance, sortField, sortDir, toggleSort } = useTableSort(attendance);
+  const totalRecords = sortedAttendance.length;
   const totalPages = Math.max(1, Math.ceil(totalRecords / rowsPerPage));
   const safeCurrentPage = Math.min(currentPage, totalPages);
   const startIndex = (safeCurrentPage - 1) * rowsPerPage;
   const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
-  const paginatedAttendance = attendance.slice(startIndex, endIndex);
+  const paginatedAttendance = sortedAttendance.slice(startIndex, endIndex);
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="employee-attendance-page">
@@ -162,12 +164,12 @@ const EmployeeAttendance = () => {
             <table className="table-premium">
               <thead>
                 <tr>
-                  <th>Date</th>
-                  <th>Day</th>
-                  <th>Check-In</th>
-                  <th>Check-Out</th>
-                  <th>Total Hours</th>
-                  <th>Status</th>
+                  <SortableTh field="date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
+                  <SortableTh field="day" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Day</SortableTh>
+                  <SortableTh field="check_in" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Check-In</SortableTh>
+                  <SortableTh field="check_out" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Check-Out</SortableTh>
+                  <SortableTh field="total_hours" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Total Hours</SortableTh>
+                  <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
                 </tr>
               </thead>
               <tbody>

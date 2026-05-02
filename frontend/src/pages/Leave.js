@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
 import { Pagination } from '../components/Pagination';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -25,8 +26,6 @@ const Leave = () => {
   const [teams, setTeams] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('requests');
-  const [sortField, setSortField] = useState('emp_name');
-  const [sortOrder, setSortOrder] = useState('asc');
   const [selectedLeave, setSelectedLeave] = useState(null);
   const [showDetailSheet, setShowDetailSheet] = useState(false);
   const [showApproveDialog, setShowApproveDialog] = useState(false);
@@ -261,16 +260,7 @@ const Leave = () => {
     }
   };
 
-  const handleSort = (field) => {
-    if (sortField === field) setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    else { setSortField(field); setSortOrder('asc'); }
-  };
-
-  const sortedLeaves = [...leaves].sort((a, b) => {
-    const aVal = a[sortField] || '';
-    const bVal = b[sortField] || '';
-    return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-  });
+  const { sortedRows: sortedLeaves, sortField, sortDir: sortOrder, toggleSort: handleSort } = useTableSort(leaves, 'emp_name', 'asc');
 
   const pendingLeaves = sortedLeaves.filter(l => l.status === 'pending');
   const historyLeaves = sortedLeaves.filter(l => l.status !== 'pending');
@@ -288,7 +278,6 @@ const Leave = () => {
   const historyTotal = historyLeaves.length;
   const pendingPaginated = pendingLeaves.slice((pendingPage - 1) * pendingPageSize, pendingPage * pendingPageSize);
   const historyPaginated = historyLeaves.slice((historyPage - 1) * historyPageSize, historyPage * historyPageSize);
-  const SortIcon = ({ field }) => sortField !== field ? null : sortOrder === 'asc' ? <ChevronUp className="w-4 h-4 inline ml-1" /> : <ChevronDown className="w-4 h-4 inline ml-1" />;
   const getStatusBadge = (status) => ({ 'pending': 'badge-warning', 'approved': 'badge-success', 'rejected': 'badge-error' }[status] || 'badge-neutral');
   const canApprove = ['hr'].includes(user?.role);
 
@@ -426,11 +415,11 @@ const Leave = () => {
                   <thead>
                     <tr>
                       <th className="w-12"></th>
-                      <th className="cursor-pointer" onClick={() => handleSort('emp_name')}>Employee <SortIcon field="emp_name" /></th>
-                      <th className="cursor-pointer" onClick={() => handleSort('team')}>Team <SortIcon field="team" /></th>
-                      <th>Type</th>
-                      <th>Date</th>
-                      <th>Duration</th>
+                      <SortableTh field="emp_name" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Employee</SortableTh>
+                      <SortableTh field="team" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Team</SortableTh>
+                      <SortableTh field="leave_type" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Type</SortableTh>
+                      <SortableTh field="start_date" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Date</SortableTh>
+                      <SortableTh field="duration" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Duration</SortableTh>
                       <th>Reason</th>
                       <th>Actions</th>
                     </tr>
@@ -499,13 +488,13 @@ const Leave = () => {
                 <thead>
                   <tr>
                     <th className="w-12"></th>
-                    <th>Employee</th>
-                    <th>Team</th>
-                    <th>Type</th>
-                    <th>Date</th>
-                    <th>Duration</th>
+                    <SortableTh field="emp_name" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Employee</SortableTh>
+                    <SortableTh field="team" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Team</SortableTh>
+                    <SortableTh field="leave_type" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Type</SortableTh>
+                    <SortableTh field="start_date" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Date</SortableTh>
+                    <SortableTh field="duration" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Duration</SortableTh>
                     <th>Reason</th>
-                    <th>Status</th>
+                    <SortableTh field="status" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Status</SortableTh>
                     <th className="w-44">Actions</th>
                   </tr>
                 </thead>

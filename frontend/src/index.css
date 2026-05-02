@@ -241,6 +241,26 @@
     scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
 }
 
+/* TRUE body-only scroll for ALL .table-premium tables.
+   When a `.table-premium` lives inside `.overflow-x-auto` (the canonical wrapper
+   used across the HRMS), the wrapper becomes its own vertical scroll container
+   capped at a sensible viewport-relative height. Combined with sticky <thead>
+   above, this means the page does NOT scroll the table — only the table body
+   scrolls inside the wrapper while the header stays pinned.
+   Auto-scoped via :has() so we don't affect non-table overflow regions
+   (sidebars, dialogs, bento cards, etc.). */
+.overflow-x-auto:has(> table.table-premium),
+.overflow-x-auto:has(> table .table-premium),
+.overflow-x-auto:has(table.table-premium) {
+    overflow-y: auto;
+    max-height: calc(100vh - 280px);
+}
+
+/* Smaller safety floor so very short cards still get their own scroll */
+@media (max-height: 720px) {
+    .overflow-x-auto:has(table.table-premium) { max-height: 480px; }
+}
+
 .overflow-x-auto::-webkit-scrollbar,
 .overflow-y-auto::-webkit-scrollbar,
 .overflow-auto::-webkit-scrollbar,

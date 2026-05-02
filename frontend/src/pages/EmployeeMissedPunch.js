@@ -10,6 +10,7 @@ import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -21,6 +22,7 @@ const EmployeeMissedPunch = () => {
   const [editingId, setEditingId] = useState(null);
   const [formLoading, setFormLoading] = useState(false);
   const [form, setForm] = useState({ date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '' });
+  const { sortedRows: sortedRequests, sortField, sortDir, toggleSort } = useTableSort(requests);
 
   const fetchData = useCallback(async () => {
     try {
@@ -72,9 +74,17 @@ const EmployeeMissedPunch = () => {
         {loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : (
           <div className="overflow-x-auto">
             <table className="table-premium">
-              <thead><tr><th>Date</th><th>Punch Type</th><th>Check-In</th><th>Check-Out</th><th>Reason</th><th>Status</th><th>Actions</th></tr></thead>
+              <thead><tr>
+                <SortableTh field="date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
+                <SortableTh field="punch_type" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Punch Type</SortableTh>
+                <SortableTh field="check_in_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Check-In</SortableTh>
+                <SortableTh field="check_out_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Check-Out</SortableTh>
+                <SortableTh field="reason" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Reason</SortableTh>
+                <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
+                <th>Actions</th>
+              </tr></thead>
               <tbody>
-                {requests.length === 0 ? <tr><td colSpan="7" className="text-center py-12 text-slate-500">No missed punch requests found</td></tr> : requests.map((r) => (
+                {sortedRequests.length === 0 ? <tr><td colSpan="7" className="text-center py-12 text-slate-500">No missed punch requests found</td></tr> : sortedRequests.map((r) => (
                   <tr key={r.id}>
                     <td className="font-medium text-slate-900">{r.date}</td>
                     <td className="text-slate-600">{r.punch_type}</td>

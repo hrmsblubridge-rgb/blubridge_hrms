@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from '../components/ui/badge';
 import { DatePicker } from '../components/ui/date-picker';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -22,6 +23,7 @@ const Reports = () => {
   
   const [leaveFilters, setLeaveFilters] = useState({ fromDate: '', toDate: '', empName: '', team: 'All', leaveType: 'All', department: 'All' });
   const [attendanceFilters, setAttendanceFilters] = useState({ fromDate: '', toDate: '', empName: '', team: 'All', status: 'All', department: 'All' });
+  const { sortedRows: sortedReportData, sortField, sortDir, toggleSort } = useTableSort(reportData);
 
   useEffect(() => { fetchTeamsAndDepts(); }, []);
 
@@ -307,28 +309,28 @@ const Reports = () => {
               <thead>
                 {activeTab === 'attendance' ? (
                   <tr>
-                    <th>Employee</th>
-                    <th>Team</th>
-                    <th>Date</th>
-                    <th>Check-In</th>
-                    <th>Check-Out</th>
-                    <th>Status</th>
+                    <SortableTh field="emp_name" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Employee</SortableTh>
+                    <SortableTh field="team" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Team</SortableTh>
+                    <SortableTh field="date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
+                    <SortableTh field="check_in" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Check-In</SortableTh>
+                    <SortableTh field="check_out" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Check-Out</SortableTh>
+                    <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
                   </tr>
                 ) : (
                   <tr>
-                    <th>Employee</th>
-                    <th>Team</th>
-                    <th>Type</th>
-                    <th>Start Date</th>
-                    <th>End Date</th>
-                    <th>Duration</th>
-                    <th>Status</th>
+                    <SortableTh field="emp_name" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Employee</SortableTh>
+                    <SortableTh field="team" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Team</SortableTh>
+                    <SortableTh field="leave_type" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Type</SortableTh>
+                    <SortableTh field="start_date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Start Date</SortableTh>
+                    <SortableTh field="end_date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>End Date</SortableTh>
+                    <SortableTh field="duration" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Duration</SortableTh>
+                    <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
                   </tr>
                 )}
               </thead>
               <tbody>
                 {activeTab === 'attendance' ? (
-                  reportData.map((record, index) => (
+                  sortedReportData.map((record, index) => (
                     <tr key={index}>
                       <td className="font-medium text-slate-900">{record.emp_name}</td>
                       <td className="text-slate-600">{record.team}</td>
@@ -339,7 +341,7 @@ const Reports = () => {
                     </tr>
                   ))
                 ) : (
-                  reportData.map((record, index) => (
+                  sortedReportData.map((record, index) => (
                     <tr key={index}>
                       <td className="font-medium text-slate-900">{record.emp_name}</td>
                       <td className="text-slate-600">{record.team}</td>

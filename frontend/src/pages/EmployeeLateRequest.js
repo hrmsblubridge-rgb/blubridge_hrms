@@ -9,6 +9,7 @@ import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -20,6 +21,7 @@ const EmployeeLateRequest = () => {
   const [editingId, setEditingId] = useState(null);
   const [formLoading, setFormLoading] = useState(false);
   const [form, setForm] = useState({ date: '', expected_time: '', actual_time: '', reason: '' });
+  const { sortedRows: sortedRequests, sortField, sortDir, toggleSort } = useTableSort(requests);
 
   const fetchData = useCallback(async () => {
     try {
@@ -77,9 +79,17 @@ const EmployeeLateRequest = () => {
         {loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : (
           <div className="overflow-x-auto">
             <table className="table-premium">
-              <thead><tr><th>Date</th><th>Expected Time</th><th>Actual Time</th><th>Reason</th><th>Status</th><th>LOP</th><th>Actions</th></tr></thead>
+              <thead><tr>
+                <SortableTh field="date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
+                <SortableTh field="expected_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Expected Time</SortableTh>
+                <SortableTh field="actual_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Actual Time</SortableTh>
+                <SortableTh field="reason" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Reason</SortableTh>
+                <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
+                <SortableTh field="is_lop" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>LOP</SortableTh>
+                <th>Actions</th>
+              </tr></thead>
               <tbody>
-                {requests.length === 0 ? <tr><td colSpan="7" className="text-center py-12 text-slate-500">No late requests found</td></tr> : requests.map((r) => (
+                {sortedRequests.length === 0 ? <tr><td colSpan="7" className="text-center py-12 text-slate-500">No late requests found</td></tr> : sortedRequests.map((r) => (
                   <tr key={r.id}>
                     <td className="font-medium text-slate-900">{r.date}</td>
                     <td className="text-slate-600">{r.expected_time || '-'}</td>

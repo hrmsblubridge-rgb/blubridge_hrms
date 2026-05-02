@@ -11,6 +11,7 @@ import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
 import { Pagination } from '../components/Pagination';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -28,6 +29,7 @@ const EmployeeLeave = () => {
   const [viewReason, setViewReason] = useState(null); // { reason, leave_type, start_date, end_date }
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const { sortedRows: sortedLeaves, sortField, sortDir, toggleSort } = useTableSort(leaves);
 
   const fetchData = useCallback(async () => {
     try {
@@ -190,23 +192,23 @@ const EmployeeLeave = () => {
             <table className="table-premium">
               <thead>
                 <tr>
-                  <th>Type</th>
-                  <th>Split</th>
-                  <th>Start Date</th>
-                  <th>End Date</th>
-                  <th>Duration</th>
+                  <SortableTh field="leave_type" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Type</SortableTh>
+                  <SortableTh field="leave_split" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Split</SortableTh>
+                  <SortableTh field="start_date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Start Date</SortableTh>
+                  <SortableTh field="end_date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>End Date</SortableTh>
+                  <SortableTh field="duration" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Duration</SortableTh>
                   <th>Reason</th>
                   <th>Document</th>
-                  <th>Status</th>
-                  <th>LOP</th>
+                  <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
+                  <SortableTh field="is_lop" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>LOP</SortableTh>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {leaves.length === 0 ? (
+                {sortedLeaves.length === 0 ? (
                   <tr><td colSpan="10" className="text-center py-12 text-slate-500">No leave records found</td></tr>
                 ) : (
-                  leaves.slice((page - 1) * pageSize, page * pageSize).map((leave, index) => (
+                  sortedLeaves.slice((page - 1) * pageSize, page * pageSize).map((leave, index) => (
                     <tr key={index}>
                       <td className="font-medium text-slate-900">{leave.leave_type}</td>
                       <td className="text-slate-600">{leave.leave_split || 'Full Day'}</td>
