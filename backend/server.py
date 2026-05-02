@@ -3193,7 +3193,7 @@ async def bulk_import_employees(
                     email=email,
                     username=username,
                     password=temp_password,
-                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://hrms-admin-hub.preview.emergentagent.com')}/login"
+                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://leave-code-mapper.preview.emergentagent.com')}/login"
                 )
             )
 
@@ -10923,6 +10923,23 @@ async def _update_attendance_from_missed_punch(rec):
 
     if not emp_id or not date or not punch_type:
         return  # malformed request — abort safely
+
+    # Normalize attendance date to DD-MM-YYYY — the canonical format used by
+    # the rest of the attendance collection / API filters / frontend. Missed-
+    # punch requests come in from the HTML date input as YYYY-MM-DD; writing
+    # the raw value hides the corrected record from the attendance grid.
+    def _to_ddmmyyyy(ds: str) -> str:
+        if not ds:
+            return ds
+        s = str(ds).strip()
+        if len(s) == 10 and s[4] == "-" and s[7] == "-":
+            try:
+                return datetime.strptime(s, "%Y-%m-%d").strftime("%d-%m-%Y")
+            except ValueError:
+                return s
+        return s
+
+    date = _to_ddmmyyyy(date)
 
     def _to_24h(raw: Optional[str]) -> Optional[str]:
         """Accept 'YYYY-MM-DDTHH:MM' / 'HH:MM' / 'HH:MM:SS' / 'HH:MM AM/PM'."""

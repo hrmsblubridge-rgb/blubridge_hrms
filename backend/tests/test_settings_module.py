@@ -22,7 +22,7 @@ from datetime import datetime, timedelta
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://hrms-admin-hub.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://leave-code-mapper.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
 
 HR_CREDS = {"username": "admin", "password": "pass123"}

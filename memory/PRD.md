@@ -398,3 +398,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Duplicate guard: skips rows that match existing non-rejected DB record AND in-batch repeats by (employee, date, punch_type).
   - Frontend: new "Import Missed Punch" button + dialog in `AdminMissedPunch.js` (HR-only) with template download, preview-after-pick (mapping chips green / ignored amber), summary counters, downloadable error log CSV.
   - Verified with 8 scenarios: Both-punch approved as Admin, In-only with AM/PM time, Out-only with sysadmin approver, invalid time rejected, missing both times rejected, missing reason rejected, unknown email rejected, in-batch duplicate caught.
+
+- **2026-05-02** Fixed: Missed-Punch approval not reflecting in Attendance grid (BUG).
+  - **Root cause:** `_update_attendance_from_missed_punch` persisted attendance rows using the raw `date` from the missed-punches collection (YYYY-MM-DD, from HTML date input). The rest of the attendance collection + `/api/attendance` filters use DD-MM-YYYY → corrected records were invisible to the frontend, so employees kept showing Absent even after HR approval.
+  - **Fix (surgical):** Added a YYYY-MM-DD → DD-MM-YYYY normalizer at the top of `_update_attendance_from_missed_punch` in `backend/server.py` (existing recalculation logic untouched).
+  - **One-time migration:** `backend/migrate_missed_punch_dates.py` renamed/merged 102 historical bad records (63 merged into existing DD-MM-YYYY rows — corrected values win; 39 date-renamed).
+  - Verified with Krithik Sagala / 01-05-2026: attendance now returns `check_in: 09:30 AM, check_out: 08:30 PM, status: Present, source: corrected` via GET /api/attendance.

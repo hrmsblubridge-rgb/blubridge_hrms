@@ -10,5 +10,5 @@
 - **Employee**: `vijayan.k` / `pass123` (created 2026-04-27, onboarding approved)
 - **Employee**: `kasper` / `pass123` (kasper@blubridge.com, EMP0050, reactivated 2026-04-27)
 
-Base URL: https://hrms-admin-hub.preview.emergentagent.com
+Base URL: https://leave-code-mapper.preview.emergentagent.com
 Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "..."}
