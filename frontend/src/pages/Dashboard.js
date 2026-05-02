@@ -785,8 +785,9 @@ const Dashboard = () => {
                       )}
                       <td>
                         <Badge className={`
-                          ${item.status === 'Not Login' || item.status === 'pending' ? 'badge-warning' : ''}
+                          ${item.status === 'Not Login' || item.status === 'pending' || item.status === 'Pending Leave' ? 'badge-warning' : ''}
                           ${item.status === 'Login' || item.status === 'approved' ? 'badge-success' : ''}
+                          ${item.status === 'Leave' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/50' : ''}
                           ${item.status === 'Completed' ? 'badge-info' : ''}
                           ${item.status === 'Early Out' || item.status === 'rejected' ? 'badge-error' : ''}
                           ${item.status === 'Late Login' ? 'bg-purple-50 text-purple-700 border border-purple-200/50' : ''}

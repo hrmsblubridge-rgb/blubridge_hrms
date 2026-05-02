@@ -404,3 +404,11 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - **Fix (surgical):** Added a YYYY-MM-DD → DD-MM-YYYY normalizer at the top of `_update_attendance_from_missed_punch` in `backend/server.py` (existing recalculation logic untouched).
   - **One-time migration:** `backend/migrate_missed_punch_dates.py` renamed/merged 102 historical bad records (63 merged into existing DD-MM-YYYY rows — corrected values win; 39 date-renamed).
   - Verified with Krithik Sagala / 01-05-2026: attendance now returns `check_in: 09:30 AM, check_out: 08:30 PM, status: Present, source: corrected` via GET /api/attendance.
+
+- **2026-05-02** Admin Leave module — added "Reason" column (truncated preview + hover tooltip + eye-icon opens full detail sheet) to both Pending and History tabs in `frontend/src/pages/Leave.js`. No API change; uses existing `reason` field.
+- **2026-05-02** Dashboard "Leaves/No Login" — leave now wins over no-login.
+  - Rewrote `GET /api/dashboard/leave-list` in `backend/server.py` to cross-reference the `leaves` collection (YYYY-MM-DD) against the queried DD-MM-YYYY date/range.
+  - Employees with approved/pending leave overlapping the window are surfaced first with `leave_type`, leave date, and status `Leave` (approved) / `Pending Leave` (pending). Only employees with no attendance AND no leave now fall into the `Not Login` bucket.
+  - Handles Full/Half Day, multi-day, Preplanned/Sick/Optional-Holiday leave types uniformly via `start_date <= to && end_date >= from`.
+  - Added "Leave" / "Pending Leave" badge styling in `frontend/src/pages/Dashboard.js`.
+  - Verified live: today returns 10 on-leave rows + 17 not-logged rows (previously all 27 were incorrectly shown as "Not Login").

@@ -6234,39 +6234,104 @@ async def get_dashboard_leave_list(
 ):
     today = get_ist_now().strftime("%d-%m-%Y")
     query_date = from_date if from_date else today
-    
-    # Get employees not logged in on the specified date
+
+    # Active employees with attendance tracking
     all_employees = await db.employees.find({
         "employee_status": EmployeeStatus.ACTIVE,
         "is_deleted": {"$ne": True},
         "attendance_tracking_enabled": True
     }, {"_id": 0}).to_list(1000)
-    
-    # Build date query for attendance
+
+    # Logged-in employees for the date / range (attendance dates are DD-MM-YYYY)
     if from_date and to_date:
         logged_records = await db.attendance.find(
-            {"date": {"$gte": from_date, "$lte": to_date}}, 
+            {"date": {"$gte": from_date, "$lte": to_date}},
             {"_id": 0}
         ).to_list(10000)
     else:
         logged_records = await db.attendance.find({"date": query_date}, {"_id": 0}).to_list(1000)
-    
+
     logged_ids = {a["employee_id"] for a in logged_records}
-    
-    not_logged = [e for e in all_employees if e["id"] not in logged_ids]
-    
+
+    # --- Leave priority lookup -------------------------------------------------
+    # Leaves use YYYY-MM-DD for start_date / end_date. Convert DD-MM-YYYY query
+    # date(s) to that format so we can cross-reference reliably.
+    def _dmy_to_ymd(ds: Optional[str]) -> Optional[str]:
+        if not ds:
+            return None
+        try:
+            return datetime.strptime(ds, "%d-%m-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return ds  # assume already YYYY-MM-DD
+
+    ymd_from = _dmy_to_ymd(from_date or query_date)
+    ymd_to = _dmy_to_ymd(to_date or query_date)
+
+    # Pull any approved/pending leave overlapping the window (approved takes
+    # priority, pending is shown as fall-back so admins can see the full leave
+    # picture — only "rejected" is excluded).
+    leave_docs = await db.leaves.find(
+        {
+            "status": {"$in": ["approved", "pending"]},
+            "start_date": {"$lte": ymd_to},
+            "end_date": {"$gte": ymd_from},
+        },
+        {"_id": 0},
+    ).to_list(5000)
+
+    # Index best leave per employee (approved wins over pending)
+    leave_by_emp: dict = {}
+    status_rank = {"approved": 2, "pending": 1}
+    for lv in leave_docs:
+        emp_id = lv.get("employee_id")
+        if not emp_id:
+            continue
+        current = leave_by_emp.get(emp_id)
+        if not current or status_rank.get(lv.get("status"), 0) > status_rank.get(current.get("status"), 0):
+            leave_by_emp[emp_id] = lv
+
+    # --- Build response ---------------------------------------------------------
+    # Priority 1: on leave (regardless of attendance punch — a leave always wins
+    # for dashboard display purposes). Priority 2: no attendance + no leave.
     result = []
-    for emp in not_logged[:20]:  # Increased limit
+
+    # 1) Employees on leave for the window
+    for emp in all_employees:
+        lv = leave_by_emp.get(emp["id"])
+        if not lv:
+            continue
+        # Display leave date in DD-MM-YYYY for UI consistency
+        try:
+            lv_start_display = datetime.strptime(lv.get("start_date", ""), "%Y-%m-%d").strftime("%d-%m-%Y")
+        except (ValueError, TypeError):
+            lv_start_display = lv.get("start_date") or query_date
         result.append({
             "emp_name": emp["full_name"],
-            "team": emp["team"],
-            "department": emp["department"],
+            "team": emp.get("team"),
+            "department": emp.get("department"),
+            "leave_type": lv.get("leave_type") or "Leave",
+            "leave_split": lv.get("leave_split"),
+            "date": lv_start_display,
+            "status": "Leave" if lv.get("status") == "approved" else "Pending Leave",
+            "reason": lv.get("reason"),
+        })
+
+    # 2) No attendance AND no leave
+    for emp in all_employees:
+        if emp["id"] in logged_ids:
+            continue
+        if emp["id"] in leave_by_emp:
+            continue
+        result.append({
+            "emp_name": emp["full_name"],
+            "team": emp.get("team"),
+            "department": emp.get("department"),
             "leave_type": "-",
             "date": query_date,
-            "status": "Not Login"
+            "status": "Not Login",
         })
-    
-    return result
+
+    return result[:50]
 
 # ============== REPORTS ROUTES ==============
 

@@ -431,17 +431,18 @@ const Leave = () => {
                       <th>Type</th>
                       <th>Date</th>
                       <th>Duration</th>
+                      <th>Reason</th>
                       <th>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {pendingPaginated.length === 0 ? (
-                      <tr><td colSpan="7" className="text-center py-12 text-slate-500">No pending requests</td></tr>
+                      <tr><td colSpan="8" className="text-center py-12 text-slate-500">No pending requests</td></tr>
                     ) : (
                       pendingPaginated.map((leave) => (
                         <tr key={leave.id}>
                           <td>
-                            <button className="p-2 hover:bg-slate-100 rounded-lg transition-colors" onClick={() => handleViewLeave(leave)}>
+                            <button className="p-2 hover:bg-slate-100 rounded-lg transition-colors" onClick={() => handleViewLeave(leave)} data-testid={`view-reason-${leave.id}`} title={leave.reason || ''}>
                               <Eye className="w-4 h-4 text-slate-400" />
                             </button>
                           </td>
@@ -450,6 +451,16 @@ const Leave = () => {
                           <td className="text-slate-600">{leave.leave_type}</td>
                           <td className="text-slate-600">{leave.start_date}</td>
                           <td className="text-slate-600">{leave.duration}</td>
+                          <td className="text-slate-600 max-w-[220px]">
+                            <div
+                              className="truncate cursor-pointer"
+                              title={leave.reason || '-'}
+                              onClick={() => handleViewLeave(leave)}
+                              data-testid={`leave-reason-preview-${leave.id}`}
+                            >
+                              {leave.reason ? (leave.reason.length > 60 ? leave.reason.slice(0, 60) + '…' : leave.reason) : '-'}
+                            </div>
+                          </td>
                           <td>
                             {canApprove && (
                               <div className="flex gap-2">
@@ -493,18 +504,19 @@ const Leave = () => {
                     <th>Type</th>
                     <th>Date</th>
                     <th>Duration</th>
+                    <th>Reason</th>
                     <th>Status</th>
                     <th className="w-44">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {historyPaginated.length === 0 ? (
-                    <tr><td colSpan="8" className="text-center py-12 text-slate-500">No history records</td></tr>
+                    <tr><td colSpan="9" className="text-center py-12 text-slate-500">No history records</td></tr>
                   ) : (
                     historyPaginated.map((leave) => (
                       <tr key={leave.id}>
                         <td>
-                          <button className="p-2 hover:bg-slate-100 rounded-lg transition-colors" onClick={() => handleViewLeave(leave)}>
+                          <button className="p-2 hover:bg-slate-100 rounded-lg transition-colors" onClick={() => handleViewLeave(leave)} data-testid={`history-view-reason-${leave.id}`} title={leave.reason || ''}>
                             <Eye className="w-4 h-4 text-slate-400" />
                           </button>
                         </td>
@@ -513,6 +525,16 @@ const Leave = () => {
                         <td className="text-slate-600">{leave.leave_type}</td>
                         <td className="text-slate-600">{leave.start_date}</td>
                         <td className="text-slate-600">{leave.duration}</td>
+                        <td className="text-slate-600 max-w-[220px]">
+                          <div
+                            className="truncate cursor-pointer"
+                            title={leave.reason || '-'}
+                            onClick={() => handleViewLeave(leave)}
+                            data-testid={`history-leave-reason-preview-${leave.id}`}
+                          >
+                            {leave.reason ? (leave.reason.length > 60 ? leave.reason.slice(0, 60) + '…' : leave.reason) : '-'}
+                          </div>
+                        </td>
                         <td><Badge className={getStatusBadge(leave.status)}>{leave.status}</Badge></td>
                         <td>
                           <div className="flex items-center gap-2">
