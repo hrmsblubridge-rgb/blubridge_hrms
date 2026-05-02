@@ -706,6 +706,7 @@ const Dashboard = () => {
                     <>
                       <th>Leave Type</th>
                       <th>Date</th>
+                      <th>Leave Reason</th>
                     </>
                   ) : activeAttendanceTab === 'logged_in' ? (
                     <>
@@ -735,7 +736,7 @@ const Dashboard = () => {
               <tbody>
                 {(activeAttendanceTab === 'not_logged' ? leaveList : attendanceDetails).length === 0 ? (
                   <tr>
-                    <td colSpan="7" className="text-center py-12 text-slate-500">
+                    <td colSpan={activeAttendanceTab === 'not_logged' ? 8 : 7} className="text-center py-12 text-slate-500">
                       <div className="flex flex-col items-center gap-2">
                         <AlertCircle className="w-8 h-8 text-slate-300" />
                         <p>No records found</p>
@@ -760,6 +761,19 @@ const Dashboard = () => {
                         <>
                           <td className="text-slate-600">{item.leave_type || '-'}</td>
                           <td className="text-slate-600">{item.date}</td>
+                          <td className="text-slate-600 max-w-[240px]">
+                            {item.reason ? (
+                              <div
+                                className="truncate"
+                                title={item.reason}
+                                data-testid={`dash-leave-reason-${index}`}
+                              >
+                                {item.reason.length > 60 ? item.reason.slice(0, 60) + '…' : item.reason}
+                              </div>
+                            ) : (
+                              <span className="text-slate-400">-</span>
+                            )}
+                          </td>
                         </>
                       ) : activeAttendanceTab === 'logged_in' ? (
                         <>
