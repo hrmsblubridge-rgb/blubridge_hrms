@@ -146,6 +146,10 @@ cloudinary.config(
 resend.api_key = os.environ.get("RESEND_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 
+# HRMS automated email system (centralized)
+from email_service import ensure_email_indexes as _ensure_email_indexes  # noqa: E402
+from email_jobs import start_email_scheduler as _start_email_scheduler, get_job_handlers as _get_email_job_handlers  # noqa: E402
+
 # Create the main app
 app = FastAPI(title="BluBridge HRMS API")
 api_router = APIRouter(prefix="/api")
@@ -12041,6 +12045,40 @@ settings_services = settings_module.register(api_router, {
     "get_shift_timings": get_shift_timings,
 })
 
+
+# ============== HRMS EMAIL MANUAL TRIGGER (HR-only, testing / on-demand) ==============
+@api_router.post("/email-jobs/{job_name}/run")
+async def run_email_job_now(job_name: str, current_user: dict = Depends(get_current_user)):
+    """Manually trigger one of the scheduled HRMS email jobs.
+
+    Useful for QA and for HR to re-send the daily summary on demand. Dedup
+    still applies — the same (email_type, scope_key) won't be sent twice.
+    """
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    handlers = _get_email_job_handlers()
+    handler = handlers.get(job_name)
+    if not handler:
+        raise HTTPException(status_code=404, detail=f"Unknown job. Valid: {list(handlers)}")
+    asyncio.create_task(handler(db))
+    return {"status": "triggered", "job": job_name}
+
+
+@api_router.get("/email-jobs/audit")
+async def email_jobs_audit(
+    email_type: Optional[str] = None,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    q: dict = {}
+    if email_type:
+        q["email_type"] = email_type
+    rows = await db.email_audit_logs.find(q, {"_id": 0}).sort("sent_at", -1).limit(max(1, min(limit, 500))).to_list(500)
+    return {"count": len(rows), "rows": rows}
+
+
 app.include_router(api_router)
 
 # CORS
@@ -12186,6 +12224,13 @@ async def ensure_indexes():
         print("Admin users seeded/migrated successfully")
     except Exception as e:
         print(f"Admin seeding check: {e}")
+
+    # HRMS automated email system — indexes + cron scheduler
+    try:
+        await _ensure_email_indexes(db)
+        _start_email_scheduler(db)
+    except Exception as e:
+        print(f"Email scheduler startup failed: {e}")
 
 
 @app.on_event("shutdown")

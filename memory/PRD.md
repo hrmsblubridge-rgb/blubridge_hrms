@@ -412,3 +412,15 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Handles Full/Half Day, multi-day, Preplanned/Sick/Optional-Holiday leave types uniformly via `start_date <= to && end_date >= from`.
   - Added "Leave" / "Pending Leave" badge styling in `frontend/src/pages/Dashboard.js`.
   - Verified live: today returns 10 on-leave rows + 17 not-logged rows (previously all 27 were incorrectly shown as "Not Login").
+
+- **2026-05-02** HRMS Automated Email Notification System — centralized enterprise-grade cron email engine (new, additive).
+  - New modules: `backend/email_templates.py` (premium base template + 5 specialized templates with BluBridge branding, CTA buttons, mobile-responsive, footer), `backend/email_service.py` (`send_hrms_email`, dedup via `email_audit_logs` with partial unique index on `(email_type, scope_key) where status=sent`, retry with backoff, employee eligibility preflight, `generate_employee_action_link` deep-link helper), `backend/email_jobs.py` (5 APScheduler cron jobs, IST-aware, `coalesce=True, max_instances=1` to prevent overlap).
+  - Schedules (IST): `adminAttendanceSummaryCron` 10:30 daily, `missedPunchCron` 09:00 daily (yesterday), `earlyOutCron` 09:15 daily (yesterday), `noLoginCron` 09:30 daily (yesterday), `lateLoginCron` Mon-Sat 10:00–13:45 every 15 min (today).
+  - All jobs skip non-working days (Sunday + Holidays) and enforce per-employee guards: skip if leave/late-request/missed-punch/early-out request already applied; skip if source=`corrected`; no-login dual-CTA (Apply Leave + Apply Missed Punch).
+  - Admin summary includes: Total / Logged In / Present / Not Logged / Late / Early Out / Half Day / Missed Punch / On Leave, plus Department-wise, Shift-wise, Top 5 delayed employees, attendance %.
+  - New env vars: `FRONTEND_BASE_URL`, `ADMIN_REPORT_RECIPIENT` (defaults to `hrmsblubridge@gmail.com` for testing).
+  - New HR-only APIs: `POST /api/email-jobs/{job_name}/run` (manual trigger with dedup still active), `GET /api/email-jobs/audit?email_type=...` (view audit log).
+  - New MongoDB collection: `email_audit_logs` — tracks `email_type`, `scope_key`, `recipient_email`, `employee_id`, `status`, `error`, `provider_id`, `retry_count`, `sent_at`.
+  - Verified end-to-end: admin summary delivered to `hrmsblubridge@gmail.com` via Resend (provider id recorded); second trigger for the same scope_key correctly skipped; yesterday (01-05-2026) was a May Day holiday → all yesterday-based jobs skipped with logs; scheduler boots cleanly on FastAPI startup.
+  - **No changes** to attendance/payroll/leave/shift/biometric/dashboard/reports/existing APIs — purely additive.
+  - Dependencies added: `apscheduler==3.11.2`, `tzlocal==5.3.1` (added to `requirements.txt`).
