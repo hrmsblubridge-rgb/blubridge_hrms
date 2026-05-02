@@ -4925,9 +4925,54 @@ async def get_attendance_stats(
         if a.get("is_lop"):
             lop_count += 1
 
-    # "Not Logged / Leaves" = employees with no IN punch in the queried window.
-    # For a single date this equals (active_employees − employees_with_in).
-    not_logged = max(0, total_employees - len(employees_with_in))
+    # "Leaves / No Login" count — MUST equal the size of /dashboard/leave-list
+    # so the tile number and the table row count always line up.
+    #   = |employees on approved/pending leave in window ∪ employees without any IN punch|
+    # Leaves are stored as YYYY-MM-DD; attendance/filter dates are DD-MM-YYYY.
+    def _dmy_to_ymd(ds: Optional[str]) -> Optional[str]:
+        if not ds:
+            return None
+        try:
+            return datetime.strptime(ds, "%d-%m-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return ds
+
+    q_from = from_date or date
+    q_to = to_date or date
+    ymd_from = _dmy_to_ymd(q_from)
+    ymd_to = _dmy_to_ymd(q_to)
+
+    # Resolve the SAME cohort used by /dashboard/leave-list so counts align.
+    active_tracking_emps = await db.employees.find(
+        {
+            "employee_status": EmployeeStatus.ACTIVE,
+            "is_deleted": {"$ne": True},
+            "attendance_tracking_enabled": True,
+        },
+        {"_id": 0, "id": 1},
+    ).to_list(5000)
+    active_ids = {e["id"] for e in active_tracking_emps}
+
+    # Restrict "with IN" to the active+tracking cohort (employees_with_in can
+    # include inactive employees whose attendance records still live on).
+    active_with_in = employees_with_in & active_ids
+
+    on_leave_ids: set = set()
+    if ymd_from and ymd_to:
+        leave_docs = await db.leaves.find(
+            {
+                "status": {"$in": ["approved", "pending"]},
+                "start_date": {"$lte": ymd_to},
+                "end_date": {"$gte": ymd_from},
+            },
+            {"_id": 0, "employee_id": 1},
+        ).to_list(5000)
+        on_leave_ids = {lv.get("employee_id") for lv in leave_docs if lv.get("employee_id")}
+    on_leave_ids &= active_ids
+
+    no_in_ids = active_ids - active_with_in
+    # Union: employees on leave OR with no IN punch
+    not_logged = len(on_leave_ids | no_in_ids)
 
     return {
         "total_employees": total_employees,
