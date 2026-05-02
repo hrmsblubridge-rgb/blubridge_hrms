@@ -13,6 +13,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/s
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
 } from '../components/ui/dialog';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 import { PageSizeSelector } from '../components/PageSizeSelector';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -263,25 +264,26 @@ const AdminMissedPunch = () => {
 
   // Server already filtered records by tab; `data` contains only the active tab's rows
   const activeRows = data;
+  const { sortedRows: sortedRowsMP, sortField: mpSortField, sortDir: mpSortDir, toggleSort: mpToggleSort } = useTableSort(activeRows);
 
   const renderTable = (items, showActions) => (
     <div className="overflow-x-auto">
-      <table className="w-full text-sm">
+      <table className="w-full text-sm table-premium">
         <thead>
           <tr className="bg-slate-50">
-            <th className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Employee</th>
-            <th className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Date</th>
-            <th className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Type</th>
-            <th className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Check-in</th>
-            <th className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Check-out</th>
-            <th className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Status</th>
+            <SortableTh field="emp_name" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Employee</SortableTh>
+            <SortableTh field="date" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Date</SortableTh>
+            <SortableTh field="punch_type" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Type</SortableTh>
+            <SortableTh field="check_in_time" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Check-in</SortableTh>
+            <SortableTh field="check_out_time" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Check-out</SortableTh>
+            <SortableTh field="status" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Status</SortableTh>
             <th className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Actions</th>
           </tr>
         </thead>
         <tbody>
-          {items.length === 0 ? (
+          {sortedRowsMP.length === 0 ? (
             <tr><td colSpan={7} className="text-center py-8 text-slate-400">No records found</td></tr>
-          ) : items.map(r => (
+          ) : sortedRowsMP.map(r => (
             <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50/50">
               <td className="px-4 py-3 font-medium text-slate-900">{r.emp_name}</td>
               <td className="px-4 py-3 text-slate-600">{r.date}</td>

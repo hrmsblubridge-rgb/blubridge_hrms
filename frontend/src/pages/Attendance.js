@@ -3,12 +3,11 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 import { 
   CalendarCheck, 
   Search, 
   Filter,
-  ChevronUp,
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -34,8 +33,6 @@ const Attendance = () => {
   const [teams, setTeams] = useState([]);
   const [departments, setDepartments] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [sortField, setSortField] = useState('emp_name');
-  const [sortOrder, setSortOrder] = useState('asc');
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showLeaveDetail, setShowLeaveDetail] = useState(false);
   
@@ -142,20 +139,7 @@ const Attendance = () => {
     }
   };
 
-  const handleSort = (field) => {
-    if (sortField === field) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortField(field);
-      setSortOrder('asc');
-    }
-  };
-
-  const sortedAttendance = [...attendance].sort((a, b) => {
-    const aVal = a[sortField] || '';
-    const bVal = b[sortField] || '';
-    return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
-  });
+  const { sortedRows: sortedAttendance, sortField, sortDir: sortOrder, toggleSort: handleSort } = useTableSort(attendance, 'emp_name', 'asc');
 
   // Pagination computed values
   const totalRecords = sortedAttendance.length;
@@ -164,11 +148,6 @@ const Attendance = () => {
   const startIndex = (safeCurrentPage - 1) * rowsPerPage;
   const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
   const paginatedAttendance = sortedAttendance.slice(startIndex, endIndex);
-
-  const getSortIcon = (field) => {
-    if (sortField !== field) return null;
-    return sortOrder === 'asc' ? <ChevronUp className="w-4 h-4 inline ml-1" /> : <ChevronDown className="w-4 h-4 inline ml-1" />;
-  };
 
   const getStatusBadge = (status, isLop) => {
     if (isLop || status === 'Loss of Pay') return 'badge-error font-bold';
@@ -323,13 +302,13 @@ const Attendance = () => {
               <thead>
                 <tr>
                   <th className="w-12"></th>
-                  <th className="cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleSort('emp_name')}>Employee {getSortIcon('emp_name')}</th>
-                  <th className="cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleSort('team')}>Team {getSortIcon('team')}</th>
-                  <th className="cursor-pointer hover:bg-slate-100 transition-colors" onClick={() => handleSort('date')}>Date {getSortIcon('date')}</th>
-                  <th>Check-In</th>
-                  <th>Check-Out</th>
-                  <th>Total Hours</th>
-                  <th>Status</th>
+                  <SortableTh field="emp_name" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Employee</SortableTh>
+                  <SortableTh field="team" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Team</SortableTh>
+                  <SortableTh field="date" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Date</SortableTh>
+                  <SortableTh field="check_in" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Check-In</SortableTh>
+                  <SortableTh field="check_out" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Check-Out</SortableTh>
+                  <SortableTh field="total_hours" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Total Hours</SortableTh>
+                  <SortableTh field="status" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Status</SortableTh>
                 </tr>
               </thead>
               <tbody>

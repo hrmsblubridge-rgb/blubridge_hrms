@@ -179,6 +179,8 @@
 /* Premium Table Styles */
 .table-premium {
     @apply w-full;
+    border-collapse: separate;
+    border-spacing: 0;
 }
 
 .table-premium thead {
@@ -188,6 +190,32 @@
 .table-premium thead th {
     @apply px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider;
     letter-spacing: 0.05em;
+    /* Sticky header — survives vertical scroll within ancestor scroll
+       containers (overflow-y: auto/scroll) AND viewport scroll. */
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background-color: rgb(248 250 252 / 0.98);
+    backdrop-filter: saturate(140%) blur(6px);
+    -webkit-backdrop-filter: saturate(140%) blur(6px);
+    box-shadow: inset 0 -1px 0 rgb(226 232 240 / 1);
+}
+
+/* Sortable header — clickable visual cue + active-state highlight */
+.table-premium thead th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 150ms ease, background-color 150ms ease;
+}
+
+.table-premium thead th.sortable:hover {
+    color: #063c88;
+    background-color: rgb(241 245 249 / 0.9);
+}
+
+.table-premium thead th.sortable.sort-active {
+    color: #063c88;
+    background-color: rgb(219 234 254 / 0.4);
 }
 
 .table-premium tbody tr {
@@ -200,6 +228,55 @@
 
 .table-premium tbody td {
     @apply px-3 py-3 text-sm;
+}
+
+/* Premium scrollbar — applies to all overflow containers globally.
+   Subtle, modern, theme-friendly. Webkit + Firefox supported. */
+.overflow-x-auto,
+.overflow-y-auto,
+.overflow-auto,
+.scroll-premium {
+    scroll-behavior: smooth;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+.overflow-x-auto::-webkit-scrollbar,
+.overflow-y-auto::-webkit-scrollbar,
+.overflow-auto::-webkit-scrollbar,
+.scroll-premium::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-track,
+.overflow-y-auto::-webkit-scrollbar-track,
+.overflow-auto::-webkit-scrollbar-track,
+.scroll-premium::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb,
+.overflow-y-auto::-webkit-scrollbar-thumb,
+.overflow-auto::-webkit-scrollbar-thumb,
+.scroll-premium::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.35);
+    border-radius: 999px;
+    transition: background 150ms ease;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb:hover,
+.overflow-y-auto::-webkit-scrollbar-thumb:hover,
+.overflow-auto::-webkit-scrollbar-thumb:hover,
+.scroll-premium::-webkit-scrollbar-thumb:hover {
+    background: rgba(6, 60, 136, 0.55);
+}
+
+.overflow-x-auto::-webkit-scrollbar-corner,
+.overflow-y-auto::-webkit-scrollbar-corner,
+.overflow-auto::-webkit-scrollbar-corner,
+.scroll-premium::-webkit-scrollbar-corner {
+    background: transparent;
 }
 
 /* Status Badges */

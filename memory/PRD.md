@@ -424,3 +424,14 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Verified end-to-end: admin summary delivered to `hrmsblubridge@gmail.com` via Resend (provider id recorded); second trigger for the same scope_key correctly skipped; yesterday (01-05-2026) was a May Day holiday → all yesterday-based jobs skipped with logs; scheduler boots cleanly on FastAPI startup.
   - **No changes** to attendance/payroll/leave/shift/biometric/dashboard/reports/existing APIs — purely additive.
   - Dependencies added: `apscheduler==3.11.2`, `tzlocal==5.3.1` (added to `requirements.txt`).
+
+- **2026-05-02** Global Datatable UI Enhancement (frontend-only, additive).
+  - **Sticky header** on every `.table-premium` table: `position:sticky; top:0; z-index:5;` + subtle backdrop blur + bottom shadow. Works against page-scroll & ancestor-scroll containers. No layout/column shift.
+  - **Premium scrollbar** globally on `.overflow-x-auto / .overflow-y-auto / .overflow-auto / .scroll-premium`: 8 px thin track, rounded thumb, smooth scroll-behavior, theme-friendly hover state. Webkit + Firefox support.
+  - **Reusable sort utility** `frontend/src/components/useTableSort.js`:
+    - `useTableSort(rows, defaultField, defaultDir)` hook → returns `sortedRows, sortField, sortDir, toggleSort, resetSort`.
+    - `<SortableTh>` drop-in `<th>` component with sort indicator (lucide ChevronsUpDown / Up / Down) + active-state highlight via `.sortable.sort-active` CSS.
+    - Smart value coercion (numbers, DD-MM-YYYY, YYYY-MM-DD, ISO, `Hh Mm`, `HH:MM` 12/24h, strings), empty values always sort last.
+  - Applied to highest-traffic admin tables: `Employees.js` (full row sort), `Attendance.js` (replaced legacy localeCompare sort with the new hook for proper date/time sorting), `AdminMissedPunch.js` (new — was unsorted previously).
+  - **No backend/API/business-logic changes**; pagination, filtering, search, row actions, modals, and existing flows fully preserved. Lint clean across all touched files.
+  - Remaining tables (Leave/Payroll/Holidays/Reports/etc.) continue to work as-is and can be migrated to the same hook in a follow-up — they already get the sticky header + premium scrollbar for free via CSS.

@@ -5,6 +5,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import SalarySlip from '../components/SalarySlip';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import { useTableSort, SortableTh } from '../components/useTableSort';
 import { 
   Users, 
   Search, 
@@ -90,6 +91,8 @@ const Employees = () => {
   const [stats, setStats] = useState(null);
   const [teams, setTeams] = useState([]);
   const [departments, setDepartments] = useState([]);
+  // Centralized client-side sort (works on the currently-paginated page set)
+  const { sortedRows: sortedEmployees, sortField: empSortField, sortDir: empSortDir, toggleSort: toggleEmpSort } = useTableSort(employees);
 
   // Fixed dropdown values
   const FIXED_DEPARTMENTS = ['Research Unit', 'Support Staff', 'Business & Product'];
@@ -898,15 +901,15 @@ const Employees = () => {
               <table className="table-premium w-full">
                 <thead>
                   <tr>
-                    <th className="whitespace-nowrap">Employee ID</th>
-                    <th className="whitespace-nowrap">Name</th>
-                    <th className="whitespace-nowrap hidden md:table-cell">Email</th>
-                    <th className="whitespace-nowrap hidden lg:table-cell">Department</th>
-                    <th className="whitespace-nowrap hidden lg:table-cell">Team</th>
-                    <th className="whitespace-nowrap hidden xl:table-cell">Designation</th>
-                    <th className="whitespace-nowrap hidden xl:table-cell">Biometric ID</th>
-                    <th className="whitespace-nowrap">Status</th>
-                    <th className="whitespace-nowrap hidden xl:table-cell">Inactive Type</th>
+                    <SortableTh field="custom_employee_id" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap">Employee ID</SortableTh>
+                    <SortableTh field="full_name" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap">Name</SortableTh>
+                    <SortableTh field="official_email" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden md:table-cell">Email</SortableTh>
+                    <SortableTh field="department" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden lg:table-cell">Department</SortableTh>
+                    <SortableTh field="team" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden lg:table-cell">Team</SortableTh>
+                    <SortableTh field="designation" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden xl:table-cell">Designation</SortableTh>
+                    <SortableTh field="biometric_id" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden xl:table-cell">Biometric ID</SortableTh>
+                    <SortableTh field="employee_status" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap">Status</SortableTh>
+                    <SortableTh field="inactive_type" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden xl:table-cell">Inactive Type</SortableTh>
                     <th className="whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
@@ -916,7 +919,7 @@ const Employees = () => {
                       <td colSpan="10" className="text-center py-12 text-slate-500">No employees found</td>
                     </tr>
                   ) : (
-                    employees.map((emp) => (
+                    sortedEmployees.map((emp) => (
                       <tr key={emp.id}>
                         <td className="font-semibold text-[#063c88] whitespace-nowrap">{emp.custom_employee_id || emp.emp_id}</td>
                         <td>
