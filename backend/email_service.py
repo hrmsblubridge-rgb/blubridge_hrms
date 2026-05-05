@@ -138,11 +138,13 @@ async def send_hrms_email(
     attempt = 0
     last_err: Optional[str] = None
     provider_id: Optional[str] = None
+    cc_to_use = cc_clean
+    cc_dropped_reason: Optional[str] = None
     while attempt <= max_retries:
         try:
             params = {"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html}
-            if cc_clean:
-                params["cc"] = cc_clean
+            if cc_to_use:
+                params["cc"] = cc_to_use
             result: Any = await asyncio.to_thread(resend.Emails.send, params)
             provider_id = (result or {}).get("id") if isinstance(result, dict) else None
             await _record_audit(
@@ -154,11 +156,24 @@ async def send_hrms_email(
                 status="sent",
                 provider_id=provider_id,
                 retry_count=attempt,
+                error=cc_dropped_reason,  # surfaces "cc dropped after rejection: ..." if applicable
             )
-            logger.info("email sent type=%s scope=%s to=%s id=%s", email_type, scope_key, to_email, provider_id)
+            if cc_dropped_reason:
+                logger.warning("email sent WITHOUT cc due to provider rejection (%s) type=%s scope=%s", cc_dropped_reason, email_type, scope_key)
+            else:
+                logger.info("email sent type=%s scope=%s to=%s cc=%d id=%s", email_type, scope_key, to_email, len(cc_to_use or []), provider_id)
             return True
         except Exception as e:
             last_err = str(e)
+            # FAIL-SAFE: if the failure was while CC was attached, drop CC and
+            # retry once so the PRIMARY recipient still gets the email. CC
+            # issues must NEVER block delivery to the primary `to_email`.
+            if cc_to_use:
+                logger.warning("send failed with CC (%s) — retrying without CC type=%s scope=%s", e, email_type, scope_key)
+                cc_dropped_reason = f"cc dropped after rejection: {e}"
+                cc_to_use = []
+                # don't increment attempt — give primary a clean retry without CC
+                continue
             attempt += 1
             await asyncio.sleep(1.5 * attempt)
 
