@@ -2517,6 +2517,353 @@ async def change_admin_password(
     
     return {"message": "Password changed successfully"}
 
+
+# ============== CREDENTIAL RESET — TWO INDEPENDENT FLOWS ==============
+# Flow A: Admin Direct Reset    (no email; admin sets/auto-generates password)
+# Flow B: Employee Self Reset   (login → "Forgot Password?" → username/email →
+#                                token sent to registered email → set new pwd)
+# Both flows reuse the existing SHA-256 hash_password() so the login engine and
+# password storage shape are UNCHANGED. The reset TOKEN itself is a separate
+# random secret (secrets.token_urlsafe), stored in `password_reset_tokens`.
+import secrets as _secrets
+
+
+def _generate_strong_password(length: int = 12) -> str:
+    """Generate a strong password: ≥1 lower, upper, digit, symbol; ≥12 chars."""
+    if length < 12:
+        length = 12
+    upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"     # excludes I, O for readability
+    lower = "abcdefghijkmnopqrstuvwxyz"   # excludes l
+    digits = "23456789"                   # excludes 0, 1
+    symbols = "!@#$%^&*?-_"
+    pools = [upper, lower, digits, symbols]
+    pwd = [_secrets.choice(p) for p in pools]
+    all_chars = upper + lower + digits + symbols
+    pwd += [_secrets.choice(all_chars) for _ in range(length - len(pwd))]
+    _secrets.SystemRandom().shuffle(pwd)
+    return "".join(pwd)
+
+
+def _validate_password_strength(pw: str) -> tuple[bool, str]:
+    if not pw or len(pw) < 8:
+        return False, "Password must be at least 8 characters long"
+    if len(pw) > 128:
+        return False, "Password is too long (max 128 chars)"
+    has_letter = any(c.isalpha() for c in pw)
+    has_digit = any(c.isdigit() for c in pw)
+    if not (has_letter and has_digit):
+        return False, "Password must contain at least one letter and one digit"
+    return True, ""
+
+
+class AdminResetCredentialsRequest(BaseModel):
+    password: Optional[str] = None
+    confirm_password: Optional[str] = None
+    auto_generate: bool = False
+    force_change_on_next_login: bool = True
+
+
+@api_router.post("/admin/employees/{employee_id}/reset-credentials")
+async def admin_reset_employee_credentials(
+    employee_id: str,
+    payload: AdminResetCredentialsRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """ADMIN DIRECT RESET — no email is sent. Admin either supplies a password
+    or asks the system to auto-generate one. The generated/new password is
+    returned ONCE in the response so the admin can hand it to the employee.
+
+    Behavior:
+      • Old password is invalidated immediately (hash overwritten).
+      • `force_change_on_next_login=True` (default) sets `must_change_password`
+        on the user, which the FE can use to redirect to /change-password.
+      • Audit log entry recorded.
+      • Password is NEVER stored or logged in plain text.
+    """
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    user = await db.users.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="No login account exists for this employee")
+
+    # Decide the new password
+    if payload.auto_generate:
+        new_password = _generate_strong_password(12)
+        generated = True
+    else:
+        if not payload.password:
+            raise HTTPException(status_code=400, detail="Password is required (or set auto_generate=true)")
+        if payload.confirm_password is not None and payload.password != payload.confirm_password:
+            raise HTTPException(status_code=400, detail="Passwords do not match")
+        ok, msg = _validate_password_strength(payload.password)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        new_password = payload.password
+        generated = False
+
+    new_hash = hash_password(new_password)
+    update = {
+        "password_hash": new_hash,
+        "must_change_password": bool(payload.force_change_on_next_login),
+        "password_updated_at": get_ist_now().isoformat(),
+        "password_updated_by": current_user.get("id"),
+        "password_updated_method": "admin_reset",
+    }
+    await db.users.update_one({"id": user["id"]}, {"$set": update})
+
+    # Invalidate any pending self-service reset tokens for this user
+    try:
+        await db.password_reset_tokens.update_many(
+            {"user_id": user["id"], "used": False},
+            {"$set": {"used": True, "invalidated_reason": "admin_reset", "used_at": get_ist_now().isoformat()}},
+        )
+    except Exception:
+        pass
+
+    await log_audit(
+        current_user.get("id"),
+        action="admin_reset_credentials",
+        resource="user",
+        resource_id=user["id"],
+        details=f"Admin reset password for employee {employee_id} ({employee.get('full_name','')}); generated={generated}; force_change={payload.force_change_on_next_login}",
+    )
+
+    response: dict = {
+        "ok": True,
+        "employee_id": employee_id,
+        "username": user.get("username"),
+        "force_change_on_next_login": bool(payload.force_change_on_next_login),
+        "generated": generated,
+    }
+    # Per spec: surface the password ONCE only when auto-generated. When the
+    # admin typed it themselves, they already know it — never echo it back.
+    if generated:
+        response["password"] = new_password
+    return response
+
+
+# ---------------- Flow B: Employee Self Reset -------------------------------
+RESET_TOKEN_TTL_MINUTES = 30
+
+
+class ForgotPasswordRequest(BaseModel):
+    identifier: str  # username OR email
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+    confirm_password: Optional[str] = None
+
+
+async def _ensure_password_reset_token_indexes() -> None:
+    try:
+        await db.password_reset_tokens.create_index([("token", 1)], unique=True)
+        # TTL index: Mongo deletes the doc once expires_at is in the past
+        await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    except Exception as _e:  # noqa: F841
+        pass
+
+
+def _resolve_employee_email(user: dict) -> Optional[str]:
+    """Pick the best email for sending a reset link. Prefer official_email
+    on the linked employee record, fall back to the user's own email."""
+    email = (user.get("email") or "").strip()
+    return email if email and "@" in email else None
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest):
+    """EMPLOYEE SELF RESET — accepts either username or email.
+
+    Per product spec: when no match is found, we explicitly tell the user
+    "User not found" (NOT the typical generic "if the account exists" message).
+    A token is created (single-use, 30 min TTL) and a reset link is emailed
+    to the REGISTERED EMAIL ONLY.
+    """
+    raw = (payload.identifier or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Please enter your username or email")
+    safe = re.escape(raw)
+    user = await db.users.find_one(
+        {"$or": [
+            {"username": {"$regex": f"^{safe}$", "$options": "i"}},
+            {"email": {"$regex": f"^{safe}$", "$options": "i"}},
+        ]},
+        {"_id": 0},
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Please check your username or email.")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Your account is deactivated. Contact admin.")
+
+    # Prefer the linked employee's official_email; fall back to user.email.
+    email_to: Optional[str] = None
+    employee_id = user.get("employee_id")
+    if employee_id:
+        emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "official_email": 1, "email": 1, "full_name": 1})
+        if emp:
+            email_to = emp.get("official_email") or emp.get("email")
+    if not email_to:
+        email_to = _resolve_employee_email(user)
+    if not email_to:
+        raise HTTPException(status_code=400, detail="No registered email on file. Please contact admin.")
+
+    # Issue a single-use token (32 bytes ≈ 43 url-safe chars)
+    token = _secrets.token_urlsafe(32)
+    now_utc = datetime.utcnow()
+    expires_at = now_utc + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
+    await db.password_reset_tokens.insert_one({
+        "id": str(uuid.uuid4()),
+        "token": token,
+        "user_id": user["id"],
+        "username": user.get("username"),
+        "email": email_to,
+        "created_at": now_utc.isoformat(),
+        # Mongo TTL index needs a real BSON datetime in UTC (naive is treated as UTC).
+        "expires_at": expires_at,
+        "used": False,
+    })
+
+    base = (os.environ.get("FRONTEND_BASE_URL") or os.environ.get("REACT_APP_BACKEND_URL") or "").rstrip("/")
+    reset_url = f"{base}/reset-password?token={token}"
+
+    # Send via existing email engine. NOT routed through cron audit dedup —
+    # this is transactional, must always go.
+    try:
+        from email_templates import password_reset_email
+        from email_service import send_hrms_email
+        display_name = user.get("name") or (user.get("username") or "there").title()
+        if employee_id:
+            emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "full_name": 1})
+            if emp and emp.get("full_name"):
+                display_name = emp["full_name"]
+        html = password_reset_email(display_name, reset_url, RESET_TOKEN_TTL_MINUTES)
+        await send_hrms_email(
+            db,
+            email_type="password_reset",
+            scope_key=f"password_reset:{token}",
+            to_email=email_to,
+            subject="Reset Your BluBridge HRMS Password",
+            html=html,
+            employee_id=employee_id,
+            force=True,  # always send; never dedup transactional resets
+        )
+    except Exception as e:
+        logger.error("forgot-password: email send failed: %s", e)
+        raise HTTPException(status_code=502, detail="Could not send reset email — please try again or contact admin.")
+
+    await log_audit(
+        user["id"],
+        action="forgot_password_request",
+        resource="user",
+        resource_id=user["id"],
+        details=f"Reset email sent to {email_to[:3]}***@{email_to.split('@',1)[1] if '@' in email_to else 'unknown'}",
+    )
+
+    # Mask the email in the response so we don't enumerate addresses to a third party
+    if "@" in email_to:
+        local, domain = email_to.split("@", 1)
+        masked = f"{local[:2]}***@{domain}" if len(local) > 2 else f"***@{domain}"
+    else:
+        masked = "your registered email"
+    return {"ok": True, "message": "Reset link sent. Please check your inbox.", "sent_to": masked}
+
+
+@api_router.get("/auth/reset-password/validate")
+async def validate_reset_token(token: str):
+    """Lightweight pre-flight check used by the FE before showing the form."""
+    if not token:
+        raise HTTPException(status_code=400, detail="Token is required")
+    doc = await db.password_reset_tokens.find_one({"token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    if doc.get("used"):
+        raise HTTPException(status_code=400, detail="This reset link has already been used")
+    expires_at = doc.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except Exception:
+            expires_at = None
+    if expires_at:
+        # Normalize to naive UTC to compare with utcnow()
+        if expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if expires_at < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="This reset link has expired")
+    username = doc.get("username") or "your account"
+    return {"ok": True, "username": username}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(payload: ResetPasswordRequest):
+    """Complete the self-service password reset using a one-time token."""
+    if not payload.token:
+        raise HTTPException(status_code=400, detail="Reset token is required")
+    if payload.confirm_password is not None and payload.new_password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    ok, msg = _validate_password_strength(payload.new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    doc = await db.password_reset_tokens.find_one({"token": payload.token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    if doc.get("used"):
+        raise HTTPException(status_code=400, detail="This reset link has already been used")
+    expires_at = doc.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except Exception:
+            expires_at = None
+    if expires_at:
+        if expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if expires_at < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="This reset link has expired")
+
+    user = await db.users.find_one({"id": doc.get("user_id")}, {"_id": 0})
+    if not user or not user.get("is_active", True):
+        raise HTTPException(status_code=400, detail="Account not found or deactivated")
+
+    new_hash = hash_password(payload.new_password)
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "password_hash": new_hash,
+            "must_change_password": False,  # they just chose it themselves
+            "password_updated_at": get_ist_now().isoformat(),
+            "password_updated_method": "self_reset",
+        }},
+    )
+    # Mark token used (one-time enforcement)
+    await db.password_reset_tokens.update_one(
+        {"token": payload.token},
+        {"$set": {"used": True, "used_at": get_ist_now().isoformat()}},
+    )
+    # Invalidate any other outstanding tokens for the same user
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "invalidated_reason": "superseded_by_reset", "used_at": get_ist_now().isoformat()}},
+    )
+
+    await log_audit(
+        user["id"],
+        action="self_reset_password",
+        resource="user",
+        resource_id=user["id"],
+        details="Password reset via self-service flow",
+    )
+    return {"ok": True, "message": "Password reset successfully. Please login."}
+
+
 # ============== EMPLOYEE MASTER ROUTES ==============
 
 @api_router.get("/employees")
@@ -12497,6 +12844,12 @@ async def ensure_indexes():
         _start_email_scheduler(db)
     except Exception as e:
         print(f"Email scheduler startup failed: {e}")
+
+    # Password reset tokens — unique on token + TTL on expires_at
+    try:
+        await _ensure_password_reset_token_indexes()
+    except Exception as e:
+        print(f"Password reset index setup failed: {e}")
 
 
 @app.on_event("shutdown")

@@ -31,6 +31,8 @@ import {
   MoreVertical,
   ShieldAlert,
   AlertTriangle,
+  KeyRound,
+  Copy,
   Briefcase,
   Mail,
   Phone,
@@ -136,6 +138,15 @@ const Employees = () => {
   const [deletionLoading, setDeletionLoading] = useState(false);
   const [forceStep, setForceStep] = useState(1); // 1: warning, 2: critical, 3: type DELETE
   const [forceConfirmText, setForceConfirmText] = useState('');
+  // Admin Reset Credentials dialog
+  const [showResetCredsDialog, setShowResetCredsDialog] = useState(false);
+  const [resetMode, setResetMode] = useState('manual'); // 'manual' | 'auto'
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetConfirm, setResetConfirm] = useState('');
+  const [resetForceChange, setResetForceChange] = useState(true);
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetGeneratedPwd, setResetGeneratedPwd] = useState(''); // shown ONCE after success
+  const [resetShowPwd, setResetShowPwd] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [viewTab, setViewTab] = useState('profile');
   const [eduExpData, setEduExpData] = useState(null);
@@ -608,6 +619,57 @@ const Employees = () => {
     await fetchDeletionImpact(emp);
   };
 
+  // ---- Admin Reset Credentials -------------------------------------------
+  const openResetCreds = (emp) => {
+    setSelectedEmployee(emp);
+    setResetMode('manual');
+    setResetPassword('');
+    setResetConfirm('');
+    setResetForceChange(true);
+    setResetGeneratedPwd('');
+    setResetShowPwd(false);
+    setShowResetCredsDialog(true);
+  };
+
+  const submitResetCreds = async () => {
+    if (!selectedEmployee) return;
+    if (resetMode === 'manual') {
+      if (!resetPassword || resetPassword.length < 8) { toast.error('Password must be at least 8 characters'); return; }
+      if (resetPassword !== resetConfirm) { toast.error('Passwords do not match'); return; }
+    }
+    setResetSubmitting(true);
+    try {
+      const body = resetMode === 'auto'
+        ? { auto_generate: true, force_change_on_next_login: resetForceChange }
+        : { password: resetPassword, confirm_password: resetConfirm, force_change_on_next_login: resetForceChange };
+      const { data } = await axios.post(
+        `${API}/admin/employees/${selectedEmployee.id}/reset-credentials`,
+        body,
+        { headers: getAuthHeaders() },
+      );
+      if (data.generated && data.password) {
+        // Show ONCE
+        setResetGeneratedPwd(data.password);
+        toast.success('Password generated — copy it now, it will not be shown again');
+      } else {
+        toast.success('Credentials reset successfully');
+        setShowResetCredsDialog(false);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to reset credentials');
+    } finally {
+      setResetSubmitting(false);
+    }
+  };
+
+  const closeResetCreds = () => {
+    setShowResetCredsDialog(false);
+    setResetGeneratedPwd('');
+    setResetPassword('');
+    setResetConfirm('');
+    setSelectedEmployee(null);
+  };
+
   const openForceDelete = async (emp) => {
     setSelectedEmployee(emp);
     setForceStep(1);
@@ -1054,6 +1116,11 @@ const Employees = () => {
                                   </DropdownMenuTrigger>
                                   <DropdownMenuContent align="end" className="w-64">
                                     <DropdownMenuLabel>Employee Actions</DropdownMenuLabel>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem onClick={() => openResetCreds(emp)} data-testid={`reset-creds-${emp.id}`}>
+                                      <KeyRound className="w-4 h-4 mr-2 text-blue-600" />
+                                      <span>Reset Credentials</span>
+                                    </DropdownMenuItem>
                                     <DropdownMenuSeparator />
                                     {emp.employee_status !== 'Inactive' && (
                                       <DropdownMenuItem onClick={() => handleDelete(emp)} data-testid={`deactivate-${emp.id}`}>
@@ -2073,6 +2140,134 @@ const Employees = () => {
             <Button variant="outline" onClick={() => setShowDeleteDialog(false)} className="rounded-lg">Cancel</Button>
             <Button onClick={confirmDelete} className="bg-red-500 hover:bg-red-600 text-white rounded-lg" data-testid="confirm-delete">Deactivate</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Admin Reset Credentials Dialog */}
+      <Dialog open={showResetCredsDialog} onOpenChange={(o) => { if (!o) closeResetCreds(); }}>
+        <DialogContent className="max-w-lg" data-testid="reset-creds-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2" style={{ fontFamily: 'Outfit' }}>
+              <KeyRound className="w-5 h-5 text-blue-600" /> Reset Credentials
+            </DialogTitle>
+            <DialogDescription>
+              {selectedEmployee && (
+                <span>Reset password for <b>{selectedEmployee.full_name}</b> (<code className="text-xs">{selectedEmployee.employee_code || selectedEmployee.id?.slice(0,8)}</code>). The old password is invalidated immediately. <b>No email is sent.</b></span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {resetGeneratedPwd ? (
+            // Post-success: show generated password ONCE
+            <div className="space-y-4 py-2" data-testid="reset-generated-pwd-box">
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5" />
+                  <div className="text-[13px] text-amber-900">
+                    <b>This password will not be shown again.</b> Copy it now and share it securely with the employee.
+                  </div>
+                </div>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 flex items-center justify-between">
+                <code className="font-mono text-base text-slate-900 select-all" data-testid="generated-password-text">
+                  {resetShowPwd ? resetGeneratedPwd : '•'.repeat(resetGeneratedPwd.length)}
+                </code>
+                <div className="flex items-center gap-1">
+                  <Button size="sm" variant="ghost" onClick={() => setResetShowPwd(!resetShowPwd)} data-testid="generated-password-show-btn">
+                    {resetShowPwd ? 'Hide' : 'Show'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => { navigator.clipboard.writeText(resetGeneratedPwd); toast.success('Copied to clipboard'); }}
+                    data-testid="generated-password-copy-btn"
+                  >
+                    <Copy className="w-3.5 h-3.5 mr-1" /> Copy
+                  </Button>
+                </div>
+              </div>
+              {resetForceChange && (
+                <p className="text-xs text-slate-500">The employee will be prompted to change this password on their next login.</p>
+              )}
+              <DialogFooter>
+                <Button onClick={closeResetCreds} className="rounded-lg" data-testid="reset-generated-done-btn">Done</Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <div className="space-y-4 py-2">
+              {/* Mode selector */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setResetMode('manual')}
+                  className={`p-3 rounded-lg border text-left transition-all ${resetMode==='manual' ? 'border-[#063c88] bg-[#063c88]/5' : 'border-slate-200 hover:border-slate-300'}`}
+                  data-testid="reset-mode-manual"
+                >
+                  <div className="text-sm font-semibold text-slate-900">Set Password</div>
+                  <div className="text-xs text-slate-500 mt-0.5">I'll type a new password</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResetMode('auto')}
+                  className={`p-3 rounded-lg border text-left transition-all ${resetMode==='auto' ? 'border-[#063c88] bg-[#063c88]/5' : 'border-slate-200 hover:border-slate-300'}`}
+                  data-testid="reset-mode-auto"
+                >
+                  <div className="text-sm font-semibold text-slate-900">Auto-Generate</div>
+                  <div className="text-xs text-slate-500 mt-0.5">System creates a strong one</div>
+                </button>
+              </div>
+
+              {resetMode === 'manual' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-[13px] font-medium text-slate-700">New Password</label>
+                    <input
+                      type="password"
+                      value={resetPassword}
+                      onChange={(e) => setResetPassword(e.target.value)}
+                      placeholder="Min 8 chars, with letter and digit"
+                      className="mt-1 w-full h-10 px-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-[#063c88]/20 outline-none text-sm"
+                      data-testid="reset-new-pwd-input"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[13px] font-medium text-slate-700">Confirm Password</label>
+                    <input
+                      type="password"
+                      value={resetConfirm}
+                      onChange={(e) => setResetConfirm(e.target.value)}
+                      placeholder="Re-enter password"
+                      className="mt-1 w-full h-10 px-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-[#063c88]/20 outline-none text-sm"
+                      data-testid="reset-confirm-pwd-input"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {resetMode === 'auto' && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-[13px] text-blue-900">
+                  A 12-character strong password will be generated. It will be shown to you <b>once</b> in the next screen — please copy it before closing.
+                </div>
+              )}
+
+              <label className="flex items-center gap-2 text-[13px] text-slate-700 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={resetForceChange}
+                  onChange={(e) => setResetForceChange(e.target.checked)}
+                  data-testid="reset-force-change-cb"
+                />
+                Force employee to change password on next login (recommended)
+              </label>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={closeResetCreds} className="rounded-lg" data-testid="reset-cancel-btn">Cancel</Button>
+                <Button onClick={submitResetCreds} disabled={resetSubmitting} className="bg-[#063c88] hover:bg-[#0a56c2] text-white rounded-lg" data-testid="reset-submit-btn">
+                  {resetSubmitting ? 'Resetting…' : (resetMode === 'auto' ? 'Generate & Reset' : 'Reset Password')}
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

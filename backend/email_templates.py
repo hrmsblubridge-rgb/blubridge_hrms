@@ -336,3 +336,29 @@ def no_login_email(emp_name: str, date_str: str, leave_url: str, missed_punch_ur
             {"label": "Apply Missed Punch", "url": missed_punch_url, "style": "secondary"},
         ],
     )
+
+
+
+def password_reset_email(emp_name: str, reset_url: str, expires_minutes: int = 30) -> str:
+    """Self-service password reset email — sent ONLY to the registered email."""
+    intro = (
+        f'We received a request to reset your BluBridge HRMS account password. '
+        f'Click the button below to choose a new password. '
+        f'This link will expire in <b>{expires_minutes} minutes</b> and can only be used once.'
+    )
+    body = f"""
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0;border:1px solid {BORDER};border-radius:10px;background:#f8fafc;">
+        <tr><td style="padding:14px 18px;font-size:13px;color:{MUTED};">
+          <b style="color:{TEXT};">Didn't request this?</b> You can safely ignore this email — your password will remain unchanged. For security, the reset link expires in {expires_minutes} minutes.
+        </td></tr>
+      </table>
+      <p style="color:{MUTED};font-size:12px;margin:18px 0 0 0;">If the button above doesn't work, copy and paste this link into your browser:</p>
+      <p style="word-break:break-all;font-size:12px;color:{BRAND_PRIMARY};margin:6px 0 0 0;">{reset_url}</p>
+    """
+    return base_email_template(
+        title="Reset Your Password",
+        greeting=f"Hi {emp_name},",
+        intro_html=intro,
+        body_html=body,
+        cta=[{"label": "Reset Password", "url": reset_url, "style": "primary"}],
+    )

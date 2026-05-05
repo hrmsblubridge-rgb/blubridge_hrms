@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -142,6 +142,17 @@ const Login = () => {
                   {showPassword ? <EyeOff className="w-[18px] h-[18px]" /> : <Eye className="w-[18px] h-[18px]" />}
                 </button>
               </div>
+            </div>
+
+            {/* Forgot password link */}
+            <div className="flex justify-end -mt-2">
+              <Link
+                to="/forgot-password"
+                className="text-[13px] font-medium text-[#063c88] hover:text-[#0a56c2] transition-colors"
+                data-testid="forgot-password-link"
+              >
+                Forgot password?
+              </Link>
             </div>
 
             {/* Submit Button */}
