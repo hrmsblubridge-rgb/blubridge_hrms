@@ -10,6 +10,14 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 - **File Storage**: Cloudinary API
 - **Emails**: Resend API
 
+## Latest Update — 2026-05-05 (Per-Recipient Email Fan-Out + Forced Run Now)
+- **Bug**: Admin Attendance Summary emails were silently dropped despite Resend returning success IDs. Root cause: a bouncing/suppressed CC address on Resend's suppression list caused the *entire* multi-recipient message to be suppressed.
+- **Fix**: Refactored `email_service.py` to add `send_hrms_email_multi()` which fans out one logical email into N independent per-recipient Resend sends (NO CC field at all). One bad address never blocks delivery to others. Each recipient gets its own audit row scoped as `{base_scope_key}:{email}`.
+- **All 5 cron jobs** (admin_summary, late_login, missed_punch, early_out, no_login) now use the per-recipient fan-out path.
+- **Run Now**: now passes `force=True` end-to-end (server.py → gated decorator → inner job → send_hrms_email). Force bypasses BOTH the admin enabled-toggle AND the dedup check, so the button always triggers a fresh send. Audit scope_key is suffixed with a microsecond timestamp to avoid unique-index collisions.
+- **Action required by user**: in Resend dashboard → Suppressions, identify and remove any suppressed `blubridge.*` addresses (likely `ops@blubridge.com`).
+
+
 ## Code Architecture
 ```
 /app

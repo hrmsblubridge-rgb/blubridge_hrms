@@ -12198,8 +12198,10 @@ settings_services = settings_module.register(api_router, {
 async def run_email_job_now(job_name: str, current_user: dict = Depends(get_current_user)):
     """Manually trigger one of the scheduled HRMS email jobs.
 
-    Useful for QA and for HR to re-send the daily summary on demand. Dedup
-    still applies — the same (email_type, scope_key) won't be sent twice.
+    Run Now is admin-controlled and bypasses BOTH the enabled-toggle AND the
+    dedup audit (so HR can re-send the daily summary on demand). The audit log
+    still records each delivery — scoped uniquely with a timestamp suffix so
+    the unique partial index never conflicts with prior sends.
     """
     if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
         raise HTTPException(status_code=403, detail="Permission denied")
@@ -12207,8 +12209,8 @@ async def run_email_job_now(job_name: str, current_user: dict = Depends(get_curr
     handler = handlers.get(job_name)
     if not handler:
         raise HTTPException(status_code=404, detail=f"Unknown job. Valid: {list(handlers)}")
-    asyncio.create_task(handler(db))
-    return {"status": "triggered", "job": job_name}
+    asyncio.create_task(handler(db, force=True))
+    return {"status": "triggered", "job": job_name, "force": True}
 
 
 @api_router.get("/email-jobs/audit")

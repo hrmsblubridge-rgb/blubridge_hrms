@@ -34,6 +34,7 @@ from email_service import (
     ADMIN_REPORT_RECIPIENT,
     generate_employee_action_link,
     send_hrms_email,
+    send_hrms_email_multi,
 )
 from email_templates import (
     admin_summary_email,
@@ -138,15 +139,17 @@ def _gated(job_name: str):
     The wrapped job MUST take `db` as its first positional arg. The decorator
     is intentionally minimal so it never alters the wrapped business logic —
     it only short-circuits when disabled and records the outcome on exit.
+    `force=True` bypasses the admin enabled-toggle (manual "Run Now" path)
+    and is forwarded to the inner job so it can bypass dedup as well.
     """
     def deco(fn):
-        async def wrapper(db: AsyncIOMotorDatabase, *args, **kwargs):
-            if not await is_cron_enabled(db, job_name):
+        async def wrapper(db: AsyncIOMotorDatabase, *args, force: bool = False, **kwargs):
+            if not force and not await is_cron_enabled(db, job_name):
                 logger.info("[cron:%s] disabled by admin — skipping", job_name)
                 await mark_cron_run(db, job_name, result="skipped")
                 return
             try:
-                await fn(db, *args, **kwargs)
+                await fn(db, *args, force=force, **kwargs)
                 await mark_cron_run(db, job_name, result="success")
             except Exception as e:
                 logger.error("[cron:%s] failed: %s\n%s", job_name, e, traceback.format_exc())
@@ -274,10 +277,9 @@ async def _is_non_working_day(db: AsyncIOMotorDatabase, dmy: str) -> bool:
 # =========================================================================
 # JOB 1: Daily Admin Attendance Summary
 # =========================================================================
-async def admin_attendance_summary_job_inner(db: AsyncIOMotorDatabase) -> None:
+async def admin_attendance_summary_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> None:
     today_dmy = _ist_today()
-    scope_key = f"admin_summary:{today_dmy}"
-    logger.info("[cron:admin_summary] start date=%s", today_dmy)
+    logger.info("[cron:admin_summary] start date=%s force=%s", today_dmy, force)
 
     employees = await _active_employees(db)
     total_employees = len(employees)
@@ -389,22 +391,24 @@ async def admin_attendance_summary_job_inner(db: AsyncIOMotorDatabase) -> None:
     ]
 
     html = admin_summary_email(summary, dept_rows, shift_rows, top_delayed, today_dmy)
-    await send_hrms_email(
+    cc_list = await get_cron_cc(db, "admin_summary")
+    recipients = [ADMIN_REPORT_RECIPIENT] + cc_list
+    await send_hrms_email_multi(
         db,
         email_type="admin_summary",
-        scope_key=scope_key,
-        to_email=ADMIN_REPORT_RECIPIENT,
+        base_scope_key=f"admin_summary:{today_dmy}",
+        recipients=recipients,
         subject=f"Daily Attendance Report — {today_dmy}",
         html=html,
-        cc=await get_cron_cc(db, "admin_summary"),
+        force=force,
     )
-    logger.info("[cron:admin_summary] done date=%s", today_dmy)
+    logger.info("[cron:admin_summary] done date=%s force=%s", today_dmy, force)
 
 
 # =========================================================================
 # JOB 2: Late Login Email to Employee
 # =========================================================================
-async def late_login_job_inner(db: AsyncIOMotorDatabase) -> None:
+async def late_login_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> None:
     today_dmy = _ist_today()
     if await _is_non_working_day(db, today_dmy):
         logger.info("[cron:late_login] non-working day, skip")
@@ -458,25 +462,25 @@ async def late_login_job_inner(db: AsyncIOMotorDatabase) -> None:
             late_by,
             action_url,
         )
-        ok = await send_hrms_email(
+        result = await send_hrms_email_multi(
             db,
             email_type="late_login",
-            scope_key=f"{emp_id}:{today_dmy}",
-            to_email=to_email,
+            base_scope_key=f"late_login:{emp_id}:{today_dmy}",
+            recipients=[to_email] + cc_list,
             subject=f"Late Login Notification — {today_dmy}",
             html=html,
             employee_id=emp_id,
-            cc=cc_list,
+            force=force,
         )
-        if ok:
+        if result["sent"] > 0:
             sent += 1
-    logger.info("[cron:late_login] done sent=%d", sent)
+    logger.info("[cron:late_login] done sent=%d force=%s", sent, force)
 
 
 # =========================================================================
 # JOB 3: Missed Punch Email (yesterday)
 # =========================================================================
-async def missed_punch_job_inner(db: AsyncIOMotorDatabase) -> None:
+async def missed_punch_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> None:
     dmy = _ist_yesterday()
     ymd = _dmy_to_ymd(dmy)
     if await _is_non_working_day(db, dmy):
@@ -513,25 +517,25 @@ async def missed_punch_job_inner(db: AsyncIOMotorDatabase) -> None:
 
         action_url = generate_employee_action_link("/employee/missed-punch", dmy)
         html = missed_punch_email(emp.get("full_name", "Employee"), dmy, missing, action_url)
-        ok = await send_hrms_email(
+        result = await send_hrms_email_multi(
             db,
             email_type="missed_punch",
-            scope_key=f"{emp_id}:{dmy}",
-            to_email=to_email,
+            base_scope_key=f"missed_punch:{emp_id}:{dmy}",
+            recipients=[to_email] + cc_list,
             subject=f"Missing Punch Detected — {dmy}",
             html=html,
             employee_id=emp_id,
-            cc=cc_list,
+            force=force,
         )
-        if ok:
+        if result["sent"] > 0:
             sent += 1
-    logger.info("[cron:missed_punch] done sent=%d", sent)
+    logger.info("[cron:missed_punch] done sent=%d force=%s", sent, force)
 
 
 # =========================================================================
 # JOB 4: Early Out Email (yesterday)
 # =========================================================================
-async def early_out_job_inner(db: AsyncIOMotorDatabase) -> None:
+async def early_out_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> None:
     dmy = _ist_yesterday()
     ymd = _dmy_to_ymd(dmy)
     if await _is_non_working_day(db, dmy):
@@ -568,25 +572,25 @@ async def early_out_job_inner(db: AsyncIOMotorDatabase) -> None:
 
         action_url = generate_employee_action_link("/employee/early-out", dmy)
         html = early_out_email(emp.get("full_name", "Employee"), dmy, worked, expected, action_url)
-        ok = await send_hrms_email(
+        result = await send_hrms_email_multi(
             db,
             email_type="early_out",
-            scope_key=f"{emp_id}:{dmy}",
-            to_email=to_email,
+            base_scope_key=f"early_out:{emp_id}:{dmy}",
+            recipients=[to_email] + cc_list,
             subject=f"Early Out Detected — {dmy}",
             html=html,
             employee_id=emp_id,
-            cc=cc_list,
+            force=force,
         )
-        if ok:
+        if result["sent"] > 0:
             sent += 1
-    logger.info("[cron:early_out] done sent=%d", sent)
+    logger.info("[cron:early_out] done sent=%d force=%s", sent, force)
 
 
 # =========================================================================
 # JOB 5: No Login Email (yesterday)
 # =========================================================================
-async def no_login_job_inner(db: AsyncIOMotorDatabase) -> None:
+async def no_login_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> None:
     dmy = _ist_yesterday()
     ymd = _dmy_to_ymd(dmy)
     if await _is_non_working_day(db, dmy):
@@ -621,19 +625,19 @@ async def no_login_job_inner(db: AsyncIOMotorDatabase) -> None:
         leave_url = generate_employee_action_link("/employee/leave", dmy)
         mp_url = generate_employee_action_link("/employee/missed-punch", dmy)
         html = no_login_email(emp.get("full_name", "Employee"), dmy, leave_url, mp_url)
-        ok = await send_hrms_email(
+        result = await send_hrms_email_multi(
             db,
             email_type="no_login",
-            scope_key=f"{emp_id}:{dmy}",
-            to_email=to_email,
+            base_scope_key=f"no_login:{emp_id}:{dmy}",
+            recipients=[to_email] + cc_list,
             subject=f"No Attendance Recorded — {dmy}",
             html=html,
             employee_id=emp_id,
-            cc=cc_list,
+            force=force,
         )
-        if ok:
+        if result["sent"] > 0:
             sent += 1
-    logger.info("[cron:no_login] done sent=%d", sent)
+    logger.info("[cron:no_login] done sent=%d force=%s", sent, force)
 
 
 # =========================================================================

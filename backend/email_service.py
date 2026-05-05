@@ -102,6 +102,7 @@ async def send_hrms_email(
     employee_id: Optional[str] = None,
     cc: Optional[list] = None,
     max_retries: int = 2,
+    force: bool = False,
 ) -> bool:
     """Send an HRMS email with dedup + retry + audit.
 
@@ -111,12 +112,18 @@ async def send_hrms_email(
 
     `cc` (optional): list of additional email addresses copied via CC. Failure
     to attach CC NEVER blocks delivery — the primary `to_email` always goes.
+
+    `force=True`: bypass dedup (used by the admin "Run Now" trigger). The
+    scope_key is suffixed with a timestamp so the unique audit index never
+    collides with prior sends.
     """
     if not resend.api_key:
         logger.warning("RESEND_API_KEY not set — skipping %s", email_type)
         return False
 
-    if await _already_sent(db, email_type, scope_key):
+    if force:
+        scope_key = f"{scope_key}:manual:{datetime.utcnow().strftime('%Y%m%dT%H%M%S%f')}"
+    elif await _already_sent(db, email_type, scope_key):
         return False
 
     # Sanitize CC: dedupe, drop the primary recipient if present, drop blanks.
@@ -189,6 +196,66 @@ async def send_hrms_email(
     )
     logger.error("email failed type=%s scope=%s err=%s", email_type, scope_key, last_err)
     return False
+
+
+async def send_hrms_email_multi(
+    db: AsyncIOMotorDatabase,
+    *,
+    email_type: str,
+    base_scope_key: str,
+    recipients: list,
+    subject: str,
+    html: str,
+    employee_id: Optional[str] = None,
+    force: bool = False,
+) -> dict:
+    """Fan out a single logical HRMS email to MULTIPLE recipients, sending each
+    one as its OWN Resend message (no CC). This isolates per-recipient bounce/
+    suppression failures so one bad address never blocks delivery to others.
+
+    Each recipient is given a unique audit scope: `{base_scope_key}:{email_lower}`.
+    Returns a summary dict { sent: int, skipped: int, failed: int, total: int }.
+    """
+    seen: set = set()
+    clean_recipients: list = []
+    for raw in recipients or []:
+        if not raw:
+            continue
+        e = str(raw).strip()
+        if not e or "@" not in e:
+            continue
+        k = e.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        clean_recipients.append(e)
+
+    sent = skipped = failed = 0
+    for rcpt in clean_recipients:
+        scope = f"{base_scope_key}:{rcpt.lower()}"
+        before_already = (not force) and await _already_sent(db, email_type, scope)
+        ok = await send_hrms_email(
+            db,
+            email_type=email_type,
+            scope_key=scope,
+            to_email=rcpt,
+            subject=subject,
+            html=html,
+            employee_id=employee_id,
+            cc=None,  # NEVER use CC — per-recipient isolation is the whole point
+            force=force,
+        )
+        if ok:
+            sent += 1
+        elif before_already:
+            skipped += 1
+        else:
+            failed += 1
+    logger.info(
+        "fanout email_type=%s base_scope=%s total=%d sent=%d skipped=%d failed=%d",
+        email_type, base_scope_key, len(clean_recipients), sent, skipped, failed,
+    )
+    return {"total": len(clean_recipients), "sent": sent, "skipped": skipped, "failed": failed}
 
 
 async def ensure_email_indexes(db: AsyncIOMotorDatabase) -> None:
