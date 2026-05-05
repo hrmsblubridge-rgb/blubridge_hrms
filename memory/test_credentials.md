@@ -9,6 +9,14 @@
 - **Employee**: `spartasolace1` / `spar@1230`
 - **Employee**: `vijayan.k` / `pass123` (created 2026-04-27, onboarding approved)
 - **Employee**: `kasper` / `pass123` (kasper@blubridge.com, EMP0050, reactivated 2026-04-27)
+- **Employee**: `Umesh.Gana` / `pass123` (used for password-reset flow tests; restored after each suite)
+
+## Password Reset Endpoints (added 2026-05-05)
+- Admin reset: `POST /api/admin/employees/{employee_id}/reset-credentials` (HR/system_admin token; body: `{password,confirm_password,auto_generate,force_change_on_next_login}`)
+- Forgot password (public): `POST /api/auth/forgot-password` body: `{identifier}`
+- Validate token (public): `GET /api/auth/reset-password/validate?token=...`
+- Reset password (public): `POST /api/auth/reset-password` body: `{token,new_password,confirm_password}`
+- NOTE: Reset endpoint enforces min 8 chars + letter + digit. Legacy `pass123` (7 chars) is grandfathered but cannot be re-set via this endpoint.
 
 Base URL: https://leave-code-mapper.preview.emergentagent.com
 Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "..."}

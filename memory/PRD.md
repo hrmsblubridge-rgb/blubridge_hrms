@@ -26,6 +26,34 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
   - HTML preview rendered all 4 colored sections as designed.
 - **Untouched**: cron schedule, scheduling logic, attendance calc, late-login/missed-punch/early-out/no-login email flows, dashboard counts, leave logic.
 
+## Latest Update — 2026-05-05 (Credential Reset System — Two Independent Flows)
+**Per explicit user spec — strict, no breakage to existing login.**
+
+### Flow A: Admin Direct Reset (no email)
+- New endpoint: `POST /api/admin/employees/{employee_id}/reset-credentials` (HR / system_admin only).
+- Body: `{ password?, confirm_password?, auto_generate?: bool, force_change_on_next_login?: bool }`.
+- Two modes — manual (admin types) or auto-generate (12-char strong password returned ONCE).
+- Old password invalidated immediately. `must_change_password` flag set on the user when force_change enabled.
+- Audit log entry written via existing `log_audit()` helper.
+- Frontend: `Employees.js` row dropdown has new "Reset Credentials" item → modal with two modes; auto-mode shows the generated password ONCE with Show/Hide + Copy buttons.
+
+### Flow B: Employee Self-Service Reset (email link)
+- Login page now has "Forgot password?" link → `/forgot-password`.
+- New public pages: `ForgotPassword.js` (input username or email) and `ResetPassword.js` (set new password from `?token=` URL).
+- Endpoints: `POST /api/auth/forgot-password`, `GET /api/auth/reset-password/validate`, `POST /api/auth/reset-password`.
+- 32-byte URL-safe token, 30-min TTL, single-use, stored in `password_reset_tokens` (Mongo TTL on `expires_at`, unique on `token`).
+- New `password_reset_email()` template in `email_templates.py`.
+
+### Security
+- Password hashing remains existing SHA-256 — auth engine UNCHANGED.
+- Strength check: ≥8 chars + letter + digit on both flows.
+- Plain passwords NEVER stored or logged. Auto-generated password returned ONCE.
+- Both flows audit-logged. Admin reset invalidates pending self-service tokens for that user.
+
+### Verification
+- Backend pytest 13/13, frontend 100% on verified flows (per testing agent iteration_43).
+- Existing `/api/auth/login` untouched.
+
 ## Tech Stack
 - **Frontend**: React, Tailwind CSS, Shadcn UI
 - **Backend**: Python, FastAPI, openpyxl
