@@ -3673,6 +3673,153 @@ async def deactivate_employee(employee_id: str, request: Request, current_user: 
     await log_audit(current_user["id"], "deactivate", "employee", employee_id, f"Deactivated employee: {existing.get('full_name')} | Type: {inactive_type} | Reason: {reason}")
     return {"message": "Employee deactivated successfully"}
 
+
+# ============== EMPLOYEE PERMANENT DELETE (SAFE + FORCE) ==============
+# Linked collections that hold per-employee data — used by impact preview AND
+# by both delete modes. Keep this list central and explicit; never cascade by
+# heuristic. New per-employee collections must be added here intentionally.
+EMPLOYEE_LINKED_COLLECTIONS = [
+    "attendance",
+    "leaves",
+    "late_requests",
+    "early_out_requests",
+    "missed_punches",
+    "payroll",
+    "salary_adjustments",
+    "employee_documents",
+    "performance_reviews",
+    "timesheets",
+    "star_records",
+    "biometric_devices_map",
+    "shift_overrides",
+    "employee_warnings",
+]
+
+
+async def _employee_record_counts(employee_id: str) -> dict:
+    counts: dict = {}
+    for coll in EMPLOYEE_LINKED_COLLECTIONS:
+        try:
+            counts[coll] = await db[coll].count_documents({"employee_id": employee_id})
+        except Exception:
+            counts[coll] = 0
+    counts["total"] = sum(v for k, v in counts.items() if k != "total")
+    return counts
+
+
+@api_router.get("/employees/{employee_id}/deletion-impact")
+async def employee_deletion_impact(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Counts of related records — drives the safe vs force delete UX.
+    HR + system_admin only."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "id": 1, "full_name": 1, "employee_status": 1})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    counts = await _employee_record_counts(employee_id)
+    return {
+        "employee_id": employee_id,
+        "full_name": emp.get("full_name"),
+        "employee_status": emp.get("employee_status"),
+        "counts": counts,
+        "can_permanent_delete": counts["total"] == 0,
+    }
+
+
+@api_router.delete("/employees/{employee_id}/permanent")
+async def employee_permanent_delete(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Safe permanent delete — hard-deletes the employee row ONLY when there
+    are zero linked records anywhere. HR + system_admin only."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    counts = await _employee_record_counts(employee_id)
+    if counts["total"] > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot permanently delete. Employee has existing records. Please use Deactivate instead.",
+        )
+
+    # Hard delete employee + their user account (no linked-data destruction
+    # possible because we just verified counts are zero).
+    await db.employees.delete_one({"id": employee_id})
+    await db.users.delete_many({"employee_id": employee_id})
+
+    await db.employee_deletion_audit.insert_one({
+        "employee_id": employee_id,
+        "full_name": emp.get("full_name"),
+        "action": "permanent_delete",
+        "performed_by": current_user["id"],
+        "performed_by_username": current_user.get("username"),
+        "performed_by_role": current_user.get("role"),
+        "counts": counts,
+        "timestamp": get_ist_now().isoformat(),
+    })
+    await log_audit(current_user["id"], "permanent_delete", "employee", employee_id, f"Permanently deleted: {emp.get('full_name')}")
+    return {"message": "Employee permanently deleted", "employee_id": employee_id}
+
+
+@api_router.delete("/employees/{employee_id}/force")
+async def employee_force_delete(
+    employee_id: str,
+    payload: dict = Body(default={}),
+    current_user: dict = Depends(get_current_user),
+):
+    """DESTRUCTIVE: deletes the employee AND every linked record across all
+    modules. Super Admin (system_admin) only.
+
+    Body must include `confirmation_text: "DELETE"` to proceed — mirrors the
+    forced-input safety gate enforced by the UI.
+    """
+    if current_user["role"] != UserRole.SYSTEM_ADMIN:
+        raise HTTPException(status_code=403, detail="Force delete is restricted to Super Admin")
+
+    if (payload or {}).get("confirmation_text", "").strip() != "DELETE":
+        raise HTTPException(status_code=400, detail='Force delete requires confirmation_text="DELETE"')
+
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    counts_before = await _employee_record_counts(employee_id)
+
+    deleted_per_collection: dict = {}
+    for coll in EMPLOYEE_LINKED_COLLECTIONS:
+        try:
+            res = await db[coll].delete_many({"employee_id": employee_id})
+            deleted_per_collection[coll] = res.deleted_count
+        except Exception as e:
+            deleted_per_collection[coll] = f"error:{e}"
+
+    await db.employees.delete_one({"id": employee_id})
+    await db.users.delete_many({"employee_id": employee_id})
+
+    await db.employee_deletion_audit.insert_one({
+        "employee_id": employee_id,
+        "full_name": emp.get("full_name"),
+        "action": "force_delete",
+        "performed_by": current_user["id"],
+        "performed_by_username": current_user.get("username"),
+        "performed_by_role": current_user.get("role"),
+        "counts_before": counts_before,
+        "deleted_per_collection": deleted_per_collection,
+        "timestamp": get_ist_now().isoformat(),
+    })
+    await log_audit(
+        current_user["id"], "force_delete", "employee", employee_id,
+        f"FORCE deleted: {emp.get('full_name')} | total_records_destroyed={counts_before['total']}",
+    )
+    return {
+        "message": "Employee and all related records permanently deleted",
+        "employee_id": employee_id,
+        "counts_before": counts_before,
+        "deleted_per_collection": deleted_per_collection,
+    }
+
+
 # ============== EMPLOYEE BULK DEACTIVATE ==============
 
 INACTIVE_IMPORT_COLUMNS = [
@@ -12124,7 +12271,7 @@ async def admin_set_cron_enabled(
         {
             "$set": {
                 "enabled": enabled,
-                "updated_at": datetime.now(IST_TZ).isoformat() if 'IST_TZ' in globals() else datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
                 "updated_by": current_user.get("username") or current_user.get("id"),
             },
             "$setOnInsert": {"job_name": job_name},

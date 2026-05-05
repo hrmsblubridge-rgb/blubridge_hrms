@@ -463,3 +463,20 @@ Auto-created on employee creation + backfilled for existing employees on startup
     - Non-admin → ShieldAlert "Access Denied".
   - **Verified live**: GET returns 5 enabled jobs → disable late_login → trigger → audit shows `last_result: "skipped"` → re-enable → trigger → `last_result: "success"`. Non-admin gets 403.
   - **No changes** to attendance / leave / payroll / email templates / schedules / business logic. Lint clean.
+
+- **2026-05-02** Multi-Mode Employee Deletion (Admin → Employees only, additive).
+  - **Backend** (`backend/server.py`): existing `DELETE /api/employees/{id}` (soft-deactivate) **untouched**. Three NEW endpoints:
+    - `GET /api/employees/{id}/deletion-impact` (HR + system_admin) — returns `counts` per linked collection (attendance, leaves, late_requests, early_out_requests, missed_punches, payroll, salary_adjustments, employee_documents, performance_reviews, timesheets, star_records, biometric_devices_map, shift_overrides, employee_warnings) + `total` + `can_permanent_delete`.
+    - `DELETE /api/employees/{id}/permanent` (HR + system_admin) — safe: succeeds only when `total === 0`, otherwise `409 "Cannot permanently delete. Employee has existing records. Please use Deactivate instead."` Hard-deletes employee + user accounts.
+    - `DELETE /api/employees/{id}/force` (system_admin ONLY) — destructive cascade: requires body `{ confirmation_text: "DELETE" }` (else `400`). Deletes employee + user + ALL records across the 14 linked collections, returning per-collection deletion counts.
+  - New `employee_deletion_audit` collection records `{employee_id, full_name, action, performed_by, performed_by_username, performed_by_role, counts/before, deleted_per_collection, timestamp}` for every delete action.
+  - **Frontend** (`frontend/src/pages/Employees.js`): action column trash icon replaced with a 3-state DropdownMenu:
+    1. **Deactivate Employee** (label clarified, opens existing soft-deactivate dialog — unchanged behaviour).
+    2. **Delete Permanently** (impact preview shows record counts; CTA disabled if any linked records exist with helpful inline guidance).
+    3. **Delete Permanently (All Records)** — visible to system_admin only, marked under a "Danger Zone" label. 3-step wizard: warning → critical IRREVERSIBLE warning → forced "DELETE" text input → final destructive button.
+  - **Verified live**:
+    - `permanent` blocked with `409` for employee with linked records ✓
+    - `force` rejected with `400` when confirmation_text != "DELETE" ✓
+    - `force` rejected with `403` for HR (only system_admin allowed) ✓
+    - `deletion-impact` returns accurate counts ✓
+  - **No changes** to soft-deactivate logic, attendance/payroll/leave/dashboard/email/cron/etc. All lint clean.

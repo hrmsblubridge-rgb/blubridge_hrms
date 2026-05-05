@@ -6,6 +6,14 @@ import { toast } from 'sonner';
 import SalarySlip from '../components/SalarySlip';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
 import { useTableSort, SortableTh } from '../components/useTableSort';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
 import { 
   Users, 
   Search, 
@@ -20,6 +28,9 @@ import {
   ChevronRight,
   UserCheck,
   UserX,
+  MoreVertical,
+  ShieldAlert,
+  AlertTriangle,
   Briefcase,
   Mail,
   Phone,
@@ -118,6 +129,13 @@ const Employees = () => {
   const [showEditSheet, setShowEditSheet] = useState(false);
   const [showViewDialog, setShowViewDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  // Permanent delete (safe) + Force delete (super admin only) state
+  const [showPermDeleteDialog, setShowPermDeleteDialog] = useState(false);
+  const [showForceDeleteDialog, setShowForceDeleteDialog] = useState(false);
+  const [deletionImpact, setDeletionImpact] = useState(null);
+  const [deletionLoading, setDeletionLoading] = useState(false);
+  const [forceStep, setForceStep] = useState(1); // 1: warning, 2: critical, 3: type DELETE
+  const [forceConfirmText, setForceConfirmText] = useState('');
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [viewTab, setViewTab] = useState('profile');
   const [eduExpData, setEduExpData] = useState(null);
@@ -569,6 +587,70 @@ const Employees = () => {
 
   const handleDelete = (employee) => { setSelectedEmployee(employee); setShowDeleteDialog(true); };
 
+  const isSuperAdmin = user?.role === 'system_admin';
+
+  const fetchDeletionImpact = async (emp) => {
+    setDeletionLoading(true);
+    setDeletionImpact(null);
+    try {
+      const res = await axios.get(`${API}/employees/${emp.id}/deletion-impact`, { headers: getAuthHeaders() });
+      setDeletionImpact(res.data);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to load deletion impact');
+    } finally {
+      setDeletionLoading(false);
+    }
+  };
+
+  const openPermDelete = async (emp) => {
+    setSelectedEmployee(emp);
+    setShowPermDeleteDialog(true);
+    await fetchDeletionImpact(emp);
+  };
+
+  const openForceDelete = async (emp) => {
+    setSelectedEmployee(emp);
+    setForceStep(1);
+    setForceConfirmText('');
+    setShowForceDeleteDialog(true);
+    await fetchDeletionImpact(emp);
+  };
+
+  const confirmPermDelete = async () => {
+    if (!selectedEmployee) return;
+    try {
+      await axios.delete(`${API}/employees/${selectedEmployee.id}/permanent`, { headers: getAuthHeaders() });
+      toast.success('Employee permanently deleted');
+      setShowPermDeleteDialog(false);
+      setSelectedEmployee(null);
+      fetchEmployees(); fetchStats();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to permanently delete');
+    }
+  };
+
+  const confirmForceDelete = async () => {
+    if (!selectedEmployee) return;
+    if (forceConfirmText.trim() !== 'DELETE') {
+      toast.error('Please type DELETE to confirm');
+      return;
+    }
+    try {
+      await axios.delete(`${API}/employees/${selectedEmployee.id}/force`, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        data: { confirmation_text: 'DELETE' },
+      });
+      toast.success('Employee and all records permanently deleted');
+      setShowForceDeleteDialog(false);
+      setForceStep(1);
+      setForceConfirmText('');
+      setSelectedEmployee(null);
+      fetchEmployees(); fetchStats();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to force delete');
+    }
+  };
+
   const validateForm = (isEdit = false) => {
     if (!form.full_name.trim()) { toast.error('Full name is required'); return false; }
     if (!form.official_email.trim()) { toast.error('Email is required'); return false; }
@@ -963,11 +1045,40 @@ const Employees = () => {
                                   <Button size="sm" variant="ghost" onClick={() => handleReactivate(emp)} className="h-7 w-7 p-0 rounded-lg" title="Reactivate" data-testid={`activate-${emp.id}`}>
                                     <UserCheck className="w-4 h-4 text-emerald-600" />
                                   </Button>
-                                ) : (
-                                  <Button size="sm" variant="ghost" onClick={() => handleDelete(emp)} className="h-7 w-7 p-0 rounded-lg" data-testid={`delete-${emp.id}`}>
-                                    <Trash2 className="w-4 h-4 text-red-500" />
-                                  </Button>
-                                )}
+                                ) : null}
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 rounded-lg" title="More actions" data-testid={`actions-menu-${emp.id}`}>
+                                      <MoreVertical className="w-4 h-4 text-slate-500" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-64">
+                                    <DropdownMenuLabel>Employee Actions</DropdownMenuLabel>
+                                    <DropdownMenuSeparator />
+                                    {emp.employee_status !== 'Inactive' && (
+                                      <DropdownMenuItem onClick={() => handleDelete(emp)} data-testid={`deactivate-${emp.id}`}>
+                                        <UserX className="w-4 h-4 mr-2 text-orange-500" />
+                                        <span>Deactivate Employee</span>
+                                      </DropdownMenuItem>
+                                    )}
+                                    <DropdownMenuItem onClick={() => openPermDelete(emp)} data-testid={`perm-delete-${emp.id}`}>
+                                      <Trash2 className="w-4 h-4 mr-2 text-red-500" />
+                                      <span>Delete Permanently</span>
+                                    </DropdownMenuItem>
+                                    {isSuperAdmin && (
+                                      <>
+                                        <DropdownMenuSeparator />
+                                        <DropdownMenuLabel className="text-rose-600 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                                          <ShieldAlert className="w-3 h-3" /> Danger Zone
+                                        </DropdownMenuLabel>
+                                        <DropdownMenuItem onClick={() => openForceDelete(emp)} data-testid={`force-delete-${emp.id}`} className="text-rose-700 focus:text-rose-800 focus:bg-rose-50">
+                                          <AlertTriangle className="w-4 h-4 mr-2" />
+                                          <span>Delete Permanently (All Records)</span>
+                                        </DropdownMenuItem>
+                                      </>
+                                    )}
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                               </>
                             )}
                           </div>
@@ -1961,6 +2072,123 @@ const Employees = () => {
           <DialogFooter>
             <Button variant="outline" onClick={() => setShowDeleteDialog(false)} className="rounded-lg">Cancel</Button>
             <Button onClick={confirmDelete} className="bg-red-500 hover:bg-red-600 text-white rounded-lg" data-testid="confirm-delete">Deactivate</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Permanent Delete (SAFE) — only allowed when zero linked records */}
+      <Dialog open={showPermDeleteDialog} onOpenChange={setShowPermDeleteDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="w-5 h-5 text-red-500" /> Delete Permanently
+            </DialogTitle>
+            <DialogDescription>
+              This permanently removes <b>{selectedEmployee?.full_name}</b> from the database. Allowed only when the employee has no records.
+            </DialogDescription>
+          </DialogHeader>
+          {deletionLoading ? (
+            <div className="py-6 text-center text-slate-500">Checking records…</div>
+          ) : deletionImpact ? (
+            <div className="space-y-3 text-sm">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
+                <div className="text-xs uppercase tracking-wider text-slate-500 mb-1.5">This employee has:</div>
+                <div className="flex justify-between"><span>Attendance records</span><span className="font-medium">{deletionImpact.counts.attendance}</span></div>
+                <div className="flex justify-between"><span>Payroll entries</span><span className="font-medium">{deletionImpact.counts.payroll}</span></div>
+                <div className="flex justify-between"><span>Leave records</span><span className="font-medium">{deletionImpact.counts.leaves}</span></div>
+                <div className="flex justify-between"><span>Other requests</span><span className="font-medium">{deletionImpact.counts.late_requests + deletionImpact.counts.early_out_requests + deletionImpact.counts.missed_punches}</span></div>
+                <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1.5"><span>Total</span><span className="font-semibold">{deletionImpact.counts.total}</span></div>
+              </div>
+              {deletionImpact.can_permanent_delete ? (
+                <p className="text-slate-700">Are you sure you want to permanently delete this employee?</p>
+              ) : (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-800 text-xs">
+                  Cannot permanently delete. Employee has existing records. Please use <b>Deactivate</b> instead.
+                </div>
+              )}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPermDeleteDialog(false)} className="rounded-lg" data-testid="perm-delete-cancel">Cancel</Button>
+            <Button
+              onClick={confirmPermDelete}
+              disabled={!deletionImpact?.can_permanent_delete}
+              className="bg-red-500 hover:bg-red-600 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="perm-delete-confirm"
+            >
+              Delete Permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Force Delete (SUPER ADMIN ONLY) — multi-step destructive confirmation */}
+      <Dialog open={showForceDeleteDialog} onOpenChange={(open) => { if (!open) { setForceStep(1); setForceConfirmText(''); } setShowForceDeleteDialog(open); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-rose-700">
+              <AlertTriangle className="w-5 h-5" /> Delete Permanently (All Records)
+            </DialogTitle>
+            <DialogDescription>
+              Step {forceStep} of 3 — destructive action for <b>{selectedEmployee?.full_name}</b>
+            </DialogDescription>
+          </DialogHeader>
+
+          {forceStep === 1 && (
+            <div className="space-y-3 text-sm">
+              <p className="text-slate-700">You are about to permanently delete this employee.</p>
+              {deletionLoading ? (
+                <div className="text-center text-slate-500 py-4">Loading impact…</div>
+              ) : deletionImpact ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
+                  <div className="text-xs uppercase tracking-wider text-slate-500 mb-1.5">This employee has:</div>
+                  <div className="flex justify-between"><span>{deletionImpact.counts.attendance}</span><span>attendance records</span></div>
+                  <div className="flex justify-between"><span>{deletionImpact.counts.payroll}</span><span>payroll entries</span></div>
+                  <div className="flex justify-between"><span>{deletionImpact.counts.leaves}</span><span>leave records</span></div>
+                  <div className="flex justify-between"><span>{deletionImpact.counts.late_requests + deletionImpact.counts.early_out_requests + deletionImpact.counts.missed_punches}</span><span>requests (late / early / missed)</span></div>
+                  <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1.5 font-semibold"><span>{deletionImpact.counts.total}</span><span>total records will be destroyed</span></div>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {forceStep === 2 && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-rose-800 text-sm space-y-2" data-testid="force-delete-warning">
+              <div className="font-semibold flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> WARNING</div>
+              <p>This will delete <b>ALL records</b> including attendance, payroll, leave, and history.</p>
+              <p>This action is <b>IRREVERSIBLE</b> and will affect reports.</p>
+            </div>
+          )}
+
+          {forceStep === 3 && (
+            <div className="space-y-3 text-sm">
+              <p>Type <code className="px-2 py-0.5 rounded bg-slate-100 text-rose-700 font-mono">DELETE</code> to confirm:</p>
+              <input
+                type="text"
+                value={forceConfirmText}
+                onChange={(e) => setForceConfirmText(e.target.value)}
+                placeholder="Type DELETE"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-300 font-mono"
+                data-testid="force-delete-input"
+                autoFocus
+              />
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowForceDeleteDialog(false)} className="rounded-lg">Cancel</Button>
+            {forceStep < 3 ? (
+              <Button onClick={() => setForceStep(forceStep + 1)} className="bg-rose-600 hover:bg-rose-700 text-white rounded-lg" data-testid="force-delete-next">Continue</Button>
+            ) : (
+              <Button
+                onClick={confirmForceDelete}
+                disabled={forceConfirmText.trim() !== 'DELETE'}
+                className="bg-rose-700 hover:bg-rose-800 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="force-delete-final"
+              >
+                Delete Permanently with All Records
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
