@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { Switch } from '../components/ui/switch';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { CheckCircle2, XCircle, Clock3, RefreshCw, Mail, ShieldAlert } from 'lucide-react';
+import { CheckCircle2, XCircle, Clock3, RefreshCw, Mail, ShieldAlert, X } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -32,6 +32,103 @@ const ResultPill = ({ result }) => {
       <Icon className="w-3.5 h-3.5" />
       {cfg.label}
     </span>
+  );
+};
+
+const EMAIL_RE = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+
+const CCEmailEditor = ({ jobName, initial, onSave }) => {
+  const [tags, setTags] = useState(initial || []);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => { setTags(initial || []); }, [initial]);
+
+  const dirty = JSON.stringify(tags) !== JSON.stringify(initial || []);
+
+  const addTag = (raw) => {
+    const e = String(raw || '').trim();
+    if (!e) return;
+    if (!EMAIL_RE.test(e)) { toast.error(`Invalid email: ${e}`); return; }
+    if (tags.some((t) => t.toLowerCase() === e.toLowerCase())) { toast.error('Already added'); return; }
+    setTags([...tags, e]);
+    setDraft('');
+  };
+
+  const onKey = (ev) => {
+    if (ev.key === 'Enter' || ev.key === ',' || ev.key === ';' || ev.key === ' ') {
+      ev.preventDefault();
+      addTag(draft);
+    } else if (ev.key === 'Backspace' && !draft && tags.length) {
+      setTags(tags.slice(0, -1));
+    }
+  };
+
+  const onPaste = (ev) => {
+    const text = ev.clipboardData?.getData('text');
+    if (text && /[,;\s]/.test(text)) {
+      ev.preventDefault();
+      const parts = text.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+      const next = [...tags];
+      parts.forEach((p) => {
+        if (EMAIL_RE.test(p) && !next.some((t) => t.toLowerCase() === p.toLowerCase())) {
+          next.push(p);
+        }
+      });
+      setTags(next);
+    }
+  };
+
+  const removeTag = (i) => setTags(tags.filter((_, idx) => idx !== i));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await onSave(tags);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="min-w-[260px]">
+      <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5 border border-slate-200 rounded-lg bg-white focus-within:border-[#063c88] focus-within:ring-1 focus-within:ring-[#063c88]/30 transition">
+        {tags.length === 0 && !draft && (
+          <span className="text-slate-400 text-xs">—</span>
+        )}
+        {tags.map((t, i) => (
+          <span key={`${t}-${i}`} className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-md text-xs" data-testid={`cc-tag-${jobName}-${i}`}>
+            {t}
+            <button type="button" onClick={() => removeTag(i)} className="hover:text-rose-600" data-testid={`cc-remove-${jobName}-${i}`}><X className="w-3 h-3" /></button>
+          </span>
+        ))}
+        <input
+          type="text"
+          className="flex-1 min-w-[140px] outline-none bg-transparent text-xs py-0.5"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={onKey}
+          onBlur={() => draft && addTag(draft)}
+          onPaste={onPaste}
+          placeholder={tags.length === 0 ? 'Enter CC emails (comma separated)' : 'Add another'}
+          data-testid={`cc-input-${jobName}`}
+        />
+      </div>
+      {dirty && (
+        <div className="mt-1.5 flex justify-end gap-2">
+          <button type="button" onClick={() => setTags(initial || [])} className="text-xs text-slate-500 hover:text-slate-700">Cancel</button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="text-xs bg-[#063c88] text-white px-2.5 py-0.5 rounded-md hover:bg-[#0a4ea8] disabled:opacity-50"
+            data-testid={`cc-save-${jobName}`}
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      )}
+    </div>
   );
 };
 
@@ -86,6 +183,21 @@ const CronManagement = () => {
     }
   };
 
+  const saveCC = async (job, cc_emails) => {
+    try {
+      const res = await axios.put(
+        `${API}/admin/cron-settings/${job.job_name}/cc`,
+        { cc_emails },
+        { headers: getAuthHeaders() }
+      );
+      toast.success('CC emails updated successfully');
+      // Update local state without full refresh
+      setJobs((prev) => prev.map((j) => (j.job_name === job.job_name ? { ...j, cc_emails: res.data.cc_emails || [] } : j)));
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to save CC emails');
+    }
+  };
+
   if (!isAdmin) {
     return (
       <div className="card-premium p-12 flex flex-col items-center justify-center text-center" data-testid="cron-mgmt-no-access">
@@ -121,6 +233,7 @@ const CronManagement = () => {
                   <th>Cron Name</th>
                   <th>Schedule</th>
                   <th className="text-center">Status</th>
+                  <th>CC Emails</th>
                   <th>Last Execution</th>
                   <th>Last Result</th>
                   <th className="text-right pr-6">Actions</th>
@@ -128,7 +241,7 @@ const CronManagement = () => {
               </thead>
               <tbody>
                 {jobs.length === 0 ? (
-                  <tr><td colSpan="6" className="text-center py-12 text-slate-500">No cron jobs configured</td></tr>
+                  <tr><td colSpan="7" className="text-center py-12 text-slate-500">No cron jobs configured</td></tr>
                 ) : jobs.map((j) => (
                   <tr key={j.job_name} data-testid={`cron-row-${j.job_name}`}>
                     <td>
@@ -155,6 +268,13 @@ const CronManagement = () => {
                           {j.enabled ? 'Enabled' : 'Disabled'}
                         </Badge>
                       </div>
+                    </td>
+                    <td>
+                      <CCEmailEditor
+                        jobName={j.job_name}
+                        initial={j.cc_emails || []}
+                        onSave={(emails) => saveCC(j, emails)}
+                      />
                     </td>
                     <td className="text-slate-600 text-sm">{formatRunAt(j.last_run_at)}</td>
                     <td>

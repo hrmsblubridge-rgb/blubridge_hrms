@@ -90,6 +90,19 @@ async def is_cron_enabled(db: AsyncIOMotorDatabase, job_name: str) -> bool:
         return True
 
 
+async def get_cron_cc(db: AsyncIOMotorDatabase, job_name: str) -> list[str]:
+    """Returns the configured CC list for a cron job. Always returns a list;
+    DB errors degrade silently to []."""
+    try:
+        doc = await db.cron_settings.find_one({"job_name": job_name}, {"_id": 0, "cc_emails": 1})
+        if not doc:
+            return []
+        return list(doc.get("cc_emails") or [])
+    except Exception as e:
+        logger.warning("get_cron_cc fallback empty (%s): %s", job_name, e)
+        return []
+
+
 async def mark_cron_run(
     db: AsyncIOMotorDatabase,
     job_name: str,
@@ -383,6 +396,7 @@ async def admin_attendance_summary_job_inner(db: AsyncIOMotorDatabase) -> None:
         to_email=ADMIN_REPORT_RECIPIENT,
         subject=f"Daily Attendance Report — {today_dmy}",
         html=html,
+        cc=await get_cron_cc(db, "admin_summary"),
     )
     logger.info("[cron:admin_summary] done date=%s", today_dmy)
 
@@ -405,6 +419,7 @@ async def late_login_job_inner(db: AsyncIOMotorDatabase) -> None:
 
     employees = {e["id"]: e for e in await _active_employees(db)}
     ymd = _dmy_to_ymd(today_dmy)
+    cc_list = await get_cron_cc(db, "late_login")
     sent = 0
     for a in records:
         emp = employees.get(a.get("employee_id"))
@@ -451,6 +466,7 @@ async def late_login_job_inner(db: AsyncIOMotorDatabase) -> None:
             subject=f"Late Login Notification — {today_dmy}",
             html=html,
             employee_id=emp_id,
+            cc=cc_list,
         )
         if ok:
             sent += 1
@@ -470,6 +486,7 @@ async def missed_punch_job_inner(db: AsyncIOMotorDatabase) -> None:
 
     records = await db.attendance.find({"date": dmy}, {"_id": 0}).to_list(5000)
     employees = {e["id"]: e for e in await _active_employees(db)}
+    cc_list = await get_cron_cc(db, "missed_punch")
 
     sent = 0
     for a in records:
@@ -504,6 +521,7 @@ async def missed_punch_job_inner(db: AsyncIOMotorDatabase) -> None:
             subject=f"Missing Punch Detected — {dmy}",
             html=html,
             employee_id=emp_id,
+            cc=cc_list,
         )
         if ok:
             sent += 1
@@ -526,6 +544,7 @@ async def early_out_job_inner(db: AsyncIOMotorDatabase) -> None:
         {"_id": 0},
     ).to_list(5000)
     employees = {e["id"]: e for e in await _active_employees(db)}
+    cc_list = await get_cron_cc(db, "early_out")
 
     sent = 0
     for a in records:
@@ -557,6 +576,7 @@ async def early_out_job_inner(db: AsyncIOMotorDatabase) -> None:
             subject=f"Early Out Detected — {dmy}",
             html=html,
             employee_id=emp_id,
+            cc=cc_list,
         )
         if ok:
             sent += 1
@@ -577,6 +597,7 @@ async def no_login_job_inner(db: AsyncIOMotorDatabase) -> None:
     employees = await _active_employees(db)
     attendance = await db.attendance.find({"date": dmy}, {"_id": 0, "employee_id": 1, "check_in": 1, "check_in_24h": 1, "check_out": 1, "check_out_24h": 1}).to_list(5000)
     emp_attendance_map = {a["employee_id"]: a for a in attendance}
+    cc_list = await get_cron_cc(db, "no_login")
 
     sent = 0
     for emp in employees:
@@ -608,6 +629,7 @@ async def no_login_job_inner(db: AsyncIOMotorDatabase) -> None:
             subject=f"No Attendance Recorded — {dmy}",
             html=html,
             employee_id=emp_id,
+            cc=cc_list,
         )
         if ok:
             sent += 1

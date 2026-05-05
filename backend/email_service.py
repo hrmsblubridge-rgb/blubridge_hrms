@@ -100,6 +100,7 @@ async def send_hrms_email(
     subject: str,
     html: str,
     employee_id: Optional[str] = None,
+    cc: Optional[list] = None,
     max_retries: int = 2,
 ) -> bool:
     """Send an HRMS email with dedup + retry + audit.
@@ -107,6 +108,9 @@ async def send_hrms_email(
     scope_key uniquely identifies the "thing" this email is about — e.g.
     "admin_summary:02-05-2026" or f"{employee_id}:02-05-2026". If an earlier
     send for the same (email_type, scope_key) succeeded, we skip.
+
+    `cc` (optional): list of additional email addresses copied via CC. Failure
+    to attach CC NEVER blocks delivery — the primary `to_email` always goes.
     """
     if not resend.api_key:
         logger.warning("RESEND_API_KEY not set — skipping %s", email_type)
@@ -115,12 +119,30 @@ async def send_hrms_email(
     if await _already_sent(db, email_type, scope_key):
         return False
 
+    # Sanitize CC: dedupe, drop the primary recipient if present, drop blanks.
+    cc_clean: list = []
+    seen = {to_email.lower().strip()}
+    if cc:
+        for raw in cc:
+            if not raw:
+                continue
+            e = str(raw).strip()
+            if not e or "@" not in e:
+                continue
+            key = e.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            cc_clean.append(e)
+
     attempt = 0
     last_err: Optional[str] = None
     provider_id: Optional[str] = None
     while attempt <= max_retries:
         try:
             params = {"from": SENDER_EMAIL, "to": [to_email], "subject": subject, "html": html}
+            if cc_clean:
+                params["cc"] = cc_clean
             result: Any = await asyncio.to_thread(resend.Emails.send, params)
             provider_id = (result or {}).get("id") if isinstance(result, dict) else None
             await _record_audit(

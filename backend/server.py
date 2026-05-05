@@ -12245,6 +12245,7 @@ async def admin_get_cron_settings(current_user: dict = Depends(get_current_user)
             "schedule": meta["schedule"],
             "scope": meta.get("scope"),
             "enabled": bool(row.get("enabled", True)),
+            "cc_emails": list(row.get("cc_emails") or []),
             "last_run_at": row.get("last_run_at"),
             "last_result": row.get("last_result"),
             "last_error": row.get("last_error"),
@@ -12279,6 +12280,66 @@ async def admin_set_cron_enabled(
         upsert=True,
     )
     return {"job_name": job_name, "enabled": enabled, "status": "ok"}
+
+
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+
+
+@api_router.put("/admin/cron-settings/{job_name}/cc")
+async def admin_set_cron_cc(
+    job_name: str,
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Set the CC recipient list for a cron job. Admin-only.
+    Body: { "cc_emails": ["a@x.com", "b@x.com"] }
+    Validates format, dedupes case-insensitively, accepts an empty list to clear.
+    """
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if job_name not in _CRON_JOB_META:
+        raise HTTPException(status_code=404, detail=f"Unknown cron. Valid: {list(_CRON_JOB_META.keys())}")
+
+    raw = payload.get("cc_emails", [])
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="cc_emails must be a list")
+
+    seen_lower: set = set()
+    cleaned: list = []
+    invalid: list = []
+    for entry in raw:
+        if entry is None:
+            continue
+        e = str(entry).strip()
+        if not e:
+            continue
+        if not _EMAIL_RE.match(e):
+            invalid.append(e)
+            continue
+        key = e.lower()
+        if key in seen_lower:
+            continue
+        seen_lower.add(key)
+        cleaned.append(e)
+
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid email format: {', '.join(invalid)}")
+    if len(cleaned) > 25:
+        raise HTTPException(status_code=400, detail="Maximum 25 CC recipients per cron")
+
+    await db.cron_settings.update_one(
+        {"job_name": job_name},
+        {
+            "$set": {
+                "cc_emails": cleaned,
+                "cc_updated_at": datetime.utcnow().isoformat(),
+                "cc_updated_by": current_user.get("username") or current_user.get("id"),
+            },
+            "$setOnInsert": {"job_name": job_name, "enabled": True},
+        },
+        upsert=True,
+    )
+    return {"job_name": job_name, "cc_emails": cleaned, "status": "ok"}
 
 
 app.include_router(api_router)

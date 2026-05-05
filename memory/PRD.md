@@ -480,3 +480,18 @@ Auto-created on employee creation + backfilled for existing employees on startup
     - `force` rejected with `403` for HR (only system_admin allowed) ✓
     - `deletion-impact` returns accurate counts ✓
   - **No changes** to soft-deactivate logic, attendance/payroll/leave/dashboard/email/cron/etc. All lint clean.
+
+- **2026-05-02** Dynamic CC Email Configuration on Cron Management (additive, fail-open).
+  - **Backend**:
+    - `email_service.send_hrms_email` now accepts an optional `cc=[...]` arg. CC list is sanitized: deduped case-insensitively, drops blanks/invalid, removes the primary `to_email` if accidentally present. Failure to attach CC NEVER blocks delivery.
+    - `email_jobs.get_cron_cc(db, job_name)` reads `cron_settings.cc_emails`; gracefully returns `[]` on missing config or DB error.
+    - All 5 cron entrypoints (`admin_summary`, `late_login`, `missed_punch`, `early_out`, `no_login`) now fetch CC ONCE per run (no N+1) and pass it into every per-employee `send_hrms_email` call.
+    - New API: `PUT /api/admin/cron-settings/{job_name}/cc` (HR + system_admin) with body `{cc_emails:[...]}`. Server-side validates email regex, dedupes, caps at 25 entries, returns `400` on invalid format.
+    - `GET /api/admin/cron-settings` now surfaces `cc_emails` per job.
+  - **Frontend** (`CronManagement.js`):
+    - New "CC Emails" column with **tag-style** editor: enter / comma / semicolon / space / blur all add a tag; backspace removes last; pasted CSV/space-separated lists auto-split & dedupe.
+    - Inline format validation (email regex) before adding; server-side 400 surfaces as toast.
+    - Save button appears only when dirty; success toast: "CC emails updated successfully". Optimistic-replace local state from API response (no full refresh).
+    - Empty CC shows `—`, matching design system.
+  - **Verified live**: set/replace/dedupe (case-insensitive) works; invalid `bad-email` returns 400; empty list clears; non-admin gets 403; existing cron flow with no CC unchanged.
+  - **No** changes to schedules, primary recipient, dedup, audit-log structure. Backward-compatible — empty `cc_emails` ⇒ behaves identically to pre-CC system. Lint clean.
