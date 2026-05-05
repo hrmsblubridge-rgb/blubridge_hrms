@@ -54,6 +54,17 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 - Backend pytest 13/13, frontend 100% on verified flows (per testing agent iteration_43).
 - Existing `/api/auth/login` untouched.
 
+## Latest Update — 2026-05-05 (Global Policy Visibility — IT and Communication Policy)
+- **Renamed & re-globalized**: `policy_it` is now "BluBridge IT and Communication Policy" (was "IT Team Policy"). 10 sections sourced from the user-uploaded docx — Purpose, Scope, Acceptable Use, Internet/Email, Data Security, Remote Workers, Social Media, Monitoring, Violation, Review.
+- **New visibility primitive** in `server.py`: `GLOBAL_POLICIES = {"policy_it"}`. `_is_policy_visible_to_user()` short-circuits to `True` for any policy in this set, BEFORE any role / department / club check. `HIDDEN_POLICIES` is now empty.
+- **DB migration applied**: existing `policy_it` doc upserted with the new content, so the change is live for already-seeded databases (not just fresh seeds).
+- **Verification**:
+  - Admin (`admin`) sees 3 policies including IT Policy ✅
+  - Regular employee (`kasper`, non-Research) sees 2 policies including IT Policy ✅
+  - Research-only policy (`policy_research`) remains correctly restricted to Research Unit + admins (untouched) ✅
+  - `GET /api/policies/policy_it` returns 200 for any logged-in user ✅
+  - No duplication, login still required (no public exposure) ✅
+
 ## Tech Stack
 - **Frontend**: React, Tailwind CSS, Shadcn UI
 - **Backend**: Python, FastAPI, openpyxl

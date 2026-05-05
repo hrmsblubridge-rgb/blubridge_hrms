@@ -396,61 +396,88 @@ COMPANY_POLICIES = [
     },
     {
         "id": "policy_it",
-        "name": "IT Team Policy",
-        "category": "Department",
-        "version": "1.5",
+        "name": "BluBridge IT and Communication Policy",
+        "category": "Company-wide",
+        "version": "1.0",
         "effective_date": "2026-01-01",
-        "applicable_to": "Technology Department",
+        "applicable_to": "All employees, contractors, and third-party users who access company systems",
         "content": {
-            "overview": "Guidelines and standards for the IT/Technology team at BluBridge.",
+            "overview": "This IT and Communication Policy sets forth the guidelines for the proper use of BluBridge information technology (IT) resources, communication tools, and data to ensure the security, privacy, and integrity of company assets. It applies to all employees, contractors, and third-party users who access company systems.",
             "sections": [
                 {
-                    "title": "Working Hours & Flexibility",
+                    "title": "1. Purpose",
                     "items": [
-                        "Core hours: 10:00 AM - 4:00 PM (mandatory presence)",
-                        "Flexible start: 8:00 AM - 10:00 AM",
-                        "Flexible end: 4:00 PM - 8:00 PM",
-                        "Work from home: Up to 2 days per week with manager approval",
-                        "On-call rotation: Monthly schedule published in advance"
+                        "This IT and Communication Policy sets forth the guidelines for the proper use of BluBridge information technology (IT) resources, communication tools, and data to ensure the security, privacy, and integrity of company assets.",
+                        "It applies to all employees, contractors, and third-party users who access company systems."
                     ]
                 },
                 {
-                    "title": "Code Standards & Practices",
+                    "title": "2. Scope",
                     "items": [
-                        "All code must pass peer review before merge",
-                        "Minimum 80% test coverage for new features",
-                        "Follow company coding style guide (available on internal wiki)",
-                        "Documentation required for all public APIs",
-                        "Security review mandatory for authentication/payment features"
+                        "Company-provided devices and IT systems.",
+                        "Network and internet usage.",
+                        "Email and communication platforms.",
+                        "Data security and confidentiality.",
+                        "Social media and public communication.",
+                        "Remote work."
                     ]
                 },
                 {
-                    "title": "Equipment & Resources",
+                    "title": "3. Acceptable Use of IT Resources",
                     "items": [
-                        "Laptop upgrade cycle: Every 3 years",
-                        "Monitors: Dual monitor setup provided",
-                        "Software licenses: Request through IT portal",
-                        "Cloud resources: Require manager + finance approval",
-                        "Training budget: ₹50,000 per year per employee"
+                        "Company Devices: All employees are responsible for the security, maintenance, and appropriate use of company-owned devices (laptops, mobile phones, tablets, etc.).",
+                        "Network Access: Employees must use secure login credentials to access company systems and are prohibited from sharing passwords with unauthorized individuals.",
+                        "Software and Applications: Only authorized software approved by BluBridge IT department may be installed on company devices. Use of pirated or unauthorized software is strictly prohibited."
                     ]
                 },
                 {
-                    "title": "Security Requirements",
+                    "title": "4. Internet and Email Usage",
                     "items": [
-                        "Use company VPN for all remote work",
-                        "2FA mandatory for all company systems",
-                        "No production access from personal devices",
-                        "Report security incidents within 1 hour",
-                        "Password rotation: Every 90 days"
+                        "Internet Access: Employees are granted access to the internet for business-related purposes. Personal use of the internet should be limited and must not interfere with job responsibilities.",
+                        "Email Use: Company-provided email accounts must be used for work-related communications. Employees should not use personal email accounts for business purposes.",
+                        "Prohibited Activities: The following activities are not permitted using company resources — accessing or distributing illegal, offensive, or inappropriate content; engaging in personal business activities or unauthorized file sharing; downloading large files that are not business-related, which could burden network resources."
                     ]
                 },
                 {
-                    "title": "Career Development",
+                    "title": "5. Data Security and Confidentiality",
                     "items": [
-                        "Quarterly 1:1 with manager for career discussion",
-                        "Annual performance review with promotion consideration",
-                        "Conference attendance: 1 per year (company sponsored)",
-                        "Certification reimbursement: Up to ₹25,000 per certification"
+                        "Data Protection: Employees are responsible for protecting sensitive and confidential company data, including customer information, proprietary materials, and financial records.",
+                        "Password Security: Employees must use strong, unique passwords and enable multi-factor authentication (MFA) where required. Passwords must not be shared or reused across multiple platforms.",
+                        "Confidentiality: Confidential company information must not be disclosed to unauthorized individuals or entities, both inside and outside the organization.",
+                        "Reporting Security Breaches: Any suspected data breach, loss, or theft of company devices or sensitive information must be reported to the IT department immediately."
+                    ]
+                },
+                {
+                    "title": "6. Remote Workers",
+                    "items": [
+                        "Remote Access: Remote workers must use secure methods, such as a Virtual Private Network (VPN), to access the company's network from offsite locations."
+                    ]
+                },
+                {
+                    "title": "7. Social Media and Public Communication",
+                    "items": [
+                        "Social Media Use: Employees are prohibited from posting confidential or proprietary company information on social media platforms. Personal opinions expressed on social media must not be presented as those of BluBridge.",
+                        "Communication with External Parties: Employees must obtain approval before sharing company-related information with the media, clients, or third-party vendors. Any public statements or press releases must be vetted through the appropriate department."
+                    ]
+                },
+                {
+                    "title": "8. Monitoring and Privacy",
+                    "items": [
+                        "Company Rights to Monitor: BluBridge reserves the right to monitor its IT systems, including email, internet use, and company devices, to ensure compliance with this policy and to maintain security. Employees should have no expectation of privacy when using company systems.",
+                        "Data Retention: Emails, files, and other communications may be retained for legal and business purposes. Employees are responsible for managing their email inboxes and other storage systems in accordance with retention policies."
+                    ]
+                },
+                {
+                    "title": "9. Violation of Policy",
+                    "items": [
+                        "Disciplinary Action: Violations of this policy may result in disciplinary action, up to and including termination of employment, as well as potential legal consequences.",
+                        "Reporting Violations: Employees are encouraged to report any suspected violations of this policy to their supervisor or the IT department."
+                    ]
+                },
+                {
+                    "title": "10. Review and Amendments",
+                    "items": [
+                        "This policy will be reviewed annually by the IT and HR departments and updated as necessary to reflect changes in technology, legal requirements, and business needs."
                     ]
                 }
             ]
@@ -9659,17 +9686,27 @@ DEPARTMENT_RESTRICTED_POLICIES = {
 
 # Policies that are completely hidden from every user (including admins).
 # To re-enable a policy, simply remove its id from this set.
-HIDDEN_POLICIES = {"policy_it"}
+HIDDEN_POLICIES: set = set()
+
+# Policies that bypass ALL access checks (department / club / role) and must
+# always be visible to every authenticated user. Used for organisation-wide
+# documents like the IT and Communication Policy.
+GLOBAL_POLICIES = {"policy_it"}
 
 async def _is_policy_visible_to_user(policy_id: str, current_user: dict) -> bool:
     """Decide if a policy is visible to the current user.
     Hidden policies are invisible to everyone.
+    Global policies are visible to every authenticated user, regardless of
+    role / department / club.
     Admin roles see all non-hidden policies.
     Employees only see department-restricted policies whose allowlist
     contains their employee.department.
     """
     if policy_id in HIDDEN_POLICIES:
         return False
+    # Global override — explicit allow for organisation-wide docs.
+    if policy_id in GLOBAL_POLICIES:
+        return True
     restricted_to = DEPARTMENT_RESTRICTED_POLICIES.get(policy_id)
     if not restricted_to:
         return True
