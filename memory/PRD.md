@@ -65,6 +65,29 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
   - `GET /api/policies/policy_it` returns 200 for any logged-in user ✅
   - No duplication, login still required (no public exposure) ✅
 
+## Latest Update — 2026-05-05 (3 New Policies + Full-View Premium UI)
+
+### New policies added (server.py + DB upserted)
+- **Admin Induction Guidelines** (`policy_admin_induction`) — 10 sections (Office Layout, Lunch & Snacks, Food Guidelines, Admin contact, Communication channels, Mobile/Bag deposit, Library, Stationery, Workstation support, IT support). **GLOBAL** — visible to every authenticated user.
+- **Support Team — HR & Leave Policy** (`policy_support_hr`) — 6 sections (10-hour day, EOD reporting, Leave email format, Leave Policy, Company Protocol, Reimbursement). **Dept-restricted** to `Support Staff` (admins always see).
+- **Research Team — HR & Leave Policy** (`policy_research_hr`) — 6 sections (11-hour day, EOD, Leave email, Leave Policy, Company Protocol, Reimbursement incl. PG accommodation up to ₹5,000/mo). **Dept-restricted** to `Research Unit` (admins always see).
+- `GLOBAL_POLICIES` extended to `{policy_it, policy_admin_induction}`. `DEPARTMENT_RESTRICTED_POLICIES` extended with the two HR policies.
+
+### Visibility verified live
+- Admin sees 6 policies ✅
+- Regular employee (non-Research, non-Support) sees 3 (Leave + IT + Admin Induction) ✅
+- Dept-restricted policies remain correctly hidden from non-matching employees ✅
+
+### Frontend redesign (Policies.js)
+- **Removed Accordion / collapse-toggle pattern entirely** per user request ("Not Toggle Type").
+- New layout: sticky **TOC sidebar** (left) + stacked **fully-expanded policy documents** (right). Smooth-scroll on TOC click; active state tracked.
+- Each policy renders as a premium "document card":
+  - Hero band with per-policy gradient (5 distinct themes — sky, indigo, emerald/teal, amber, pink) + icon + applicable-to + version + effective date
+  - Overview block with brand-accented left border and Sparkles icon
+  - All sections always-visible (no toggles), each with colored header band + bullet list / table / leave-type table
+  - Footer band: "Internal — login required" + last updated
+- Every interactive element has `data-testid`. Lint clean.
+
 ## Tech Stack
 - **Frontend**: React, Tailwind CSS, Shadcn UI
 - **Backend**: Python, FastAPI, openpyxl

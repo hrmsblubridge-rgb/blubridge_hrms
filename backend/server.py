@@ -572,6 +572,251 @@ COMPANY_POLICIES = [
                 }
             ]
         }
+    },
+    {
+        "id": "policy_admin_induction",
+        "name": "Admin Induction Guidelines",
+        "category": "Admin",
+        "version": "1.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "All Employees",
+        "content": {
+            "overview": "Office layout, facilities, communication channels, and admin support guidelines for every BluBridge employee.",
+            "sections": [
+                {
+                    "title": "1. Office Layout",
+                    "items": [
+                        "Employees are introduced to the complete office premises, including parking area, restrooms, cafeteria, mini pantry, and restricted zones.",
+                        "Please ensure you use only the designated areas as permitted."
+                    ]
+                },
+                {
+                    "title": "2. Lunch & Snack Timings",
+                    "items": [
+                        "Beverages (Coffee, Tea, etc.): Available from 11:00 AM in the cafeteria.",
+                        "Lunch: 1:00 PM – 2:30 PM",
+                        "Evening Snacks: 5:00 PM – 6:00 PM"
+                    ]
+                },
+                {
+                    "title": "3. Food & Snack Guidelines",
+                    "items": [
+                        "Employees are requested to consume food responsibly and adhere to portion guidelines (e.g., limited number of eggs, chicken pieces, etc.) to ensure availability for all."
+                    ]
+                },
+                {
+                    "title": "4. Point of Contact for Issues",
+                    "items": [
+                        "For any concerns, issues, or requirements, please reach out to the Admin Team."
+                    ]
+                },
+                {
+                    "title": "5. Communication Channels",
+                    "items": [
+                        "Connect with the Admin Team through: G Space, Gmail, G Chat.",
+                        "If there is no response online, you may approach the Reception Desk directly."
+                    ]
+                },
+                {
+                    "title": "6. Mobile & Bag Deposit Policy",
+                    "items": [
+                        "All employees are required to deposit mobile phones and bags in the designated cupboards at the reception before entering the work area.",
+                        "These can be accessed during break times if required."
+                    ]
+                },
+                {
+                    "title": "7. Library & Leisure Area",
+                    "items": [
+                        "A dedicated library is available on the 1st floor, containing educational, fiction, and non-fiction books.",
+                        "Employees are encouraged to utilize this space during their leisure time."
+                    ]
+                },
+                {
+                    "title": "8. Stationery Requirements",
+                    "items": [
+                        "For any stationery needs, please raise a request with the Admin Team through the communication channels.",
+                        "Items will be arranged accordingly."
+                    ]
+                },
+                {
+                    "title": "9. Workstation & Facility Support",
+                    "items": [
+                        "For any issues related to chairs, desks, air conditioning, or refreshment areas, the Admin Team will provide prompt support and resolution."
+                    ]
+                },
+                {
+                    "title": "10. IT Support",
+                    "items": [
+                        "For any system or technical issues, please contact the IT Team. The IT Head, Anbu, will assist in resolving all IT-related concerns."
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_support_hr",
+        "name": "Support Team — HR & Leave Policy",
+        "category": "Department",
+        "version": "1.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "Support Staff team",
+        "content": {
+            "overview": "HR Induction, working-hour expectations, EOD reporting, leave format, company protocol and reimbursement rules for the Support team.",
+            "sections": [
+                {
+                    "title": "1. Working Hours Policies",
+                    "items": [
+                        "Total working hours: 10 hours per day",
+                        "Productive learning/work time: 8 hours 30 minutes",
+                        "Break time: 1 hour 30 minutes",
+                        "Productivity Criteria — Minimum learning hours: 8 hours 30 minutes; Total working hours requirement: 10 hours",
+                        "Break Schedule — 1st Break: 11:00 AM | 2nd Break (Lunch): 01:00 PM | 3rd Break: 05:00 PM",
+                        "(Break time can be utilized flexibly within the total allowed duration)"
+                    ]
+                },
+                {
+                    "title": "2. End of Day (EOD) Reporting",
+                    "items": [
+                        "EOD Submission is Mandatory.",
+                        "All employees must submit a detailed End of Day (EOD) report via email on a daily basis without exception.",
+                        "Email Details — To: Manoj | CC: Praveen, Kripa & Team",
+                        "Submission Timeline — EOD must be sent before logging off for the day.",
+                        "Reports must be clear, structured, and detailed.",
+                        "Incomplete or vague updates will be considered non-compliance.",
+                        "Failure to submit EOD may impact performance evaluation and accountability."
+                    ]
+                },
+                {
+                    "title": "3. Leave Email Format",
+                    "items": [
+                        "All leave requests must strictly follow the format below.",
+                        "Email Recipients — To: Manoj | CC: Praveen, Kripa, HR Team",
+                        "Subject Line Format: [Leave Type] – [Full Day/Half Day] – [Date] (e.g. Sick Leave – Full Day – 12 Feb 2026)",
+                        "Email Body should specify: Type of Leave (Emergency / Sick / Pre-Planned / Late Coming), Date(s), Reason.",
+                        "Ensure all details are accurate and complete.",
+                        "Incomplete emails may lead to delay or rejection of leave approval.",
+                        "Must be sent within the defined timelines as per leave policy."
+                    ]
+                },
+                {
+                    "title": "4. Leave Policy",
+                    "items": [
+                        "Emergency Leave (Half/Full Day) — for unforeseen or urgent situations. Must inform via email between 9:45 AM – 10:00 AM. Supporting documents are mandatory.",
+                        "Sick Leave (Half/Full Day) — Email intimation required before 7:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
+                        "Pre-Planned Leave (Half/Full Day) — Must be applied at least 4 days in advance.",
+                        "Late Coming (LC) — Must inform before 9:45 AM (latest by 10:00 AM); should include expected arrival time.",
+                        "Half Day Criteria — Minimum 5 hours of productive work.",
+                        "Leave Approval Process — All leaves must be approved by management (via Teams). Post approval: send email and update in HRMS portal."
+                    ]
+                },
+                {
+                    "title": "5. Company Protocol",
+                    "items": [
+                        "Salary / Stipend — Processed on the 1st day of every month. If the 1st falls on a Sunday or declared holiday, payment is processed on the last working day of the previous month.",
+                        "Workplace Discipline — Sleeping on the floor is strictly prohibited. If feeling drowsy, take a short break and resume work.",
+                        "Communication — Employees must remain active on Teams and Google Chat. All official communication will be shared through these platforms. Official mail, Teams and HRMS must be logged in on personal mobile.",
+                        "Attendance Compliance — Biometric punch and register signing are mandatory. Failure will result in payroll processing issues.",
+                        "Device Policy — Mobile phones are restricted on the work floor; must be kept at the reception area.",
+                        "Professional Presence — Employees must update their LinkedIn profile after joining.",
+                        "Facilities Provided — Lunch, dinner, evening snacks; tea and coffee available."
+                    ]
+                },
+                {
+                    "title": "6. Reimbursement Policy (If Any)",
+                    "items": [
+                        "All reimbursements require prior management approval. No exceptions.",
+                        "Without approval, claims will not be processed.",
+                        "Submission Process — Send email with: Expense details and Valid bills/invoices (mandatory).",
+                        "Email Details — To: Accounts Team, Front Office | CC: HR Team, Kripa, Praveen.",
+                        "Claims must be submitted promptly.",
+                        "Incomplete or unclear submissions will be rejected.",
+                        "Fake or invalid bills will lead to strict disciplinary action."
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_research_hr",
+        "name": "Research Team — HR & Leave Policy",
+        "category": "Department",
+        "version": "1.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "Research Unit",
+        "content": {
+            "overview": "HR Induction, working-hour expectations (11 hrs), EOD reporting, leave format, company protocol and reimbursement rules (incl. PG accommodation) for the Research team.",
+            "sections": [
+                {
+                    "title": "1. Working Hours Policies",
+                    "items": [
+                        "Total working hours: 11 hours per day",
+                        "Productive learning/work time: 9 hours 30 minutes",
+                        "Break time: 1 hour 30 minutes",
+                        "Productivity Criteria — Minimum learning hours: 9 hours 30 minutes; Total working hours requirement: 11 hours",
+                        "Break Schedule — 1st Break: 11:00 AM | 2nd Break (Lunch): 01:00 PM | 3rd Break: 05:00 PM",
+                        "(Break time can be utilized flexibly within the total allowed duration)"
+                    ]
+                },
+                {
+                    "title": "2. End of Day (EOD) Reporting",
+                    "items": [
+                        "EOD Submission is Mandatory.",
+                        "All employees must submit a detailed End of Day (EOD) report via email on a daily basis without exception.",
+                        "Email Details — To: Manoj | CC: Praveen, Kripa & Team",
+                        "Submission Timeline — EOD must be sent before logging off for the day.",
+                        "Reports must be clear, structured, and detailed.",
+                        "Incomplete or vague updates will be considered non-compliance.",
+                        "Failure to submit EOD may impact performance evaluation and accountability."
+                    ]
+                },
+                {
+                    "title": "3. Leave Email Format",
+                    "items": [
+                        "All leave requests must strictly follow the format below.",
+                        "Email Recipients — To: Manoj | CC: Praveen, Kripa, HR Team",
+                        "Subject Line Format: [Leave Type] – [Full Day/Half Day] – [Date] (e.g. Sick Leave – Full Day – 12 Feb 2026)",
+                        "Email Body should specify: Type of Leave (Emergency / Sick / Pre-Planned / Late Coming), Date(s), Reason.",
+                        "Ensure all details are accurate and complete.",
+                        "Incomplete emails may lead to delay or rejection of leave approval.",
+                        "Must be sent within the defined timelines as per leave policy."
+                    ]
+                },
+                {
+                    "title": "4. Leave Policy",
+                    "items": [
+                        "Emergency Leave (Half/Full Day) — for unforeseen or urgent situations. Must inform via email between 9:45 AM – 10:00 AM. Supporting documents are mandatory.",
+                        "Sick Leave (Half/Full Day) — Email intimation required before 7:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
+                        "Pre-Planned Leave (Half/Full Day) — Must be applied at least 4 days in advance.",
+                        "Late Coming (LC) — Must inform before 9:45 AM (latest by 10:00 AM); should include expected arrival time.",
+                        "Half Day Criteria — Minimum 5 hours of productive work.",
+                        "Leave Approval Process — All leaves must be approved by management (via Teams). Post approval: send email and update in HRMS portal."
+                    ]
+                },
+                {
+                    "title": "5. Company Protocol",
+                    "items": [
+                        "Salary / Stipend — Processed on the 1st day of every month. If the 1st falls on a Sunday or declared holiday, payment is processed on the last working day of the previous month.",
+                        "Workplace Discipline — Sleeping on the floor is strictly prohibited. If feeling drowsy, take a short break and resume work.",
+                        "Communication — Employees must remain active on Teams and Google Chat. All official communication will be shared through these platforms. Official mail, Teams and HRMS must be logged in on personal mobile.",
+                        "Attendance Compliance — Biometric punch and register signing are mandatory. Failure will result in payroll processing issues.",
+                        "Device Policy — Mobile phones are restricted on the work floor; must be kept at the reception area.",
+                        "Professional Presence — Employees must update their LinkedIn profile after joining.",
+                        "Facilities Provided — Lunch, dinner, evening snacks; tea and coffee available."
+                    ]
+                },
+                {
+                    "title": "6. Reimbursement Policy",
+                    "items": [
+                        "PG (Paying Guest) Accommodation Reimbursement — The company will cover 50% of PG accommodation expenses, subject to a maximum limit of ₹5,000 per month. This reimbursement is applicable only with valid bills and prior approval.",
+                        "Submission Process — Send email with: Expense details and Valid bills/invoices (mandatory).",
+                        "Email Details — To: Accounts Team, Front Office | CC: HR Team, Kripa, Praveen.",
+                        "Claims must be submitted promptly.",
+                        "Incomplete or unclear submissions will be rejected.",
+                        "Fake or invalid bills will lead to strict disciplinary action."
+                    ]
+                }
+            ]
+        }
     }
 ]
 
@@ -9682,6 +9927,8 @@ async def get_my_documents(current_user: dict = Depends(get_current_user)):
 # Map: policy_id -> set of department names allowed (admins always see them)
 DEPARTMENT_RESTRICTED_POLICIES = {
     "policy_research": {"Research Unit"},
+    "policy_research_hr": {"Research Unit"},
+    "policy_support_hr": {"Support Staff"},
 }
 
 # Policies that are completely hidden from every user (including admins).
@@ -9690,8 +9937,8 @@ HIDDEN_POLICIES: set = set()
 
 # Policies that bypass ALL access checks (department / club / role) and must
 # always be visible to every authenticated user. Used for organisation-wide
-# documents like the IT and Communication Policy.
-GLOBAL_POLICIES = {"policy_it"}
+# documents like the IT and Communication Policy and the Admin Induction.
+GLOBAL_POLICIES = {"policy_it", "policy_admin_induction"}
 
 async def _is_policy_visible_to_user(policy_id: str, current_user: dict) -> bool:
     """Decide if a policy is visible to the current user.
