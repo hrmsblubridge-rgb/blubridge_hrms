@@ -147,8 +147,8 @@ resend.api_key = os.environ.get("RESEND_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 
 # HRMS automated email system (centralized)
-from email_service import ensure_email_indexes as _ensure_email_indexes  # noqa: E402
-from email_jobs import start_email_scheduler as _start_email_scheduler, get_job_handlers as _get_email_job_handlers  # noqa: E402
+from email_service import ensure_email_indexes as _ensure_email_indexes, ensure_cron_settings_seed as _ensure_cron_settings_seed  # noqa: E402
+from email_jobs import start_email_scheduler as _start_email_scheduler, get_job_handlers as _get_email_job_handlers, JOB_META as _CRON_JOB_META  # noqa: E402
 
 # Create the main app
 app = FastAPI(title="BluBridge HRMS API")
@@ -12079,6 +12079,61 @@ async def email_jobs_audit(
     return {"count": len(rows), "rows": rows}
 
 
+# ============== ADMIN-CONTROLLED CRON MANAGEMENT ==============
+@api_router.get("/admin/cron-settings")
+async def admin_get_cron_settings(current_user: dict = Depends(get_current_user)):
+    """List all email cron jobs with metadata + admin toggle + last-run state.
+    Admin-only (HR + system_admin)."""
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rows_by_name = {}
+    async for doc in db.cron_settings.find({}, {"_id": 0}):
+        rows_by_name[doc["job_name"]] = doc
+    out = []
+    for job_name, meta in _CRON_JOB_META.items():
+        row = rows_by_name.get(job_name) or {"job_name": job_name, "enabled": True}
+        out.append({
+            "job_name": job_name,
+            "label": meta["label"],
+            "schedule": meta["schedule"],
+            "scope": meta.get("scope"),
+            "enabled": bool(row.get("enabled", True)),
+            "last_run_at": row.get("last_run_at"),
+            "last_result": row.get("last_result"),
+            "last_error": row.get("last_error"),
+        })
+    return {"jobs": out}
+
+
+@api_router.put("/admin/cron-settings/{job_name}")
+async def admin_set_cron_enabled(
+    job_name: str,
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Toggle a cron's enabled flag. Admin-only.
+    Body: { "enabled": true/false }
+    """
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if job_name not in _CRON_JOB_META:
+        raise HTTPException(status_code=404, detail=f"Unknown cron. Valid: {list(_CRON_JOB_META.keys())}")
+    enabled = bool(payload.get("enabled"))
+    await db.cron_settings.update_one(
+        {"job_name": job_name},
+        {
+            "$set": {
+                "enabled": enabled,
+                "updated_at": datetime.now(IST_TZ).isoformat() if 'IST_TZ' in globals() else datetime.utcnow().isoformat(),
+                "updated_by": current_user.get("username") or current_user.get("id"),
+            },
+            "$setOnInsert": {"job_name": job_name},
+        },
+        upsert=True,
+    )
+    return {"job_name": job_name, "enabled": enabled, "status": "ok"}
+
+
 app.include_router(api_router)
 
 # CORS
@@ -12228,6 +12283,7 @@ async def ensure_indexes():
     # HRMS automated email system — indexes + cron scheduler
     try:
         await _ensure_email_indexes(db)
+        await _ensure_cron_settings_seed(db, list(_CRON_JOB_META.keys()))
         _start_email_scheduler(db)
     except Exception as e:
         print(f"Email scheduler startup failed: {e}")

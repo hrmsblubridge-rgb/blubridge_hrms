@@ -165,3 +165,21 @@ async def ensure_email_indexes(db: AsyncIOMotorDatabase) -> None:
         await db.email_audit_logs.create_index([("sent_at", -1)])
     except Exception as e:
         logger.warning("email_audit_logs index setup: %s", e)
+
+
+async def ensure_cron_settings_seed(db: AsyncIOMotorDatabase, job_names: list[str]) -> None:
+    """Seed `cron_settings` with each known job at `enabled: true` if absent.
+    Never overwrites existing rows — admin toggles persist across restarts."""
+    try:
+        await db.cron_settings.create_index([("job_name", 1)], unique=True, name="cron_settings_job_unique")
+    except Exception as e:
+        logger.warning("cron_settings index setup: %s", e)
+    for jn in job_names:
+        try:
+            await db.cron_settings.update_one(
+                {"job_name": jn},
+                {"$setOnInsert": {"job_name": jn, "enabled": True, "last_run_at": None, "last_result": None, "last_error": None}},
+                upsert=True,
+            )
+        except Exception as e:
+            logger.warning("cron_settings seed for %s failed: %s", jn, e)

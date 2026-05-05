@@ -14,10 +14,14 @@ Design principles:
   • Every outbound email is routed through `send_hrms_email()` which enforces
     dedup via the email_audit_logs collection + unique index.
   • Failures are logged but never block other jobs or the main API.
+  • Admin-controlled gatekeeper layer: each job consults `cron_settings`
+    BEFORE executing. If disabled, the run is recorded as "skipped" and the
+    job exits safely. Default and fail-open: missing config = ENABLED.
 """
 from __future__ import annotations
 
 import logging
+import traceback
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
@@ -42,6 +46,102 @@ from email_templates import (
 logger = logging.getLogger("hrms.email.jobs")
 
 IST = pytz_timezone("Asia/Kolkata")
+
+# ---- Job metadata exposed for the admin UI --------------------------------
+JOB_META: dict[str, dict] = {
+    "admin_summary": {
+        "label": "Admin Attendance Summary",
+        "schedule": "Daily 10:30 IST",
+        "scope": "today",
+    },
+    "late_login": {
+        "label": "Late Login",
+        "schedule": "Mon–Sat, every 15 min between 10:00–13:45 IST",
+        "scope": "today",
+    },
+    "missed_punch": {
+        "label": "Missed Punch",
+        "schedule": "Daily 09:00 IST",
+        "scope": "yesterday",
+    },
+    "early_out": {
+        "label": "Early Out",
+        "schedule": "Daily 09:15 IST",
+        "scope": "yesterday",
+    },
+    "no_login": {
+        "label": "No Login",
+        "schedule": "Daily 09:30 IST",
+        "scope": "yesterday",
+    },
+}
+
+
+# ---- Admin-controlled gatekeeper -----------------------------------------
+async def is_cron_enabled(db: AsyncIOMotorDatabase, job_name: str) -> bool:
+    """Default fail-open: if no config or DB error, the cron RUNS."""
+    try:
+        doc = await db.cron_settings.find_one({"job_name": job_name}, {"_id": 0, "enabled": 1})
+        if not doc:
+            return True
+        return bool(doc.get("enabled", True))
+    except Exception as e:
+        logger.warning("is_cron_enabled fallback enabled (%s): %s", job_name, e)
+        return True
+
+
+async def mark_cron_run(
+    db: AsyncIOMotorDatabase,
+    job_name: str,
+    *,
+    result: str,
+    error: Optional[str] = None,
+) -> None:
+    """Persist the last-run snapshot for the admin UI. Never raises."""
+    try:
+        await db.cron_settings.update_one(
+            {"job_name": job_name},
+            {
+                "$set": {
+                    "last_run_at": datetime.now(IST).isoformat(),
+                    "last_result": result,
+                    "last_error": error,
+                },
+                "$setOnInsert": {
+                    "job_name": job_name,
+                    "enabled": True,
+                    "created_at": datetime.now(IST).isoformat(),
+                },
+            },
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("mark_cron_run failed (%s): %s", job_name, e)
+
+
+def _gated(job_name: str):
+    """Decorator: gates a job by the admin toggle + records last-run state.
+
+    The wrapped job MUST take `db` as its first positional arg. The decorator
+    is intentionally minimal so it never alters the wrapped business logic —
+    it only short-circuits when disabled and records the outcome on exit.
+    """
+    def deco(fn):
+        async def wrapper(db: AsyncIOMotorDatabase, *args, **kwargs):
+            if not await is_cron_enabled(db, job_name):
+                logger.info("[cron:%s] disabled by admin — skipping", job_name)
+                await mark_cron_run(db, job_name, result="skipped")
+                return
+            try:
+                await fn(db, *args, **kwargs)
+                await mark_cron_run(db, job_name, result="success")
+            except Exception as e:
+                logger.error("[cron:%s] failed: %s\n%s", job_name, e, traceback.format_exc())
+                await mark_cron_run(db, job_name, result="failed", error=str(e))
+                # never re-raise from a scheduled cron — keeps APScheduler healthy
+        wrapper.__name__ = fn.__name__
+        return wrapper
+    return deco
 
 
 def _ist_today() -> str:  # DD-MM-YYYY
@@ -161,7 +261,7 @@ async def _is_non_working_day(db: AsyncIOMotorDatabase, dmy: str) -> bool:
 # =========================================================================
 # JOB 1: Daily Admin Attendance Summary
 # =========================================================================
-async def admin_attendance_summary_job(db: AsyncIOMotorDatabase) -> None:
+async def admin_attendance_summary_job_inner(db: AsyncIOMotorDatabase) -> None:
     today_dmy = _ist_today()
     scope_key = f"admin_summary:{today_dmy}"
     logger.info("[cron:admin_summary] start date=%s", today_dmy)
@@ -290,7 +390,7 @@ async def admin_attendance_summary_job(db: AsyncIOMotorDatabase) -> None:
 # =========================================================================
 # JOB 2: Late Login Email to Employee
 # =========================================================================
-async def late_login_job(db: AsyncIOMotorDatabase) -> None:
+async def late_login_job_inner(db: AsyncIOMotorDatabase) -> None:
     today_dmy = _ist_today()
     if await _is_non_working_day(db, today_dmy):
         logger.info("[cron:late_login] non-working day, skip")
@@ -360,7 +460,7 @@ async def late_login_job(db: AsyncIOMotorDatabase) -> None:
 # =========================================================================
 # JOB 3: Missed Punch Email (yesterday)
 # =========================================================================
-async def missed_punch_job(db: AsyncIOMotorDatabase) -> None:
+async def missed_punch_job_inner(db: AsyncIOMotorDatabase) -> None:
     dmy = _ist_yesterday()
     ymd = _dmy_to_ymd(dmy)
     if await _is_non_working_day(db, dmy):
@@ -413,7 +513,7 @@ async def missed_punch_job(db: AsyncIOMotorDatabase) -> None:
 # =========================================================================
 # JOB 4: Early Out Email (yesterday)
 # =========================================================================
-async def early_out_job(db: AsyncIOMotorDatabase) -> None:
+async def early_out_job_inner(db: AsyncIOMotorDatabase) -> None:
     dmy = _ist_yesterday()
     ymd = _dmy_to_ymd(dmy)
     if await _is_non_working_day(db, dmy):
@@ -466,7 +566,7 @@ async def early_out_job(db: AsyncIOMotorDatabase) -> None:
 # =========================================================================
 # JOB 5: No Login Email (yesterday)
 # =========================================================================
-async def no_login_job(db: AsyncIOMotorDatabase) -> None:
+async def no_login_job_inner(db: AsyncIOMotorDatabase) -> None:
     dmy = _ist_yesterday()
     ymd = _dmy_to_ymd(dmy)
     if await _is_non_working_day(db, dmy):
@@ -512,6 +612,16 @@ async def no_login_job(db: AsyncIOMotorDatabase) -> None:
         if ok:
             sent += 1
     logger.info("[cron:no_login] done sent=%d", sent)
+
+
+# =========================================================================
+# Public job entrypoints — gated by admin toggle, last-run tracked
+# =========================================================================
+admin_attendance_summary_job = _gated("admin_summary")(admin_attendance_summary_job_inner)
+late_login_job = _gated("late_login")(late_login_job_inner)
+missed_punch_job = _gated("missed_punch")(missed_punch_job_inner)
+early_out_job = _gated("early_out")(early_out_job_inner)
+no_login_job = _gated("no_login")(no_login_job_inner)
 
 
 # =========================================================================

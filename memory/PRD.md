@@ -450,3 +450,16 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - `<SortableTh>` icon already maps cleanly: `null/different field` → `ChevronsUpDown` neutral; `field=this, dir=asc` → `ChevronUp`; `field=this, dir=desc` → `ChevronDown`.
   - Removed pre-set default sort fields from `Attendance.js` and `Leave.js` so click-3 reset returns to true API order.
   - Programmatic 3-state cycle test (7 cases, neutral / asc / desc / reset / restart / switch / reset-after-switch) all pass via `node /tmp/test_sort.mjs`.
+
+- **2026-05-02** Admin-Controlled Email Cron Management System (additive control layer, zero refactor).
+  - **Backend gatekeeper** in `backend/email_jobs.py`: new `_gated(job_name)` decorator wraps each of the 5 cron entrypoints. Before invoking the existing job logic, it consults `cron_settings.enabled` (fail-open: missing config → ENABLED). If disabled, marks `last_result=skipped` and returns. On success/failure, marks `last_result=success/failed` with `last_error` and timestamp. Existing inner job functions renamed to `*_job_inner` and rewrapped — zero changes to email-sending business logic.
+  - **Persistence**: new `cron_settings` collection, unique index on `job_name`. Auto-seeded at startup with `enabled: true`. Toggles persist across restarts.
+  - **APIs (admin-only, hr / system_admin)**:
+    - `GET /api/admin/cron-settings` — all 5 jobs with label, schedule, enabled flag, last_run_at, last_result, last_error.
+    - `PUT /api/admin/cron-settings/{job_name}` — body `{ enabled: true|false }`.
+  - **Frontend**: new page `frontend/src/pages/CronManagement.js`, route `/settings/cron-management` (AdminRoute), sidebar entry under Settings.
+    - Table: Cron Name, Schedule, Status (Switch + badge), Last Execution, Last Result (Success/Failed/Skipped pills), Run Now button (disabled when off).
+    - Optimistic toggle with revert on error; toasts: "Cron Enabled Successfully" / "Cron Disabled Successfully".
+    - Non-admin → ShieldAlert "Access Denied".
+  - **Verified live**: GET returns 5 enabled jobs → disable late_login → trigger → audit shows `last_result: "skipped"` → re-enable → trigger → `last_result: "success"`. Non-admin gets 403.
+  - **No changes** to attendance / leave / payroll / email templates / schedules / business logic. Lint clean.

@@ -21,6 +21,7 @@ import {
   ChevronDown,
   Search,
   Settings,
+  Mail as MailIcon,
   ClipboardCheck,
   ClipboardList,
   Ticket,
@@ -65,6 +66,7 @@ const allNavItems = [
   { path: '/role-management', label: 'Role Management', icon: Shield, roles: ['hr', 'system_admin'] },
   { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText, roles: ['hr', 'system_admin'] },
   { path: '/settings', label: 'Settings', icon: Settings, roles: ['hr', 'system_admin'] },
+  { path: '/settings/cron-management', label: 'Cron Management', icon: MailIcon, roles: ['hr', 'system_admin'] },
 ];
 
 const Layout = ({ children }) => {
