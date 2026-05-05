@@ -233,7 +233,9 @@ const CronManagement = () => {
                   <th>Cron Name</th>
                   <th>Schedule</th>
                   <th className="text-center">Status</th>
-                  <th>CC Emails</th>
+                  {/* CC column DISABLED per policy (task id=r9m2kq). Kept commented
+                      so it can be restored without reconstructing the JSX. */}
+                  {/* <th>CC Emails</th> */}
                   <th>Last Execution</th>
                   <th>Last Result</th>
                   <th className="text-right pr-6">Actions</th>
@@ -241,7 +243,7 @@ const CronManagement = () => {
               </thead>
               <tbody>
                 {jobs.length === 0 ? (
-                  <tr><td colSpan="7" className="text-center py-12 text-slate-500">No cron jobs configured</td></tr>
+                  <tr><td colSpan="6" className="text-center py-12 text-slate-500">No cron jobs configured</td></tr>
                 ) : jobs.map((j) => (
                   <tr key={j.job_name} data-testid={`cron-row-${j.job_name}`}>
                     <td>
@@ -269,13 +271,15 @@ const CronManagement = () => {
                         </Badge>
                       </div>
                     </td>
-                    <td>
+                    {/* CC Emails cell DISABLED per policy (task id=r9m2kq).
+                        Editor component preserved for easy restoration. */}
+                    {/* <td>
                       <CCEmailEditor
                         jobName={j.job_name}
                         initial={j.cc_emails || []}
                         onSave={(emails) => saveCC(j, emails)}
                       />
-                    </td>
+                    </td> */}
                     <td className="text-slate-600 text-sm">{formatRunAt(j.last_run_at)}</td>
                     <td>
                       <ResultPill result={j.last_result} />

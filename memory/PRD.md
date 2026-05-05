@@ -4,6 +4,29 @@
 Build and enhance a premium enterprise-grade HRMS web application with role-based access control, onboarding workflow, and notification system. The system must be scalable, modular, and production-ready with modules for employee onboarding, attendance tracking, leave management, payroll, teams, tickets, and more.
 
 ## Tech Stack
+
+## Latest Update — 2026-05-05 (Strict Surgical Cron Email Refactor)
+**Per explicit user spec — surgical, no side-effects.**
+- **CC functionality DISABLED** (commented out, NOT deleted, restorable):
+  - `email_service.py` → CC sanitize/send/fallback block commented; `cc` param accepted but ignored.
+  - `email_jobs.py` → all 5 jobs use `cc_list = []` (the `get_cron_cc()` calls commented out).
+  - `CronManagement.js` → `<th>CC Emails</th>` header & `<CCEmailEditor/>` cell commented out; `colSpan` adjusted from 7 → 6. The `CCEmailEditor` component & `saveCC` handler are preserved.
+- **Admin email recipient HARD-CODED** for the Daily Attendance Summary cron: `to_email = "hr@blubridge.com"` regardless of `ADMIN_REPORT_RECIPIENT` env or `cron_settings`.
+- **Email content rebuilt as employee-wise DETAILED report** (replaces counts-only stat-grid):
+  - New `admin_summary_email_detailed()` template in `email_templates.py`.
+  - 4 mutually-exclusive sections with colored headers:
+    - **Logged In** (green `#10b981`): Employee Name, Login Time
+    - **Late Login** (orange `#f59e0b`): Employee Name, Login Time, Late Duration
+    - **Not Logged In** (red `#ef4444`): Employee Name (excludes employees on leave)
+    - **On Leave** (blue `#0ea5e9`): Employee Name, Date, Leave Type, Status, Reason
+  - Old `admin_summary_email()` and old counts-aggregation block kept commented in code for restoration.
+- **Verified live** by triggering `POST /api/email-jobs/admin_summary/run`:
+  - Recipient: `hr@blubridge.com` only (no CC). Provider id: `04f26f54-9030-4457-8a37-549f39aeed5b`.
+  - Today's data: 48 logged in / 2 late / 8 not logged / 3 on leave (correct mutual exclusivity).
+  - HTML preview rendered all 4 colored sections as designed.
+- **Untouched**: cron schedule, scheduling logic, attendance calc, late-login/missed-punch/early-out/no-login email flows, dashboard counts, leave logic.
+
+## Tech Stack
 - **Frontend**: React, Tailwind CSS, Shadcn UI
 - **Backend**: Python, FastAPI, openpyxl
 - **Database**: MongoDB Atlas

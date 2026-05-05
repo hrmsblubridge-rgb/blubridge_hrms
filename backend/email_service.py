@@ -126,21 +126,28 @@ async def send_hrms_email(
     elif await _already_sent(db, email_type, scope_key):
         return False
 
-    # Sanitize CC: dedupe, drop the primary recipient if present, drop blanks.
-    cc_clean: list = []
-    seen = {to_email.lower().strip()}
+    # --------------------------------------------------------------------
+    # CC processing is DISABLED per policy (task id=r9m2kq / 8c1z7n).
+    # The `cc` param is still accepted for backward-compat, but any provided
+    # addresses are IGNORED and never sent to Resend. Restore by un-commenting
+    # the block below.
+    # --------------------------------------------------------------------
+    cc_clean: list = []  # forced empty — CC suppressed globally
+    # seen = {to_email.lower().strip()}
+    # if cc:
+    #     for raw in cc:
+    #         if not raw:
+    #             continue
+    #         e = str(raw).strip()
+    #         if not e or "@" not in e:
+    #             continue
+    #         key = e.lower()
+    #         if key in seen:
+    #             continue
+    #         seen.add(key)
+    #         cc_clean.append(e)
     if cc:
-        for raw in cc:
-            if not raw:
-                continue
-            e = str(raw).strip()
-            if not e or "@" not in e:
-                continue
-            key = e.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            cc_clean.append(e)
+        logger.debug("cc ignored (disabled) for type=%s scope=%s count=%d", email_type, scope_key, len(cc))
 
     attempt = 0
     last_err: Optional[str] = None

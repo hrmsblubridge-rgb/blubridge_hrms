@@ -131,6 +131,108 @@ def simple_table(headers: list[str], rows: list[list]) -> str:
     """
 
 
+# ---------- Colored section helper (used by detailed admin summary) ----------
+def _section_header(title: str, count: int, color: str) -> str:
+    return (
+        f'<div style="margin:22px 0 8px 0;padding:10px 14px;border-left:4px solid {color};'
+        f'background:{color}15;border-radius:4px;">'
+        f'<span style="font-size:15px;font-weight:700;color:{color};">{title}</span>'
+        f'<span style="font-size:13px;color:{MUTED};margin-left:10px;">({count})</span>'
+        f'</div>'
+    )
+
+
+def _colored_table(headers: list, rows: list, color: str, empty_msg: str = "No records.") -> str:
+    """Like simple_table but with a colored header band matching the section."""
+    if not rows:
+        return f'<p style="color:{MUTED};font-size:13px;margin:6px 0 0 14px;">{empty_msg}</p>'
+    th = "".join(
+        f'<th style="padding:10px 12px;text-align:left;background:{color}12;color:{color};'
+        f'font-size:12px;border-bottom:2px solid {color};font-weight:700;">{h}</th>'
+        for h in headers
+    )
+    tr_html = []
+    for idx, r in enumerate(rows):
+        bg = "#ffffff" if idx % 2 == 0 else "#fafafa"
+        tds = "".join(
+            f'<td style="padding:9px 12px;font-size:13px;color:{TEXT};border-bottom:1px solid {BORDER};">{c}</td>'
+            for c in r
+        )
+        tr_html.append(f'<tr style="background:{bg};">{tds}</tr>')
+    return (
+        f'<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'style="border:1px solid {BORDER};border-radius:8px;overflow:hidden;margin:4px 0 0 0;">'
+        f'<thead><tr>{th}</tr></thead>'
+        f'<tbody>{"".join(tr_html)}</tbody>'
+        f'</table>'
+    )
+
+
+def admin_summary_email_detailed(
+    *,
+    date_str: str,
+    logged_in_rows: list,
+    late_login_rows: list,
+    not_logged_rows: list,
+    on_leave_rows: list,
+) -> str:
+    """Employee-wise detailed daily attendance report.
+
+    Shows FULL LISTS (not counts) across 4 colored sections:
+      • Logged In (green) — Name, Login Time
+      • Late Logins (orange) — Name, Login Time, Late Duration
+      • Not Logged In (red) — Name
+      • On Leave (blue) — Name, Date, Leave Type, Status, Reason
+    """
+    GREEN = "#10b981"
+    ORANGE = "#f59e0b"
+    RED = "#ef4444"
+    BLUE = "#0ea5e9"
+
+    intro = (
+        f'Detailed attendance snapshot for <b>{date_str}</b>. '
+        f'Employee-level breakdown across 4 mutually-exclusive sections below.'
+    )
+
+    body = (
+        _section_header("Logged In", len(logged_in_rows), GREEN)
+        + _colored_table(
+            ["Employee Name", "Login Time"],
+            logged_in_rows,
+            GREEN,
+            empty_msg="No employees logged in yet.",
+        )
+        + _section_header("Late Login", len(late_login_rows), ORANGE)
+        + _colored_table(
+            ["Employee Name", "Login Time", "Late Duration"],
+            late_login_rows,
+            ORANGE,
+            empty_msg="No late logins.",
+        )
+        + _section_header("Not Logged In", len(not_logged_rows), RED)
+        + _colored_table(
+            ["Employee Name"],
+            not_logged_rows,
+            RED,
+            empty_msg="All expected employees have logged in.",
+        )
+        + _section_header("On Leave", len(on_leave_rows), BLUE)
+        + _colored_table(
+            ["Employee Name", "Date", "Leave Type", "Status", "Reason"],
+            on_leave_rows,
+            BLUE,
+            empty_msg="No employees on leave.",
+        )
+    )
+
+    return base_email_template(
+        title=f"Daily Attendance Report — {date_str}",
+        greeting="Hi HR team,",
+        intro_html=intro,
+        body_html=body,
+    )
+
+
 # ---------- Specific email generators ---------------------------------------
 def admin_summary_email(summary: dict, dept_rows: list, shift_rows: list, top_delayed: list, date_str: str) -> str:
     cells = [

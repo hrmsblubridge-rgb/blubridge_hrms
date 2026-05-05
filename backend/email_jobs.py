@@ -38,6 +38,7 @@ from email_service import (
 )
 from email_templates import (
     admin_summary_email,
+    admin_summary_email_detailed,
     early_out_email,
     late_login_email,
     missed_punch_email,
@@ -278,121 +279,115 @@ async def _is_non_working_day(db: AsyncIOMotorDatabase, dmy: str) -> bool:
 # JOB 1: Daily Admin Attendance Summary
 # =========================================================================
 async def admin_attendance_summary_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> None:
+    """Daily admin attendance summary — DETAILED employee-wise report.
+
+    Builds 4 mutually-exclusive sections:
+      • Logged In        (Name, Login Time)
+      • Late Login       (Name, Login Time, Late Duration) — subset of Logged In
+                         shown separately per requirement
+      • Not Logged In    (Name) — excludes employees on leave
+      • On Leave         (Name, Date, Leave Type, Status, Reason)
+
+    Hard-coded recipient: hr@blubridge.com. No CC.
+    """
     today_dmy = _ist_today()
     logger.info("[cron:admin_summary] start date=%s force=%s", today_dmy, force)
 
     employees = await _active_employees(db)
-    total_employees = len(employees)
     emp_by_id = {e["id"]: e for e in employees}
 
     attendance = await db.attendance.find({"date": today_dmy}, {"_id": 0}).to_list(5000)
 
-    logged_in = completed = early_out = late_login = half_day = missed_punch = 0
-    emp_with_in: set[str] = set()
-    delayed: list[tuple[int, dict]] = []
+    # --- Build On-Leave set FIRST (so Not Logged In can exclude them) --------
+    ymd = _dmy_to_ymd(today_dmy)
+    leaves_today = await db.leaves.find(
+        {
+            "status": {"$in": ["approved", "pending"]},
+            "start_date": {"$lte": ymd},
+            "end_date": {"$gte": ymd},
+        },
+        {"_id": 0},
+    ).to_list(5000)
+    on_leave_ids: set = set()
+    on_leave_rows: list = []
+    for lv in leaves_today:
+        eid = lv.get("employee_id")
+        emp = emp_by_id.get(eid)
+        if not emp:
+            continue
+        on_leave_ids.add(eid)
+        on_leave_rows.append([
+            emp.get("full_name") or emp.get("emp_name") or "-",
+            today_dmy,
+            lv.get("leave_type") or "-",
+            (lv.get("status") or "-").title(),
+            (lv.get("reason") or "-")[:160],
+        ])
+    on_leave_rows.sort(key=lambda r: r[0].lower())
+
+    # --- Walk attendance to build Logged-In & Late-Login lists ---------------
+    logged_in_rows: list = []
+    late_login_rows: list = []
+    emp_with_in: set = set()
 
     for a in attendance:
         emp_id = a.get("employee_id")
-        if emp_id not in emp_by_id:
-            continue
-        has_in = bool(a.get("check_in") or a.get("check_in_24h"))
-        has_out = bool(a.get("check_out") or a.get("check_out_24h"))
-        status = (a.get("status") or "").strip()
-        if has_in:
-            emp_with_in.add(emp_id)
-            if has_out:
-                if status in ("Early Out", "Loss of Pay") or a.get("is_lop"):
-                    early_out += 1
-                else:
-                    completed += 1
-            else:
-                logged_in += 1
-        if status == "Half Day":
-            half_day += 1
-        if has_in != has_out:  # XOR → missed punch
-            missed_punch += 1
-        # Late detection: status or late_by
-        late_by = a.get("late_by_minutes") or 0
-        if status == "Late Login" or "late login" in (a.get("lop_reason") or "").lower() or late_by:
-            late_login += 1
-            if late_by:
-                delayed.append((int(late_by), a))
-
-    # Leaves count (unique employees with any leave overlap today)
-    ymd = _dmy_to_ymd(today_dmy)
-    leave_rows = await db.leaves.find(
-        {"status": {"$in": ["approved", "pending"]}, "start_date": {"$lte": ymd}, "end_date": {"$gte": ymd}},
-        {"_id": 0, "employee_id": 1},
-    ).to_list(5000)
-    on_leave_ids = {lv["employee_id"] for lv in leave_rows if lv.get("employee_id") in emp_by_id}
-    on_leave = len(on_leave_ids)
-
-    not_logged = len(on_leave_ids | (set(emp_by_id.keys()) - emp_with_in))
-    present = completed + logged_in
-    attendance_pct = round(100.0 * len(emp_with_in) / total_employees, 1) if total_employees else 0.0
-
-    summary = {
-        "total_employees": total_employees,
-        "logged_in": logged_in,
-        "present": present,
-        "not_logged": not_logged,
-        "late_login": late_login,
-        "early_out": early_out,
-        "half_day": half_day,
-        "missed_punch": missed_punch,
-        "on_leave": on_leave,
-        "attendance_pct": attendance_pct,
-    }
-
-    # Department-wise
-    dept_rows_map: dict[str, dict] = {}
-    for emp in employees:
-        d = emp.get("department") or "Unknown"
-        dept_rows_map.setdefault(d, {"total": 0, "present": 0, "leave": 0, "late": 0})
-        dept_rows_map[d]["total"] += 1
-    for a in attendance:
-        emp = emp_by_id.get(a.get("employee_id"))
+        emp = emp_by_id.get(emp_id)
         if not emp:
             continue
-        d = emp.get("department") or "Unknown"
-        if a.get("check_in") or a.get("check_in_24h"):
-            dept_rows_map[d]["present"] += 1
-        if (a.get("status") or "") == "Late Login" or a.get("late_by_minutes"):
-            dept_rows_map[d]["late"] += 1
-    for emp_id in on_leave_ids:
-        emp = emp_by_id.get(emp_id)
-        if emp:
-            d = emp.get("department") or "Unknown"
-            dept_rows_map.setdefault(d, {"total": 0, "present": 0, "leave": 0, "late": 0})
-            dept_rows_map[d]["leave"] += 1
-    dept_rows = [
-        [d, v["total"], v["present"], v["leave"], v["late"], max(0, v["total"] - v["present"] - v["leave"])]
-        for d, v in sorted(dept_rows_map.items())
-    ]
+        check_in = a.get("check_in") or a.get("check_in_24h") or ""
+        if not check_in:
+            continue
+        emp_with_in.add(emp_id)
+        emp_name = emp.get("full_name") or emp.get("emp_name") or "-"
+        logged_in_rows.append([emp_name, check_in])
 
-    # Shift-wise
-    shift_map: dict[str, dict] = {}
+        status = (a.get("status") or "").strip()
+        late_by = int(a.get("late_by_minutes") or 0)
+        is_late = (status == "Late Login") or ("late login" in (a.get("lop_reason") or "").lower()) or late_by > 0
+        if is_late:
+            if late_by <= 0:
+                # Fallback compute from expected_login vs check_in_24h
+                try:
+                    exp = a.get("expected_login") or "10:00"
+                    actual = a.get("check_in_24h") or check_in
+                    eh, em = map(int, exp.split(":"))
+                    ah, am = map(int, actual.split(":"))
+                    late_by = max(0, (ah * 60 + am) - (eh * 60 + em))
+                except Exception:
+                    late_by = 0
+            late_display = f"{late_by} min" if late_by > 0 else "-"
+            late_login_rows.append([emp_name, check_in, late_display])
+
+    logged_in_rows.sort(key=lambda r: r[0].lower())
+    late_login_rows.sort(key=lambda r: r[0].lower())
+
+    # --- Not Logged In: employees with no check_in AND not on leave ----------
+    not_logged_rows: list = []
     for emp in employees:
-        s = emp.get("shift_type") or "General"
-        shift_map.setdefault(s, {"total": 0, "in": 0})
-        shift_map[s]["total"] += 1
-    for a in attendance:
-        emp = emp_by_id.get(a.get("employee_id"))
-        if emp and (a.get("check_in") or a.get("check_in_24h")):
-            s = emp.get("shift_type") or "General"
-            shift_map[s]["in"] += 1
-    shift_rows = [[s, v["total"], v["in"], max(0, v["total"] - v["in"])] for s, v in sorted(shift_map.items())]
+        eid = emp["id"]
+        if eid in emp_with_in:
+            continue
+        if eid in on_leave_ids:
+            continue  # on-leave employees excluded per requirement
+        not_logged_rows.append([emp.get("full_name") or emp.get("emp_name") or "-"])
+    not_logged_rows.sort(key=lambda r: r[0].lower())
 
-    # Top 5 delayed
-    delayed.sort(key=lambda x: x[0], reverse=True)
-    top_delayed = [
-        [d[1].get("emp_name") or "-", d[1].get("team") or "-", d[1].get("check_in") or "-", f"{d[0]} min"]
-        for d in delayed[:5]
-    ]
+    html = admin_summary_email_detailed(
+        date_str=today_dmy,
+        logged_in_rows=logged_in_rows,
+        late_login_rows=late_login_rows,
+        not_logged_rows=not_logged_rows,
+        on_leave_rows=on_leave_rows,
+    )
 
-    html = admin_summary_email(summary, dept_rows, shift_rows, top_delayed, today_dmy)
-    cc_list = await get_cron_cc(db, "admin_summary")
-    recipients = [ADMIN_REPORT_RECIPIENT] + cc_list
+    # ---- HARD-CODED admin recipient; CC is DISABLED per policy --------------
+    # CC functionality is intentionally commented out (see task id=r9m2kq).
+    # Do NOT re-enable without explicit product approval.
+    # cc_list = await get_cron_cc(db, "admin_summary")  # [DISABLED: CC removal]
+    admin_recipient = "hr@blubridge.com"
+    recipients = [admin_recipient]  # no CC; primary only
+
     await send_hrms_email_multi(
         db,
         email_type="admin_summary",
@@ -402,7 +397,23 @@ async def admin_attendance_summary_job_inner(db: AsyncIOMotorDatabase, force: bo
         html=html,
         force=force,
     )
-    logger.info("[cron:admin_summary] done date=%s force=%s", today_dmy, force)
+    logger.info(
+        "[cron:admin_summary] done date=%s force=%s logged=%d late=%d absent=%d leave=%d",
+        today_dmy, force, len(logged_in_rows), len(late_login_rows),
+        len(not_logged_rows), len(on_leave_rows),
+    )
+
+    # ------------------------------------------------------------------------
+    # LEGACY counts-only summary (commented out per task id=8c1z7n; restore
+    # here if product wants the old stat-grid format back).
+    # ------------------------------------------------------------------------
+    # logged_in = completed = early_out = late_login = half_day = missed_punch = 0
+    # ... (original count-based aggregation preserved in git history)
+    # summary = { "total_employees": ..., "logged_in": ..., ... }
+    # dept_rows = [...]
+    # shift_rows = [...]
+    # top_delayed = [...]
+    # html = admin_summary_email(summary, dept_rows, shift_rows, top_delayed, today_dmy)
 
 
 # =========================================================================
@@ -423,7 +434,10 @@ async def late_login_job_inner(db: AsyncIOMotorDatabase, force: bool = False) ->
 
     employees = {e["id"]: e for e in await _active_employees(db)}
     ymd = _dmy_to_ymd(today_dmy)
-    cc_list = await get_cron_cc(db, "late_login")
+    # CC functionality disabled per policy (task id=r9m2kq). Keep the line
+    # commented so it can be restored later without re-derivation.
+    # cc_list = await get_cron_cc(db, "late_login")  # [DISABLED: CC removal]
+    cc_list: list = []
     sent = 0
     for a in records:
         emp = employees.get(a.get("employee_id"))
@@ -490,7 +504,8 @@ async def missed_punch_job_inner(db: AsyncIOMotorDatabase, force: bool = False) 
 
     records = await db.attendance.find({"date": dmy}, {"_id": 0}).to_list(5000)
     employees = {e["id"]: e for e in await _active_employees(db)}
-    cc_list = await get_cron_cc(db, "missed_punch")
+    # cc_list = await get_cron_cc(db, "missed_punch")  # [DISABLED: CC removal]
+    cc_list: list = []
 
     sent = 0
     for a in records:
@@ -548,7 +563,8 @@ async def early_out_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> 
         {"_id": 0},
     ).to_list(5000)
     employees = {e["id"]: e for e in await _active_employees(db)}
-    cc_list = await get_cron_cc(db, "early_out")
+    # cc_list = await get_cron_cc(db, "early_out")  # [DISABLED: CC removal]
+    cc_list: list = []
 
     sent = 0
     for a in records:
@@ -601,7 +617,8 @@ async def no_login_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> N
     employees = await _active_employees(db)
     attendance = await db.attendance.find({"date": dmy}, {"_id": 0, "employee_id": 1, "check_in": 1, "check_in_24h": 1, "check_out": 1, "check_out_24h": 1}).to_list(5000)
     emp_attendance_map = {a["employee_id"]: a for a in attendance}
-    cc_list = await get_cron_cc(db, "no_login")
+    # cc_list = await get_cron_cc(db, "no_login")  # [DISABLED: CC removal]
+    cc_list: list = []
 
     sent = 0
     for emp in employees:
