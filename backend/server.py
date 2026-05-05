@@ -9933,7 +9933,7 @@ DEPARTMENT_RESTRICTED_POLICIES = {
 
 # Policies that are completely hidden from every user (including admins).
 # To re-enable a policy, simply remove its id from this set.
-HIDDEN_POLICIES: set = set()
+HIDDEN_POLICIES: set = {"policy_research"}
 
 # Policies that bypass ALL access checks (department / club / role) and must
 # always be visible to every authenticated user. Used for organisation-wide
