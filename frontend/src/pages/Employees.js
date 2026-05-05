@@ -393,14 +393,22 @@ const Employees = () => {
     setShowEditSheet(true);
   };
 
-  const handleView = async (employee) => { 
-    setSelectedEmployee(employee); 
+  const handleView = async (employee) => {
+    setSelectedEmployee(employee);
     setViewTab('profile');
     setEduExpData(null);
     setDocumentsData(null);
     setSalaryData(null);
     setAdjustments([]);
     setShowViewDialog(true);
+    // Fetch the freshest detail (which now includes the linked login username).
+    // Falls back silently to the list-row data if the call fails.
+    try {
+      const { data } = await axios.get(`${API}/employees/${employee.id}`, { headers: getAuthHeaders() });
+      if (data) setSelectedEmployee((prev) => ({ ...prev, ...data }));
+    } catch (e) {
+      // non-fatal — keep showing whatever we already have
+    }
   };
   
   const fetchEduExp = async (employeeId) => {
@@ -1654,6 +1662,28 @@ const Employees = () => {
                       <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide">Employment</h4>
                       <div className="space-y-3">
                         <div className="flex items-center gap-3"><Hash className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Employee ID: {selectedEmployee.custom_employee_id || '-'}</span></div>
+                        <div className="flex items-center gap-3" data-testid="employee-username-row">
+                          <KeyRound className="w-4 h-4 text-slate-400" />
+                          <span className="text-sm text-slate-600">Username:&nbsp;</span>
+                          {selectedEmployee.username ? (
+                            <>
+                              <code className="text-sm font-medium text-slate-800 bg-slate-50 px-2 py-0.5 rounded border border-slate-200" data-testid="employee-username-value">
+                                {selectedEmployee.username}
+                              </code>
+                              <button
+                                type="button"
+                                onClick={() => { navigator.clipboard.writeText(selectedEmployee.username); toast.success('Username copied'); }}
+                                className="text-slate-400 hover:text-slate-600 transition-colors"
+                                title="Copy username"
+                                data-testid="employee-username-copy"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-sm text-slate-400 italic">N/A</span>
+                          )}
+                        </div>
                         <div className="flex items-center gap-3"><Fingerprint className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Biometric ID: {selectedEmployee.biometric_id || '-'}</span></div>
                         <div className="flex items-center gap-3"><Briefcase className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Joined: {selectedEmployee.date_of_joining}</span></div>
                         <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.department} / {selectedEmployee.team}</span></div>

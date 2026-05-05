@@ -3881,7 +3881,12 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
         manager = await db.employees.find_one({"id": employee["reporting_manager_id"]}, {"_id": 0, "full_name": 1, "emp_id": 1})
         employee["reporting_manager_name"] = manager.get("full_name") if manager else None
         employee["reporting_manager_emp_id"] = manager.get("emp_id") if manager else None
-    
+
+    # Attach the linked login username (read-only, detail-view only).
+    # Auth tables are NOT modified — we only project the username for display.
+    user_doc = await db.users.find_one({"employee_id": employee_id}, {"_id": 0, "username": 1})
+    employee["username"] = user_doc.get("username") if user_doc else None
+
     return serialize_doc(employee)
 
 @api_router.post("/employees")
