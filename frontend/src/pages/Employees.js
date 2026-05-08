@@ -688,15 +688,22 @@ const Employees = () => {
 
   const confirmPermDelete = async () => {
     if (!selectedEmployee) return;
+    const idToDelete = selectedEmployee.id;
     try {
-      await axios.delete(`${API}/employees/${selectedEmployee.id}/permanent`, { headers: getAuthHeaders() });
-      toast.success('Employee permanently deleted');
-      setShowPermDeleteDialog(false);
-      setSelectedEmployee(null);
-      fetchEmployees(); fetchStats();
+      await axios.delete(`${API}/employees/${idToDelete}/permanent`, { headers: getAuthHeaders() });
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to permanently delete');
+      return;
     }
+    // SUCCESS — happen ONCE, in this order, all outside the try/catch so
+    // any state-cleanup or refetch error never triggers a phantom failure toast.
+    toast.success('Employee permanently deleted');
+    setShowPermDeleteDialog(false);
+    setSelectedEmployee(null);
+    setEmployees((prev) => prev.filter((e) => e.id !== idToDelete));      // optimistic UI removal
+    setAllEmployees((prev) => prev.filter((e) => e.id !== idToDelete));
+    setPagination((p) => ({ ...p, total: Math.max(0, (p.total || 1) - 1) }));
+    fetchData();                                                          // authoritative refresh in background
   };
 
   const confirmForceDelete = async () => {
@@ -705,20 +712,25 @@ const Employees = () => {
       toast.error('Please type DELETE to confirm');
       return;
     }
+    const idToDelete = selectedEmployee.id;
     try {
-      await axios.delete(`${API}/employees/${selectedEmployee.id}/force`, {
+      await axios.delete(`${API}/employees/${idToDelete}/force`, {
         headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
         data: { confirmation_text: 'DELETE' },
       });
-      toast.success('Employee and all records permanently deleted');
-      setShowForceDeleteDialog(false);
-      setForceStep(1);
-      setForceConfirmText('');
-      setSelectedEmployee(null);
-      fetchEmployees(); fetchStats();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to force delete');
+      return;
     }
+    toast.success('Employee and all records permanently deleted');
+    setShowForceDeleteDialog(false);
+    setForceStep(1);
+    setForceConfirmText('');
+    setSelectedEmployee(null);
+    setEmployees((prev) => prev.filter((e) => e.id !== idToDelete));
+    setAllEmployees((prev) => prev.filter((e) => e.id !== idToDelete));
+    setPagination((p) => ({ ...p, total: Math.max(0, (p.total || 1) - 1) }));
+    fetchData();
   };
 
   const validateForm = (isEdit = false) => {
