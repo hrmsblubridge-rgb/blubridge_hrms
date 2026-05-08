@@ -147,7 +147,7 @@ resend.api_key = os.environ.get("RESEND_API_KEY")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 
 # HRMS automated email system (centralized)
-from email_service import ensure_email_indexes as _ensure_email_indexes, ensure_cron_settings_seed as _ensure_cron_settings_seed  # noqa: E402
+from email_service import ensure_email_indexes as _ensure_email_indexes, ensure_cron_settings_seed as _ensure_cron_settings_seed, absolute_url  # noqa: E402
 from email_jobs import start_email_scheduler as _start_email_scheduler, get_job_handlers as _get_email_job_handlers, JOB_META as _CRON_JOB_META  # noqa: E402
 
 # Create the main app
@@ -3002,8 +3002,8 @@ async def forgot_password(payload: ForgotPasswordRequest):
         "used": False,
     })
 
-    base = (os.environ.get("FRONTEND_BASE_URL") or os.environ.get("REACT_APP_BACKEND_URL") or "").rstrip("/")
-    reset_url = f"{base}/reset-password?token={token}"
+    base = absolute_url("/").rstrip("/")
+    reset_url = absolute_url("/reset-password", query={"token": token})
 
     # Send via existing email engine. NOT routed through cron audit dedup —
     # this is transactional, must always go.
@@ -3816,7 +3816,7 @@ async def bulk_import_employees(
                     email=email,
                     username=username,
                     password=temp_password,
-                    login_url=f"{os.environ.get('FRONTEND_URL', 'https://leave-code-mapper.preview.emergentagent.com')}/login"
+                    login_url=absolute_url("/login")
                 )
             )
 
@@ -3936,8 +3936,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         phone_part = str(uuid.uuid4())[:4]
     temp_password = f"{name_part}@{phone_part}"
     
-    frontend_url = os.environ.get('FRONTEND_URL', 'https://blubrg.com')
-    login_url = f"{frontend_url}/login"
+    login_url = absolute_url("/login")
     
     if existing_deleted:
         # Reactivate the deleted employee with updated info

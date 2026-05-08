@@ -21,7 +21,67 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 logger = logging.getLogger("hrms.email")
 
-FRONTEND_BASE = os.environ.get("FRONTEND_BASE_URL") or os.environ.get("REACT_APP_BACKEND_URL", "")
+# ----------------------------------------------------------------------------
+# Centralised, BULLETPROOF base URL for every link rendered into HRMS emails.
+# Reads from FRONTEND_BASE_URL (preferred) or legacy FRONTEND_URL env. If
+# either is set but malformed (missing scheme, empty host) we hard-fallback to
+# the official production domain so email links NEVER end up as
+# `http:///reset-password?token=...` or relative paths.
+# ----------------------------------------------------------------------------
+_OFFICIAL_FRONTEND_BASE = "https://blubrg.com"
+
+
+def _resolve_frontend_base() -> str:
+    raw = (
+        os.environ.get("FRONTEND_BASE_URL")
+        or os.environ.get("FRONTEND_URL")
+        or os.environ.get("REACT_APP_BACKEND_URL")
+        or ""
+    ).strip().rstrip("/")
+    # Validate scheme + host. If anything looks off, fall back to official.
+    if not raw:
+        return _OFFICIAL_FRONTEND_BASE
+    if not (raw.startswith("http://") or raw.startswith("https://")):
+        return _OFFICIAL_FRONTEND_BASE
+    # Reject "http:///..." style — empty host between scheme and first /
+    after_scheme = raw.split("://", 1)[1] if "://" in raw else ""
+    host = after_scheme.split("/", 1)[0]
+    if not host or "." not in host:
+        return _OFFICIAL_FRONTEND_BASE
+    return raw
+
+
+# Module-level constant, evaluated on import (after .env has been loaded by
+# the FastAPI process). Re-evaluated inside `absolute_url` on every call so
+# env changes during runtime are picked up too — defensively.
+FRONTEND_BASE = _resolve_frontend_base()
+
+
+def absolute_url(path: str = "/", *, query: Optional[dict] = None) -> str:
+    """Return a fully-qualified absolute URL safe to embed in an email.
+
+    • Always begins with a scheme + host (https://blubrg.com by default).
+    • `path` may be passed with or without a leading slash; output is normalised.
+    • `query` (optional) appends key=value pairs preserving any existing query.
+    • Never returns a relative path. Never returns `http:///...`.
+    """
+    base = _resolve_frontend_base()
+    p = path or "/"
+    if not p.startswith("/"):
+        p = "/" + p
+    url = f"{base}{p}"
+    if query:
+        from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
+        parts = urlsplit(url)
+        merged = dict(parse_qsl(parts.query, keep_blank_values=True))
+        for k, v in query.items():
+            if v is None:
+                continue
+            merged[str(k)] = str(v)
+        url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(merged), parts.fragment))
+    return url
+
+
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 ADMIN_REPORT_RECIPIENT = os.environ.get("ADMIN_REPORT_RECIPIENT", "hrmsblubridge@gmail.com")
 
@@ -32,13 +92,9 @@ def generate_employee_action_link(route: str, date_str: Optional[str] = None) ->
     """Build a deep-link URL to the employee portal.
 
     Example: generate_employee_action_link('/employee/late-request', '02-05-2026')
+    Always returns an absolute https://blubrg.com/... URL — never relative.
     """
-    base = FRONTEND_BASE.rstrip("/")
-    url = f"{base}{route}"
-    if date_str:
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}date={date_str}"
-    return url
+    return absolute_url(route, query=({"date": date_str} if date_str else None))
 
 
 async def _is_email_eligible(emp: dict) -> bool:
