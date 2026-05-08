@@ -10013,6 +10013,23 @@ async def get_policies(current_user: dict = Depends(get_current_user)):
     for policy in policies:
         if await _is_policy_visible_to_user(policy.get("id"), current_user):
             visible_policies.append(policy)
+
+    # Attach acknowledgement state for the requesting user (read-only enrichment).
+    # Only employees see this; admins still see the policies but ack tracking
+    # is shown in the dedicated admin tracking dashboard, not here.
+    employee_id = current_user.get("employee_id")
+    if employee_id and visible_policies:
+        ack_ids = [p["id"] for p in visible_policies]
+        ack_cursor = db.policy_acknowledgements.find(
+            {"policy_id": {"$in": ack_ids}, "employee_id": employee_id},
+            {"_id": 0, "policy_id": 1, "acknowledged_at": 1},
+        )
+        ack_map: dict = {}
+        async for ack in ack_cursor:
+            ack_map[ack["policy_id"]] = ack.get("acknowledged_at")
+        for p in visible_policies:
+            p["is_acknowledged"] = p["id"] in ack_map
+            p["acknowledged_at"] = ack_map.get(p["id"])
     return [serialize_doc(p) for p in visible_policies]
 
 @api_router.get("/policies/{policy_id}")
@@ -10040,6 +10057,247 @@ async def update_policy(policy_id: str, data: dict, current_user: dict = Depends
     
     await log_audit(current_user["id"], "update_policy", "policy", policy_id)
     return {"message": "Policy updated successfully"}
+
+
+# ============== POLICY ACKNOWLEDGEMENTS ==============
+# Each row in `policy_acknowledgements`:
+#   { id, policy_id, employee_id, employee_name, role, department,
+#     acknowledged_at (ISO), ip, user_agent }
+# Unique partial index on (policy_id, employee_id) prevents duplicate acks.
+
+async def _ensure_policy_ack_indexes() -> None:
+    try:
+        await db.policy_acknowledgements.create_index(
+            [("policy_id", 1), ("employee_id", 1)],
+            unique=True,
+            name="uniq_policy_employee",
+        )
+        await db.policy_acknowledgements.create_index([("policy_id", 1), ("acknowledged_at", -1)])
+        await db.policy_acknowledgements.create_index([("employee_id", 1)])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _eligible_employees_for_policy(policy_id: str) -> list:
+    """Return the active employees who SHOULD see / acknowledge this policy
+    given the existing visibility primitives. Hidden policies → empty list.
+    """
+    if policy_id in HIDDEN_POLICIES:
+        return []
+    base_q: dict = {"is_deleted": {"$ne": True}, "employee_status": {"$ne": "Inactive"}}
+    if policy_id in GLOBAL_POLICIES:
+        pass  # global → all active employees
+    else:
+        depts = DEPARTMENT_RESTRICTED_POLICIES.get(policy_id)
+        if depts:
+            base_q["department"] = {"$in": list(depts)}
+    return await db.employees.find(
+        base_q,
+        {"_id": 0, "id": 1, "full_name": 1, "department": 1, "team": 1, "designation": 1, "official_email": 1, "custom_employee_id": 1},
+    ).sort("full_name", 1).to_list(5000)
+
+
+@api_router.post("/policies/{policy_id}/acknowledge")
+async def acknowledge_policy(policy_id: str, current_user: dict = Depends(get_current_user)):
+    """Employee endpoint — record acknowledgement of a policy. Idempotent:
+    if already acknowledged, returns the existing record without erroring."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="Only employees can acknowledge policies")
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0, "name": 1})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    if not await _is_policy_visible_to_user(policy_id, current_user):
+        raise HTTPException(status_code=403, detail="You do not have access to this policy")
+
+    existing = await db.policy_acknowledgements.find_one(
+        {"policy_id": policy_id, "employee_id": employee_id},
+        {"_id": 0},
+    )
+    if existing:
+        return {"ok": True, "already_acknowledged": True, "acknowledged_at": existing.get("acknowledged_at")}
+
+    employee = await db.employees.find_one(
+        {"id": employee_id},
+        {"_id": 0, "full_name": 1, "department": 1, "team": 1, "designation": 1, "custom_employee_id": 1},
+    )
+    now_iso = get_ist_now().isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "policy_id": policy_id,
+        "policy_name": policy.get("name"),
+        "employee_id": employee_id,
+        "employee_name": (employee or {}).get("full_name") or current_user.get("name") or "",
+        "employee_code": (employee or {}).get("custom_employee_id"),
+        "department": (employee or {}).get("department"),
+        "team": (employee or {}).get("team"),
+        "designation": (employee or {}).get("designation"),
+        "role": current_user.get("role"),
+        "user_id": current_user.get("id"),
+        "acknowledged_at": now_iso,
+    }
+    try:
+        await db.policy_acknowledgements.insert_one(doc)
+    except Exception as e:
+        # Race on the unique index → treat as already acknowledged
+        existing = await db.policy_acknowledgements.find_one(
+            {"policy_id": policy_id, "employee_id": employee_id},
+            {"_id": 0, "acknowledged_at": 1},
+        )
+        if existing:
+            return {"ok": True, "already_acknowledged": True, "acknowledged_at": existing.get("acknowledged_at")}
+        raise HTTPException(status_code=500, detail=f"Could not record acknowledgement: {e}")
+
+    await log_audit(
+        current_user.get("id"),
+        action="acknowledge_policy",
+        resource="policy",
+        resource_id=policy_id,
+        details=f"{doc['employee_name']} acknowledged {policy.get('name')}",
+    )
+    return {"ok": True, "already_acknowledged": False, "acknowledged_at": now_iso}
+
+
+@api_router.get("/policies/{policy_id}/acknowledgement")
+async def get_my_policy_ack(policy_id: str, current_user: dict = Depends(get_current_user)):
+    """Read the current user's ack status for a single policy."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        return {"is_acknowledged": False, "acknowledged_at": None}
+    ack = await db.policy_acknowledgements.find_one(
+        {"policy_id": policy_id, "employee_id": employee_id},
+        {"_id": 0, "acknowledged_at": 1},
+    )
+    return {
+        "is_acknowledged": bool(ack),
+        "acknowledged_at": ack.get("acknowledged_at") if ack else None,
+    }
+
+
+@api_router.get("/admin/policy-acknowledgements/summary")
+async def admin_policy_ack_summary(current_user: dict = Depends(get_current_user)):
+    """Per-policy counts: total eligible / acknowledged / pending."""
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rows: list = []
+    policies = await db.policies.find(
+        {"id": {"$nin": list(HIDDEN_POLICIES)}},
+        {"_id": 0, "id": 1, "name": 1, "category": 1, "applicable_to": 1, "version": 1},
+    ).to_list(50)
+    for p in policies:
+        eligible = await _eligible_employees_for_policy(p["id"])
+        eligible_ids = [e["id"] for e in eligible]
+        ack_count = 0
+        if eligible_ids:
+            ack_count = await db.policy_acknowledgements.count_documents(
+                {"policy_id": p["id"], "employee_id": {"$in": eligible_ids}}
+            )
+        total = len(eligible_ids)
+        rows.append({
+            "policy_id": p["id"],
+            "policy_name": p["name"],
+            "category": p.get("category"),
+            "applicable_to": p.get("applicable_to"),
+            "version": p.get("version"),
+            "total_eligible": total,
+            "acknowledged": ack_count,
+            "pending": max(0, total - ack_count),
+            "ack_rate": round((ack_count * 100.0 / total), 1) if total else 0.0,
+        })
+    return {"summary": rows}
+
+
+@api_router.get("/admin/policy-acknowledgements")
+async def admin_policy_ack_list(
+    policy_id: Optional[str] = None,
+    department: Optional[str] = None,
+    role: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    search: Optional[str] = None,
+    limit: int = 1000,
+    current_user: dict = Depends(get_current_user),
+):
+    """Detailed employee × policy ack list. Filters: policy_id, department,
+    role, status (acknowledged|pending), search by employee_name/code."""
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if not policy_id:
+        raise HTTPException(status_code=400, detail="policy_id is required")
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0, "name": 1})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+
+    eligible = await _eligible_employees_for_policy(policy_id)
+    if department:
+        eligible = [e for e in eligible if (e.get("department") or "") == department]
+    if search:
+        s = search.strip().lower()
+        eligible = [
+            e for e in eligible
+            if s in (e.get("full_name") or "").lower()
+            or s in (str(e.get("custom_employee_id") or "").lower())
+            or s in (e.get("official_email") or "").lower()
+        ]
+    eligible_ids = [e["id"] for e in eligible]
+
+    ack_map: dict = {}
+    if eligible_ids:
+        cursor = db.policy_acknowledgements.find(
+            {"policy_id": policy_id, "employee_id": {"$in": eligible_ids}},
+            {"_id": 0, "employee_id": 1, "acknowledged_at": 1, "role": 1},
+        )
+        async for a in cursor:
+            ack_map[a["employee_id"]] = a
+
+    # Lookup roles via users collection (one shot)
+    role_map: dict = {}
+    if eligible_ids:
+        ucursor = db.users.find(
+            {"employee_id": {"$in": eligible_ids}},
+            {"_id": 0, "employee_id": 1, "role": 1, "username": 1},
+        )
+        async for u in ucursor:
+            role_map[u["employee_id"]] = u
+
+    rows: list = []
+    for e in eligible:
+        ack = ack_map.get(e["id"])
+        u = role_map.get(e["id"], {})
+        emp_role = (ack or {}).get("role") or u.get("role") or "employee"
+        rows.append({
+            "employee_id": e["id"],
+            "employee_code": e.get("custom_employee_id"),
+            "employee_name": e.get("full_name"),
+            "department": e.get("department"),
+            "team": e.get("team"),
+            "designation": e.get("designation"),
+            "official_email": e.get("official_email"),
+            "username": u.get("username"),
+            "role": emp_role,
+            "is_acknowledged": bool(ack),
+            "acknowledged_at": (ack or {}).get("acknowledged_at"),
+        })
+    if role:
+        rows = [r for r in rows if (r.get("role") or "").lower() == role.lower()]
+    if status_filter:
+        sf = status_filter.lower()
+        if sf == "acknowledged":
+            rows = [r for r in rows if r["is_acknowledged"]]
+        elif sf == "pending":
+            rows = [r for r in rows if not r["is_acknowledged"]]
+
+    rows = rows[: max(1, min(limit, 5000))]
+    total = len(rows)
+    ack_count = sum(1 for r in rows if r["is_acknowledged"])
+    return {
+        "policy_id": policy_id,
+        "policy_name": policy.get("name"),
+        "total": total,
+        "acknowledged": ack_count,
+        "pending": total - ack_count,
+        "rows": rows,
+    }
+
 
 # ============== EMPLOYEE EDUCATION & EXPERIENCE ROUTES ==============
 
@@ -13139,6 +13397,12 @@ async def ensure_indexes():
         await _ensure_password_reset_token_indexes()
     except Exception as e:
         print(f"Password reset index setup failed: {e}")
+
+    # Policy acknowledgements — unique (policy_id, employee_id)
+    try:
+        await _ensure_policy_ack_indexes()
+    except Exception as e:
+        print(f"Policy ack index setup failed: {e}")
 
 
 @app.on_event("shutdown")

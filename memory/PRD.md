@@ -88,6 +88,34 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
   - Footer band: "Internal — login required" + last updated
 - Every interactive element has `data-testid`. Lint clean.
 
+## Latest Update — 2026-05-05 (Policy Acknowledgement System — Employee + Admin Tracking)
+
+### Backend (additive, no auth/visibility changes)
+- New collection `policy_acknowledgements` with **unique index on `(policy_id, employee_id)`** — duplicate acks are blocked at the DB layer, plus an idempotent re-ack path returns the existing record.
+- New endpoints:
+  - `POST /api/policies/{policy_id}/acknowledge` — employee acknowledges; returns `{ok, already_acknowledged, acknowledged_at}`. Blocks if the policy is hidden / not visible to the user (403) or doesn't exist (404).
+  - `GET /api/policies/{policy_id}/acknowledgement` — single-policy ack status for the current user.
+  - `GET /api/admin/policy-acknowledgements/summary` — per-policy `{total_eligible, acknowledged, pending, ack_rate}`. Eligibility computed from existing `GLOBAL_POLICIES` / `DEPARTMENT_RESTRICTED_POLICIES` / `HIDDEN_POLICIES` primitives — no visibility logic was changed.
+  - `GET /api/admin/policy-acknowledgements?policy_id=...&status=...&department=...&role=...&search=...` — detailed employee×policy list with filters.
+- `GET /api/policies` enriches each policy with `is_acknowledged` and `acknowledged_at` for the requesting employee (read-only enrichment).
+- Audit log entry written on every successful first-time ack.
+
+### Frontend
+- **Employee Policies page** (`/employee/policies`) — at the bottom of every policy document:
+  - **Pending state**: dashed accent border, "I have read and agree to this policy" checkbox, **Agree button disabled until checkbox checked**, accent-colored CTA.
+  - **Acknowledged state**: green badge with checkmark, timestamp, disabled "Acknowledged" button.
+  - Hero band shows live "Acknowledged" / "Pending Acknowledgement" pill.
+  - Page header shows `X of N acknowledged` progress chip.
+  - TOC sidebar shows green check / amber clock per policy.
+- **Admin tracking dashboard** at `/policies/acknowledgements` (HR + system_admin):
+  - Summary cards per policy with progress bar, ack rate %, and "Complete" / "N pending" badge.
+  - Detail panel with **filters: Status (acknowledged|pending), Department, Role, Search** + **CSV export** of the visible rows.
+  - Sidebar nav entry "Policy Acks" (ShieldCheck icon).
+- All elements have unique `data-testid` for testing.
+
+### Verification (curl, 7/7 pass)
+- T1 kasper → restricted policy → 403 ✅ · T2 non-existent → 404 ✅ · T3 admin list missing policy_id → 400 ✅ · T4 employee → admin list → 403 ✅ · T5 status=pending filter ✅ · T6 search=kasper finds 1 ack=True ✅ · T7 summary invariant `pending + acknowledged == total_eligible` ✅ for all 5 policies.
+
 ## Tech Stack
 - **Frontend**: React, Tailwind CSS, Shadcn UI
 - **Backend**: Python, FastAPI, openpyxl

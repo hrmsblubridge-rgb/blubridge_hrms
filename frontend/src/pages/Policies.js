@@ -3,9 +3,11 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
+import { Checkbox } from '../components/ui/checkbox';
 import {
   FileText, Loader2, BookOpen, Calendar, Users, Building2,
-  Laptop, FlaskConical, ShieldCheck, Sparkles, Check,
+  Laptop, FlaskConical, ShieldCheck, Sparkles, Check, CheckCircle2, Clock,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -131,10 +133,24 @@ const SectionBlock = ({ section, accent }) => {
 };
 
 // Per-policy "page card" — the full document, top-to-bottom, no toggles.
-const PolicyDocument = ({ policy }) => {
+const PolicyDocument = ({ policy, onAcknowledge, isEmployee }) => {
   const theme = POLICY_THEME[policy.id] || FALLBACK_THEME;
   const PolicyIcon = theme.icon;
   const sections = policy.content?.sections || [];
+  const [agreed, setAgreed] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const acknowledged = !!policy.is_acknowledged;
+  const ackTime = policy.acknowledged_at ? new Date(policy.acknowledged_at) : null;
+
+  const handleAgree = async () => {
+    if (!agreed || submitting || acknowledged) return;
+    setSubmitting(true);
+    try {
+      await onAcknowledge(policy.id);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   return (
     <article
@@ -170,6 +186,23 @@ const PolicyDocument = ({ policy }) => {
               {policy.effective_date && (
                 <span className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> Effective: {new Date(policy.effective_date).toLocaleDateString()}</span>
               )}
+              {isEmployee && (
+                acknowledged ? (
+                  <span
+                    className="flex items-center gap-1.5 bg-emerald-500/30 text-white border border-emerald-200/40 px-2 py-0.5 rounded-full font-medium backdrop-blur-sm"
+                    data-testid={`ack-status-${policy.id}`}
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Acknowledged
+                  </span>
+                ) : (
+                  <span
+                    className="flex items-center gap-1.5 bg-amber-400/30 text-white border border-amber-200/40 px-2 py-0.5 rounded-full font-medium backdrop-blur-sm"
+                    data-testid={`ack-status-${policy.id}`}
+                  >
+                    <Clock className="w-3.5 h-3.5" /> Pending Acknowledgement
+                  </span>
+                )
+              )}
             </div>
           </div>
         </div>
@@ -200,6 +233,69 @@ const PolicyDocument = ({ policy }) => {
         )}
       </div>
 
+      {/* Acknowledgement section (employees only) */}
+      {isEmployee && (
+        <section className="mx-5 sm:mx-7 mb-5 mt-1" data-testid={`ack-section-${policy.id}`}>
+          {acknowledged ? (
+            <div
+              className="rounded-xl border-2 border-emerald-200 bg-gradient-to-br from-emerald-50 to-white px-5 py-4 flex items-center gap-3"
+            >
+              <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                <CheckCircle2 className="w-5 h-5 text-emerald-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-[14px] font-semibold text-emerald-900">You have acknowledged this policy</div>
+                <div className="text-[12px] text-emerald-700/80 mt-0.5">
+                  Acknowledged on {ackTime ? ackTime.toLocaleString() : '—'}
+                </div>
+              </div>
+              <Button disabled className="rounded-full bg-emerald-100 text-emerald-700 hover:bg-emerald-100" data-testid={`ack-done-btn-${policy.id}`}>
+                <CheckCircle2 className="w-4 h-4 mr-1.5" /> Acknowledged
+              </Button>
+            </div>
+          ) : (
+            <div
+              className="rounded-xl border-2 border-dashed px-5 py-4"
+              style={{ borderColor: `${theme.accent}55`, background: `${theme.accent}06` }}
+            >
+              <div className="flex items-start gap-3 mb-3">
+                <ShieldCheck className="w-5 h-5 mt-0.5 flex-shrink-0" style={{ color: theme.accent }} />
+                <div className="flex-1">
+                  <div className="text-[14px] font-semibold text-slate-900">Acknowledgement required</div>
+                  <p className="text-[12.5px] text-slate-600 mt-0.5">
+                    Please confirm that you have read and understood the policy above. Your acknowledgement will be timestamped and recorded.
+                  </p>
+                </div>
+              </div>
+              <label
+                className="flex items-center gap-2.5 cursor-pointer select-none px-3 py-2.5 rounded-lg bg-white border border-slate-200 hover:border-slate-300 transition-colors"
+                data-testid={`ack-checkbox-label-${policy.id}`}
+              >
+                <Checkbox
+                  checked={agreed}
+                  onCheckedChange={(v) => setAgreed(v === true)}
+                  data-testid={`ack-checkbox-${policy.id}`}
+                />
+                <span className="text-[13.5px] text-slate-800">
+                  I have read and agree to this policy
+                </span>
+              </label>
+              <div className="flex justify-end mt-3">
+                <Button
+                  disabled={!agreed || submitting}
+                  onClick={handleAgree}
+                  className="rounded-full text-white font-semibold disabled:opacity-50"
+                  style={{ background: theme.accent }}
+                  data-testid={`ack-agree-btn-${policy.id}`}
+                >
+                  {submitting ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> Saving…</> : <>Agree</>}
+                </Button>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
       {/* Footer */}
       <footer className="px-7 py-3 border-t border-slate-100 bg-slate-50/60 flex flex-wrap items-center justify-between gap-2 text-[12px] text-slate-500">
         <span className="flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /> Internal — login required</span>
@@ -210,38 +306,73 @@ const PolicyDocument = ({ policy }) => {
 };
 
 const Policies = () => {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [policies, setPolicies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeId, setActiveId] = useState(null);
 
+  const isEmployee = !!user?.employee_id;
+
+  const fetchPolicies = async () => {
+    try {
+      const { data } = await axios.get(`${API}/policies`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const list = data || [];
+      setPolicies(list);
+      if (list.length && !activeId) setActiveId(list[0].id);
+    } catch (err) {
+      console.error('Error fetching policies:', err);
+      toast.error('Failed to load policies');
+    }
+  };
+
   useEffect(() => {
     let mounted = true;
     (async () => {
-      try {
-        setLoading(true);
-        const { data } = await axios.get(`${API}/policies`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!mounted) return;
-        const list = data || [];
-        setPolicies(list);
-        if (list.length) setActiveId(list[0].id);
-      } catch (err) {
-        console.error('Error fetching policies:', err);
-        toast.error('Failed to load policies');
-      } finally {
-        if (mounted) setLoading(false);
-      }
+      setLoading(true);
+      await fetchPolicies();
+      if (mounted) setLoading(false);
     })();
     return () => { mounted = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  const handleAcknowledge = async (policyId) => {
+    try {
+      const { data } = await axios.post(
+        `${API}/policies/${policyId}/acknowledge`,
+        {},
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      // Optimistic local update so the UI flips immediately
+      setPolicies((prev) => prev.map((p) =>
+        p.id === policyId
+          ? { ...p, is_acknowledged: true, acknowledged_at: data.acknowledged_at }
+          : p
+      ));
+      if (data.already_acknowledged) {
+        toast.message('Already acknowledged earlier');
+      } else {
+        toast.success('Policy acknowledged. Thank you!');
+      }
+    } catch (err) {
+      const msg = err?.response?.data?.detail || 'Could not record acknowledgement';
+      toast.error(typeof msg === 'string' ? msg : 'Could not record acknowledgement');
+    }
+  };
 
   const tocItems = useMemo(() => policies.map((p) => ({
     id: p.id,
     name: p.name,
     theme: POLICY_THEME[p.id] || FALLBACK_THEME,
+    acknowledged: !!p.is_acknowledged,
   })), [policies]);
+
+  const ackedCount = useMemo(
+    () => policies.filter((p) => p.is_acknowledged).length,
+    [policies],
+  );
 
   const scrollTo = (id) => {
     setActiveId(id);
@@ -269,9 +400,26 @@ const Policies = () => {
             All policies applicable to you — open, end-to-end, no accordions.
           </p>
         </div>
-        <div className="flex items-center gap-2 text-[12px] text-slate-500">
-          <Check className="w-4 h-4 text-emerald-500" />
-          <span>{policies.length} policies available</span>
+        <div className="flex items-center gap-3">
+          {isEmployee && policies.length > 0 && (
+            <div
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-medium border ${
+                ackedCount === policies.length
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : 'bg-amber-50 text-amber-700 border-amber-200'
+              }`}
+              data-testid="policies-ack-progress"
+            >
+              {ackedCount === policies.length
+                ? <CheckCircle2 className="w-3.5 h-3.5" />
+                : <Clock className="w-3.5 h-3.5" />}
+              {ackedCount} of {policies.length} acknowledged
+            </div>
+          )}
+          <div className="flex items-center gap-2 text-[12px] text-slate-500">
+            <Check className="w-4 h-4 text-emerald-500" />
+            <span>{policies.length} policies available</span>
+          </div>
         </div>
       </div>
 
@@ -301,7 +449,12 @@ const Policies = () => {
                     >
                       <Icon className="w-3.5 h-3.5" />
                     </span>
-                    <span className="text-[13px] truncate">{it.name}</span>
+                    <span className="text-[13px] truncate flex-1">{it.name}</span>
+                    {isEmployee && (
+                      it.acknowledged
+                        ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                        : <Clock className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+                    )}
                   </button>
                 );
               })}
@@ -317,7 +470,14 @@ const Policies = () => {
               <p>No policies are published or visible to your account.</p>
             </div>
           ) : (
-            policies.map((p) => <PolicyDocument key={p.id} policy={p} />)
+            policies.map((p) => (
+              <PolicyDocument
+                key={p.id}
+                policy={p}
+                onAcknowledge={handleAcknowledge}
+                isEmployee={isEmployee}
+              />
+            ))
           )}
         </main>
       </div>

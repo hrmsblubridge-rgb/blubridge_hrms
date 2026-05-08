@@ -42,6 +42,7 @@ import RoleManagement from "./pages/RoleManagement";
 import OperationalChecklist from "./pages/OperationalChecklist";
 import Settings from "./pages/Settings";
 import CronManagement from "./pages/CronManagement";
+import PolicyAcknowledgements from "./pages/PolicyAcknowledgements";
 import "./App.css";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -167,6 +168,7 @@ function App() {
           <Route path="/reports" element={<AdminRoute><Reports /></AdminRoute>} />
           <Route path="/holidays" element={<AdminRoute><Holidays /></AdminRoute>} />
           <Route path="/policies" element={<AdminRoute><Policies /></AdminRoute>} />
+          <Route path="/policies/acknowledgements" element={<AdminRoute><PolicyAcknowledgements /></AdminRoute>} />
           <Route path="/verification" element={<AdminRoute><Verification /></AdminRoute>} />
           <Route path="/tickets" element={<AdminRoute><Tickets /></AdminRoute>} />
           <Route path="/issue-tickets" element={<AdminRoute><IssueTickets /></AdminRoute>} />
