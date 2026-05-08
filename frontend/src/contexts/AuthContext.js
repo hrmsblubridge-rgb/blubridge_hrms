@@ -68,8 +68,21 @@ export const AuthProvider = ({ children }) => {
     return user.onboarding_status !== 'approved' && !user.onboarding_completed;
   };
 
+  // Temporary 14-day document-verification bypass for newly created employees.
+  // Returns true ONLY for users whose `documents_bypassed_until` (set at
+  // creation by the backend) is still in the future. Existing employees and
+  // admins are unaffected because the flag is missing on their records.
+  const isWithinDocumentBypass = () => {
+    if (!user) return false;
+    const ts = user.documents_bypassed_until;
+    if (!ts) return false;
+    const exp = new Date(ts);
+    if (Number.isNaN(exp.getTime())) return false;
+    return exp.getTime() > Date.now();
+  };
+
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, getAuthHeaders, updateUser, needsOnboarding }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, getAuthHeaders, updateUser, needsOnboarding, isWithinDocumentBypass }}>
       {children}
     </AuthContext.Provider>
   );

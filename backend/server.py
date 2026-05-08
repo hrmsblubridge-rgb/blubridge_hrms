@@ -96,8 +96,18 @@ def is_sunday_ddmmyyyy(date_str: str) -> bool:
 # so they can log in and land directly on the employee dashboard without
 # going through the onboarding flow. Outside this window the standard
 # onboarding flow auto-resumes (no further code changes needed).
-ONBOARDING_SKIP_WINDOW_START = datetime(2026, 4, 28, 0, 0, 0, tzinfo=IST)
-ONBOARDING_SKIP_WINDOW_END = datetime(2026, 5, 3, 23, 59, 59, tzinfo=IST)
+# --------------------------------------------------------------------------
+# TEMPORARY DOCUMENT-VERIFICATION BYPASS (14-day window)
+# --------------------------------------------------------------------------
+# During this window, NEWLY CREATED employees skip the mandatory document
+# upload onboarding gate and get direct dashboard access. The bypass is
+# surfaced on the user record as `documents_bypassed_until` so the frontend
+# can also hide the "My Documents" menu / block the route. After the end
+# date the original behaviour resumes automatically — no manual rollback
+# required. Existing employees (created outside the window) are NOT touched.
+# To extend or shorten this window, change the two dates below.
+ONBOARDING_SKIP_WINDOW_START = datetime(2026, 5, 8, 0, 0, 0, tzinfo=IST)
+ONBOARDING_SKIP_WINDOW_END = datetime(2026, 5, 22, 23, 59, 59, tzinfo=IST)
 
 def should_skip_onboarding_now() -> bool:
     """Return True if the current IST time falls within the temporary
@@ -3002,7 +3012,6 @@ async def forgot_password(payload: ForgotPasswordRequest):
         "used": False,
     })
 
-    base = absolute_url("/").rstrip("/")
     reset_url = absolute_url("/reset-password", query={"token": token})
 
     # Send via existing email engine. NOT routed through cron audit dedup —
@@ -3821,16 +3830,23 @@ async def bulk_import_employees(
             )
 
             # Temporary policy: skip onboarding within configured window so
-            # bulk-imported employees can log in directly.
+            # bulk-imported employees can log in directly. We also stamp
+            # `documents_bypassed_until` so the frontend hides upload entry
+            # points for the affected accounts only.
             if should_skip_onboarding_now():
                 _now_iso = get_ist_now().isoformat()
+                _bypass_until = ONBOARDING_SKIP_WINDOW_END.isoformat()
                 await db.employees.update_one(
                     {"id": employee.id},
                     {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "onboarding_completed_at": _now_iso}}
                 )
                 await db.users.update_many(
                     {"employee_id": employee.id},
-                    {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "is_first_login": False}}
+                    {"$set": {
+                        "onboarding_status": OnboardingStatus.APPROVED,
+                        "is_first_login": False,
+                        "documents_bypassed_until": _bypass_until,
+                    }}
                 )
             
             # Add to existing sets to prevent duplicates in same batch
@@ -4146,15 +4162,21 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
 
     # Temporary policy: during the configured window, new employees skip the
     # onboarding flow entirely and land on the dashboard right after login.
+    # `documents_bypassed_until` is the FE flag used to hide upload menu/route.
     if should_skip_onboarding_now():
         now_iso = get_ist_now().isoformat()
+        bypass_until = ONBOARDING_SKIP_WINDOW_END.isoformat()
         await db.employees.update_one(
             {"id": employee.id},
             {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "onboarding_completed_at": now_iso}}
         )
         await db.users.update_many(
             {"employee_id": employee.id},
-            {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "is_first_login": False}}
+            {"$set": {
+                "onboarding_status": OnboardingStatus.APPROVED,
+                "is_first_login": False,
+                "documents_bypassed_until": bypass_until,
+            }}
         )
         await db.onboarding.update_one(
             {"employee_id": employee.id},

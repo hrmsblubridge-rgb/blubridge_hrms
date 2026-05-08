@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import NotificationBell from './NotificationBell';
@@ -51,10 +51,18 @@ const navItems = [
 ];
 
 const EmployeeLayout = ({ children }) => {
-  const { user, token, logout } = useAuth();
+  const { user, token, logout, isWithinDocumentBypass } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // TEMPORARY 14-DAY DOC BYPASS — hide the "My Documents" entry for users
+  // whose account was created during the bypass window. Restores automatically
+  // when `documents_bypassed_until` lapses.
+  const docsBypassed = isWithinDocumentBypass && isWithinDocumentBypass();
+  const visibleNavItems = docsBypassed
+    ? navItems.filter((it) => it.path !== '/employee/documents')
+    : navItems;
 
   const handleLogout = () => {
     logout();
@@ -91,6 +99,13 @@ const EmployeeLayout = ({ children }) => {
     const current = navItems.find(item => location.pathname === item.path);
     return current?.label || 'Dashboard';
   };
+
+  // Block deep-link to /employee/documents during bypass — redirect to dashboard.
+  useEffect(() => {
+    if (docsBypassed && location.pathname === '/employee/documents') {
+      navigate('/employee/dashboard', { replace: true });
+    }
+  }, [docsBypassed, location.pathname, navigate]);
 
   return (
     <div className="min-h-screen bg-[#efede5]">
@@ -130,7 +145,7 @@ const EmployeeLayout = ({ children }) => {
         {/* Navigation */}
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           <p className="px-4 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Menu</p>
-          {navItems.map((item, index) => {
+          {visibleNavItems.map((item, index) => {
             const isActive = location.pathname === item.path;
             return (
               <NavLink
