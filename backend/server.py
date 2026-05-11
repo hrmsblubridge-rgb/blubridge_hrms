@@ -8539,6 +8539,93 @@ async def upload_onboarding_document(data: DocumentUpload, current_user: dict = 
     
     return {"message": "Document uploaded successfully"}
 
+
+@api_router.post("/admin/employees/{employee_id}/onboarding-documents/upload")
+async def admin_upload_onboarding_document_on_behalf(
+    employee_id: str,
+    data: DocumentUpload,
+    current_user: dict = Depends(get_current_user),
+):
+    """HR / Admin uploads an onboarding document ON BEHALF OF an employee.
+
+    Same target collection (`onboarding_documents`) and same `status=UPLOADED`
+    as the self-service path so the existing HR verification queue picks it up
+    without any extra wiring. We record `uploaded_by_admin=True` and the admin
+    user id/name so the audit trail makes the on-behalf action explicit. No
+    auto-verification, no auto-onboarding-approval — explicit per user spec.
+    """
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    doc_record = await db.onboarding_documents.find_one(
+        {"employee_id": employee_id, "document_type": data.document_type},
+        {"_id": 0},
+    )
+    now_iso = get_ist_now().isoformat()
+    update_data = {
+        "file_url": data.file_url,
+        "file_public_id": data.file_public_id,
+        "file_name": data.file_name,
+        "status": DocumentStatus.UPLOADED,
+        "uploaded_at": now_iso,
+        "uploaded_by_admin": True,
+        "uploaded_by_user_id": current_user.get("id"),
+        "uploaded_by_user_name": current_user.get("name"),
+        # Clear any prior rejection so the doc re-enters the queue cleanly
+        "rejection_reason": None,
+    }
+
+    if doc_record:
+        await db.onboarding_documents.update_one(
+            {"employee_id": employee_id, "document_type": data.document_type},
+            {"$set": update_data},
+        )
+    else:
+        # The first-login seed normally creates required-doc placeholders. If
+        # an admin uploads a type that was never seeded (e.g. legacy employees
+        # who never went through onboarding), create the row on the fly.
+        await db.onboarding_documents.insert_one({
+            "id": str(uuid.uuid4()),
+            "employee_id": employee_id,
+            "document_type": data.document_type,
+            "is_required": True,
+            **update_data,
+        })
+
+    # Bump onboarding to IN_PROGRESS so the dashboard reflects activity
+    # (only if it was previously NOT_STARTED — never override an APPROVED state).
+    onboarding_doc = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0, "status": 1})
+    if onboarding_doc and onboarding_doc.get("status") not in [OnboardingStatus.APPROVED, OnboardingStatus.IN_REVIEW]:
+        await db.onboarding.update_one(
+            {"employee_id": employee_id},
+            {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": now_iso}},
+        )
+    elif not onboarding_doc:
+        await db.onboarding.insert_one({
+            "id": str(uuid.uuid4()),
+            "employee_id": employee_id,
+            "status": OnboardingStatus.IN_PROGRESS,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+
+    await log_audit(
+        current_user.get("id"),
+        action="admin_upload_onboarding_document",
+        resource="onboarding_document",
+        resource_id=employee_id,
+        details=f"Uploaded {data.document_type} on behalf of {employee.get('full_name')}",
+    )
+    return {
+        "message": "Document uploaded successfully (queued for HR verification)",
+        "document_type": data.document_type,
+        "status": DocumentStatus.UPLOADED,
+    }
+
 @api_router.post("/onboarding/submit")
 async def submit_onboarding(current_user: dict = Depends(get_current_user)):
     """Submit onboarding for HR review"""
