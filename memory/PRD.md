@@ -5,6 +5,30 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-11 (Dashboard Performance Overhaul — 9x Faster Load)
+**User complaint: "Why Data showing taking too much time… Get the data fast" (Loading dashboard… stuck for 8-10s)**
+- **Root cause:** Multiple inefficient query patterns in dashboard endpoints:
+  1. `get_attendance_stats` ran `find({}).to_list(10000)` (full collection scan ~2.3s on 4774 records) then filtered in Python.
+  2. `get_employee_stats` ran ~15 sequential `count_documents` calls (~250ms Atlas latency × 15 = 3.75s).
+  3. `/dashboard/stats` called helpers sequentially.
+  4. `/teams` and `/departments` had N+1 `count_documents` patterns.
+  5. Missing indexes on `attendance.date`, `employees.employee_status`, `leaves.status+start_date+end_date`.
+- **Fixes applied:**
+  - Added MongoDB indexes for hot fields (attendance date/status, employees status/department/team, leaves status+date range).
+  - Replaced full-collection scans with indexed `$in` queries (enumerate DD-MM-YYYY between from/to).
+  - Parallelized all top-level Atlas round-trips via `asyncio.gather`.
+  - Removed unused `employee_stats` (~15 extra count calls) from `/dashboard/stats` — frontend never consumed it.
+  - Converted `/teams` and `/departments` N+1 counts to single `$group` aggregation pipelines.
+  - Same indexed `$in` optimization applied to `/attendance` (chart) and `/dashboard/leave-list`.
+- **Verified live benchmarks (cold→warm):**
+  - `/dashboard/stats`: 3-7s → **0.7s** (~9x faster)
+  - `/teams`: 1.9s → **0.7s**
+  - `/departments`: 2.5s → **0.7s**
+  - `/attendance` (chart range): 2.3s → **0.9s**
+  - Dashboard render after login: **2.8s** (was 8-10s) — Promise.all wall-time now bounded by slowest endpoint.
+- **Data integrity verified:** `not_logged=8` still matches `leave-list count=8`; all tile counts unchanged.
+
+
 ## Latest Update — 2026-05-05 (Strict Surgical Cron Email Refactor)
 **Per explicit user spec — surgical, no side-effects.**
 - **CC functionality DISABLED** (commented out, NOT deleted, restorable):

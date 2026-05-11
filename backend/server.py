@@ -3249,30 +3249,40 @@ async def get_employee_stats(current_user: dict = Depends(get_current_user)):
     """Get employee statistics for dashboard"""
     base_query = {"is_deleted": {"$ne": True}}
     
-    total = await db.employees.count_documents(base_query)
-    active = await db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.ACTIVE})
-    inactive = await db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.INACTIVE})
-    resigned = await db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.RESIGNED})
-    
-    # By department
-    by_department = {}
+    # Run all count_documents calls concurrently to avoid sequential round-trips.
     departments = await db.departments.find({}, {"_id": 0, "name": 1}).to_list(100)
-    for dept in departments:
-        count = await db.employees.count_documents({**base_query, "department": dept["name"], "employee_status": EmployeeStatus.ACTIVE})
-        by_department[dept["name"]] = count
-    
-    # By employment type
-    by_type = {}
-    for emp_type in [EmploymentType.FULL_TIME, EmploymentType.PART_TIME, EmploymentType.CONTRACT, EmploymentType.INTERN]:
-        count = await db.employees.count_documents({**base_query, "employment_type": emp_type, "employee_status": EmployeeStatus.ACTIVE})
-        by_type[emp_type] = count
-    
-    # By work location
-    by_location = {}
-    for loc in [WorkLocation.REMOTE, WorkLocation.OFFICE, WorkLocation.HYBRID]:
-        count = await db.employees.count_documents({**base_query, "work_location": loc, "employee_status": EmployeeStatus.ACTIVE})
-        by_location[loc] = count
-    
+    dept_names = [d["name"] for d in departments]
+    emp_types = [EmploymentType.FULL_TIME, EmploymentType.PART_TIME, EmploymentType.CONTRACT, EmploymentType.INTERN]
+    locations = [WorkLocation.REMOTE, WorkLocation.OFFICE, WorkLocation.HYBRID]
+
+    tasks = [
+        db.employees.count_documents(base_query),
+        db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.ACTIVE}),
+        db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.INACTIVE}),
+        db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.RESIGNED}),
+    ]
+    dept_tasks = [
+        db.employees.count_documents({**base_query, "department": n, "employee_status": EmployeeStatus.ACTIVE})
+        for n in dept_names
+    ]
+    type_tasks = [
+        db.employees.count_documents({**base_query, "employment_type": t, "employee_status": EmployeeStatus.ACTIVE})
+        for t in emp_types
+    ]
+    loc_tasks = [
+        db.employees.count_documents({**base_query, "work_location": l, "employee_status": EmployeeStatus.ACTIVE})
+        for l in locations
+    ]
+
+    results = await asyncio.gather(*tasks, *dept_tasks, *type_tasks, *loc_tasks)
+    total, active, inactive, resigned = results[0:4]
+    offset = 4
+    by_department = {n: results[offset + i] for i, n in enumerate(dept_names)}
+    offset += len(dept_names)
+    by_type = {t: results[offset + i] for i, t in enumerate(emp_types)}
+    offset += len(emp_types)
+    by_location = {l: results[offset + i] for i, l in enumerate(locations)}
+
     return {
         "total": total,
         "active": active,
@@ -4888,10 +4898,10 @@ async def get_attendance(
         query["department"] = department
     if status and status != "All":
         query["status"] = status
-    
-    attendance = await db.attendance.find(query, {"_id": 0}).sort("date", -1).to_list(5000)
-    
-    # Filter by date range in Python (DD-MM-YYYY strings don't sort lexicographically)
+
+    # Build indexed date range query by enumerating valid DD-MM-YYYY values.
+    # This replaces a previous full-collection scan + Python filter that
+    # dominated dashboard chart load time.
     def parse_ddmmyyyy(ds):
         try:
             parts = ds.split("-")
@@ -4899,10 +4909,26 @@ async def get_attendance(
         except:
             return 0
 
+    if from_date and to_date:
+        try:
+            _f = datetime.strptime(from_date, "%d-%m-%Y").date()
+            _t = datetime.strptime(to_date, "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            _f = _t = None
+        if _f and _t and _f <= _t and (_t - _f).days <= 366:
+            date_list = []
+            cur = _f
+            while cur <= _t:
+                date_list.append(cur.strftime("%d-%m-%Y"))
+                cur += timedelta(days=1)
+            query["date"] = {"$in": date_list}
+
+    attendance = await db.attendance.find(query, {"_id": 0}).sort("date", -1).to_list(10000)
+
+    # Fallback Python filter for any non-DD-MM-YYYY edge cases (legacy data).
     if from_date or to_date:
         from_val = parse_ddmmyyyy(from_date) if from_date else 0
         to_val = parse_ddmmyyyy(to_date) if to_date else 99999999
-        
         attendance = [a for a in attendance if from_val <= parse_ddmmyyyy(a.get("date", "")) <= to_val]
     
     # Gap-fill missing dates with "Absent" stub records (Issue 2 fix).
@@ -5669,13 +5695,6 @@ async def get_attendance_stats(
     if not date and not from_date:
         date = get_ist_today()
     
-    # Only count active employees with attendance tracking enabled
-    total_employees = await db.employees.count_documents({
-        "employee_status": EmployeeStatus.ACTIVE,
-        "is_deleted": {"$ne": True},
-        "attendance_tracking_enabled": True
-    })
-    
     # Helper to parse DD-MM-YYYY to sortable integer
     def parse_ddmmyyyy(ds):
         try:
@@ -5684,17 +5703,89 @@ async def get_attendance_stats(
         except:
             return 0
     
-    # For date range, fetch all and filter in Python (DD-MM-YYYY strings don't sort lexicographically in MongoDB)
+    # Build an indexed query for date range by enumerating valid DD-MM-YYYY
+    # strings between from_date and to_date. This avoids a full-collection
+    # scan (previously ~2s on 5k+ records) by leveraging the `attendance_date`
+    # index with $in.
+    def _enumerate_dates(fd: str, td: str) -> list:
+        try:
+            start = datetime.strptime(fd, "%d-%m-%Y").date()
+            end = datetime.strptime(td, "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            return []
+        if start > end:
+            return []
+        out = []
+        cur = start
+        # Cap at 366 days to prevent abuse
+        for _ in range(367):
+            if cur > end:
+                break
+            out.append(cur.strftime("%d-%m-%Y"))
+            cur += timedelta(days=1)
+        return out
+
+    def _dmy_to_ymd(ds: Optional[str]) -> Optional[str]:
+        if not ds:
+            return None
+        try:
+            return datetime.strptime(ds, "%d-%m-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return ds
+
+    q_from = from_date or date
+    q_to = to_date or date
+    ymd_from = _dmy_to_ymd(q_from)
+    ymd_to = _dmy_to_ymd(q_to)
+
+    # Build attendance query
     if from_date and to_date:
-        all_records = await db.attendance.find({}, {"_id": 0}).to_list(10000)
-        from_val = parse_ddmmyyyy(from_date)
-        to_val = parse_ddmmyyyy(to_date)
-        filtered = [a for a in all_records if from_val <= parse_ddmmyyyy(a.get("date", "")) <= to_val]
+        date_list = _enumerate_dates(from_date, to_date)
+        att_query = {"date": {"$in": date_list}} if date_list else None
     elif date:
-        filtered = await db.attendance.find({"date": date}, {"_id": 0}).to_list(10000)
+        att_query = {"date": date}
     else:
-        filtered = []
-    
+        att_query = None
+
+    # Run all top-level queries CONCURRENTLY (was previously sequential ~1-2s
+    # round-trips on Atlas).
+    total_employees_task = db.employees.count_documents({
+        "employee_status": EmployeeStatus.ACTIVE,
+        "is_deleted": {"$ne": True},
+        "attendance_tracking_enabled": True
+    })
+    active_emps_task = db.employees.find(
+        {
+            "employee_status": EmployeeStatus.ACTIVE,
+            "is_deleted": {"$ne": True},
+            "attendance_tracking_enabled": True,
+        },
+        {"_id": 0, "id": 1},
+    ).to_list(5000)
+    if att_query is not None:
+        filtered_task = db.attendance.find(att_query, {"_id": 0}).to_list(50000)
+    else:
+        async def _empty_list():
+            return []
+        filtered_task = _empty_list()
+    if ymd_from and ymd_to:
+        leaves_task = db.leaves.find(
+            {
+                "status": {"$in": ["approved", "pending"]},
+                "start_date": {"$lte": ymd_to},
+                "end_date": {"$gte": ymd_from},
+            },
+            {"_id": 0, "employee_id": 1},
+        ).to_list(5000)
+    else:
+        async def _empty_list2():
+            return []
+        leaves_task = _empty_list2()
+
+    total_employees, active_tracking_emps, filtered, leave_docs = await asyncio.gather(
+        total_employees_task, active_emps_task, filtered_task, leaves_task
+    )
+
     # Strict mutually-exclusive bucketing — single source of truth.
     # The frontend tile clicks fetch the same records and apply the same
     # classification so counts and detail lists ALWAYS line up.
@@ -5723,48 +5814,11 @@ async def get_attendance_stats(
 
     # "Leaves / No Login" count — MUST equal the size of /dashboard/leave-list
     # so the tile number and the table row count always line up.
-    #   = |employees on approved/pending leave in window ∪ employees without any IN punch|
-    # Leaves are stored as YYYY-MM-DD; attendance/filter dates are DD-MM-YYYY.
-    def _dmy_to_ymd(ds: Optional[str]) -> Optional[str]:
-        if not ds:
-            return None
-        try:
-            return datetime.strptime(ds, "%d-%m-%Y").strftime("%Y-%m-%d")
-        except ValueError:
-            return ds
-
-    q_from = from_date or date
-    q_to = to_date or date
-    ymd_from = _dmy_to_ymd(q_from)
-    ymd_to = _dmy_to_ymd(q_to)
-
-    # Resolve the SAME cohort used by /dashboard/leave-list so counts align.
-    active_tracking_emps = await db.employees.find(
-        {
-            "employee_status": EmployeeStatus.ACTIVE,
-            "is_deleted": {"$ne": True},
-            "attendance_tracking_enabled": True,
-        },
-        {"_id": 0, "id": 1},
-    ).to_list(5000)
     active_ids = {e["id"] for e in active_tracking_emps}
-
     # Restrict "with IN" to the active+tracking cohort (employees_with_in can
     # include inactive employees whose attendance records still live on).
     active_with_in = employees_with_in & active_ids
-
-    on_leave_ids: set = set()
-    if ymd_from and ymd_to:
-        leave_docs = await db.leaves.find(
-            {
-                "status": {"$in": ["approved", "pending"]},
-                "start_date": {"$lte": ymd_to},
-                "end_date": {"$gte": ymd_from},
-            },
-            {"_id": 0, "employee_id": 1},
-        ).to_list(5000)
-        on_leave_ids = {lv.get("employee_id") for lv in leave_docs if lv.get("employee_id")}
-    on_leave_ids &= active_ids
+    on_leave_ids = {lv.get("employee_id") for lv in leave_docs if lv.get("employee_id")} & active_ids
 
     no_in_ids = active_ids - active_with_in
     # Union: employees on leave OR with no IN punch
@@ -6982,14 +7036,22 @@ async def get_teams(department: Optional[str] = None, current_user: dict = Depen
     
     teams = await db.teams.find(query, {"_id": 0}).to_list(100)
     
-    # Calculate actual member count from employees
-    for team in teams:
-        count = await db.employees.count_documents({
-            "team": team["name"],
-            "is_deleted": {"$ne": True},
-            "employee_status": EmployeeStatus.ACTIVE
-        })
-        team["member_count"] = count
+    # Calculate member counts in a SINGLE aggregation pipeline instead of
+    # N parallel count_documents calls. Removes per-team round-trip latency.
+    if teams:
+        team_names = [t["name"] for t in teams]
+        counts_pipeline = [
+            {"$match": {
+                "team": {"$in": team_names},
+                "is_deleted": {"$ne": True},
+                "employee_status": EmployeeStatus.ACTIVE,
+            }},
+            {"$group": {"_id": "$team", "count": {"$sum": 1}}},
+        ]
+        agg = await db.employees.aggregate(counts_pipeline).to_list(1000)
+        count_map = {row["_id"]: row["count"] for row in agg}
+        for team in teams:
+            team["member_count"] = count_map.get(team["name"], 0)
     
     return [serialize_doc(t) for t in teams]
 
@@ -7011,16 +7073,30 @@ async def get_team(team_id: str, current_user: dict = Depends(get_current_user))
 async def get_departments(current_user: dict = Depends(get_current_user)):
     departments = await db.departments.find({"is_deleted": {"$ne": True}}, {"_id": 0}).to_list(100)
     
-    # Calculate actual counts
-    for dept in departments:
-        emp_count = await db.employees.count_documents({
-            "department": dept["name"],
-            "is_deleted": {"$ne": True},
-            "employee_status": EmployeeStatus.ACTIVE
-        })
-        team_count = await db.teams.count_documents({"department": dept["name"]})
-        dept["employee_count"] = emp_count
-        dept["team_count"] = team_count
+    # Calculate actual counts via 2 single aggregation pipelines (was 2*N round-trips).
+    if departments:
+        dept_names = [d["name"] for d in departments]
+        emp_pipeline = [
+            {"$match": {
+                "department": {"$in": dept_names},
+                "is_deleted": {"$ne": True},
+                "employee_status": EmployeeStatus.ACTIVE,
+            }},
+            {"$group": {"_id": "$department", "count": {"$sum": 1}}},
+        ]
+        team_pipeline = [
+            {"$match": {"department": {"$in": dept_names}}},
+            {"$group": {"_id": "$department", "count": {"$sum": 1}}},
+        ]
+        emp_agg, team_agg = await asyncio.gather(
+            db.employees.aggregate(emp_pipeline).to_list(1000),
+            db.teams.aggregate(team_pipeline).to_list(1000),
+        )
+        emp_map = {r["_id"]: r["count"] for r in emp_agg}
+        team_map = {r["_id"]: r["count"] for r in team_agg}
+        for dept in departments:
+            dept["employee_count"] = emp_map.get(dept["name"], 0)
+            dept["team_count"] = team_map.get(dept["name"], 0)
     
     return [serialize_doc(d) for d in departments]
 
@@ -7038,25 +7114,20 @@ async def get_dashboard_stats(
     query_from = from_date if from_date else today
     query_to = to_date if to_date else today
     
-    # Get counts from employee master
+    # Get counts from employee master - run all in parallel.
+    # NOTE: employee_stats() was removed from this endpoint — the Dashboard UI
+    # only consumes attendance/research/support/leaves fields. Skipping it cut
+    # 15+ extra count_documents calls per dashboard load.
     base_query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
-    
-    total_research = await db.employees.count_documents({**base_query, "department": "Research Unit"})
-    total_support = await db.employees.count_documents({**base_query, "department": "Support Staff"})
-    pending_approvals = await db.leaves.count_documents({"status": "pending"})
-    upcoming_leaves = await db.leaves.count_documents({
-        "status": "approved",
-        "start_date": {"$gte": get_ist_now().strftime("%Y-%m-%d")}
-    })
-    
-    # Get attendance stats with date range support
-    attendance_stats = await get_attendance_stats(
-        date=None, 
-        from_date=query_from, 
-        to_date=query_to, 
-        current_user=current_user
+    today_ymd = get_ist_now().strftime("%Y-%m-%d")
+
+    total_research, total_support, pending_approvals, upcoming_leaves, attendance_stats = await asyncio.gather(
+        db.employees.count_documents({**base_query, "department": "Research Unit"}),
+        db.employees.count_documents({**base_query, "department": "Support Staff"}),
+        db.leaves.count_documents({"status": "pending"}),
+        db.leaves.count_documents({"status": "approved", "start_date": {"$gte": today_ymd}}),
+        get_attendance_stats(date=None, from_date=query_from, to_date=query_to, current_user=current_user),
     )
-    employee_stats = await get_employee_stats(current_user)
     
     return {
         "total_research_unit": total_research,
@@ -7064,7 +7135,6 @@ async def get_dashboard_stats(
         "pending_approvals": pending_approvals,
         "upcoming_leaves": upcoming_leaves,
         "attendance": attendance_stats,
-        "employee_stats": employee_stats
     }
 
 @api_router.get("/dashboard/leave-list")
@@ -7085,10 +7155,23 @@ async def get_dashboard_leave_list(
 
     # Logged-in employees for the date / range (attendance dates are DD-MM-YYYY)
     if from_date and to_date:
-        logged_records = await db.attendance.find(
-            {"date": {"$gte": from_date, "$lte": to_date}},
-            {"_id": 0}
-        ).to_list(10000)
+        # Enumerate valid DD-MM-YYYY between dates to use the date index.
+        try:
+            _f = datetime.strptime(from_date, "%d-%m-%Y").date()
+            _t = datetime.strptime(to_date, "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            _f = _t = None
+        if _f and _t and _f <= _t and (_t - _f).days <= 366:
+            date_list = []
+            cur = _f
+            while cur <= _t:
+                date_list.append(cur.strftime("%d-%m-%Y"))
+                cur += timedelta(days=1)
+            logged_records = await db.attendance.find(
+                {"date": {"$in": date_list}}, {"_id": 0}
+            ).to_list(50000)
+        else:
+            logged_records = []
     else:
         logged_records = await db.attendance.find({"date": query_date}, {"_id": 0}).to_list(1000)
 
@@ -13366,6 +13449,29 @@ async def ensure_indexes():
             unique=True,
             name="unique_employee_date"
         )
+    except Exception:
+        pass
+
+    # Performance indexes for dashboard / reports — these dramatically reduce
+    # full-collection scans that previously dominated dashboard load time.
+    try:
+        await db.attendance.create_index([("date", 1)], name="attendance_date")
+        await db.attendance.create_index([("status", 1)], name="attendance_status")
+    except Exception:
+        pass
+    try:
+        await db.employees.create_index(
+            [("employee_status", 1), ("is_deleted", 1), ("attendance_tracking_enabled", 1)],
+            name="emp_status_deleted_tracking",
+        )
+        await db.employees.create_index([("department", 1)], name="emp_department")
+        await db.employees.create_index([("team", 1)], name="emp_team")
+    except Exception:
+        pass
+    try:
+        await db.leaves.create_index([("status", 1)], name="leaves_status")
+        await db.leaves.create_index([("status", 1), ("start_date", 1), ("end_date", 1)], name="leaves_status_range")
+        await db.leaves.create_index([("employee_id", 1)], name="leaves_employee_id")
     except Exception:
         pass
 
