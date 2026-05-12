@@ -7264,6 +7264,11 @@ def _normalize_date_to_int(ds: Optional[str]) -> Optional[int]:
     Accepts DD-MM-YYYY, YYYY-MM-DD, DD/MM/YYYY, YYYY/MM/DD, ISO strings."""
     if not ds:
         return None
+    # Defensive: some legacy/imported employee records persist non-string
+    # values (e.g. last_day_payable=True) — those would crash .strip() and
+    # 500 the report export. Treat any non-string as "no date".
+    if not isinstance(ds, str):
+        return None
     s = ds.strip().split("T")[0].replace("/", "-")
     parts = s.split("-")
     if len(parts) != 3:
