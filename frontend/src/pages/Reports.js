@@ -175,7 +175,7 @@ const Reports = () => {
         </h3>
         
         {activeTab === 'leave' ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div key="leave-filters-grid" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div>
               <label className="text-sm text-slate-600 mb-2 block font-medium">From Date</label>
               <DatePicker value={leaveFilters.fromDate} onChange={(val) => setLeaveFilters({ ...leaveFilters, fromDate: val })} placeholder="Select date" data-testid="leave-filter-from" />
@@ -229,7 +229,7 @@ const Reports = () => {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div key="attendance-filters-grid" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div>
               <label className="text-sm text-slate-600 mb-2 block font-medium">From Date</label>
               <DatePicker value={attendanceFilters.fromDate} onChange={(val) => setAttendanceFilters({ ...attendanceFilters, fromDate: val })} placeholder="Select date" data-testid="attendance-filter-from" />
