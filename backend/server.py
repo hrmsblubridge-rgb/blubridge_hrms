@@ -8584,7 +8584,17 @@ async def get_my_onboarding_status(current_user: dict = Depends(get_current_user
 
 @api_router.post("/onboarding/upload-document")
 async def upload_onboarding_document(data: DocumentUpload, current_user: dict = Depends(get_current_user)):
-    """Upload a document for onboarding"""
+    """Upload a document for onboarding.
+
+    Re-upload policy (per product spec):
+      - Allowed when current status is `not_uploaded`, `uploaded`, or `rejected`.
+      - BLOCKED once the document is `verified` (approved) — to update, the
+        employee must raise a support ticket. This protects the integrity of
+        an HR-verified record.
+      - Employees can re-upload at ANY time after onboarding approval as long
+        as the specific doc isn't already verified (e.g., refresh a rejected
+        Aadhaar from My Documents post-onboarding).
+    """
     employee_id = current_user.get("employee_id")
     if not employee_id:
         raise HTTPException(status_code=400, detail="No employee linked to this user")
@@ -8597,14 +8607,24 @@ async def upload_onboarding_document(data: DocumentUpload, current_user: dict = 
     
     if not doc_record:
         raise HTTPException(status_code=404, detail="Document type not found")
-    
-    # Update document
+
+    # Lock verified docs — only HR can override via the verification flow.
+    if doc_record.get("status") == DocumentStatus.VERIFIED:
+        raise HTTPException(
+            status_code=400,
+            detail="This document is already approved by HR and cannot be re-uploaded. Please raise a support ticket if you need to update it.",
+        )
+
+    was_rejected = doc_record.get("status") == DocumentStatus.REJECTED
+
+    # Update document — clear any prior rejection reason so the queue is clean.
     update_data = {
         "file_url": data.file_url,
         "file_public_id": data.file_public_id,
         "file_name": data.file_name,
         "status": DocumentStatus.UPLOADED,
-        "uploaded_at": get_ist_now().isoformat()
+        "uploaded_at": get_ist_now().isoformat(),
+        "rejection_reason": None,
     }
     
     await db.onboarding_documents.update_one(
@@ -8612,14 +8632,67 @@ async def upload_onboarding_document(data: DocumentUpload, current_user: dict = 
         {"$set": update_data}
     )
     
-    # Update onboarding status to in_progress
-    await db.onboarding.update_one(
-        {"employee_id": employee_id},
-        {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": get_ist_now().isoformat()}}
-    )
+    # Bump onboarding to IN_PROGRESS only if not already APPROVED — never
+    # demote a fully-approved onboarding because of a post-approval re-upload.
+    onboarding_doc = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0, "status": 1})
+    if onboarding_doc and onboarding_doc.get("status") != OnboardingStatus.APPROVED:
+        await db.onboarding.update_one(
+            {"employee_id": employee_id},
+            {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": get_ist_now().isoformat()}}
+        )
     
     await log_audit(current_user["id"], "upload_document", "onboarding", employee_id, f"Uploaded {data.document_type}")
-    
+
+    # Notify HR (in-app + email) so the verification queue stays fresh.
+    try:
+        emp_doc = await db.employees.find_one({"id": employee_id}, {"_id": 0, "full_name": 1, "emp_id": 1})
+        emp_name = (emp_doc or {}).get("full_name") or current_user.get("name") or "An employee"
+        doc_label = next(
+            (r["label"] for r in REQUIRED_DOCUMENTS if r["type"] == data.document_type),
+            data.document_type.replace("_", " ").title(),
+        )
+        verb = "re-uploaded" if was_rejected else "uploaded"
+        notif_title = f"Document {verb}: {doc_label}"
+        notif_msg = f"{emp_name} has {verb} {doc_label}. Open the Verification queue to review."
+        await notify_roles(
+            list(ALL_ADMIN_ROLES),
+            notif_title,
+            notif_msg,
+            notif_type="info",
+            link="/verification",
+        )
+
+        # Email HR — single recipient (hr@blubridge.com per the cron policy).
+        try:
+            html = f"""
+            <div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">
+                <div style=\"background: #0b1f3b; padding: 20px; border-radius: 8px 8px 0 0;\">
+                    <h1 style=\"color: white; margin: 0; font-size: 22px;\">BluBridge HRMS</h1>
+                </div>
+                <div style=\"background: #fffdf7; padding: 28px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 8px 8px;\">
+                    <h2 style=\"color: #0b1f3b; margin: 0 0 12px;\">Onboarding Document {verb.title()}</h2>
+                    <p style=\"color: #444; margin: 0 0 16px;\"><strong>{emp_name}</strong> has {verb} the following document and it is now pending HR verification.</p>
+                    <div style=\"background: #f5f5f5; padding: 14px 16px; border-radius: 8px; margin: 12px 0 20px;\">
+                        <p style=\"margin: 4px 0;\"><strong>Employee:</strong> {emp_name}</p>
+                        <p style=\"margin: 4px 0;\"><strong>Document:</strong> {doc_label}</p>
+                        <p style=\"margin: 4px 0;\"><strong>Status:</strong> Pending Review</p>
+                    </div>
+                    <p style=\"color: #555;\">Please review it in the Verification queue at your earliest convenience.</p>
+                    <p style=\"color: #999; font-size: 12px; margin-top: 28px;\">Automated notification from BluBridge HRMS.</p>
+                </div>
+            </div>
+            """
+            await send_email_notification(
+                to_email="hr@blubridge.com",
+                subject=f"[HRMS] {emp_name} {verb} {doc_label}",
+                html_content=html,
+            )
+        except Exception as _e:
+            logger.warning(f"HR email notification failed (non-fatal): {_e}")
+    except Exception as _e:
+        # Notification is best-effort — never fail the upload because of it.
+        logger.warning(f"HR notification fan-out failed (non-fatal): {_e}")
+
     return {"message": "Document uploaded successfully"}
 
 

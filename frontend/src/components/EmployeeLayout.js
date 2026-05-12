@@ -56,13 +56,11 @@ const EmployeeLayout = ({ children }) => {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // TEMPORARY 14-DAY DOC BYPASS — hide the "My Documents" entry for users
-  // whose account was created during the bypass window. Restores automatically
-  // when `documents_bypassed_until` lapses.
-  const docsBypassed = isWithinDocumentBypass && isWithinDocumentBypass();
-  const visibleNavItems = docsBypassed
-    ? navItems.filter((it) => it.path !== '/employee/documents')
-    : navItems;
+  // "My Documents" is ALWAYS visible — it's the permanent destination for
+  // onboarding document uploads + viewing official HR letters. (Earlier this
+  // was hidden during the 14-day onboarding bypass; users now need access to
+  // it from day one to upload onboarding documents at their pace.)
+  const visibleNavItems = navItems;
 
   const handleLogout = () => {
     logout();
@@ -100,12 +98,11 @@ const EmployeeLayout = ({ children }) => {
     return current?.label || 'Dashboard';
   };
 
-  // Block deep-link to /employee/documents during bypass — redirect to dashboard.
+  // Deep-link to /employee/documents is now ALWAYS allowed (the page itself
+  // is the upload destination for onboarding documents during/after bypass).
   useEffect(() => {
-    if (docsBypassed && location.pathname === '/employee/documents') {
-      navigate('/employee/dashboard', { replace: true });
-    }
-  }, [docsBypassed, location.pathname, navigate]);
+    // intentionally no redirect — see above comment.
+  }, [location.pathname, navigate]);
 
   return (
     <div className="min-h-screen bg-[#efede5]">
