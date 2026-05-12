@@ -5,6 +5,36 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-12 (Employee 'My Documents' = Permanent Onboarding Upload Hub)
+**User wants the My Documents page to be the single place where employees upload onboarding docs and see verification status, with Admin Verification queue logically connected.**
+
+User-confirmed choices:
+- (1a) All 9 onboarding doc types same as gate
+- (2c) Re-upload allowed for rejected/not_uploaded; verified docs LOCKED (raise support ticket to change)
+- (3b) HR receives in-app notifications + email on every upload/re-upload
+- (4a) "My Documents" sidebar entry is ALWAYS visible (even during 14-day bypass)
+
+**Backend (`/app/backend/server.py`):**
+- `POST /api/onboarding/upload-document` extended with re-upload policy:
+  - Verified doc → 400 with "already approved by HR" error.
+  - Rejected → 200, status flips to `uploaded`, rejection_reason cleared.
+  - Not-uploaded / uploaded → 200 normal upload.
+  - On every success: `notify_roles(ALL_ADMIN_ROLES)` + email to `hr@blubridge.com` (best-effort, won't fail upload).
+  - Onboarding status never demoted post-APPROVED.
+
+**Frontend:**
+- `EmployeeDocuments.js` — new "Onboarding Documents" section above existing official docs. Renders all 9 doc rows with status badges (Approved/Rejected/Pending Review/Not Uploaded), inline rejection reason, View button, and contextual Upload / Re-upload / Replace / Locked button. Cloudinary signed upload via `/api/cloudinary/signature`.
+- `EmployeeLayout.js` — removed 14-day-bypass hiding of "My Documents" + removed deep-link redirect. Now permanently accessible.
+- No changes to admin `Verification.js` — uploads land in same `onboarding_documents` collection with `status=uploaded` and auto-appear in the existing HR review queue.
+
+**Verified end-to-end (testing agent iteration_44, 7/7 backend tests + frontend UI screenshots):**
+- All 3 status paths behave per spec (400 / 200 / 200).
+- HR notifications created with correct verb ("uploaded" vs "re-uploaded"), `link=/verification`.
+- Sidebar shows "My Documents" for users in bypass.
+- Admin /verification correctly lists the employee with new uploads.
+- Dashboard perf from previous task unaffected (warm < 2s).
+
+
 ## Latest Update — 2026-05-11 (Dashboard Performance Overhaul — 9x Faster Load)
 **User complaint: "Why Data showing taking too much time… Get the data fast" (Loading dashboard… stuck for 8-10s)**
 - **Root cause:** Multiple inefficient query patterns in dashboard endpoints:
