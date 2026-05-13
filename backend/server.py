@@ -12314,6 +12314,85 @@ async def bulk_import_early_out(
 
 # ============== ATTENDANCE UPDATE HELPER ==============
 
+def _enforce_no_future_missed_punch(date_str: Optional[str], punch_type: Optional[str],
+                                    check_in_raw: Optional[str], check_out_raw: Optional[str]) -> None:
+    """Raise HTTP 400 if any submitted punch time on `date_str` is in the future
+    (IST). Used by missed-punch CREATE and APPROVE flows to prevent phantom
+    future OUT times from being applied to the attendance grid.
+
+    Accepts any of the formats supported by the engine's `_to_24h` helper:
+    `YYYY-MM-DDTHH:MM`, `HH:MM`, `HH:MM:SS`, `HH:MM AM/PM`.
+    """
+    if not date_str:
+        return
+
+    def _to_24h_local(raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        s = str(raw).strip()
+        if "T" in s:
+            s = s.split("T")[-1]
+        try:
+            return datetime.strptime(s[:5], "%H:%M").strftime("%H:%M")
+        except ValueError:
+            pass
+        try:
+            return datetime.strptime(s, "%I:%M %p").strftime("%H:%M")
+        except ValueError:
+            return None
+
+    # Normalize attendance date
+    ds = str(date_str).strip()
+    if len(ds) == 10 and ds[4] == "-" and ds[7] == "-":
+        try:
+            req_date = datetime.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            return
+    elif len(ds) == 10 and ds[2] == "-" and ds[5] == "-":
+        try:
+            req_date = datetime.strptime(ds, "%d-%m-%Y").date()
+        except ValueError:
+            return
+    else:
+        return
+
+    now_ist = get_ist_now()
+    today_ist = now_ist.date()
+    # Past dates never need future-time validation.
+    if req_date < today_ist:
+        return
+    # Future dates are wholly disallowed — a missed-punch is a correction for
+    # an event that already happened.
+    if req_date > today_ist:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot submit a missed-punch for a future date.",
+        )
+
+    # Same day → reject any time that is later than now (IST).
+    pt = (punch_type or "").strip().lower()
+    times_to_check: list[tuple[str, Optional[str]]] = []
+    if pt in ("check-in", "both"):
+        times_to_check.append(("check-in", _to_24h_local(check_in_raw)))
+    if pt in ("check-out", "both"):
+        times_to_check.append(("check-out", _to_24h_local(check_out_raw)))
+
+    now_minutes = now_ist.hour * 60 + now_ist.minute
+    for label, t24 in times_to_check:
+        if not t24:
+            continue
+        try:
+            hh, mm = t24.split(":")
+            req_minutes = int(hh) * 60 + int(mm)
+        except (ValueError, AttributeError):
+            continue
+        if req_minutes > now_minutes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"The {label} time ({t24}) is in the future. Please submit a missed-punch only for a time that has already passed.",
+            )
+
+
 async def _update_attendance_from_missed_punch(rec):
     """Production Missed-Punch Approval Engine.
 
@@ -12580,6 +12659,14 @@ async def get_missed_punches(
 @api_router.post("/missed-punches")
 async def create_missed_punch(data: MissedPunchCreate, current_user: dict = Depends(get_current_user)):
     emp, is_hr = await _resolve_employee(data.employee_id, current_user)
+
+    # Reject future punch times — a missed-punch is a CORRECTION for a moment
+    # that has already passed. Allowing future times would let employees /
+    # admins set OUT-times that have not occurred yet (e.g. submitting at
+    # 09:00 AM with check_out 10:05 PM same day), which then surfaces as a
+    # phantom out-time on the attendance grid. The check uses the request's
+    # `date` + extracted HH:MM time, compared against IST now.
+    _enforce_no_future_missed_punch(data.date, data.punch_type, data.check_in_time, data.check_out_time)
     
     # JOB 4: Prevent duplicate missed punch (same employee + date + punch_type)
     existing = await db.missed_punches.find_one({
@@ -12624,6 +12711,16 @@ async def approve_missed_punch(request_id: str, current_user: dict = Depends(get
         raise HTTPException(status_code=404, detail="Request not found")
     if rec.get("status") != "pending":
         raise HTTPException(status_code=400, detail="Request is not pending")
+
+    # Re-validate "no future punch" at approval time — a request submitted in
+    # the morning for a same-day OUT time may still be in the future when
+    # HR clicks approve. Defensive double-check (the create endpoint already
+    # blocks this; this guards manual DB inserts / legacy pending rows).
+    _enforce_no_future_missed_punch(
+        rec.get("date"), rec.get("punch_type"),
+        rec.get("check_in_time"), rec.get("check_out_time"),
+    )
+
     result = await db.missed_punches.update_one({"id": request_id}, {"$set": {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Request not found")

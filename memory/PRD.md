@@ -5,6 +5,28 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-13 (Fix: Phantom Future Out-Time from Missed-Punch)
+**Bug:** Employee `Ram Charan Golla` showed `Out-Time: 10:05 PM` on the attendance grid while the actual IST clock was only 4:59 PM — a phantom future check-out.
+
+**Root cause:** Missed-punch CREATE and APPROVE endpoints had **no validation against future times**. The employee submitted at 09:02 AM a `check_out_time = 22:05` for today's date; HR approved at 13:27 PM (still 9 hours before the actual 10:05 PM) and the engine wrote `check_out=22:05` to the attendance row. Biometric sync was working correctly — the future OUT was injected via the missed-punch correction pipeline.
+
+**Fix (1 file, surgical):**
+- Added helper `_enforce_no_future_missed_punch(date, punch_type, check_in_raw, check_out_raw)` in `/app/backend/server.py`.
+- Called from `POST /api/missed-punches` and `PUT /api/missed-punches/{id}/approve`.
+- Rejects:
+  - Same-day check_in_time / check_out_time later than current IST minute
+  - Any missed-punch dated for a future calendar day
+- Accepts every legitimate past correction unchanged. Supports the same time-string formats the engine already parses (`YYYY-MM-DDTHH:MM`, `HH:MM`, `HH:MM:SS`, `HH:MM AM/PM`).
+
+**Cleanup of historical row:**
+- Bad missed-punch request (id `a9477c9a-…147fe`) marked `status=reverted` with audit reason; `is_applied=False`.
+- Attendance row for Ram Charan 13-05-2026 reverted to biometric IN-only state (in=09:55 AM, out=None, status=Login).
+
+**Verified (4/4 pytest):** `/app/backend/tests/test_missed_punch_no_future_time.py` — future same-day OUT, future-date, datetime-local future, yesterday's late-night punch (allowed).
+
+**Zero side-effects:** No changes to biometric sync, payroll, shifts, reports, employee module, leave flow, auth, or schema.
+
+
 ## Latest Update — 2026-05-12 (Critical Auth Bug Fix: Admin Change Password Persistence)
 **Bug:** Admin would change their password via Profile → Change Password — "Password changed successfully" toast appeared and the new password worked for that session. After ANY backend restart (deployment, hot-reload from .env change, supervisor restart), the new password stopped working and only the original `pass123` worked.
 
