@@ -5,6 +5,15 @@
 - **System Admin**: `sysadmin` / `pass123` (role: system_admin)
 - **Office Admin**: `offadmin` / `pass123` (role: office_admin)
 
+
+> ⚠️ **NOTE (2026-05-12 fix):** The startup seed previously force-reset `admin`'s
+> password back to `pass123` on every backend restart, silently undoing any
+> admin password change. This is now FIXED — admin password changes persist.
+> The default seed credential `admin/pass123` only applies on a fresh install
+> (or if `admin.password_hash` is somehow blank). If you change it during
+> testing, you must remember the new value (or run the password-change test
+> suite's cleanup, which always restores `pass123`).
+
 ## Employee Accounts
 - **Employee**: `spartasolace1` / `spar@1230`
 - **Employee**: `vijayan.k` / `pass123` (created 2026-04-27, onboarding approved)

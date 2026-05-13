@@ -5,6 +5,26 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-12 (Critical Auth Bug Fix: Admin Change Password Persistence)
+**Bug:** Admin would change their password via Profile → Change Password — "Password changed successfully" toast appeared and the new password worked for that session. After ANY backend restart (deployment, hot-reload from .env change, supervisor restart), the new password stopped working and only the original `pass123` worked.
+
+**Root cause:** Non-idempotent startup seed (`/app/backend/server.py` around line 13609). The migration branch for the existing `admin` user `$set` `password_hash: hash_password("pass123")` UNCONDITIONALLY — overwriting whatever the admin had set. Classic non-idempotent seed anti-pattern. The intent of the migration was only to update `role` → `hr` and `name` → `HR Admin` for legacy admin records; the password field was bundled in by mistake.
+
+**Fix (1 file, surgical):** Split the migration: always update `role`/`name`, but ONLY set `password_hash` when it's missing/empty (legacy-record bootstrap). Existing admins keep whatever password they chose.
+
+**Verified (11/11 e2e steps + 3/3 pytest):**
+- Change password → restart backend → new password STILL works ✅
+- Old password rejected ✅
+- Original seed `pass123` rejected after change ✅
+- Wrong current-password validation works ✅
+- Multiple consecutive password changes work ✅
+- Other users (sysadmin, kasper) unaffected ✅
+- Login/JWT/role-permissions/sessions untouched
+- Hash algorithm unchanged (SHA-256, matching all existing users)
+
+**Regression test added:** `/app/backend/tests/test_change_password_persistence.py` — 4 tests covering happy path, wrong-current rejection, multi-change cycle, and post-restart persistence (latter gated by `RUN_RESTART_TEST=1`).
+
+
 ## Latest Update — 2026-05-12 (Employee 'My Documents' = Permanent Onboarding Upload Hub)
 **User wants the My Documents page to be the single place where employees upload onboarding docs and see verification status, with Admin Verification queue logically connected.**
 

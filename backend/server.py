@@ -13606,12 +13606,23 @@ async def ensure_indexes():
             await db.users.insert_one(admin_doc.copy())
             print("Default HR admin user seeded successfully")
         else:
-            # Update existing admin to HR role with new password
+            # Migrate existing admin's role/name only — DO NOT touch the
+            # password hash. Force-resetting password_hash on every startup
+            # silently rolled back any admin password change (bug: change
+            # password worked once, then restart wiped it). The password is
+            # owned by the user. Only re-seed the password if the field is
+            # genuinely missing/empty (legacy migration only).
+            migrate_set = {"role": "hr", "name": "HR Admin"}
+            if not existing_admin.get("password_hash"):
+                # Legacy/corrupt record without a hash — bootstrap with default
+                # so login is not permanently broken. Normal users never hit
+                # this path because all seeded/created users have a hash.
+                migrate_set["password_hash"] = hash_password("pass123")
             await db.users.update_one(
                 {"username": "admin"},
-                {"$set": {"role": "hr", "name": "HR Admin", "password_hash": hash_password("pass123")}}
+                {"$set": migrate_set}
             )
-            print("Admin user updated to HR role")
+            print("Admin user migrated (role/name only; password preserved)")
         
         # Create system_admin user if not exists
         existing_sysadmin = await db.users.find_one({"username": "sysadmin"})
