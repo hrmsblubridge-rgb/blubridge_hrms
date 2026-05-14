@@ -2777,7 +2777,12 @@ async def change_admin_password(
     data: ChangePasswordRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """Change admin user password"""
+    """Change admin user password.
+
+    Persistence-audit: every password change writes `password_updated_at`,
+    `password_updated_by`, and `password_updated_method` so any unexpected
+    revert can be forensically traced. The actual password is NEVER logged.
+    """
     user = await db.users.find_one({"id": current_user["id"]})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -2789,14 +2794,27 @@ async def change_admin_password(
     
     # Update to new password
     new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
+    now_iso = get_ist_now().isoformat()
     await db.users.update_one(
         {"id": current_user["id"]},
         {"$set": {
             "password_hash": new_hash,
-            "updated_at": get_ist_now().isoformat()
+            "updated_at": now_iso,
+            "password_updated_at": now_iso,
+            "password_updated_by": current_user["id"],
+            "password_updated_method": "self_change",
         }}
     )
-    
+
+    # Audit log — actor + timestamp, no password values.
+    try:
+        await log_audit(
+            current_user["id"], "change_password", "user", current_user["id"],
+            f"Self-changed password (user={user.get('username')}, role={user.get('role')})",
+        )
+    except Exception as _e:
+        logger.warning("change-password audit log failed (non-fatal): %s", _e)
+
     return {"message": "Password changed successfully"}
 
 
@@ -7879,11 +7897,17 @@ async def change_employee_password(data: PasswordChangeRequest, current_user: di
     if current_user.get("password_hash") != current_hash:
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     
-    # Update password in database
+    # Update password in database — write full audit trail.
     new_hash = hash_password(data.new_password)
+    now_iso = get_ist_now().isoformat()
     await db.users.update_one(
         {"id": current_user["id"]},
-        {"$set": {"password_hash": new_hash}}
+        {"$set": {
+            "password_hash": new_hash,
+            "password_updated_at": now_iso,
+            "password_updated_by": current_user["id"],
+            "password_updated_method": "self_change",
+        }}
     )
     
     # Log the action
@@ -10872,7 +10896,15 @@ async def delete_holiday(holiday_id: str, current_user: dict = Depends(get_curre
 # ============== SEED DATA ==============
 
 @api_router.post("/seed")
-async def seed_database():
+async def seed_database(current_user: dict = Depends(get_current_user)):
+    """One-shot seed of default admin + departments. SECURED — only an
+    authenticated HR user may invoke this. Re-runs are idempotent: if an
+    admin already exists the function short-circuits without ever overwriting
+    a user's password (defense against ever rolling back a self-changed
+    password through this endpoint).
+    """
+    if current_user.get("role") != UserRole.HR:
+        raise HTTPException(status_code=403, detail="Permission denied")
     # Check if already seeded
     admin_exists = await db.users.find_one({"username": "admin"})
     if admin_exists:
@@ -13650,6 +13682,19 @@ async def ensure_indexes():
     except Exception:
         pass
 
+    # Users — unique username index. Prevents shadow-account injection that
+    # could be mistaken for admin during login lookup. Use try/except so a
+    # transient duplicate in legacy data doesn't crash startup; the duplicate
+    # is logged for follow-up cleanup.
+    try:
+        await db.users.create_index([("username", 1)], unique=True, name="unique_username")
+    except Exception as _e:
+        logger.warning("users.username unique index failed (likely duplicate legacy rows): %s", _e)
+    try:
+        await db.users.create_index([("id", 1)], unique=True, name="unique_id")
+    except Exception as _e:
+        logger.warning("users.id unique index failed: %s", _e)
+
     # Missed-punch correction audit trail — keyed lookups by request_id and
     # by employee+date for forensics. Non-unique (a single request can cause
     # multiple audit rows if re-applied via bulk-import edge cases).
@@ -13681,87 +13726,70 @@ async def ensure_indexes():
     except Exception:
         pass
     
-    # Seed default admin users if not exists + migrate old roles
+    # ==========================================================
+    # Seed default admin users (BULLETPROOF / DEFENSIVE)
+    # ==========================================================
+    # GUARANTEE: This block NEVER overwrites an existing user's password.
+    #   • Detection: check by ROLE (not just username) — renaming admin won't
+    #     trigger a duplicate seed.
+    #   • Migrate: only `role`/`name` (and `password_hash` IFF it is missing,
+    #     i.e. genuinely corrupt record).
+    #   • Honour the audit trail: if `password_updated_at` exists on the
+    #     record the password has been intentionally set by a user/admin —
+    #     this seed never touches it.
+    # ==========================================================
     try:
         # Migrate old roles to new role system
         await db.users.update_many({"role": {"$in": ["super_admin", "admin", "hr_manager"]}}, {"$set": {"role": "hr"}})
         await db.users.update_many({"role": "team_lead"}, {"$set": {"role": "hr"}})
-        
-        existing_admin = await db.users.find_one({"username": "admin"})
-        if not existing_admin:
-            admin_user = User(
-                username="admin",
-                email="admin@blubridge.com",
-                password_hash=hash_password("pass123"),
-                name="HR Admin",
-                role=UserRole.HR,
-                is_first_login=False,
-                onboarding_status="completed"
-            )
-            admin_doc = admin_user.model_dump()
-            admin_doc['created_at'] = admin_doc['created_at'].isoformat()
-            await db.users.insert_one(admin_doc.copy())
-            print("Default HR admin user seeded successfully")
-        else:
-            # Migrate existing admin's role/name only — DO NOT touch the
-            # password hash. Force-resetting password_hash on every startup
-            # silently rolled back any admin password change (bug: change
-            # password worked once, then restart wiped it). The password is
-            # owned by the user. Only re-seed the password if the field is
-            # genuinely missing/empty (legacy migration only).
-            migrate_set = {"role": "hr", "name": "HR Admin"}
-            if not existing_admin.get("password_hash"):
-                # Legacy/corrupt record without a hash — bootstrap with default
-                # so login is not permanently broken. Normal users never hit
-                # this path because all seeded/created users have a hash.
-                migrate_set["password_hash"] = hash_password("pass123")
-            await db.users.update_one(
-                {"username": "admin"},
-                {"$set": migrate_set}
-            )
-            print("Admin user migrated (role/name only; password preserved)")
-        
-        # Create system_admin user if not exists. Check by ROLE (not just
-        # username) so admin can rename `sysadmin` without the seed recreating
-        # a duplicate on every restart.
-        existing_sysadmin = await db.users.find_one({
-            "$or": [{"username": "sysadmin"}, {"role": UserRole.SYSTEM_ADMIN}]
-        })
-        if not existing_sysadmin:
-            sys_admin = User(
-                username="sysadmin",
-                email="sysadmin@blubridge.com",
-                password_hash=hash_password("pass123"),
-                name="System Admin",
-                role=UserRole.SYSTEM_ADMIN,
-                is_first_login=False,
-                onboarding_status="completed"
-            )
-            sys_doc = sys_admin.model_dump()
-            sys_doc['created_at'] = sys_doc['created_at'].isoformat()
-            await db.users.insert_one(sys_doc.copy())
-            print("System admin user seeded successfully")
-        
-        # Create office_admin user if not exists. Check by ROLE (not just
-        # username) so admin can rename `offadmin` → e.g. `workforce` without
-        # the seed recreating a duplicate on every restart.
-        existing_offadmin = await db.users.find_one({
-            "$or": [{"username": "offadmin"}, {"role": UserRole.OFFICE_ADMIN}]
-        })
-        if not existing_offadmin:
-            off_admin = User(
-                username="offadmin",
-                email="offadmin@blubridge.com",
-                password_hash=hash_password("pass123"),
-                name="Office Admin",
-                role=UserRole.OFFICE_ADMIN,
-                is_first_login=False,
-                onboarding_status="completed"
-            )
-            off_doc = off_admin.model_dump()
-            off_doc['created_at'] = off_doc['created_at'].isoformat()
-            await db.users.insert_one(off_doc.copy())
-            print("Office admin user seeded successfully")
+
+        async def _seed_role_user(role_value: str, default_username: str, default_email: str,
+                                  default_name: str, default_pwd: str = "pass123"):
+            """Ensure exactly ONE user exists for a given admin role. Password is
+            ONLY set on first creation (or if missing); never overwritten."""
+            existing = await db.users.find_one({
+                "$or": [{"username": default_username}, {"role": role_value}]
+            })
+            if not existing:
+                new_user = User(
+                    username=default_username,
+                    email=default_email,
+                    password_hash=hash_password(default_pwd),
+                    name=default_name,
+                    role=role_value,
+                    is_first_login=False,
+                    onboarding_status="completed",
+                )
+                doc = new_user.model_dump()
+                doc['created_at'] = doc['created_at'].isoformat()
+                await db.users.insert_one(doc.copy())
+                print(f"Default {role_value} user seeded (username={default_username})")
+                return
+            # User exists — migrate role/name (idempotent). Password is sacred.
+            migrate_set: dict = {}
+            # Only normalize role/name if they look "stale" — never if user
+            # customized them.
+            if existing.get("role") != role_value:
+                # Role drift can happen from legacy data; safe to normalize.
+                migrate_set["role"] = role_value
+            if not existing.get("name"):
+                migrate_set["name"] = default_name
+            # Bootstrap password ONLY when missing AND not previously updated
+            # — protects against ever wiping a self-changed password.
+            if not existing.get("password_hash") and not existing.get("password_updated_at"):
+                migrate_set["password_hash"] = hash_password(default_pwd)
+                migrate_set["password_updated_at"] = get_ist_now().isoformat()
+                migrate_set["password_updated_method"] = "seed_bootstrap"
+                logger.warning("Bootstrapping missing password_hash for role=%s username=%s", role_value, existing.get("username"))
+            if migrate_set:
+                await db.users.update_one({"id": existing["id"]}, {"$set": migrate_set})
+                print(f"{role_value} user migrated (role/name only; password preserved): {list(migrate_set.keys())}")
+            else:
+                print(f"{role_value} user already up-to-date — no changes")
+
+        await _seed_role_user(UserRole.HR, "admin", "admin@blubridge.com", "HR Admin")
+        await _seed_role_user(UserRole.SYSTEM_ADMIN, "sysadmin", "sysadmin@blubridge.com", "System Admin")
+        await _seed_role_user(UserRole.OFFICE_ADMIN, "offadmin", "offadmin@blubridge.com", "Office Admin")
         
         # Create notifications index
         await db.notifications.create_index([("user_id", 1), ("read", 1)])

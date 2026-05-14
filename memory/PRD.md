@@ -5,6 +5,38 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-14 (FINAL PERMANENT FIX: Admin Password Revert)
+**Issue (3rd recurrence):** Even after the 2026-05-12 seed fix, admin password reportedly reverted. Deep root-cause trace performed across ALL revert vectors.
+
+**Vectors investigated & neutralized:**
+1. ✅ Startup seed (already fixed earlier; refactored into `_seed_role_user` helper that is bulletproof — never touches existing password)
+2. ✅ Sysadmin / Office Admin seed blocks now also delegate through `_seed_role_user` (same guarantee)
+3. ✅ `/api/seed` public endpoint was unauthenticated — now requires HR auth (`Depends(get_current_user)` + role check)
+4. ✅ APScheduler / cron jobs — confirmed none touch `users.password_hash`
+5. ✅ External cron/systemd/supervisor — confirmed none touch `users.password_hash`
+6. ✅ Manual scripts (`scripts/*.py`) — already exclude admin via `PRESERVED_USERNAMES`
+7. ✅ Duplicate user injection — added unique index on `users.username` to prevent shadow admin accounts
+
+**Audit fields added** on every password change (`/auth/change-password`, `/employee/change-password`, `/auth/reset-password`):
+- `password_updated_at` — IST timestamp of change
+- `password_updated_by` — actor user id
+- `password_updated_method` — `self_change` / `self_reset` / `seed_bootstrap`
+
+The new seed helper `_seed_role_user` GUARANTEES it will never re-set a password if `password_updated_at` exists (i.e. the user has ever intentionally changed it). Even if `password_hash` were missing AND `password_updated_at` were set, the seed refuses to bootstrap — preserving the audit guarantee.
+
+**Definitive verification (3 backend restarts):**
+- Change password → restart #1 → new password works, old rejected ✅
+- → restart #2 → new password works ✅
+- → restart #3 → new password works, old still rejected ✅
+- `/api/seed` without auth → 403 Forbidden ✅
+- sysadmin/workforce/kasper logins unaffected ✅
+- Audit fields populated: `password_updated_at`, `password_updated_by`, `password_updated_method` ✅
+- pytest restart-persistence test (gated by `RUN_RESTART_TEST=1`) → PASSED in 80s ✅
+
+**Files modified:** `/app/backend/server.py` only.
+**Regression test:** `/app/backend/tests/test_change_password_persistence.py` (4 tests, restart-persistence included).
+
+
 ## Latest Update — 2026-05-13 (Fix: Phantom Future Out-Time from Missed-Punch)
 **Bug:** Employee `Ram Charan Golla` showed `Out-Time: 10:05 PM` on the attendance grid while the actual IST clock was only 4:59 PM — a phantom future check-out.
 

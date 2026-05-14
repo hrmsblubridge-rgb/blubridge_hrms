@@ -127,14 +127,20 @@ def test_password_persists_across_backend_restart():
     # Restart backend
     rc = os.system("sudo supervisorctl restart backend >/dev/null 2>&1")
     assert rc == 0
-    # Wait for backend to come back
-    for _ in range(20):
+    # Wait for backend to come back — Atlas cold start can take 20s+
+    time.sleep(25)
+    for _ in range(30):
         try:
-            requests.get(f"{API}/auth/login", timeout=3)
-            break
+            r = requests.post(
+                f"{API}/auth/login",
+                json={"username": "__probe__", "password": "__probe__"},
+                timeout=10,
+            )
+            if r.status_code in (200, 401, 400, 422):
+                break
         except Exception:
-            time.sleep(1)
-    time.sleep(4)
+            time.sleep(2)
+    time.sleep(3)
 
     assert _login(ADMIN_USER, new), "New password MUST persist across restart (regression: seed used to wipe it)"
     assert _login(ADMIN_USER, DEFAULT_PWD) is None, "Old seed password must NOT come back"
