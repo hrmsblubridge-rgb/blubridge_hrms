@@ -13721,8 +13721,12 @@ async def ensure_indexes():
             )
             print("Admin user migrated (role/name only; password preserved)")
         
-        # Create system_admin user if not exists
-        existing_sysadmin = await db.users.find_one({"username": "sysadmin"})
+        # Create system_admin user if not exists. Check by ROLE (not just
+        # username) so admin can rename `sysadmin` without the seed recreating
+        # a duplicate on every restart.
+        existing_sysadmin = await db.users.find_one({
+            "$or": [{"username": "sysadmin"}, {"role": UserRole.SYSTEM_ADMIN}]
+        })
         if not existing_sysadmin:
             sys_admin = User(
                 username="sysadmin",
@@ -13738,8 +13742,12 @@ async def ensure_indexes():
             await db.users.insert_one(sys_doc.copy())
             print("System admin user seeded successfully")
         
-        # Create office_admin user if not exists
-        existing_offadmin = await db.users.find_one({"username": "offadmin"})
+        # Create office_admin user if not exists. Check by ROLE (not just
+        # username) so admin can rename `offadmin` → e.g. `workforce` without
+        # the seed recreating a duplicate on every restart.
+        existing_offadmin = await db.users.find_one({
+            "$or": [{"username": "offadmin"}, {"role": UserRole.OFFICE_ADMIN}]
+        })
         if not existing_offadmin:
             off_admin = User(
                 username="offadmin",

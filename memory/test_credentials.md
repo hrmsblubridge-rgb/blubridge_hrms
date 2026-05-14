@@ -3,7 +3,7 @@
 ## Admin Accounts
 - **HR Admin**: `admin` / `pass123` (role: hr)
 - **System Admin**: `sysadmin` / `pass123` (role: system_admin)
-- **Office Admin**: `offadmin` / `pass123` (role: office_admin)
+- **Office Admin**: `workforce` / `Pass@123#` (role: office_admin — renamed from `offadmin` on 2026-05-13)
 
 
 > ⚠️ **NOTE (2026-05-12 fix):** The startup seed previously force-reset `admin`'s
