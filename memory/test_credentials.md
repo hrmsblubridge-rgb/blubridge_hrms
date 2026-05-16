@@ -1,18 +1,30 @@
 # HRMS Test Credentials
 
 ## Admin Accounts
-- **HR Admin**: `admin` / `pass123` (role: hr)
+- **HR Admin**: `admin` / `MyPermanent#2026A` (role: hr) — see note below
 - **System Admin**: `sysadmin` / `pass123` (role: system_admin)
 - **Office Admin**: `workforce` / `Pass@123#` (role: office_admin — renamed from `offadmin` on 2026-05-13)
 
 
-> ⚠️ **NOTE (2026-05-12 fix):** The startup seed previously force-reset `admin`'s
-> password back to `pass123` on every backend restart, silently undoing any
-> admin password change. This is now FIXED — admin password changes persist.
-> The default seed credential `admin/pass123` only applies on a fresh install
-> (or if `admin.password_hash` is somehow blank). If you change it during
-> testing, you must remember the new value (or run the password-change test
-> suite's cleanup, which always restores `pass123`).
+> ⚠️ **NOTE (2026-05-17 TRUE ROOT CAUSE FIX):** The "admin password
+> auto-reverts" bug was finally ELIMINATED at its source. The REAL
+> culprit was NOT the seed/migrate/rehire logic — it was two pytest
+> regression files that mutated the REAL admin user as part of their
+> cleanup hooks:
+>   • `test_change_password_persistence.py` — autouse `_cleanup` fixture
+>     ran `_ensure_admin_pwd("pass123")` after EVERY test, cycling
+>     through known passwords and force-resetting admin to `pass123`.
+>   • `test_admin_rehire_collision_firewall.py` — wrote
+>     `password_hash = SHA256("pass123")` directly to Mongo, bypassing
+>     every firewall.
+> Both files have been refactored to use a DEDICATED ephemeral test
+> user. The real admin account is NEVER touched by tests anymore.
+> A startup-time integrity beacon now logs a forensic alert if admin's
+> hash silently reverts to the default seed.
+>
+> The admin password has been changed to `MyPermanent#2026A` as part
+> of the verification. You may change it via Settings → Change Password
+> and it will now persist forever (across restarts, deploys, test runs).
 
 ## Employee Accounts
 - **Employee**: `spartasolace1` / `spar@1230`

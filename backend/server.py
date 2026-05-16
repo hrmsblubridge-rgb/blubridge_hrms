@@ -13877,7 +13877,48 @@ async def ensure_indexes():
         await _seed_role_user(UserRole.HR, "admin", "admin@blubridge.com", "HR Admin")
         await _seed_role_user(UserRole.SYSTEM_ADMIN, "sysadmin", "sysadmin@blubridge.com", "System Admin")
         await _seed_role_user(UserRole.OFFICE_ADMIN, "offadmin", "offadmin@blubridge.com", "Office Admin")
-        
+
+        # ==========================================================
+        # READ-ONLY INTEGRITY BEACON — Admin credential tamper alert
+        # ==========================================================
+        # If admin's password_hash silently matches the default seed
+        # AND audit fields claim the password was previously changed
+        # (i.e. method != seed_bootstrap), something OUTSIDE the
+        # legitimate change-password / reset-password flow has rewritten
+        # the hash. This block NEVER writes — it only logs a loud
+        # warning so the regression can be traced in real time.
+        # Common past culprit: pytest cleanup fixtures that reset admin
+        # back to "pass123" after every test run.
+        # ==========================================================
+        try:
+            _default_seed_hash = hashlib.sha256(b"pass123").hexdigest()
+            for _protected_username in ("admin", "sysadmin", "workforce", "offadmin"):
+                _u = await db.users.find_one(
+                    {"username": _protected_username},
+                    {"_id": 0, "username": 1, "role": 1, "password_hash": 1,
+                     "password_updated_at": 1, "password_updated_method": 1},
+                )
+                if not _u:
+                    continue
+                _hash_is_default = _u.get("password_hash") == _default_seed_hash
+                _was_changed = bool(_u.get("password_updated_at"))
+                _method = _u.get("password_updated_method") or ""
+                if _hash_is_default and _was_changed and _method != "seed_bootstrap":
+                    logger.error(
+                        "🚨 ADMIN CREDENTIAL TAMPER BEACON: protected user "
+                        "username=%s role=%s currently has password_hash=DEFAULT_SEED "
+                        "but audit trail (password_updated_at=%s method=%s) claims "
+                        "it was changed. This means an external process (likely a "
+                        "test fixture or seed-restore script) wrote the hash WITHOUT "
+                        "updating the audit trail. INVESTIGATE: search backend/tests "
+                        "and any scripts/ for raw db.users writes targeting username=%s.",
+                        _u.get("username"), _u.get("role"),
+                        _u.get("password_updated_at"), _method,
+                        _u.get("username"),
+                    )
+        except Exception as _beacon_err:
+            logger.warning("integrity beacon check failed (non-fatal): %s", _beacon_err)
+
         # Create notifications index
         await db.notifications.create_index([("user_id", 1), ("read", 1)])
         await db.notifications.create_index([("created_at", -1)])
