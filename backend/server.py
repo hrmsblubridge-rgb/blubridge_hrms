@@ -2772,6 +2772,59 @@ class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
 
+# ============================================================
+# PROTECTED ADMIN ACCOUNTS — credential overwrite firewall
+# ============================================================
+# These username/role pairs may ONLY have their password_hash modified via:
+#   • /auth/change-password (self-change)
+#   • /auth/reset-password (token-based forgot-password)
+# Any other code path attempting to write password_hash to one of these
+# users MUST go through `_safe_user_update()` which strips the field with a
+# loud warning. Prevents the recurring "admin password reverted" bug where
+# employee rehire flows could collide on usernames like "admin@xxx.com" and
+# silently overwrite the real admin user.
+PROTECTED_ADMIN_USERNAMES = {"admin", "sysadmin", "offadmin", "workforce"}
+PROTECTED_ADMIN_ROLES = {"hr", "system_admin", "office_admin"}
+
+
+def _is_protected_admin(user_doc: Optional[dict]) -> bool:
+    if not user_doc:
+        return False
+    if (user_doc.get("username") or "").lower() in PROTECTED_ADMIN_USERNAMES:
+        return True
+    if (user_doc.get("role") or "") in PROTECTED_ADMIN_ROLES:
+        return True
+    return False
+
+
+async def _safe_user_update(filter_query: dict, update_doc: dict, *, source: str) -> None:
+    """Surgical wrapper around `db.users.update_one` that REFUSES to write
+    `password_hash` against a protected admin record.
+
+    `source` is a short tag (e.g. 'employee_rehire', 'employee_create_legacy')
+    logged for forensics. The actual password value is never logged.
+    """
+    set_clause = update_doc.get("$set") or {}
+    if "password_hash" in set_clause:
+        target = await db.users.find_one(filter_query, {"_id": 0, "username": 1, "role": 1, "password_updated_at": 1})
+        if _is_protected_admin(target) or (target and target.get("password_updated_at")):
+            logger.warning(
+                "BLOCKED password_hash overwrite on protected user "
+                "(username=%s role=%s source=%s) — stripping password_hash from update.",
+                (target or {}).get("username"),
+                (target or {}).get("role"),
+                source,
+            )
+            # Strip ONLY the password fields; let the rest of the update proceed.
+            stripped = {k: v for k, v in set_clause.items() if k not in ("password_hash", "password_updated_at", "password_updated_by", "password_updated_method")}
+            if stripped:
+                update_doc = {**update_doc, "$set": stripped}
+            else:
+                # Nothing left to update — no-op.
+                return
+    await db.users.update_one(filter_query, update_doc)
+
+
 @api_router.post("/auth/change-password")
 async def change_admin_password(
     data: ChangePasswordRequest,
@@ -4024,8 +4077,26 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         if data.login_enabled:
             existing_user = await db.users.find_one({"username": username})
             if existing_user:
-                # Update existing user with new password and reactivate
-                await db.users.update_one(
+                # CRITICAL FIREWALL: never overwrite a protected admin's
+                # credentials via a rehire flow. A username collision with a
+                # protected user (e.g. "admin@..." email derives username
+                # "admin") used to silently reset the real admin's password.
+                if _is_protected_admin(existing_user):
+                    logger.warning(
+                        "Refusing employee rehire — username '%s' collides with "
+                        "protected admin role (role=%s). HR must use a different "
+                        "email/username.",
+                        username, existing_user.get("role"),
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"The username '{username}' is reserved for an admin account. "
+                            "Please use a different email address for this employee."
+                        ),
+                    )
+                # Safe path: ordinary employee user reactivation.
+                await _safe_user_update(
                     {"username": username},
                     {"$set": {
                         "password_hash": hash_password(temp_password),
@@ -4034,7 +4105,8 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
                         "role": data.user_role if data.user_role else UserRole.EMPLOYEE,
                         "department": data.department,
                         "team": data.team
-                    }}
+                    }},
+                    source="employee_rehire",
                 )
             else:
                 # Create new user

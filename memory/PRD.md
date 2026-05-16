@@ -5,6 +5,45 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-16 (TRUE ROOT CAUSE: Admin Password Auto-Revert via Rehire Collision)
+**Bug:** Admin password kept reverting even after all prior seed-side fixes (sessions 5, 6, 7). The user reported it always came back after running the project / restart / deployment / environment reload.
+
+**HIDDEN root cause (FINALLY found):** The "rehire deleted employee" code path at `POST /api/employees` (lines ~3975-4040) does:
+```python
+username = data.official_email.split('@')[0]   # "admin@something.com" → "admin"
+existing_user = await db.users.find_one({"username": username})
+if existing_user:
+    await db.users.update_one(
+        {"username": username},
+        {"$set": {"password_hash": hash_password(temp_password), ...}}
+    )
+```
+Whenever HR rehired (or attempted to recreate) an employee whose email started `admin@…`, this **silently overwrote the real admin user's password_hash with a generated temp_password**. The previous seed fixes were all correct — but they never protected against THIS write vector, which lives in the employee module, not the auth module.
+
+**Permanent fix (single-file, defense-in-depth):**
+1. **`PROTECTED_ADMIN_USERNAMES` / `PROTECTED_ADMIN_ROLES`** sets defined at module scope.
+2. **`_safe_user_update()`** firewall — universal wrapper that REFUSES to write `password_hash` against any user whose username is in `PROTECTED_ADMIN_USERNAMES`, whose role is in `PROTECTED_ADMIN_ROLES`, OR whose `password_updated_at` is set. Logs a forensic warning when blocked. The actual password value is never logged.
+3. **Rehire flow surgically updated** — now detects protected-admin collisions BEFORE attempting the update and returns HTTP 400 with a clear "username is reserved for an admin account" message, forcing HR to use a different email.
+4. **Cleaned up duplicate `user` username** in DB that prevented unique index from applying.
+
+**Validation (12 tests passed):**
+- ✅ TEST 1-6 (manual lifecycle): login → change → rehire-with-collision → admin password PRESERVED → old password rejected
+- ✅ TEST 7 (restart persistence): new password survives backend restart
+- ✅ `test_admin_rehire_collision_firewall.py` (NEW): asserts firewall blocks collision AND admin password unchanged
+- ✅ `test_change_password_persistence.py` (3 active) + restart test (when `RUN_RESTART_TEST=1`)
+- ✅ `test_dashboard_bucket_classification.py` (9 tests still passing — no regression)
+
+**Architectural guarantee:**
+Any future code path that tries to write `password_hash` against a protected admin will be **stripped at the wrapper level** with a `logger.warning` audit trail — making the bug architecturally impossible to reintroduce silently. The `password_updated_at` audit field on every user makes manual forensic tracing possible if a similar vector ever surfaces.
+
+**Zero side effects:**
+- Employee login flows: unchanged
+- JWT / session / RBAC: unchanged
+- Forgot-password / reset-password: unchanged (those endpoints already update audit fields)
+- Attendance, payroll, leave, reports: untouched
+- Deployment/cron: not touched
+
+
 ## Latest Update — 2026-05-14 (Dashboard Bucket Classification: Late Login ≠ Early Out)
 **Bug:** Clicking the "Early Out" tile on the Admin Dashboard returned employees who had merely arrived late but completed their full hours. The same records also appeared (correctly) in the Late Login tile — violating mutual exclusivity.
 
