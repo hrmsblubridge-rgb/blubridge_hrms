@@ -40,27 +40,41 @@ const Payroll = () => {
 
   const days = getDaysInMonth();
 
-  // Scroll sync refs for top + bottom horizontal scrollbars
+  // Scroll sync refs for top + bottom horizontal scrollbars.
+  // The previous implementation set `scrollLeft` synchronously inside the
+  // scroll event — at 120Hz trackpad rates this causes a visible jitter as
+  // both elements fight each other. We now coalesce to ONE write per frame
+  // via requestAnimationFrame, which is the standard fix for smooth
+  // dual-bar sync and removes the jittery feel without any logic change.
   const topScrollRef = useRef(null);
   const tableScrollRef = useRef(null);
-  const isSyncing = useRef(false);
+  const syncFromRef = useRef(null);  // 'top' | 'table' | null
+  const rafIdRef = useRef(0);
 
-  const handleTopScroll = useCallback(() => {
-    if (isSyncing.current) return;
-    isSyncing.current = true;
-    if (tableScrollRef.current && topScrollRef.current) {
-      tableScrollRef.current.scrollLeft = topScrollRef.current.scrollLeft;
-    }
-    isSyncing.current = false;
+  const scheduleSync = useCallback((from) => {
+    syncFromRef.current = from;
+    if (rafIdRef.current) return;
+    rafIdRef.current = requestAnimationFrame(() => {
+      rafIdRef.current = 0;
+      const src = syncFromRef.current;
+      syncFromRef.current = null;
+      if (!src) return;
+      const top = topScrollRef.current;
+      const table = tableScrollRef.current;
+      if (!top || !table) return;
+      if (src === 'top' && table.scrollLeft !== top.scrollLeft) {
+        table.scrollLeft = top.scrollLeft;
+      } else if (src === 'table' && top.scrollLeft !== table.scrollLeft) {
+        top.scrollLeft = table.scrollLeft;
+      }
+    });
   }, []);
 
-  const handleTableScroll = useCallback(() => {
-    if (isSyncing.current) return;
-    isSyncing.current = true;
-    if (topScrollRef.current && tableScrollRef.current) {
-      topScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
-    }
-    isSyncing.current = false;
+  const handleTopScroll = useCallback(() => scheduleSync('top'), [scheduleSync]);
+  const handleTableScroll = useCallback(() => scheduleSync('table'), [scheduleSync]);
+
+  useEffect(() => () => {
+    if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
   }, []);
 
   // Keep top scrollbar width in sync with actual table width
@@ -182,6 +196,59 @@ const Payroll = () => {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="payroll-page">
+      {/* Scoped styling for the Payroll → Attendance View horizontal scroll
+          experience. CSS-only enhancement — no JS hot path, no animation
+          libraries, no DOM changes. Purely a presentation polish:
+            • slim modern scrollbar (WebKit + Firefox)
+            • overscroll-behavior: contain (no scroll-chaining to page)
+            • GPU compositing hint on sticky cells (smoother repaint while
+              the horizontal scroll moves)
+            • smooth thumb hover transition */}
+      <style>{`
+        .payroll-attendance-shell .payroll-attendance-scroll {
+          scroll-behavior: auto; /* respect native physics — don't auto-smooth */
+          overscroll-behavior-x: contain;
+          /* Improve mac/iOS feel */
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: thin;
+          scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
+        }
+        .payroll-attendance-shell .payroll-attendance-scroll::-webkit-scrollbar {
+          height: 10px;
+          width: 10px;
+        }
+        .payroll-attendance-shell .payroll-attendance-scroll::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .payroll-attendance-shell .payroll-attendance-scroll::-webkit-scrollbar-thumb {
+          background-color: rgba(100, 116, 139, 0.35);
+          border-radius: 999px;
+          border: 2px solid transparent;
+          background-clip: padding-box;
+          transition: background-color 160ms ease;
+        }
+        .payroll-attendance-shell .payroll-attendance-scroll:hover::-webkit-scrollbar-thumb,
+        .payroll-attendance-shell .payroll-attendance-scroll:focus-within::-webkit-scrollbar-thumb {
+          background-color: rgba(71, 85, 105, 0.55);
+        }
+        .payroll-attendance-shell .payroll-attendance-scroll::-webkit-scrollbar-thumb:active {
+          background-color: rgba(51, 65, 85, 0.75);
+        }
+        /* Slim top-bar thumb is even subtler */
+        .payroll-attendance-shell .payroll-attendance-topbar::-webkit-scrollbar {
+          height: 8px;
+        }
+        /* GPU layer hint on sticky cells — smoother repaint while the
+           horizontal scroll re-positions them every frame. We deliberately
+           AVOID transform translateZ(0) because creating a new transformed
+           containing block breaks position sticky in Safari.
+           will-change alone gives the layer promotion safely. */
+        .payroll-attendance-shell thead th[class*="sticky"],
+        .payroll-attendance-shell tbody td[class*="sticky"] {
+          will-change: transform;
+          backface-visibility: hidden;
+        }
+      `}</style>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -254,18 +321,22 @@ const Payroll = () => {
         </TabsList>
 
         <TabsContent value="attendance" className="mt-4">
-          <div className="card-premium overflow-hidden">
+          <div className="card-premium overflow-hidden payroll-attendance-shell">
             {/* Top horizontal scrollbar */}
             <div
               ref={topScrollRef}
               onScroll={handleTopScroll}
-              className="overflow-x-auto"
-              style={{ height: '16px' }}
+              className="overflow-x-auto payroll-attendance-scroll payroll-attendance-topbar"
+              style={{ height: '14px' }}
               data-testid="top-scrollbar"
             >
               <div style={{ width: tableWidth || '100%', height: '1px' }} />
             </div>
-            <div className="overflow-x-auto overflow-y-auto max-h-[65vh]" ref={tableScrollRef} onScroll={handleTableScroll}>
+            <div
+              className="overflow-x-auto overflow-y-auto max-h-[65vh] payroll-attendance-scroll"
+              ref={tableScrollRef}
+              onScroll={handleTableScroll}
+            >
               <table className="w-full border-collapse min-w-max">
                 <thead className="sticky top-0 z-20">
                   <tr>
