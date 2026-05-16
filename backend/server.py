@@ -5669,7 +5669,13 @@ def classify_attendance_bucket(rec: dict) -> str:
     Buckets (strict, mutually exclusive):
       - 'logged_in'  → has IN, no OUT (still working)
       - 'completed'  → has IN + OUT, full hours (no LOP, no Early Out flag)
-      - 'early_out'  → has IN + OUT, hours short (Early Out / Loss of Pay)
+                       — also includes LATE-LOGIN-but-completed days; those are
+                         picked up SEPARATELY by `is_late_login_record`.
+      - 'early_out'  → has IN + OUT, hours short due to EARLY EXIT (not late
+                       arrival). A LOP record whose root cause is "Late Login"
+                       is NEVER classified as early_out — even though it shares
+                       the LOSS_OF_PAY status — because the employee actually
+                       worked their hours, they just came late.
       - 'no_login'   → no IN at all (synthetic Absent / Sunday / no record)
 
     'Late Login' is a SECONDARY flag (see is_late_login_record) and overlays
@@ -5679,13 +5685,22 @@ def classify_attendance_bucket(rec: dict) -> str:
     has_out = bool(rec.get("check_out") or rec.get("check_out_24h"))
     status = (rec.get("status") or "").strip()
     is_lop = bool(rec.get("is_lop"))
+    lop_reason = (rec.get("lop_reason") or "").lower()
 
     if not has_in:
         return "no_login"
     if not has_out:
         return "logged_in"
-    # Has both IN + OUT — split by short-hours / LOP
+    # Has both IN + OUT. The engine writes status=LOSS_OF_PAY for BOTH late
+    # arrivals AND early exits — distinguish them by lop_reason so a late
+    # employee who completed the full day is NOT mis-tiled as early_out.
+    is_late_lop = ("late login" in lop_reason) or status == AttendanceStatus.LATE_LOGIN
     if status in (AttendanceStatus.EARLY_OUT, AttendanceStatus.LOSS_OF_PAY) or is_lop:
+        if is_late_lop:
+            # Late arrival but full hours worked → counts as completed for
+            # the Early Out tile. Late Login tile still picks it up via
+            # is_late_login_record (which reads the same lop_reason).
+            return "completed"
         return "early_out"
     return "completed"
 

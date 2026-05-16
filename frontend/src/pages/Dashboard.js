@@ -309,13 +309,21 @@ const Dashboard = () => {
       // Strict mutually-exclusive client-side classification — MUST mirror
       // backend `classify_attendance_bucket` in server.py so dashboard tiles
       // and the records table always line up.
+      //
+      // IMPORTANT: a LOP record whose root cause is "Late Login" must NOT
+      // be classified as Early Out — late employees who complete their full
+      // hours are picked up by `isLateLogin` only. This prevents the same
+      // employee from appearing under both Late Login and Early Out tabs.
       const hasIn = (r) => Boolean(r.check_in || r.check_in_24h);
       const hasOut = (r) => Boolean(r.check_out || r.check_out_24h);
-      const isShortDay = (r) =>
-        r.status === 'Early Out' || r.status === 'Loss of Pay' || r.is_lop === true;
       const isLateLogin = (r) =>
         r.status === 'Late Login' ||
         (r.lop_reason || '').toLowerCase().includes('late login');
+      const isShortDay = (r) => {
+        // Late-login records are LOP=true but should NOT count as early-out.
+        if (isLateLogin(r)) return false;
+        return r.status === 'Early Out' || r.status === 'Loss of Pay' || r.is_lop === true;
+      };
 
       const STATUS_PREDICATE = {
         logged_in: (r) => hasIn(r) && !hasOut(r),

@@ -5,6 +5,26 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-14 (Dashboard Bucket Classification: Late Login ≠ Early Out)
+**Bug:** Clicking the "Early Out" tile on the Admin Dashboard returned employees who had merely arrived late but completed their full hours. The same records also appeared (correctly) in the Late Login tile — violating mutual exclusivity.
+
+**Root cause:** The attendance engine writes `status="Loss of Pay"` + `is_lop=True` for BOTH late arrivals and early exits, differentiated only by `lop_reason`. The classifier (`classify_attendance_bucket` backend + `STATUS_PREDICATE` frontend) inspected only `is_lop`, so a late-but-completed record landed in the `early_out` bucket while ALSO getting the `late_login` secondary flag.
+
+**Fix (surgical, 2 files):**
+- `/app/backend/server.py` `classify_attendance_bucket`: when `is_lop` is true, check `lop_reason` — if it contains "late login", return `completed` instead of `early_out`. Late Login tile still picks up the record via `is_late_login_record` (already correct).
+- `/app/frontend/src/pages/Dashboard.js` `isShortDay` predicate: same exclusion — late-login records no longer match the Early Out filter.
+
+**Verified on live data:**
+- Early Out unique records: 32
+- Late Login unique records: 30
+- **Overlap = 0** (was non-zero before fix)
+- 8/8 acceptance scenarios (TEST 1-5 in spec + 3 derived cases) pass
+
+**Regression test:** `/app/backend/tests/test_dashboard_bucket_classification.py` — 9 tests (8 scenario parametrized + mutual-exclusivity invariant).
+
+**Zero side effects:** No changes to attendance records, payroll, total hours, shift assignment, leave flow, late-request/early-out-request modules, cron jobs, or reports. Classifier is a pure presentation-layer mapping.
+
+
 ## Latest Update — 2026-05-14 (FINAL PERMANENT FIX: Admin Password Revert)
 **Issue (3rd recurrence):** Even after the 2026-05-12 seed fix, admin password reportedly reverted. Deep root-cause trace performed across ALL revert vectors.
 
