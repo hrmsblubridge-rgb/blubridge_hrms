@@ -5050,6 +5050,330 @@ async def get_employee_avatar_map(current_user: dict = Depends(get_current_user)
     return out
 
 
+# =========================================================
+#  PROFILE-PHOTO UPLOAD TEST-EMAIL FLOW
+# =========================================================
+# Implements a tokenized, single-use, time-limited link that an admin can
+# email to one or many employees inviting them to upload their profile
+# photo. Designed for a controlled "pilot" rollout (one employee at a
+# time) before enabling bulk dispatch.
+#
+# Components:
+#   • POST /api/admin/profile-upload-email/send  (admin-only)
+#       Body: { target: "single", employee_id?, email? }   → sends to ONE
+#       Body: { target: "all" }                            → bulk send
+#         (gated by settings.enable_profile_upload_mail_bulk)
+#   • GET  /api/profile-upload/redeem?token=...
+#       Validates + consumes the token, returns a short-lived JWT plus
+#       the employee profile so the frontend can finish the redirect to
+#       /employee/profile.
+#   • Bulk feature-flag lives in `settings` collection:
+#         { _id: "profile_upload_mail", enable_bulk: false }
+# =========================================================
+
+PROFILE_UPLOAD_TOKEN_TTL_HOURS = 72  # 3 days
+
+
+class ProfileUploadEmailRequest(BaseModel):
+    target: str = Field("single", description="'single' or 'all'")
+    employee_id: Optional[str] = None
+    email: Optional[str] = None  # Convenience: identify by official_email
+
+
+def _build_profile_upload_email_html(name: str, upload_url: str, expires_in_hours: int) -> str:
+    """Modern, mobile-responsive, professionally-branded HTML email."""
+    safe_name = (name or "there").split()[0]
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Upload your profile picture · BluBridge</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f5f7;padding:32px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 6px 24px rgba(15,23,42,0.06);">
+          <!-- Banner -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#063c88 0%,#0a5cba 100%);padding:36px 32px;color:#ffffff;">
+              <div style="font-family:'Outfit','Segoe UI',sans-serif;font-size:22px;font-weight:700;letter-spacing:0.3px;">BluBridge HRMS</div>
+              <div style="margin-top:8px;font-size:13px;opacity:0.85;">Workforce experience platform</div>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 32px 8px 32px;">
+              <h1 style="margin:0 0 12px 0;font-family:'Outfit','Segoe UI',sans-serif;font-size:24px;color:#0f172a;font-weight:700;">Hi {safe_name},</h1>
+              <p style="margin:0 0 16px 0;font-size:15px;line-height:1.65;color:#334155;">
+                Let's put a face to your name. Your profile picture appears across the entire HRMS — attendance, directory, your digital ID card, and more — and makes it easier for teammates to recognise you instantly.
+              </p>
+              <p style="margin:0 0 28px 0;font-size:15px;line-height:1.65;color:#334155;">
+                It takes less than 30 seconds. Just tap the button below and choose a clear, recent photo.
+              </p>
+            </td>
+          </tr>
+          <!-- CTA -->
+          <tr>
+            <td align="center" style="padding:4px 32px 8px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" style="border-radius:999px;background:#063c88;">
+                    <a href="{upload_url}" target="_blank" rel="noopener" style="display:inline-block;padding:16px 32px;font-family:'Outfit','Segoe UI',sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:999px;letter-spacing:0.2px;">Upload Your Profile Picture →</a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:14px 0 0 0;font-size:12px;color:#94a3b8;">Secure link · valid for {expires_in_hours} hours · single use</p>
+            </td>
+          </tr>
+          <!-- Tips -->
+          <tr>
+            <td style="padding:28px 32px 8px 32px;">
+              <div style="border-top:1px solid #eef0f4;padding-top:24px;">
+                <div style="font-size:13px;font-weight:600;color:#0f172a;margin-bottom:10px;">A few quick tips</div>
+                <ul style="margin:0;padding-left:18px;color:#475569;font-size:13px;line-height:1.7;">
+                  <li>Use a recent, well-lit headshot</li>
+                  <li>Face the camera, neutral background works best</li>
+                  <li>JPG, PNG or WebP · up to 5 MB</li>
+                </ul>
+              </div>
+            </td>
+          </tr>
+          <!-- Fallback link -->
+          <tr>
+            <td style="padding:24px 32px 32px 32px;">
+              <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6;">
+                Button not working? Copy and paste this link into your browser:<br />
+                <span style="color:#0a5cba;word-break:break-all;">{upload_url}</span>
+              </p>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background:#f8fafc;padding:20px 32px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #eef0f4;">
+              You're receiving this email because you're an active employee at BluBridge.<br />
+              Need help? Reply to this email and we'll assist.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+
+async def _create_profile_upload_token(employee: dict) -> tuple[str, datetime]:
+    """Generate a single-use, time-limited token for the given employee."""
+    raw_token = _secrets.token_urlsafe(48)
+    now = get_ist_now()
+    expires_at = now + timedelta(hours=PROFILE_UPLOAD_TOKEN_TTL_HOURS)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "token": raw_token,
+        "employee_id": employee["id"],
+        "user_id": None,  # filled when we look up the user record
+        "email": employee.get("official_email"),
+        "purpose": "profile_upload",
+        "created_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "used_at": None,
+    }
+    # Best-effort attach user_id so redeem can return a real auth token
+    user = await db.users.find_one({"employee_id": employee["id"]}, {"_id": 0, "id": 1})
+    if user:
+        doc["user_id"] = user["id"]
+    await db.profile_upload_tokens.insert_one(doc)
+    return raw_token, expires_at
+
+
+@api_router.post("/admin/profile-upload-email/send")
+async def send_profile_upload_email(
+    body: ProfileUploadEmailRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Send the "Upload your profile picture" email.
+
+    Strict pilot mode: by default this endpoint allows sending to ONE
+    employee only. Bulk dispatch requires the feature flag
+    `settings.profile_upload_mail.enable_bulk = true` and is intended for
+    use only after the pilot recipient has confirmed the flow works.
+    """
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+
+    if not resend.api_key:
+        raise HTTPException(status_code=500, detail="Email service is not configured (RESEND_API_KEY missing)")
+
+    target = (body.target or "single").lower()
+
+    # ---- Resolve recipients ----
+    recipients: list[dict] = []
+
+    if target == "all":
+        flag = await db.settings.find_one({"_id": "profile_upload_mail"}) or {}
+        if not flag.get("enable_bulk"):
+            raise HTTPException(
+                status_code=400,
+                detail="Bulk dispatch is disabled. Run a successful pilot first, then enable settings.profile_upload_mail.enable_bulk.",
+            )
+        async for e in db.employees.find(
+            {"is_deleted": {"$ne": True}, "employee_status": {"$ne": "Inactive"},
+             "official_email": {"$exists": True, "$ne": None}},
+            {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "avatar": 1},
+        ):
+            if e.get("official_email"):
+                recipients.append(e)
+    else:
+        emp = None
+        if body.employee_id:
+            emp = await db.employees.find_one(
+                {"id": body.employee_id, "is_deleted": {"$ne": True}},
+                {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "avatar": 1},
+            )
+        elif body.email:
+            emp = await db.employees.find_one(
+                {"official_email": {"$regex": f"^{re.escape(body.email)}$", "$options": "i"},
+                 "is_deleted": {"$ne": True}},
+                {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "avatar": 1},
+            )
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        if not emp.get("official_email"):
+            raise HTTPException(status_code=400, detail="Employee has no official_email on file")
+        recipients = [emp]
+
+    # ---- Send ----
+    sent, failed = [], []
+    for emp in recipients:
+        try:
+            token, expires_at = await _create_profile_upload_token(emp)
+            upload_url = absolute_url("/profile-upload", query={"token": token})
+            html = _build_profile_upload_email_html(emp.get("full_name"), upload_url, PROFILE_UPLOAD_TOKEN_TTL_HOURS)
+            result = await send_email_notification(
+                to_email=emp["official_email"],
+                subject="📸 Upload your BluBridge profile picture",
+                html_content=html,
+            )
+            if result and result.get("id"):
+                sent.append({"email": emp["official_email"], "name": emp.get("full_name"), "message_id": result.get("id"), "token_expires_at": expires_at.isoformat()})
+            else:
+                failed.append({"email": emp["official_email"], "reason": "Resend returned no message id"})
+        except Exception as e:
+            logger.exception("Failed to dispatch profile-upload email to %s", emp.get("official_email"))
+            failed.append({"email": emp.get("official_email"), "reason": str(e)})
+
+    await log_audit(
+        current_user["id"],
+        "send_profile_upload_email",
+        "email",
+        target,
+        f"Sent: {len(sent)}, Failed: {len(failed)}",
+    )
+
+    return {"success": True, "target": target, "sent": sent, "failed": failed, "count": len(sent)}
+
+
+@api_router.get("/profile-upload/validate")
+async def validate_profile_upload_token(token: str):
+    """Lightweight, no-side-effect validation used by the public landing
+    page to decide whether to even ask the user to log in."""
+    doc = await db.profile_upload_tokens.find_one({"token": token}, {"_id": 0})
+    if not doc:
+        return {"valid": False, "reason": "Token not found"}
+    if doc.get("used_at"):
+        return {"valid": False, "reason": "This link has already been used. Please request a new one."}
+    try:
+        exp = datetime.fromisoformat(doc["expires_at"])
+        if exp < get_ist_now():
+            return {"valid": False, "reason": "This link has expired. Please request a new one."}
+    except Exception:
+        return {"valid": False, "reason": "Token integrity check failed"}
+    return {"valid": True, "email": doc.get("email"), "expires_at": doc["expires_at"]}
+
+
+@api_router.post("/profile-upload/redeem")
+async def redeem_profile_upload_token(body: dict):
+    """Single-use redemption: validates the token, marks it consumed, and
+    returns a short-lived auth token + the employee profile so the
+    frontend can drop the user straight onto the upload page."""
+    token = (body or {}).get("token")
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+
+    doc = await db.profile_upload_tokens.find_one({"token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Invalid link")
+    if doc.get("used_at"):
+        raise HTTPException(status_code=410, detail="This link has already been used")
+    try:
+        exp = datetime.fromisoformat(doc["expires_at"])
+        if exp < get_ist_now():
+            raise HTTPException(status_code=410, detail="This link has expired")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Token integrity check failed")
+
+    if not doc.get("user_id"):
+        raise HTTPException(status_code=400, detail="No login account is linked to this employee yet")
+
+    user = await db.users.find_one({"id": doc["user_id"]}, {"_id": 0})
+    if not user or not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="User account is inactive")
+
+    # Mark token consumed BEFORE issuing the JWT so a race can't re-use it.
+    await db.profile_upload_tokens.update_one(
+        {"id": doc["id"], "used_at": None},
+        {"$set": {"used_at": get_ist_now().isoformat()}},
+    )
+
+    # Issue a normal auth token (short-lived) the frontend can use as Bearer.
+    jwt_payload = {
+        "user_id": user["id"],
+        "username": user.get("username"),
+        "role": user.get("role"),
+        "exp": datetime.utcnow() + timedelta(hours=2),
+    }
+    auth_token = jwt.encode(jwt_payload, JWT_SECRET, algorithm="HS256")
+
+    # Fetch employee row (for avatar etc.)
+    emp = await db.employees.find_one({"id": user.get("employee_id")}, {"_id": 0})
+
+    await log_audit(user["id"], "profile_upload_link_used", "auth", user["id"], "Logged in via profile-upload email link")
+
+    return {
+        "token": auth_token,
+        "user": {k: v for k, v in user.items() if k != "password_hash"},
+        "employee": serialize_doc(emp) if emp else None,
+        "redirect": "/employee/profile?welcome=upload",
+    }
+
+
+@api_router.get("/admin/profile-upload-email/settings")
+async def get_profile_upload_email_settings(current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    doc = await db.settings.find_one({"_id": "profile_upload_mail"}) or {}
+    return {"enable_bulk": bool(doc.get("enable_bulk", False))}
+
+
+@api_router.put("/admin/profile-upload-email/settings")
+async def update_profile_upload_email_settings(body: dict, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    enable_bulk = bool(body.get("enable_bulk", False))
+    await db.settings.update_one(
+        {"_id": "profile_upload_mail"},
+        {"$set": {"enable_bulk": enable_bulk, "updated_at": get_ist_now().isoformat(), "updated_by": current_user["id"]}},
+        upsert=True,
+    )
+    await log_audit(current_user["id"], "toggle_profile_upload_mail_bulk", "settings",
+                    "profile_upload_mail", f"enable_bulk={enable_bulk}")
+    return {"success": True, "enable_bulk": enable_bulk}
+
+
 # ============== ATTENDANCE ROUTES ==============
 
 @api_router.get("/attendance")

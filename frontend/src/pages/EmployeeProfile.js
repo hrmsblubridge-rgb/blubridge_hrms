@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { User, Mail, Phone, Calendar, Briefcase, MapPin, Building2, Users } from 'lucide-react';
+import { User, Mail, Phone, Calendar, Briefcase, MapPin, Building2, Users, Sparkles } from 'lucide-react';
 import AvatarUploader from '../components/AvatarUploader';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -11,6 +12,8 @@ const EmployeeProfile = () => {
   const { getAuthHeaders, token, updateUser, user } = useAuth();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [params] = useSearchParams();
+  const showWelcomeBanner = params.get('welcome') === 'upload';
 
   // Fetch ONLY depends on getAuthHeaders. We deliberately keep updateUser
   // out of the dep array to prevent re-fetch loops (updateUser would change
@@ -59,6 +62,26 @@ const EmployeeProfile = () => {
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="employee-profile-page">
+      {/* Welcome banner — shown when arriving via the email upload link */}
+      {showWelcomeBanner && !profile?.avatar && (
+        <div
+          className="rounded-2xl border border-[#0a5cba]/20 bg-gradient-to-r from-[#063c88]/5 to-[#0a5cba]/5 p-5 flex items-start gap-4"
+          data-testid="profile-upload-welcome-banner"
+        >
+          <div className="w-10 h-10 rounded-full bg-[#063c88] flex items-center justify-center flex-shrink-0">
+            <Sparkles className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-slate-900" style={{ fontFamily: 'Outfit' }}>
+              Welcome! Let's add your profile picture
+            </h3>
+            <p className="text-sm text-slate-600 mt-1">
+              Tap the camera icon on your avatar below to upload a photo. It will appear instantly across the entire HRMS — attendance, directory, ID card and more.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-xl bg-[#063c88] flex items-center justify-center">

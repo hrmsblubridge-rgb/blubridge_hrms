@@ -7,6 +7,7 @@ import ResetPassword from "./pages/ResetPassword";
 import Dashboard from "./pages/Dashboard";
 import Employees from "./pages/Employees";
 import EmployeePhotoWall from "./pages/EmployeePhotoWall";
+import ProfileUploadRedeem from "./pages/ProfileUploadRedeem";
 import Attendance from "./pages/Attendance";
 import Leave from "./pages/Leave";
 import StarReward from "./pages/StarReward";
@@ -151,6 +152,7 @@ function App() {
         <Routes>
           {/* Auth Routes */}
           <Route path="/login" element={<Login />} />
+          <Route path="/profile-upload" element={<ProfileUploadRedeem />} />
           <Route path="/admin" element={<Login />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />

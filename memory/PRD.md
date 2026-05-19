@@ -5,6 +5,52 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-19 (Profile Picture Upload Test-Mail Flow — Pilot for rishi.nayak@blubridge.com)
+**Feature:** Tokenized, single-use, time-limited "Upload your profile picture" email flow for controlled pilot rollout.
+
+**Backend:**
+- `POST /api/admin/profile-upload-email/send` — admin-only. Body `{target:"single", employee_id?, email?}` for pilot; `{target:"all"}` for bulk (gated by feature flag).
+- `GET /api/profile-upload/validate?token=...` — public, no-side-effect status check.
+- `POST /api/profile-upload/redeem` — single-use redemption. Atomically marks token consumed, issues a 2-hour Bearer JWT, returns user + employee + redirect target. Returns HTTP 410 on replay.
+- `GET/PUT /api/admin/profile-upload-email/settings` — manage `enable_bulk` feature flag (default `false`).
+- New Mongo collection: `profile_upload_tokens` `{id, token, employee_id, user_id, email, purpose, created_at, expires_at, used_at}`.
+- Token: 48-byte `secrets.token_urlsafe`, TTL 72 hours, single-use guarded by `update_one(..., {used_at: None})`.
+- Modern, mobile-responsive, branded HTML email built inline (no external template engine).
+
+**Frontend:**
+- New public route `/profile-upload?token=...` → `ProfileUploadRedeem.js`. Validates → redeems → persists JWT to localStorage → hard-reloads to `/employee/profile?welcome=upload`.
+- React 18 dev-mode safe (redeem guarded by `useRef` to prevent double-consume in StrictMode).
+- `EmployeeProfile.js` shows a one-time welcome banner when `?welcome=upload` query and no avatar yet.
+- `EmployeePhotoWall.js` (admin) gained an "Email Tools" panel:
+  - Pilot email input (defaults to `rishi.nayak@blubridge.com`) + "Send pilot email" button
+  - Bulk dispatch toggle (Switch) backed by `settings.profile_upload_mail.enable_bulk`
+  - "Send to all" button (disabled until toggle is ON)
+- Per-card "Invite" button on every employee without a photo (single-click invite).
+
+**E2E Validation (curl, full chain):**
+- ✅ Email dispatched to rishi.nayak@blubridge.com via Resend (message_id `b242cfef-6f50-48ad-9c8a-5da24b31d132`)
+- ✅ Token generated, stored, expires 72h
+- ✅ Validate endpoint returns `{valid:true}` for fresh token
+- ✅ Redeem returns valid 2h JWT + employee object + redirect target
+- ✅ JWT works as Bearer on `/api/employee/profile`, `/api/employee/me/avatar`
+- ✅ Avatar uploaded via the issued JWT instantly appears in `/api/employee-avatars` (so all 13 admin modules pick it up)
+- ✅ Replay redemption blocked (HTTP 410 "already used")
+- ✅ Bulk send REJECTED with 400 when feature flag off; succeeds when flag on
+- ✅ Feature flag toggle persists in `settings` collection
+- ✅ Lint clean (frontend + new backend code)
+
+**Requirements satisfied:**
+1. Pilot only — defaults to single recipient, bulk gated behind admin toggle ✅
+2. Modern professional email design — gradient banner, brand color, CTA button, mobile responsive, fallback link, tips section ✅
+3. CTA → tokenized URL → auto-login → redirect to profile upload ✅
+4. Security — `secrets.token_urlsafe(48)`, single-use atomic guard, 72h expiry, role check, audit log ✅
+5. After upload — `refreshAvatars()` propagates everywhere (Attendance, Leave, Directory, ID-card, etc.) ✅
+6. UI — welcome banner, success confirmation, error handling ✅
+7. Feature flag `enable_profile_upload_mail` (named `enable_bulk` in settings) ✅
+8. Scalable architecture — same endpoint handles single + bulk, same token model, same email template ✅
+
+**Heads-up to user:** `FRONTEND_BASE_URL=https://blubrg.com` in backend/.env — the email link points to `blubrg.com/profile-upload?token=...`. If the production deploy is in sync, Rishi's link will work end-to-end. For preview-only testing, override that env to the preview URL.
+
 ## Latest Update — 2026-05-19 (Centralized Profile Photo Visibility Across ALL Admin Modules)
 **Issue:** Employee "Pragathi V Nahar" uploaded a profile photo successfully but admin modules still showed only the initial letter "P" everywhere except the dedicated Employees screen.
 

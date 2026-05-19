@@ -2,9 +2,11 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { ImageIcon, Search, Filter, Users as UsersIcon } from 'lucide-react';
+import { ImageIcon, Search, Filter, Users as UsersIcon, Mail, Send, Loader2, ShieldAlert } from 'lucide-react';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import { Input } from '../components/ui/input';
+import { Switch } from '../components/ui/switch';
+import { Button } from '../components/ui/button';
 import {
   Select,
   SelectContent,
@@ -23,6 +25,12 @@ const EmployeePhotoWall = () => {
   const [deptFilter, setDeptFilter] = useState('all');
   const [photoFilter, setPhotoFilter] = useState('all'); // all | with | without
 
+  // Email-tools state
+  const [pilotEmail, setPilotEmail] = useState('rishi.nayak@blubridge.com');
+  const [sendingTo, setSendingTo] = useState(null); // email currently being dispatched
+  const [bulkEnabled, setBulkEnabled] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   const fetchEmployees = useCallback(async () => {
     try {
       setLoading(true);
@@ -36,9 +44,84 @@ const EmployeePhotoWall = () => {
     }
   }, [getAuthHeaders]);
 
+  const fetchBulkFlag = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/admin/profile-upload-email/settings`, { headers: getAuthHeaders() });
+      setBulkEnabled(!!res.data?.enable_bulk);
+    } catch (e) {
+      /* non-fatal */
+    }
+  }, [getAuthHeaders]);
+
   useEffect(() => {
     fetchEmployees();
-  }, [fetchEmployees]);
+    fetchBulkFlag();
+  }, [fetchEmployees, fetchBulkFlag]);
+
+  // ---- Email dispatch helpers ----
+  const sendInvite = async ({ employee_id, email }) => {
+    const key = email || employee_id;
+    setSendingTo(key);
+    try {
+      const res = await axios.post(
+        `${API}/admin/profile-upload-email/send`,
+        { target: 'single', employee_id, email },
+        { headers: getAuthHeaders() }
+      );
+      const sent = res.data?.sent?.[0];
+      if (sent) {
+        toast.success(`Email sent to ${sent.email}`);
+      } else {
+        toast.error(res.data?.failed?.[0]?.reason || 'Send failed');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to send invite');
+    } finally {
+      setSendingTo(null);
+    }
+  };
+
+  const sendPilot = async () => {
+    const v = (pilotEmail || '').trim();
+    if (!v) return toast.error('Enter an email');
+    await sendInvite({ email: v });
+  };
+
+  const toggleBulkFlag = async (next) => {
+    try {
+      await axios.put(
+        `${API}/admin/profile-upload-email/settings`,
+        { enable_bulk: next },
+        { headers: getAuthHeaders() }
+      );
+      setBulkEnabled(next);
+      toast.success(`Bulk dispatch ${next ? 'enabled' : 'disabled'}`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to update flag');
+    }
+  };
+
+  const sendBulk = async () => {
+    if (!bulkEnabled) {
+      toast.error('Enable bulk dispatch first (only after a successful pilot).');
+      return;
+    }
+    const count = employees.filter((e) => !e.avatar && e.official_email).length;
+    if (!window.confirm(`Send the upload email to ${count} employees who don't yet have a profile photo?`)) return;
+    setBulkBusy(true);
+    try {
+      const res = await axios.post(
+        `${API}/admin/profile-upload-email/send`,
+        { target: 'all' },
+        { headers: getAuthHeaders() }
+      );
+      toast.success(`Sent ${res.data?.count || 0} emails (${res.data?.failed?.length || 0} failed)`);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Bulk send failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const departments = useMemo(() => {
     const set = new Set();
@@ -107,6 +190,70 @@ const EmployeePhotoWall = () => {
             <p className="text-sm text-slate-500">
               {withPhotoCount} of {employees.length} employees have uploaded a profile photo
             </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Email Tools — Pilot dispatch panel */}
+      <div className="card-flat p-5 border border-[#0a5cba]/15 bg-gradient-to-r from-[#063c88]/5 to-white" data-testid="profile-upload-email-tools">
+        <div className="flex items-start gap-3 mb-4">
+          <div className="w-9 h-9 rounded-lg bg-[#063c88] flex items-center justify-center flex-shrink-0">
+            <Mail className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1">
+            <h2 className="font-semibold text-slate-900" style={{ fontFamily: 'Outfit' }}>
+              Profile picture invite email
+            </h2>
+            <p className="text-xs text-slate-500 mt-1">
+              Send a secure, single-use link inviting an employee to upload their photo. Currently in <span className="font-medium text-[#063c88]">pilot mode</span> — send to one address at a time. Enable bulk dispatch only after the pilot is confirmed working.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col md:flex-row gap-3 md:items-center">
+          <Input
+            type="email"
+            placeholder="employee@blubridge.com"
+            value={pilotEmail}
+            onChange={(e) => setPilotEmail(e.target.value)}
+            className="md:max-w-sm"
+            data-testid="pilot-email-input"
+          />
+          <Button
+            onClick={sendPilot}
+            disabled={!!sendingTo}
+            data-testid="send-pilot-email-btn"
+            className="bg-[#063c88] hover:bg-[#0a5cba] text-white"
+          >
+            {sendingTo ? (
+              <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Sending…</>
+            ) : (
+              <><Send className="w-4 h-4 mr-2" /> Send pilot email</>
+            )}
+          </Button>
+
+          <div className="md:ml-auto flex items-center gap-3 bg-white border border-slate-200 rounded-xl px-4 py-2">
+            <Switch
+              checked={bulkEnabled}
+              onCheckedChange={toggleBulkFlag}
+              data-testid="bulk-flag-switch"
+            />
+            <div className="text-xs">
+              <div className="font-semibold text-slate-900 flex items-center gap-1">
+                {bulkEnabled ? 'Bulk dispatch ON' : 'Bulk dispatch OFF'}
+                {bulkEnabled && <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />}
+              </div>
+              <div className="text-slate-500">enable_profile_upload_mail</div>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={sendBulk}
+              disabled={!bulkEnabled || bulkBusy}
+              data-testid="send-bulk-email-btn"
+            >
+              {bulkBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : 'Send to all'}
+            </Button>
           </div>
         </div>
       </div>
@@ -188,9 +335,28 @@ const EmployeePhotoWall = () => {
                     {emp.custom_employee_id || emp.emp_id}
                   </p>
                   {!emp.avatar && (
-                    <span className="mt-2 text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-100">
-                      No photo
-                    </span>
+                    <>
+                      <span className="mt-2 text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-100">
+                        No photo
+                      </span>
+                      {emp.official_email && (
+                        <button
+                          type="button"
+                          onClick={() => sendInvite({ employee_id: emp.id })}
+                          disabled={sendingTo === emp.id}
+                          data-testid={`invite-${emp.id}`}
+                          className="mt-2 inline-flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-md bg-[#063c88]/5 text-[#063c88] hover:bg-[#063c88] hover:text-white transition disabled:opacity-60"
+                          title="Send the upload-photo email to this employee"
+                        >
+                          {sendingTo === emp.id ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Send className="w-3 h-3" />
+                          )}
+                          Invite
+                        </button>
+                      )}
+                    </>
                   )}
                 </div>
               ))}
