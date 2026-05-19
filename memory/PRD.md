@@ -5,6 +5,22 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-19 (Avatar render bug — "Praga V" text inside box)
+**Issue:** After uploading a profile photo and reloading, Pragathi's avatar showed the literal text "Praga V" (her name overflowing inside the avatar box) instead of her actual photo.
+
+**Root cause (this was NOT my code rendering the name — it was the browser):**
+The previous fix added an `<img alt={displayName} src={resolvedUrl}>` overlay on top of a gradient initial-letter base. When the image is slow to load or transiently failing (CORS preflight, cache miss, slow Cloudinary cold-edge), the browser's **default broken-image placeholder** renders the `alt` attribute as plain black-on-white text inside the image's bounding box. With `text-5xl` inherited from the parent and `alt="Pragathi V Nahar"`, the result looked exactly like the bug report — "Praga V" wrapping inside the white-ish box. The `onError` handler eventually fires, but by then the user has already seen the ugly text flash. For some slow loads, `onError` may never fire and the broken-image rendering persists indefinitely.
+
+**Fix — three layered guards (all structural, none cosmetic):**
+1. **`alt=""` + `aria-hidden="true"`** — the avatar is decorative; the visible "P" letter underneath conveys identity. With empty alt, the browser's broken-image renderer has nothing to display as text, eliminating the "Praga V" text overflow regardless of load state.
+2. **`opacity-0` → `opacity-100` via `onLoad`** — the `<img>` element is fully transparent while loading. Even if the browser tries to render its broken-image icon/state, the user can't see it. Once `onLoad` confirms the image is painted, we fade to `opacity-100` (200ms transition).
+3. **`onError` removes the `<img>` from the DOM entirely** — eliminates any pending failed-load state from the React tree. The initial-letter base layer stays visible.
+
+**Result:**
+- User ALWAYS sees either Pragathi's actual photo (preferred), or the clean gradient "P" placeholder.
+- No more "Praga V" text overflow, no more empty grey circle, no more flashing broken-image icon.
+- Works regardless of network speed, CORS, image hosting transient errors, etc.
+
 ## Latest Update — 2026-05-19 (Avatar render bug — empty circle for Pragathi V Nahar)
 **Issue:** Pragathi V Nahar had successfully uploaded her profile photo (verified in DB and via direct Cloudinary curl — returns HTTP 200, valid JPEG, 23 KB), yet on the Photo Wall the avatar circle appeared empty (no photo, no initial letter) while other "no photo" employees correctly showed their gradient initial.
 

@@ -61,13 +61,19 @@ const EmployeeAvatar = ({
     cachedAvatar ||
     null;
 
-  // Track whether the <img> failed to load. If it did, we render the
-  // gradient initial-letter fallback instead of leaving an empty circle.
-  const [hasError, setHasError] = useState(false);
+  // Loading state lifecycle:
+  //   • 'loading' — img is in DOM but not yet painted; we keep it
+  //     opacity-0 so the browser's broken-image alt-text placeholder
+  //     never flashes to the user. The gradient + initial-letter layer
+  //     below is what they see during this phase.
+  //   • 'loaded'  — onLoad fired → fade the img in (opacity-100), it
+  //     covers the initial layer.
+  //   • 'error'   — onError fired → remove the img entirely so the
+  //     initial layer stays visible. No browser fallback ever shown.
+  const [phase, setPhase] = useState('loading');
   useEffect(() => {
-    // Reset the error flag if the URL itself changes — e.g. when the user
-    // uploads a new photo and the cache refreshes.
-    setHasError(false);
+    // Reset whenever the URL changes (e.g. a new upload).
+    setPhase('loading');
   }, [resolvedUrl]);
 
   const displayName =
@@ -79,17 +85,17 @@ const EmployeeAvatar = ({
 
   const base = `${sizeCls} ${shapeCls} flex-shrink-0 overflow-hidden flex items-center justify-center ${className}`;
 
-  const showPhoto = !!resolvedUrl && !hasError;
+  const showImage = !!resolvedUrl && phase !== 'error';
 
   // Render strategy: ALWAYS draw the gradient initial-letter as the base
   // layer, then overlay the <img> on top once we have a URL. This way:
   //   • If the photo is still loading, the user sees the initial — not
-  //     an empty grey circle.
+  //     an empty grey circle or the browser's broken-image alt-text.
   //   • If the photo's background is white/transparent (common for ID
   //     headshots), the surrounding initial layer is hidden by the
   //     image but the photo content is unaffected.
-  //   • If the photo URL is broken, `onError` sets hasError → the img is
-  //     removed and the initial layer remains visible.
+  //   • If the photo URL is broken, `onError` removes the img entirely
+  //     so the initial layer remains visible.
   return (
     <div
       className={`${base} relative bg-gradient-to-br from-[#063c88] to-[#0a5cba] shadow-md`}
@@ -99,20 +105,28 @@ const EmployeeAvatar = ({
       <span
         className="absolute inset-0 flex items-center justify-center text-white font-bold select-none pointer-events-none"
         style={{ fontFamily: 'Outfit' }}
-        aria-hidden={showPhoto ? 'true' : 'false'}
+        aria-hidden={phase === 'loaded' ? 'true' : 'false'}
       >
         {initial}
       </span>
 
-      {/* Photo overlay — covers the initial when loaded */}
-      {showPhoto && (
+      {/* Photo overlay — kept invisible until the browser confirms it
+          painted. Without this guard, the browser would briefly show its
+          built-in "broken image" rendering (which displays the alt text
+          as ugly black-on-white text) for any slow or temporarily-failing
+          fetch. */}
+      {showImage && (
         <img
           src={resolvedUrl}
-          alt={displayName || 'Profile photo'}
-          className="absolute inset-0 w-full h-full object-cover"
+          alt=""
+          aria-hidden="true"
+          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
+            phase === 'loaded' ? 'opacity-100' : 'opacity-0'
+          }`}
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={() => setHasError(true)}
+          onLoad={() => setPhase('loaded')}
+          onError={() => setPhase('error')}
         />
       )}
     </div>
