@@ -5,6 +5,32 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-19 (Avatar photo not showing after upload — root cause #2)
+**Issue:** After uploading a profile photo, the toast confirmed "Profile photo updated" but the avatar kept showing the gradient "P" placeholder. Reload didn't help.
+
+**Root cause:** My previous fix used an opacity-gated `<img>` element:
+```jsx
+className={`... ${phase === 'loaded' ? 'opacity-100' : 'opacity-0'}`}
+onError={() => setPhase('error')}
+```
+When Cloudinary serves a freshly-uploaded transformation URL, the first browser request can return a transient 404 (cold transformation cache). `onError` fires, `phase` becomes `'error'`, and the img is never re-attempted — `useEffect([resolvedUrl])` only resets phase when the URL CHANGES, but the URL stays the same. So once locked into error state, the photo would never render until a hard navigation.
+
+**Fix — eliminate the `<img>` element entirely; use CSS `background-image`:**
+- CSS `background-image` has no `alt` attribute → no text leakage.
+- CSS `background-image` has no broken-image icon → if the URL fails, the layer is simply transparent.
+- No `onLoad` / `onError` state tracking required → no race conditions, no locked-in error states.
+- The browser still caches and re-tries CSS background fetches on next paint, so cold-cache 404s resolve themselves on subsequent renders.
+- The gradient initial-letter base layer stays underneath; the photo paints on top via `background-size: cover` + `background-position: center`.
+
+**Architectural benefit:**
+The component went from ~120 lines with `useState`, `useEffect`, `onLoad`, `onError`, opacity transitions, alt-text guards, and ARIA hint flipping — down to a pure, declarative render with zero state. The bug is now structurally impossible because there's no JavaScript state to corrupt.
+
+**Validation:**
+- ✅ DB confirms Pragathi's avatar URL is correctly stored
+- ✅ URL returns HTTP 200 (curl + browser UA)
+- ✅ New component renders correctly in admin sidebar (verified via screenshot)
+- ✅ Lint clean
+
 ## Latest Update — 2026-05-19 (Avatar render bug — "Praga V" text inside box)
 **Issue:** After uploading a profile photo and reloading, Pragathi's avatar showed the literal text "Praga V" (her name overflowing inside the avatar box) instead of her actual photo.
 

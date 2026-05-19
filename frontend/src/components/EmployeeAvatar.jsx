@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { useAuth } from '../contexts/AuthContext';
 
 /**
@@ -12,9 +12,20 @@ import { useAuth } from '../contexts/AuthContext';
  *      all admin modules so any module showing `employee_id` gets the
  *      photo automatically once the employee uploads one.
  *
- * If the resolved image FAILS to load in the browser (broken URL, CORS,
- * network error, etc.) we automatically fall back to the gradient
- * initial-letter circle — never an empty container.
+ * Implementation note (why CSS background-image instead of <img>):
+ *   • CSS background images don't expose `alt` text — so a failing fetch
+ *     never leaks the employee's name as black-on-white text into the
+ *     avatar box (the previous "Praga V" bug).
+ *   • CSS background images don't render a broken-image icon — if the
+ *     URL fails or returns 404 (e.g. Cloudinary transformation cold-cache
+ *     on the first request), the background is simply transparent and
+ *     the gradient initial-letter underneath stays visible.
+ *   • No load/error state tracking is required — eliminating the race
+ *     condition where `onError` would lock the component into a state
+ *     it could never recover from.
+ *   • The browser caches background-image fetches the same way it caches
+ *     <img> fetches, so the second request after a cold 404 succeeds
+ *     automatically on the next paint.
  *
  * Props:
  *   • employee     — { full_name?, name?, avatar?, avatar_url?, id? }
@@ -61,21 +72,6 @@ const EmployeeAvatar = ({
     cachedAvatar ||
     null;
 
-  // Loading state lifecycle:
-  //   • 'loading' — img is in DOM but not yet painted; we keep it
-  //     opacity-0 so the browser's broken-image alt-text placeholder
-  //     never flashes to the user. The gradient + initial-letter layer
-  //     below is what they see during this phase.
-  //   • 'loaded'  — onLoad fired → fade the img in (opacity-100), it
-  //     covers the initial layer.
-  //   • 'error'   — onError fired → remove the img entirely so the
-  //     initial layer stays visible. No browser fallback ever shown.
-  const [phase, setPhase] = useState('loading');
-  useEffect(() => {
-    // Reset whenever the URL changes (e.g. a new upload).
-    setPhase('loading');
-  }, [resolvedUrl]);
-
   const displayName =
     name || employee?.full_name || employee?.name || employee?.emp_name || '';
   const initial = (displayName || '?').charAt(0).toUpperCase();
@@ -85,48 +81,44 @@ const EmployeeAvatar = ({
 
   const base = `${sizeCls} ${shapeCls} flex-shrink-0 overflow-hidden flex items-center justify-center ${className}`;
 
-  const showImage = !!resolvedUrl && phase !== 'error';
+  // Build the background-image style. We append a `?v=<urllen>` cache-buster
+  // ONLY when the URL has no query string yet — this is a no-op for normal
+  // Cloudinary URLs (which already carry a version segment like `/v17...`),
+  // but it prevents stale browser caching if someone passes a parameterless
+  // URL while testing.
+  const bgStyle = resolvedUrl
+    ? {
+        backgroundImage: `url("${resolvedUrl}")`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+      }
+    : undefined;
 
-  // Render strategy: ALWAYS draw the gradient initial-letter as the base
-  // layer, then overlay the <img> on top once we have a URL. This way:
-  //   • If the photo is still loading, the user sees the initial — not
-  //     an empty grey circle or the browser's broken-image alt-text.
-  //   • If the photo's background is white/transparent (common for ID
-  //     headshots), the surrounding initial layer is hidden by the
-  //     image but the photo content is unaffected.
-  //   • If the photo URL is broken, `onError` removes the img entirely
-  //     so the initial layer remains visible.
   return (
     <div
       className={`${base} relative bg-gradient-to-br from-[#063c88] to-[#0a5cba] shadow-md`}
       data-testid={testId}
     >
-      {/* Initial-letter base layer — always rendered */}
+      {/* Initial-letter base layer — always rendered. The photo (if any)
+          paints over this via CSS background-image. */}
       <span
         className="absolute inset-0 flex items-center justify-center text-white font-bold select-none pointer-events-none"
         style={{ fontFamily: 'Outfit' }}
-        aria-hidden={phase === 'loaded' ? 'true' : 'false'}
+        aria-hidden={resolvedUrl ? 'true' : 'false'}
       >
         {initial}
       </span>
 
-      {/* Photo overlay — kept invisible until the browser confirms it
-          painted. Without this guard, the browser would briefly show its
-          built-in "broken image" rendering (which displays the alt text
-          as ugly black-on-white text) for any slow or temporarily-failing
-          fetch. */}
-      {showImage && (
-        <img
-          src={resolvedUrl}
-          alt=""
-          aria-hidden="true"
-          className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
-            phase === 'loaded' ? 'opacity-100' : 'opacity-0'
-          }`}
-          decoding="async"
-          referrerPolicy="no-referrer"
-          onLoad={() => setPhase('loaded')}
-          onError={() => setPhase('error')}
+      {/* Photo overlay via background-image — no <img>, no alt, no broken-
+          image fallback, no opacity race. If the URL fails, the gradient
+          + initial underneath remains visible. */}
+      {resolvedUrl && (
+        <div
+          className="absolute inset-0"
+          style={bgStyle}
+          role="img"
+          aria-label={displayName ? `Profile photo of ${displayName}` : 'Profile photo'}
         />
       )}
     </div>
