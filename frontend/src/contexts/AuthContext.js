@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 
 const AuthContext = createContext(null);
@@ -53,13 +53,24 @@ export const AuthProvider = ({ children }) => {
     setUser(null);
   };
 
-  const updateUser = (updates) => {
-    setUser(prev => ({ ...prev, ...updates }));
-  };
+  const updateUser = useCallback((updates) => {
+    setUser(prev => {
+      if (!prev) return prev;
+      // Skip the state update if nothing actually changed — prevents
+      // re-render storms when callers (e.g. EmployeeProfile.fetchProfile)
+      // call updateUser inside an effect.
+      const next = { ...prev, ...updates };
+      let changed = false;
+      for (const k of Object.keys(updates || {})) {
+        if (prev[k] !== updates[k]) { changed = true; break; }
+      }
+      return changed ? next : prev;
+    });
+  }, []);
 
-  const getAuthHeaders = () => ({
+  const getAuthHeaders = useCallback(() => ({
     Authorization: `Bearer ${token}`
-  });
+  }), [token]);
 
   // Check if user needs onboarding
   const needsOnboarding = () => {

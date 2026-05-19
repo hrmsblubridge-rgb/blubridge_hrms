@@ -8,31 +8,45 @@ import AvatarUploader from '../components/AvatarUploader';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const EmployeeProfile = () => {
-  const { getAuthHeaders, token, updateUser } = useAuth();
+  const { getAuthHeaders, token, updateUser, user } = useAuth();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Fetch ONLY depends on getAuthHeaders. We deliberately keep updateUser
+  // out of the dep array to prevent re-fetch loops (updateUser would change
+  // every render if AuthContext re-renders for any reason).
   const fetchProfile = useCallback(async () => {
     try {
       setLoading(true);
       const response = await axios.get(`${API}/employee/profile`, { headers: getAuthHeaders() });
       setProfile(response.data);
-      // Propagate avatar to AuthContext so sidebar / header pick it up immediately.
-      if (response.data?.avatar !== undefined) {
-        updateUser?.({ avatar: response.data.avatar || null });
-      }
     } catch (error) {
       toast.error('Failed to load profile');
     } finally {
       setLoading(false);
     }
-  }, [getAuthHeaders, updateUser]);
+  }, [getAuthHeaders]);
 
   useEffect(() => { fetchProfile(); }, [fetchProfile]);
 
+  // Sync the loaded avatar into AuthContext ONLY when it actually differs
+  // from what the context already has. Runs in a separate effect so it
+  // never triggers a re-fetch loop.
+  useEffect(() => {
+    if (!profile) return;
+    const newAvatar = profile.avatar || null;
+    if ((user?.avatar || null) !== newAvatar) {
+      updateUser?.({ avatar: newAvatar });
+    }
+    // We only react to profile.avatar changes; user.avatar is read inside
+    // the guard above and intentionally NOT a dependency to avoid an
+    // update→re-render→update cycle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.avatar]);
+
   const handleAvatarUpdated = (updatedEmployee) => {
     setProfile((prev) => ({ ...(prev || {}), ...(updatedEmployee || {}) }));
-    updateUser?.({ avatar: updatedEmployee?.avatar || null });
+    // updateUser will be triggered by the effect above when profile.avatar changes.
   };
 
   if (loading) {
