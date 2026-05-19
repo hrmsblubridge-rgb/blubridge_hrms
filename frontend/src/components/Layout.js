@@ -15,6 +15,7 @@ import {
   Menu,
   X,
   UserCog,
+  ImagePlus,
   Wallet,
   User,
   KeyRound,
@@ -50,6 +51,7 @@ import {
 const allNavItems = [
   { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/employees', label: 'Employees', icon: UserCog, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/employees/photo-wall', label: 'Photo Wall', icon: ImagePlus, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/verification', label: 'Verification', icon: ClipboardCheck, roles: ['hr'] },
   { path: '/operational-checklist', label: 'Operational Setup', icon: ClipboardList, roles: ['hr', 'office_admin'] },
   { path: '/attendance', label: 'Attendance', icon: CalendarCheck, roles: ['hr', 'system_admin', 'office_admin'] },

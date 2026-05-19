@@ -5,6 +5,35 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-19 (Employee Profile Photo Upload + Admin Photo Wall)
+**Feature:** Employees can now upload a profile photo from their "My Profile" page; admins (HR / system_admin / office_admin) can upload photos for any employee from the Employees → detail dialog; and a new "Photo Wall" view gives admins a face-to-name gallery grouped by department.
+
+**Implementation:**
+- **Backend:**
+  - Extended `PUT /api/employees/{id}/avatar` to allow self-update (employee.employee_id == id) in addition to admin roles
+  - Added `PUT /api/employee/me/avatar` — convenience endpoint so employee doesn't need to know their own employee_id
+  - Added `DELETE /api/employee/me/avatar` — employee can remove their photo
+  - Enriched `POST /api/auth/login` & `GET /api/auth/me` to include `avatar` for employees (so sidebar/header pick it up immediately)
+  - Cloudinary "avatars" folder already allowed
+- **Frontend:**
+  - New reusable `components/EmployeeAvatar.jsx` — shows photo if available, falls back to gradient initial
+  - New reusable `components/AvatarUploader.jsx` — wraps EmployeeAvatar with camera-overlay upload button, supports `mode="self"` and `mode="admin"`, includes Cloudinary smart-crop transformation (`c_fill,g_face,w_512,h_512,q_auto,f_auto`)
+  - `EmployeeProfile.js` — replaces initial-letter avatar with AvatarUploader; on success propagates to AuthContext via `updateUser({avatar})`
+  - `EmployeeLayout.js` — sidebar + header avatars now use EmployeeAvatar with `user.avatar`
+  - `Employees.js` (admin) — table cell + detail-dialog header use EmployeeAvatar; admins see AvatarUploader in detail dialog
+  - New `pages/EmployeePhotoWall.js` — admin-only gallery grouped by department, with search + dept filter + photo-status filter
+  - Route `/employees/photo-wall` added (AdminRoute); sidebar nav entry "Photo Wall" with `ImagePlus` icon
+- **Constraints:** JPG/PNG/WebP, ≤5 MB, auto-resized to 512×512 with smart face-aware crop by Cloudinary
+
+**Validation:**
+- ✅ Employee self-upload via `/api/employee/me/avatar` → success
+- ✅ `/api/auth/me` returns avatar for employee
+- ✅ Cross-employee upload by non-admin returns HTTP 403 (RBAC working)
+- ✅ Admin can upload for any employee via existing PUT endpoint
+- ✅ DELETE removes avatar + cleans up old Cloudinary asset
+- ✅ Backend lint: only pre-existing legacy warnings, none from new code
+- ✅ Frontend lint: clean
+
 ## Latest Update — 2026-05-17 (FINAL TRUE ROOT CAUSE: Admin Password Auto-Revert — TEST FIXTURES)
 **Bug:** Despite the May-16 rehire-collision firewall, the admin password STILL kept reverting after restart/deploy/local-execution.
 

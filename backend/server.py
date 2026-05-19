@@ -2729,18 +2729,27 @@ async def login(request: LoginRequest):
     
     user_response = {k: v for k, v in user.items() if k != "password_hash"}
     
-    # Add onboarding info for employees
+    # Add onboarding info + avatar for employees
     if user.get("role") == UserRole.EMPLOYEE and user.get("employee_id"):
         onboarding = await db.onboarding.find_one({"employee_id": user["employee_id"]}, {"_id": 0})
         user_response["onboarding_status"] = onboarding.get("status") if onboarding else user.get("onboarding_status", OnboardingStatus.PENDING)
         user_response["is_first_login"] = user.get("is_first_login", True)
         user_response["onboarding_completed"] = user_response["onboarding_status"] == OnboardingStatus.APPROVED
+        emp = await db.employees.find_one({"id": user["employee_id"]}, {"_id": 0, "avatar": 1})
+        if emp and emp.get("avatar"):
+            user_response["avatar"] = emp["avatar"]
     
     return {"token": token, "user": user_response}
 
 @api_router.get("/auth/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
-    return {k: v for k, v in current_user.items() if k != "password_hash"}
+    out = {k: v for k, v in current_user.items() if k != "password_hash"}
+    # Enrich with employee avatar so sidebar/header can display the photo.
+    if current_user.get("role") == UserRole.EMPLOYEE and current_user.get("employee_id"):
+        emp = await db.employees.find_one({"id": current_user["employee_id"]}, {"_id": 0, "avatar": 1})
+        if emp and emp.get("avatar"):
+            out["avatar"] = emp["avatar"]
+    return out
 
 @api_router.put("/auth/update-profile")
 async def update_admin_profile(
@@ -4937,22 +4946,29 @@ class AvatarUpdate(BaseModel):
 
 @api_router.put("/employees/{employee_id}/avatar")
 async def update_employee_avatar(employee_id: str, data: AvatarUpdate, current_user: dict = Depends(get_current_user)):
-    """Update employee avatar/photo"""
-    if current_user["role"] not in [UserRole.HR]:
-        raise HTTPException(status_code=403, detail="Permission denied")
-    
+    """Update employee avatar/photo.
+
+    Access rules:
+      • HR / system_admin / office_admin — can update any employee's avatar
+      • Employees — can update ONLY their own avatar (current_user.employee_id == employee_id)
+    """
+    is_admin = current_user.get("role") in ALL_ADMIN_ROLES
+    is_self = current_user.get("employee_id") == employee_id
+    if not (is_admin or is_self):
+        raise HTTPException(status_code=403, detail="You can only update your own profile photo")
+
     existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Employee not found")
-    
+
     # Delete old avatar from Cloudinary if exists
     old_public_id = existing.get("avatar_public_id")
-    if old_public_id:
+    if old_public_id and old_public_id != data.avatar_public_id:
         try:
             await asyncio.to_thread(cloudinary.uploader.destroy, old_public_id, invalidate=True)
         except Exception as e:
             logger.warning(f"Failed to delete old avatar: {e}")
-    
+
     await db.employees.update_one(
         {"id": employee_id},
         {"$set": {
@@ -4961,11 +4977,46 @@ async def update_employee_avatar(employee_id: str, data: AvatarUpdate, current_u
             "updated_at": get_ist_now().isoformat()
         }}
     )
-    
-    await log_audit(current_user["id"], "update_avatar", "employee", employee_id)
-    
+
+    actor = "self" if is_self and not is_admin else current_user.get("role", "admin")
+    await log_audit(current_user["id"], "update_avatar", "employee", employee_id, f"Avatar updated by {actor}")
+
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     return serialize_doc(employee)
+
+
+@api_router.put("/employee/me/avatar")
+async def update_my_avatar(data: AvatarUpdate, current_user: dict = Depends(get_current_user)):
+    """Convenience endpoint — the logged-in employee updates THEIR OWN avatar
+    without needing to know their `employee_id`. Internally delegates to the
+    same logic as `PUT /employees/{employee_id}/avatar`."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="No employee profile linked to this user")
+    return await update_employee_avatar(employee_id, data, current_user)
+
+
+@api_router.delete("/employee/me/avatar")
+async def delete_my_avatar(current_user: dict = Depends(get_current_user)):
+    """Logged-in employee removes their own avatar (reverts to initial-letter)."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="No employee profile linked to this user")
+    existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    old_public_id = existing.get("avatar_public_id")
+    if old_public_id:
+        try:
+            await asyncio.to_thread(cloudinary.uploader.destroy, old_public_id, invalidate=True)
+        except Exception as e:
+            logger.warning(f"Failed to delete avatar from Cloudinary: {e}")
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {"avatar": None, "avatar_public_id": None, "updated_at": get_ist_now().isoformat()}}
+    )
+    await log_audit(current_user["id"], "delete_avatar", "employee", employee_id, "Avatar removed by self")
+    return {"success": True}
 
 # ============== ATTENDANCE ROUTES ==============
 

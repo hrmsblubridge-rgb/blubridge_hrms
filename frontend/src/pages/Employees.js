@@ -5,6 +5,8 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import SalarySlip from '../components/SalarySlip';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import EmployeeAvatar from '../components/EmployeeAvatar';
+import AvatarUploader from '../components/AvatarUploader';
 import { useTableSort, SortableTh } from '../components/useTableSort';
 import {
   DropdownMenu,
@@ -98,7 +100,7 @@ const StatCard = ({ title, value, icon: Icon, color, bgColor }) => (
 );
 
 const Employees = () => {
-  const { getAuthHeaders, user } = useAuth();
+  const { getAuthHeaders, user, token } = useAuth();
   const [searchParams] = useSearchParams();
   const [employees, setEmployees] = useState([]);
   const [stats, setStats] = useState(null);
@@ -1088,9 +1090,7 @@ const Employees = () => {
                         <td className="font-semibold text-[#063c88] whitespace-nowrap">{emp.custom_employee_id || emp.emp_id}</td>
                         <td>
                           <div className="flex items-center gap-2">
-                            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center flex-shrink-0">
-                              <span className="text-white text-xs font-medium">{emp.full_name?.charAt(0)}</span>
-                            </div>
+                            <EmployeeAvatar employee={emp} size="xs" shape="circle" />
                             <span className="font-medium text-slate-900 truncate max-w-[120px]" title={emp.full_name}>{emp.full_name}</span>
                           </div>
                         </td>
@@ -1629,9 +1629,26 @@ const Employees = () => {
             <div className="space-y-4">
               {/* Header */}
               <div className="flex items-center gap-4 pb-4 border-b border-slate-100">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-lg">
-                  <span className="text-white text-2xl font-bold">{selectedEmployee.full_name?.charAt(0)?.toUpperCase()}</span>
-                </div>
+                {user?.role === 'hr' || user?.role === 'system_admin' || user?.role === 'office_admin' ? (
+                  <AvatarUploader
+                    employee={selectedEmployee}
+                    mode="admin"
+                    token={token}
+                    size="lg"
+                    shape="square"
+                    canRemove={true}
+                    onUpdated={(updatedEmp) => {
+                      setSelectedEmployee((prev) => ({ ...(prev || {}), ...(updatedEmp || {}) }));
+                      // Reflect in the table immediately
+                      setEmployees((list) =>
+                        list.map((e) => (e.id === updatedEmp.id ? { ...e, ...updatedEmp } : e))
+                      );
+                    }}
+                    testIdPrefix="admin-employee-avatar"
+                  />
+                ) : (
+                  <EmployeeAvatar employee={selectedEmployee} size="lg" shape="square" />
+                )}
                 <div>
                   <h3 className="text-lg font-bold text-slate-900">{selectedEmployee.full_name}</h3>
                   <p className="text-sm text-slate-500">{selectedEmployee.designation} • {selectedEmployee.tier_level}</p>

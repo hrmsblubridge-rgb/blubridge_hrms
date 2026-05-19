@@ -6,6 +6,7 @@ import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Dashboard from "./pages/Dashboard";
 import Employees from "./pages/Employees";
+import EmployeePhotoWall from "./pages/EmployeePhotoWall";
 import Attendance from "./pages/Attendance";
 import Leave from "./pages/Leave";
 import StarReward from "./pages/StarReward";
@@ -160,6 +161,7 @@ function App() {
           {/* Admin Routes */}
           <Route path="/dashboard" element={<AdminRoute><Dashboard /></AdminRoute>} />
           <Route path="/employees" element={<AdminRoute><Employees /></AdminRoute>} />
+          <Route path="/employees/photo-wall" element={<AdminRoute><EmployeePhotoWall /></AdminRoute>} />
           <Route path="/attendance" element={<AdminRoute><Attendance /></AdminRoute>} />
           <Route path="/leave" element={<AdminRoute><Leave /></AdminRoute>} />
           <Route path="/star-reward" element={<AdminRoute><StarReward /></AdminRoute>} />

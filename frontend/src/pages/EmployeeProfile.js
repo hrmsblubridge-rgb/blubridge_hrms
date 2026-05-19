@@ -3,11 +3,12 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { User, Mail, Phone, Calendar, Briefcase, MapPin, Building2, Users } from 'lucide-react';
+import AvatarUploader from '../components/AvatarUploader';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const EmployeeProfile = () => {
-  const { getAuthHeaders, user } = useAuth();
+  const { getAuthHeaders, token, updateUser } = useAuth();
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -16,14 +17,23 @@ const EmployeeProfile = () => {
       setLoading(true);
       const response = await axios.get(`${API}/employee/profile`, { headers: getAuthHeaders() });
       setProfile(response.data);
+      // Propagate avatar to AuthContext so sidebar / header pick it up immediately.
+      if (response.data?.avatar !== undefined) {
+        updateUser?.({ avatar: response.data.avatar || null });
+      }
     } catch (error) {
       toast.error('Failed to load profile');
     } finally {
       setLoading(false);
     }
-  }, [getAuthHeaders]);
+  }, [getAuthHeaders, updateUser]);
 
   useEffect(() => { fetchProfile(); }, [fetchProfile]);
+
+  const handleAvatarUpdated = (updatedEmployee) => {
+    setProfile((prev) => ({ ...(prev || {}), ...(updatedEmployee || {}) }));
+    updateUser?.({ avatar: updatedEmployee?.avatar || null });
+  };
 
   if (loading) {
     return (
@@ -51,15 +61,24 @@ const EmployeeProfile = () => {
         <div className="flex flex-col md:flex-row gap-8 items-start">
           {/* Avatar & Basic Info */}
           <div className="text-center md:text-left">
-            <div className="w-32 h-32 rounded-2xl bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-xl mx-auto md:mx-0">
-              <span className="text-white text-5xl font-bold" style={{ fontFamily: 'Outfit' }}>
-                {profile?.full_name?.charAt(0)?.toUpperCase()}
-              </span>
+            <div className="mx-auto md:mx-0 w-fit">
+              <AvatarUploader
+                employee={profile}
+                mode="self"
+                token={token}
+                size="xl"
+                shape="square"
+                onUpdated={handleAvatarUpdated}
+                testIdPrefix="my-profile-avatar"
+              />
             </div>
             <div className="mt-4">
               <h2 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>{profile?.full_name}</h2>
               <p className="text-slate-500">{profile?.designation}</p>
               <p className="text-sm text-[#063c88] font-medium mt-1">{profile?.emp_id}</p>
+              <p className="text-[11px] text-slate-400 mt-3 max-w-[220px]">
+                Click the camera icon to upload a profile photo. JPG/PNG/WebP, max 5 MB.
+              </p>
             </div>
           </div>
 

@@ -27,6 +27,7 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 import { Button } from './ui/button';
+import EmployeeAvatar from './EmployeeAvatar';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -166,11 +167,13 @@ const EmployeeLayout = ({ children }) => {
         {/* User Section */}
         <div className="p-4 border-t border-black/5">
           <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50/80 mb-3">
-            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-md">
-              <span className="text-white font-semibold text-sm">
-                {user?.name?.charAt(0)?.toUpperCase()}
-              </span>
-            </div>
+            <EmployeeAvatar
+              src={user?.avatar}
+              name={user?.name}
+              size="md"
+              shape="circle"
+              testId="employee-sidebar-avatar"
+            />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-slate-900 truncate">{user?.name}</p>
               <p className="text-xs text-slate-500">Employee</p>
@@ -221,11 +224,13 @@ const EmployeeLayout = ({ children }) => {
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button className="flex items-center gap-3 hover:bg-slate-100 rounded-xl px-3 py-2 transition-colors">
-                    <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-md">
-                      <span className="text-white font-semibold text-sm">
-                        {user?.name?.charAt(0)?.toUpperCase()}
-                      </span>
-                    </div>
+                    <EmployeeAvatar
+                      src={user?.avatar}
+                      name={user?.name}
+                      size="sm"
+                      shape="circle"
+                      testId="employee-header-avatar"
+                    />
                     <div className="hidden sm:block text-left">
                       <p className="text-sm font-medium text-slate-900">{user?.name}</p>
                       <p className="text-xs text-slate-500">Employee</p>
