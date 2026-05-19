@@ -18,7 +18,7 @@ import {
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const EmployeePhotoWall = () => {
-  const { getAuthHeaders } = useAuth();
+  const { getAuthHeaders, getAvatarById } = useAuth();
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -134,8 +134,8 @@ const EmployeePhotoWall = () => {
     return employees
       .filter((e) => (deptFilter === 'all' ? true : e.department === deptFilter))
       .filter((e) => {
-        if (photoFilter === 'with') return !!e.avatar;
-        if (photoFilter === 'without') return !e.avatar;
+        if (photoFilter === 'with') return !!(e.avatar || getAvatarById?.(e.id));
+        if (photoFilter === 'without') return !(e.avatar || getAvatarById?.(e.id));
         return true;
       })
       .filter((e) => {
@@ -163,8 +163,8 @@ const EmployeePhotoWall = () => {
   }, [filtered]);
 
   const withPhotoCount = useMemo(
-    () => employees.filter((e) => e.avatar).length,
-    [employees]
+    () => employees.filter((e) => e.avatar || getAvatarById?.(e.id)).length,
+    [employees, getAvatarById]
   );
 
   if (loading) {
@@ -334,7 +334,7 @@ const EmployeePhotoWall = () => {
                   <p className="text-[10px] text-[#063c88] font-medium mt-1 truncate w-full">
                     {emp.custom_employee_id || emp.emp_id}
                   </p>
-                  {!emp.avatar && (
+                  {!(emp.avatar || getAvatarById?.(emp.id)) && (
                     <>
                       <span className="mt-2 text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-100">
                         No photo

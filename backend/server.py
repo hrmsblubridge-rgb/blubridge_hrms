@@ -3297,7 +3297,7 @@ async def get_employees(
 async def get_all_employees(current_user: dict = Depends(get_current_user)):
     """Get all active employees (for dropdowns)"""
     query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
-    employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1, "custom_employee_id": 1, "biometric_id": 1}).to_list(1000)
+    employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1, "custom_employee_id": 1, "biometric_id": 1, "avatar": 1, "designation": 1, "official_email": 1}).to_list(1000)
     return employees
 
 @api_router.get("/employees/autocomplete")
