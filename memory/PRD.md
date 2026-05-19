@@ -5,6 +5,32 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-19 (Avatar render bug — empty circle for Pragathi V Nahar)
+**Issue:** Pragathi V Nahar had successfully uploaded her profile photo (verified in DB and via direct Cloudinary curl — returns HTTP 200, valid JPEG, 23 KB), yet on the Photo Wall the avatar circle appeared empty (no photo, no initial letter) while other "no photo" employees correctly showed their gradient initial.
+
+**Root cause analysis (forensic image inspection):**
+1. The uploaded photo is a real headshot on a **stark-white background** (confirmed via image-analysis tool).
+2. The old `EmployeeAvatar` had two code paths:
+   - If `photoUrl` was truthy → render container with `bg-slate-100` + `<img>` inside.
+   - Else → render gradient + initial letter.
+3. `loading="lazy"` delayed image fetch until the card scrolled into view → during the gap, the user saw an empty slate-100 circle.
+4. Once the image painted, its white background blended with the slate-100 container → the photo appeared invisible.
+5. The `onError` handler only set `display:none` on the img — it didn't trigger a re-render or restore the initial — so any image fetch failure left an empty container as well.
+
+**Fix — bulletproof layered rendering:**
+- Always render the gradient + initial-letter as the BASE layer (`absolute inset-0`).
+- Image overlay (`absolute inset-0` on top) covers the initial when loaded.
+- Removed `loading="lazy"` (unnecessary for small avatars, caused the visible gap).
+- Added `decoding="async"` + `referrerPolicy="no-referrer"` for cleaner browser load.
+- `onError` now sets React state → removes the broken `<img>` from the DOM → initial layer is naturally visible.
+- `useEffect([resolvedUrl])` resets the error flag whenever the URL changes (e.g. after a fresh upload).
+
+**Result:**
+- The user ALWAYS sees something — either the photo (preferred) or the gradient "P" — never an empty circle.
+- White-background photos no longer disappear visually because they overlay on top of the colored base layer.
+- Lazy-loading-induced flickers eliminated.
+- Lint clean.
+
 ## Latest Update — 2026-05-19 (Profile Picture Upload Test-Mail Flow — Pilot for rishi.nayak@blubridge.com)
 **Feature:** Tokenized, single-use, time-limited "Upload your profile picture" email flow for controlled pilot rollout.
 
