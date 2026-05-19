@@ -3,6 +3,7 @@ import axios from 'axios';
 import { useAuth } from '../contexts/AuthContext';
 import { Search } from 'lucide-react';
 import { Input } from './ui/input';
+import EmployeeAvatar from './EmployeeAvatar';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -91,9 +92,7 @@ export const EmployeeAutocomplete = ({
                 onClick={() => handleSelect(emp)}
                 data-testid={`${testId}-item-${emp.emp_id}`}
               >
-                <div className="w-7 h-7 rounded-full bg-[#063c88]/10 flex items-center justify-center text-xs font-bold text-[#063c88] shrink-0">
-                  {emp.full_name?.charAt(0)}
-                </div>
+                <EmployeeAvatar employeeId={emp.id} name={emp.full_name} size="xs" shape="circle" />
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-medium text-slate-800 truncate">{emp.full_name}</div>
                   <div className="text-xs text-slate-500 truncate">{emp.emp_id} &middot; {emp.official_email}</div>

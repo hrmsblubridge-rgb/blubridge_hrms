@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
+import EmployeeAvatar from './EmployeeAvatar';
 import {
   X,
   Calendar,
@@ -423,11 +424,13 @@ const EmployeeLeaveDetail = ({ employee, onClose }) => {
           </button>
           
           <div className="flex items-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-white/20 flex items-center justify-center backdrop-blur-sm">
-              <span className="text-2xl font-bold">
-                {(employee.emp_name || employee.full_name || 'E')?.charAt(0)?.toUpperCase()}
-              </span>
-            </div>
+            <EmployeeAvatar
+              employeeId={employee.id || employee.employee_id}
+              name={employee.emp_name || employee.full_name}
+              size="lg"
+              shape="square"
+              className="bg-white/20 backdrop-blur-sm ring-2 ring-white/30"
+            />
             <div>
               <h2 className="text-2xl font-bold" style={{ fontFamily: 'Outfit' }} data-testid="employee-detail-name">
                 {employee.emp_name || employee.full_name}

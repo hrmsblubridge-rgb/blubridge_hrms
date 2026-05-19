@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import { Download, Plus, Eye, ArrowLeft, Star, Users, Award, TrendingUp, Trophy, Sparkles, AlertTriangle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -389,9 +390,7 @@ const StarReward = () => {
                       <tr key={emp.id}>
                         <td>
                           <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
-                              <span className="text-white text-xs font-medium">{emp.name?.charAt(0)}</span>
-                            </div>
+                            <EmployeeAvatar employeeId={emp.id} name={emp.name} size="sm" shape="circle" />
                             <span className="font-medium text-slate-900">{emp.name}</span>
                           </div>
                         </td>
@@ -539,9 +538,7 @@ const StarReward = () => {
                           <tr key={emp.id}>
                             <td>
                               <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
-                                  <span className="text-white text-xs font-medium">{emp.name?.charAt(0)}</span>
-                                </div>
+                                <EmployeeAvatar employeeId={emp.id} name={emp.name} size="sm" shape="circle" />
                                 <span className="font-medium text-slate-900">{emp.name}</span>
                               </div>
                             </td>
@@ -597,9 +594,7 @@ const StarReward = () => {
                   <div key={emp.id} className="p-5 rounded-xl bg-gradient-to-br from-[#fffdf7] to-amber-50/30 border border-amber-200/30 hover:border-amber-300 hover:shadow-lg transition-all animate-slide-up" style={{ animationDelay: `${index * 0.03}s` }}>
                     <div className="flex items-start justify-between mb-4">
                       <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-lg">
-                          <span className="text-white text-lg font-bold">{emp.name?.charAt(0)}</span>
-                        </div>
+                        <EmployeeAvatar employeeId={emp.id} name={emp.name} size="md" shape="square" className="shadow-lg" />
                         <div>
                           <p className="font-semibold text-slate-900">{emp.name}</p>
                           <p className="text-xs text-slate-500">{emp.team}</p>

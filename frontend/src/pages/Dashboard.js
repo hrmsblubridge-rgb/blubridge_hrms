@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import { 
   Users, 
   CalendarDays, 
@@ -835,11 +836,7 @@ const Dashboard = () => {
           {selectedEmployee && (
             <div className="py-6 space-y-6">
               <div className="flex items-center gap-4 pb-6 border-b border-slate-100">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-lg">
-                  <span className="text-white text-2xl font-bold">
-                    {selectedEmployee.emp_name?.charAt(0)?.toUpperCase()}
-                  </span>
-                </div>
+                <EmployeeAvatar employeeId={selectedEmployee.employee_id} name={selectedEmployee.emp_name} size="lg" shape="square" />
                 <div>
                   <h3 className="font-semibold text-lg text-slate-900">{selectedEmployee.emp_name}</h3>
                   <p className="text-sm text-slate-500">{selectedEmployee.team}</p>

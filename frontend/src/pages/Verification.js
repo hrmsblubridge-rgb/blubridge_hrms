@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -396,11 +397,7 @@ const Verification = () => {
                     <TableRow key={record.id} data-testid={`onboarding-row-${record.employee_id}`}>
                       <TableCell>
                         <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center">
-                            <span className="text-white text-sm font-medium">
-                              {record.emp_name?.charAt(0)?.toUpperCase()}
-                            </span>
-                          </div>
+                          <EmployeeAvatar employeeId={record.employee_id} name={record.emp_name} size="sm" shape="circle" />
                           <div>
                             <p className="font-medium text-slate-900">{record.emp_name}</p>
                             <p className="text-xs text-slate-500">{record.emp_id}</p>
@@ -445,11 +442,7 @@ const Verification = () => {
         <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center">
-                <span className="text-white font-medium">
-                  {selectedEmployee?.emp_name?.charAt(0)?.toUpperCase()}
-                </span>
-              </div>
+              <EmployeeAvatar employeeId={selectedEmployee?.employee_id} name={selectedEmployee?.emp_name} size="md" shape="circle" />
               <div>
                 <p>{selectedEmployee?.emp_name}</p>
                 <p className="text-sm font-normal text-slate-500">

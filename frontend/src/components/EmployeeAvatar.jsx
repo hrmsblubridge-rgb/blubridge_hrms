@@ -1,17 +1,26 @@
 import React from 'react';
+import { useAuth } from '../contexts/AuthContext';
 
 /**
  * EmployeeAvatar — shows the employee's profile photo if available,
  * otherwise falls back to the gradient initial-letter circle.
  *
+ * Resolution order for the image URL (first non-empty wins):
+ *   1. `src` prop (explicit)
+ *   2. `employee.avatar` / `employee.avatar_url`
+ *   3. AuthContext.avatarMap[employeeId]   ← centralized cache used by
+ *      all admin modules so any module showing `employee_id` gets the
+ *      photo automatically once the employee uploads one.
+ *
  * Props:
- *   • employee     — { full_name?, name?, avatar?, avatar_url? }
- *   • name         — optional fallback name string
- *   • src          — optional explicit image URL (overrides employee.avatar)
+ *   • employee     — { full_name?, name?, avatar?, avatar_url?, id? }
+ *   • employeeId   — explicit employee_id to look up in the avatar cache
+ *   • name         — fallback display name (used for the initial)
+ *   • src          — explicit image URL (overrides everything else)
  *   • size         — 'xs' | 'sm' | 'md' | 'lg' | 'xl' | 'photo-wall'
- *   • shape        — 'circle' | 'square' (default 'circle')
+ *   • shape        — 'circle' | 'square'
  *   • className    — extra Tailwind classes
- *   • testId       — data-testid forwarder
+ *   • testId       — data-testid passthrough
  */
 const SIZE_MAP = {
   xs: 'w-7 h-7 text-xs',
@@ -29,6 +38,7 @@ const SHAPE_MAP = {
 
 const EmployeeAvatar = ({
   employee,
+  employeeId,
   name,
   src,
   size = 'md',
@@ -36,8 +46,18 @@ const EmployeeAvatar = ({
   className = '',
   testId,
 }) => {
-  const photoUrl = src || employee?.avatar || employee?.avatar_url || null;
-  const displayName = name || employee?.full_name || employee?.name || '';
+  const { getAvatarById } = useAuth() || {};
+  const lookupId = employeeId || employee?.id || employee?.employee_id;
+  const cachedAvatar = lookupId && getAvatarById ? getAvatarById(lookupId) : null;
+
+  const photoUrl =
+    src ||
+    employee?.avatar ||
+    employee?.avatar_url ||
+    cachedAvatar ||
+    null;
+
+  const displayName = name || employee?.full_name || employee?.name || employee?.emp_name || '';
   const initial = (displayName || '?').charAt(0).toUpperCase();
 
   const sizeCls = SIZE_MAP[size] || SIZE_MAP.md;

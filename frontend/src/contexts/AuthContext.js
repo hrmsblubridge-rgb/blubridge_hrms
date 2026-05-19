@@ -9,6 +9,31 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState(localStorage.getItem('blubridge_token'));
+  // Centralized avatar cache: { employee_id: avatar_url }. Single source of
+  // truth for all admin modules (Attendance, Leave, Verification, etc.) so
+  // they can render the correct photo without each endpoint having to
+  // enrich its own response with avatar URLs.
+  const [avatarMap, setAvatarMap] = useState({});
+
+  const refreshAvatars = useCallback(async (tk) => {
+    const useToken = tk || token || localStorage.getItem('blubridge_token');
+    if (!useToken) return;
+    try {
+      const resp = await axios.get(`${API}/employee-avatars`, {
+        headers: { Authorization: `Bearer ${useToken}` },
+      });
+      setAvatarMap(resp.data || {});
+    } catch (e) {
+      // Non-fatal — admin pages will just show initials.
+      console.warn('Avatar map fetch failed:', e?.response?.status);
+    }
+  }, [token]);
+
+  // Public helper so any component can synchronously read the avatar by id.
+  const getAvatarById = useCallback(
+    (employeeId) => (employeeId ? avatarMap[employeeId] || null : null),
+    [avatarMap]
+  );
 
   useEffect(() => {
     const initAuth = async () => {
@@ -20,6 +45,8 @@ export const AuthProvider = ({ children }) => {
           });
           setUser(response.data);
           setToken(savedToken);
+          // Hydrate avatar cache on app boot.
+          refreshAvatars(savedToken);
         } catch (error) {
           console.error('Auth init error:', error);
           localStorage.removeItem('blubridge_token');
@@ -29,6 +56,7 @@ export const AuthProvider = ({ children }) => {
       setLoading(false);
     };
     initAuth();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const login = async (username, password) => {
@@ -38,6 +66,8 @@ export const AuthProvider = ({ children }) => {
       localStorage.setItem('blubridge_token', newToken);
       setToken(newToken);
       setUser(userData);
+      // Hydrate avatar cache immediately after login.
+      refreshAvatars(newToken);
       return { success: true, user: userData };
     } catch (error) {
       return { 
@@ -51,6 +81,7 @@ export const AuthProvider = ({ children }) => {
     localStorage.removeItem('blubridge_token');
     setToken(null);
     setUser(null);
+    setAvatarMap({});
   };
 
   const updateUser = useCallback((updates) => {
@@ -93,7 +124,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, logout, getAuthHeaders, updateUser, needsOnboarding, isWithinDocumentBypass }}>
+    <AuthContext.Provider value={{ user, token, loading, login, logout, getAuthHeaders, updateUser, needsOnboarding, isWithinDocumentBypass, avatarMap, getAvatarById, refreshAvatars }}>
       {children}
     </AuthContext.Provider>
   );

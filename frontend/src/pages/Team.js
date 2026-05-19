@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import { Users, Eye, Mail, Briefcase, ChevronRight, Building2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
@@ -222,9 +223,7 @@ const Team = () => {
                   {teamMembers.map((member) => (
                     <div key={member.id} className="flex items-center justify-between p-3 rounded-xl bg-white border border-slate-100 hover:border-slate-200 hover:shadow-sm transition-all">
                       <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-md">
-                          <span className="text-white font-medium text-sm">{member.full_name?.charAt(0)?.toUpperCase()}</span>
-                        </div>
+                        <EmployeeAvatar employeeId={member.id} name={member.full_name} size="md" shape="circle" className="shadow-md" />
                         <div>
                           <p className="font-medium text-slate-900">{member.full_name}</p>
                           <div className="flex items-center gap-1 text-xs text-slate-500">

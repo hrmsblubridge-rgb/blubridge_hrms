@@ -9,6 +9,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
@@ -601,9 +602,7 @@ const Leave = () => {
           {selectedLeave && (
             <div className="py-6 space-y-6">
               <div className="flex items-center gap-4 pb-6 border-b border-slate-100">
-                <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center shadow-lg">
-                  <span className="text-white text-xl font-bold">{selectedLeave.emp_name?.charAt(0)?.toUpperCase()}</span>
-                </div>
+                <EmployeeAvatar employeeId={selectedLeave.employee_id} name={selectedLeave.emp_name} size="lg" shape="square" />
                 <div>
                   <h3 className="font-semibold text-lg text-slate-900">{selectedLeave.emp_name}</h3>
                   <p className="text-sm text-slate-500">{selectedLeave.team}</p>

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import {
   CheckCircle2, Circle, Search, Monitor, CreditCard, Key,
   Briefcase, Users, ClipboardList, ChevronRight, X, StickyNote,
@@ -244,9 +245,7 @@ export default function OperationalChecklist() {
                     <tr key={cl.id} className="border-t border-slate-50 hover:bg-slate-50/50 cursor-pointer" onClick={() => openDetail(cl)} data-testid={`checklist-row-${cl.employee_id}`}>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center">
-                            <span className="text-white text-xs font-semibold">{cl.emp_name?.charAt(0)?.toUpperCase()}</span>
-                          </div>
+                          <EmployeeAvatar employeeId={cl.employee_id} name={cl.emp_name} size="sm" shape="circle" />
                           <div>
                             <p className="font-medium text-slate-900">{cl.emp_name}</p>
                             <p className="text-xs text-slate-400">{cl.employee_id}</p>
@@ -297,9 +296,7 @@ export default function OperationalChecklist() {
               <SheetHeader className="pb-4 border-b border-slate-100">
                 <SheetTitle className="text-lg">Operational Setup</SheetTitle>
                 <div className="flex items-center gap-3 mt-3">
-                  <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center">
-                    <span className="text-white text-lg font-semibold">{selected.emp_name?.charAt(0)?.toUpperCase()}</span>
-                  </div>
+                  <EmployeeAvatar employeeId={selected.employee_id} name={selected.emp_name} size="md" shape="circle" />
                   <div>
                     <p className="text-base font-semibold text-slate-900">{selected.emp_name}</p>
                     <p className="text-xs text-slate-500">{selected.department} {selected.designation ? `- ${selected.designation}` : ''}</p>

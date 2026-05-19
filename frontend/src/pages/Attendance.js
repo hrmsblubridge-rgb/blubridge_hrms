@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 import { useTableSort, SortableTh } from '../components/useTableSort';
 import { 
   CalendarCheck, 
@@ -338,9 +339,7 @@ const Attendance = () => {
                           onClick={() => handleEmployeeClick(record)}
                           data-testid={`employee-row-${index}`}
                         >
-                          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#063c88] to-[#0a5cba] flex items-center justify-center">
-                            <span className="text-white text-xs font-medium">{record.emp_name?.charAt(0)}</span>
-                          </div>
+                          <EmployeeAvatar employeeId={record.employee_id} name={record.emp_name} size="sm" shape="circle" />
                           <span className="font-medium text-slate-900 hover:text-[#063c88] transition-colors">{record.emp_name}</span>
                         </div>
                       </td>

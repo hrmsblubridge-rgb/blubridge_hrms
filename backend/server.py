@@ -5018,6 +5018,38 @@ async def delete_my_avatar(current_user: dict = Depends(get_current_user)):
     await log_audit(current_user["id"], "delete_avatar", "employee", employee_id, "Avatar removed by self")
     return {"success": True}
 
+
+@api_router.get("/employee-avatars")
+async def get_employee_avatar_map(current_user: dict = Depends(get_current_user)):
+    """Return a compact id→avatar_url map for all non-deleted employees.
+
+    Used by the admin UI as a single-fetch source of truth so any admin
+    module (Attendance, Leave, Verification, Reports, etc.) can render the
+    correct profile photo by employee_id WITHOUT requiring each individual
+    endpoint to enrich its response. This avoids duplicate storage logic
+    and N+1 lookups while keeping the payload tiny (~50 bytes per employee).
+
+    Path is `/employee-avatars` (NOT `/employees/avatar-map`) to avoid
+    collision with the existing `/employees/{employee_id}` parameterized
+    route which would otherwise swallow the request and 404.
+
+    Returns: { "<employee_id>": "<avatar_url>", ... }
+    Employees without an avatar are omitted (frontend falls back to the
+    gradient initial-letter automatically).
+    """
+    # Anyone authenticated can call this — employees may also benefit
+    # (e.g. team page). The data is non-sensitive (just a public photo URL
+    # the user has explicitly opted to share inside the org).
+    out = {}
+    async for e in db.employees.find(
+        {"is_deleted": {"$ne": True}, "avatar": {"$exists": True, "$ne": None}},
+        {"_id": 0, "id": 1, "avatar": 1},
+    ):
+        if e.get("avatar"):
+            out[e["id"]] = e["avatar"]
+    return out
+
+
 # ============== ATTENDANCE ROUTES ==============
 
 @api_router.get("/attendance")

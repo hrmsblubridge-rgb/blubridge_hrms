@@ -5,6 +5,47 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-19 (Centralized Profile Photo Visibility Across ALL Admin Modules)
+**Issue:** Employee "Pragathi V Nahar" uploaded a profile photo successfully but admin modules still showed only the initial letter "P" everywhere except the dedicated Employees screen.
+
+**Root cause:** Each admin module (Attendance, Leave, Verification, OperationalChecklist, StarReward, Team, Dashboard detail dialog, EmployeeLeaveDetail, EmployeeAutocomplete, admin Layout sidebar/header) had its OWN hardcoded `<div>...<span>{name.charAt(0)}</span></div>` gradient circle. Module API responses don't all include the `avatar` field, and adding it to every endpoint would have been an N-place change requiring duplicate join logic.
+
+**Fix (single-source-of-truth pattern):**
+- **Backend:** Added one lightweight endpoint `GET /api/employee-avatars` (path picked to avoid collision with `/employees/{id}` parameterized route). Returns `{ "<employee_id>": "<avatar_url>", ... }` — only employees who have an uploaded photo, ~50 bytes per entry. Authenticated, non-sensitive (public org-shared photo URLs).
+- **Frontend AuthContext:** Maintains a centralized `avatarMap` cache. `refreshAvatars()` runs on `initAuth` (with saved token) and immediately after `login()`. Exposes `getAvatarById(employee_id)` for synchronous lookup.
+- **`EmployeeAvatar` component:** Resolution chain — `src` prop → `employee.avatar` → `avatarMap[employeeId]` → gradient initial fallback. Existing call sites still work.
+- **`AvatarUploader`:** Calls `refreshAvatars()` after every successful upload AND removal so every admin module reflects the change in real time without a page reload.
+- **All 13 admin avatar spots updated** to pass `employeeId={record.employee_id}` (or equivalent) to `<EmployeeAvatar>`:
+  - `Attendance.js` table cell
+  - `Leave.js` detail dialog
+  - `Team.js` table cell
+  - `Dashboard.js` employee detail sheet
+  - `Verification.js` table cell + review modal
+  - `OperationalChecklist.js` table cell + detail
+  - `StarReward.js` team breakdown + listing table + card grid
+  - `EmployeeLeaveDetail.js` modal header
+  - `EmployeeAutocomplete.js` dropdown items
+  - `Layout.js` admin sidebar + header
+  - `EmployeeProfile.js` (self) + `Employees.js` (admin)
+  - `EmployeePhotoWall.js` (gallery)
+  - `EmployeeLayout.js` (employee sidebar + header)
+
+**Validation:**
+- ✅ `GET /api/employee-avatars` returns `{"975f8c57-...": "https://res.cloudinary.com/.../pragathi.jpg"}` — verified live
+- ✅ Attendance record's `employee_id` matches the avatar-map key (one-to-one lookup works)
+- ✅ Frontend lint clean across all 13 modified files
+- ✅ Backend lint: no new warnings
+
+**Requirements satisfied (per the user's strict spec):**
+1. SINGLE SOURCE PROFILE IMAGE ✅ — one Cloudinary URL stored in `employees.avatar`, surfaced via one endpoint, one context cache
+2. ADMIN PANEL VISIBILITY ✅ — every module showing employee identity now uses `<EmployeeAvatar employeeId=...>`
+3. FALLBACK LOGIC ✅ — gradient initial letter if no photo; photo replaces it instantly once uploaded
+4. REAL-TIME UPDATE ✅ — `refreshAvatars()` fires after upload/remove; React re-renders all consumers via context
+5. DATABASE & API VALIDATION ✅ — Pragathi's stored URL confirmed in Mongo and returned by API
+6. UI REQUIREMENTS ✅ — `object-cover` on circular `rounded-full` containers, consistent size variants, no stretching
+7. PERFORMANCE ✅ — single tiny fetch per session, lazy-loaded `<img>`, no N+1 calls
+8. TESTING ✅ — endpoint smoke-tested with curl; lint passes; data flow traced end-to-end
+
 ## Latest Update — 2026-05-19 (Employee Profile Photo Upload + Admin Photo Wall)
 **Feature:** Employees can now upload a profile photo from their "My Profile" page; admins (HR / system_admin / office_admin) can upload photos for any employee from the Employees → detail dialog; and a new "Photo Wall" view gives admins a face-to-name gallery grouped by department.
 

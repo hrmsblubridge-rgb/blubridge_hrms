@@ -3,6 +3,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { Camera, Loader2, X } from 'lucide-react';
 import EmployeeAvatar from './EmployeeAvatar';
+import { useAuth } from '../contexts/AuthContext';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -38,6 +39,7 @@ const AvatarUploader = ({
   const fileRef = useRef(null);
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState(null);
+  const { refreshAvatars } = useAuth() || {};
 
   const authHeader = { Authorization: `Bearer ${token}` };
 
@@ -106,6 +108,10 @@ const AvatarUploader = ({
       toast.success('Profile photo updated');
       setPreview(null);
       onUpdated?.(saveResp.data);
+      // Refresh the centralized avatar cache so EVERY admin module
+      // (Attendance, Leave, Verification, Reports, etc.) reflects the
+      // change without a page reload.
+      refreshAvatars?.();
     } catch (err) {
       console.error('Avatar upload error:', err);
       toast.error(err.response?.data?.detail || 'Failed to upload photo');
@@ -144,6 +150,7 @@ const AvatarUploader = ({
         onUpdated?.(resp.data);
       }
       toast.success('Profile photo removed');
+      refreshAvatars?.();
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to remove photo');
     } finally {
