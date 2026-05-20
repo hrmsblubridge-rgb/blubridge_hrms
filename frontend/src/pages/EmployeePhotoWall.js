@@ -2,8 +2,9 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { ImageIcon, Search, Filter, Users as UsersIcon, Mail, Send, Loader2, ShieldAlert } from 'lucide-react';
+import { ImageIcon, Search, Filter, Users as UsersIcon, Mail, Send, Loader2, ShieldAlert, Camera } from 'lucide-react';
 import EmployeeAvatar from '../components/EmployeeAvatar';
+import AvatarUploadDialog from '../components/AvatarUploadDialog';
 import { Input } from '../components/ui/input';
 import { Switch } from '../components/ui/switch';
 import { Button } from '../components/ui/button';
@@ -18,12 +19,15 @@ import {
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const EmployeePhotoWall = () => {
-  const { getAuthHeaders, getAvatarById } = useAuth();
+  const { getAuthHeaders, getAvatarById, token } = useAuth();
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('all');
   const [photoFilter, setPhotoFilter] = useState('all'); // all | with | without
+
+  // Avatar upload dialog state
+  const [activeEmployee, setActiveEmployee] = useState(null);
 
   // Email-tools state
   const [pilotEmail, setPilotEmail] = useState('rishi.nayak@blubridge.com');
@@ -312,19 +316,36 @@ const EmployeePhotoWall = () => {
               <span className="text-xs text-slate-500">{list.length} members</span>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4">
-              {list.map((emp) => (
+              {list.map((emp) => {
+                const hasPhoto = !!(emp.avatar || getAvatarById?.(emp.id));
+                return (
                 <div
                   key={emp.id}
-                  className="card-flat p-4 flex flex-col items-center text-center hover:shadow-lg transition cursor-default"
+                  className="card-flat p-4 flex flex-col items-center text-center hover:shadow-lg transition cursor-pointer group relative"
                   data-testid={`photo-wall-card-${emp.id}`}
-                  title={`${emp.full_name} • ${emp.designation || ''}`}
+                  title={`Click to ${hasPhoto ? 'replace' : 'upload'} photo`}
+                  onClick={() => setActiveEmployee(emp)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setActiveEmployee(emp);
+                    }
+                  }}
                 >
-                  <EmployeeAvatar
-                    employee={emp}
-                    size="photo-wall"
-                    shape="circle"
-                    className="mb-3 shadow-sm"
-                  />
+                  <div className="relative mb-3">
+                    <EmployeeAvatar
+                      employee={emp}
+                      size="photo-wall"
+                      shape="circle"
+                      className="shadow-sm"
+                    />
+                    {/* Hover overlay — camera icon */}
+                    <div className="absolute inset-0 rounded-full bg-slate-900/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Camera className="w-6 h-6 text-white" />
+                    </div>
+                  </div>
                   <p className="text-sm font-semibold text-slate-900 truncate w-full" title={emp.full_name}>
                     {emp.full_name}
                   </p>
@@ -334,15 +355,15 @@ const EmployeePhotoWall = () => {
                   <p className="text-[10px] text-[#063c88] font-medium mt-1 truncate w-full">
                     {emp.custom_employee_id || emp.emp_id}
                   </p>
-                  {!(emp.avatar || getAvatarById?.(emp.id)) && (
+                  {!hasPhoto && (
                     <>
                       <span className="mt-2 text-[10px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-100">
-                        No photo
+                        Pending Photo
                       </span>
                       {emp.official_email && (
                         <button
                           type="button"
-                          onClick={() => sendInvite({ employee_id: emp.id })}
+                          onClick={(e) => { e.stopPropagation(); sendInvite({ employee_id: emp.id }); }}
                           disabled={sendingTo === emp.id}
                           data-testid={`invite-${emp.id}`}
                           className="mt-2 inline-flex items-center justify-center gap-1 text-[10px] px-2 py-1 rounded-md bg-[#063c88]/5 text-[#063c88] hover:bg-[#063c88] hover:text-white transition disabled:opacity-60"
@@ -358,12 +379,37 @@ const EmployeePhotoWall = () => {
                       )}
                     </>
                   )}
+                  {hasPhoto && (
+                    <span className="mt-2 text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100">
+                      ✓ Photo uploaded
+                    </span>
+                  )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         ))
       )}
+
+      {/* Admin avatar upload dialog */}
+      <AvatarUploadDialog
+        open={!!activeEmployee}
+        employee={activeEmployee}
+        token={token}
+        onClose={() => setActiveEmployee(null)}
+        onUpdated={(updated) => {
+          // Patch local list so the card flips to "Photo uploaded" instantly,
+          // without waiting for the centralized refreshAvatars round-trip.
+          if (updated?.id) {
+            setEmployees((prev) =>
+              prev.map((e) => (e.id === updated.id ? { ...e, ...updated } : e))
+            );
+          } else {
+            fetchEmployees();
+          }
+        }}
+      />
     </div>
   );
 };

@@ -4982,7 +4982,15 @@ async def update_employee_avatar(employee_id: str, data: AvatarUpdate, current_u
     )
 
     actor = "self" if is_self and not is_admin else current_user.get("role", "admin")
-    await log_audit(current_user["id"], "update_avatar", "employee", employee_id, f"Avatar updated by {actor}")
+    # Audit log: capture both previous and new image URLs so HR can trace
+    # who replaced/removed which photo (regulatory ask from 2026-05-20).
+    prev_url = existing.get("avatar") or "(none)"
+    new_url = data.avatar_url or "(removed)"
+    audit_detail = (
+        f"Avatar updated by {actor} | employee={existing.get('full_name','?')} "
+        f"| previous={prev_url} | updated={new_url}"
+    )
+    await log_audit(current_user["id"], "update_avatar", "employee", employee_id, audit_detail)
 
     employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
     return serialize_doc(employee)
