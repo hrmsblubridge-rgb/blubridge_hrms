@@ -235,15 +235,17 @@ const AvatarUploadDialog = ({ employee, open, onClose, onUpdated, token }) => {
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in"
       onClick={busy ? undefined : onClose}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
       data-testid="avatar-upload-dialog"
     >
       <div
-        className="w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden"
+        className={`w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden transition ${
+          isDragging ? 'ring-4 ring-[#063c88]/50' : ''
+        }`}
         onClick={(e) => e.stopPropagation()}
         ref={dropRef}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
-        onDrop={onDrop}
       >
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">

@@ -5,6 +5,39 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-20 (Photo Wall Admin Upload + Clipboard Paste)
+**Feature:** Admin can now click any employee card on the Photo Wall to open a modal upload dialog that supports **click-to-upload, drag-and-drop, AND CTRL+V clipboard paste** (screenshots, copied images, WhatsApp images, etc.) — plus replace, remove, and live preview.
+
+**Files added/changed:**
+- **NEW** `/app/frontend/src/components/AvatarUploadDialog.jsx` (~290 lines) — reusable modal:
+  • Click-to-upload via hidden file input
+  • Drag-and-drop on the ENTIRE backdrop (not just the inner card)
+  • `window.addEventListener('paste')` listener while open — auto-extracts `image/*` blobs from `clipboardData.items`, renames as `pasted-{ts}.{ext}`, validates, stages with preview
+  • Live blob-URL preview before save
+  • Cloudinary direct upload with `onUploadProgress` → animated progress bar (15→90% during upload, 95→100% during backend persist)
+  • Cloudinary URL transformation `c_fill,g_face,w_512,h_512,q_auto,f_auto` (face-aware 512×512)
+  • Mobile camera capture via `capture="environment"` attribute
+  • Validation: JPG/PNG/WebP only, 5MB cap with friendly toasts
+  • `refreshAvatars()` on success — propagates instantly to all admin modules
+  • Cancel / X / backdrop-click all close (only when not busy)
+- `EmployeePhotoWall.js` — cards now have hover `group-hover` overlay with Camera icon, click handler `setActiveEmployee(emp)`, "Pending Photo" badge (was "No photo"), and green "✓ Photo uploaded" badge when avatar exists. "Invite" button uses `e.stopPropagation()` so it doesn't open the dialog.
+- `server.py` PUT `/api/employees/{id}/avatar` — audit log enhanced to capture **previous and updated image URLs** + employee name: `"Avatar updated by hr | employee=Rishi S Nayak | previous=https://... | updated=https://..."`. RBAC + old Cloudinary asset cleanup were already in place.
+
+**Validation (iteration_46 — 100% pass):**
+- ✅ Backend RBAC + persistence + audit log (6/6 pytest in new file `/app/backend/tests/test_photo_wall_avatar.py`)
+- ✅ Frontend: hover overlay → click → modal opens → file picker upload with progress bar → instant card refresh to "Photo uploaded" badge
+- ✅ Validation toasts for unsupported format + >5MB
+- ✅ Drag-over highlight visual (`ring-4 ring-[#063c88]/50` on the inner card while dragging anywhere over the backdrop)
+- ✅ CTRL+V clipboard paste — image extracted from `ClipboardEvent.clipboardData.items`, toast "Image pasted from clipboard"
+- ✅ Cancel / X / backdrop close behaviors
+- ✅ Cross-module sync via `refreshAvatars()` confirmed — Cloudinary avatars rendered on `/attendance` after upload (no manual reload)
+- ✅ Employee → 403 when updating another employee's avatar (RBAC firewall holds)
+
+**Code-review notes (intentionally deferred — not user-blocking):**
+- Remove flow still uses native `window.confirm()` instead of shadcn `AlertDialog` (cosmetic only)
+- Old Cloudinary asset destroy runs synchronously via `asyncio.to_thread`; could move to FastAPI `BackgroundTasks` for sub-100ms PUT responses (minor perf)
+
+
 ## Latest Update — 2026-05-20 (Passport-size Photograph document fully removed)
 **User feedback (with screenshots):** The previous fix removed only the avatar/profile-photo metric, but the **"Passport-size Photograph" document** (a separate onboarding doc type) was still appearing on:
 1. The employee's Onboarding upload page ("Passport-size Photograph · REQUIRED · Approved · Pragathi.jpg")
