@@ -5,6 +5,42 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-20 (Onboarding & Profile Photo Completion Email Automation)
+**Feature:** Automated lifecycle emails — every 48 hours, incomplete employees get a reminder; a one-time success email fires once both onboarding (4 mandatory docs verified) AND profile photo are 100% complete. Phase-1 pilot mode restricts ALL emails to `rishi.nayak@blubridge.com` until `enable_bulk_onboarding_mail` is flipped on by an admin.
+
+**Architecture:**
+- **New module** `/app/backend/onboarding_completion.py` — pure-function `compute_completion()` (testable in isolation), `run_completion_cycle()` (the dispatcher), `get_settings()` / `update_settings()`, `list_completion_dashboard()`. Mongo state lives in `onboarding_completion_state` collection (one row per employee — `last_reminder_sent_at`, `reminder_count`, `completion_success_mail_sent`, `completed_at`).
+- **Completion math (single source of truth):** onboarding_percent = (verified×1.0 + uploaded×0.5)/4 — capped at 99% while any doc is pending HR review. profile_photo_uploaded = bool(employees.avatar). overall_percent = 0.7×onboarding + 0.3×photo.
+- **Pilot-mode safety:** when `enable_bulk_onboarding_mail=False`, the scan query is restricted via `official_email` regex to the pilot recipient only — no other employee row is touched. This eliminates the risk of 50+ reminders being redirected to a single inbox during testing.
+- **Cadence:** scheduler fires every 6 hours (`*/6` IST), the 48-hour cadence is enforced in business logic (`now - last_reminder_sent_at >= 48h`) — so the cron stays cheap.
+- **Idempotency:** `completion_success_mail_sent=True` is a permanent flag; `_send_success()` short-circuits if already true.
+
+**Backend endpoints** (all under `/api`):
+- `GET  /admin/onboarding-completion/dashboard?status=...&search=...&department=...` — rows + summary.
+- `GET  /admin/onboarding-completion/settings` — `{enable_bulk_onboarding_mail, pilot_email}`.
+- `PUT  /admin/onboarding-completion/settings` — admin only; persists in `settings` collection (`_id=onboarding_completion_mail`).
+- `POST /admin/onboarding-completion/run-now` body `{}` or `{employee_id}` — bypasses 48h cadence for HR verification.
+- `GET  /employee/my-completion` — employee self-status (used for in-app banners).
+- Scheduled cron job `onboardingCompletionCron` registered in `email_jobs.py` (`hour="*/6"`) + manual trigger via existing `/email-jobs/onboarding_completion/run`.
+
+**Frontend:** `/onboarding-completion` admin page (`/app/frontend/src/pages/OnboardingCompletion.js`) — summary chips for Total / Incomplete / Completed / No Photo / Reminder Due / Success Pending, 6 filter pills, search box, employee table (overall progress bar, onboarding%, photo badge, last-reminder timestamp, reminder count, status pill, success-mail status, per-row Send button), Run Now bypass-cadence button, Pilot Email input + Bulk-Toggle Switch with a confirm dialog. Sidebar nav entry "Onboarding & Photo" (HR + SysAdmin). All `data-testid`s in place.
+
+**Validation (testing agent, iteration_45 — 100% pass):**
+- ✅ 15/15 pytest API tests (settings persistence, dashboard filters, /run-now, RBAC for employee→403, employee self-snapshot, reminder_count increment)
+- ✅ Synthetic 100%-complete employee (Rishi) — success email fired ONCE via Resend; second /run-now correctly idempotent (`skipped=1`); state reverted post-test
+- ✅ Pilot-mode safety — bulk toggle off restricts scan to exactly 1 employee row (Rishi only); no spam to 50+ other inboxes
+- ✅ 48h cadence verified — `force=False` skips (0 sent, 1 skipped); `force=True` sends
+- ✅ Frontend page renders cleanly; all data-testids present
+- ✅ 6/6 unit tests in `test_onboarding_completion.py` for `compute_completion()`
+
+**Test files:**
+- `/app/backend/tests/test_onboarding_completion.py` (6 unit tests)
+- `/app/backend/tests/test_onboarding_completion_e2e.py` (15 API tests — created by testing agent)
+- `/app/backend/tests/synth_success_email_test.py` (destructive synthetic test, auto-reverts)
+
+**Heads-up to HR:** while `enable_bulk_onboarding_mail=False`, the actual employees will NOT receive the celebration email — it routes to the pilot recipient. Flip the toggle to `True` AFTER pilot sign-off.
+
+
 ## Latest Update — 2026-05-19 (Avatar photo not showing after upload — root cause #2)
 **Issue:** After uploading a profile photo, the toast confirmed "Profile photo updated" but the avatar kept showing the gradient "P" placeholder. Reload didn't help.
 
