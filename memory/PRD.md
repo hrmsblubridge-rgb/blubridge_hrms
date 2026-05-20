@@ -5,6 +5,28 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-20 (Onboarding-only scope — photo dropped from completion gate)
+**User request:** "Only in the app Onboarding & Photo only remove photo option… Already that option Employee Profile…So better Onboarding section photograph upload option should be removed."
+
+**Rationale:** The profile photo upload already lives in Employee Profile. Tracking it again in the onboarding completion gate was a duplicate ask that confused both employees and HR.
+
+**Changes (surgical):**
+- **Sidebar label:** "Onboarding & Photo" → **"Onboarding"** (admin sidebar).
+- **`compute_completion()`:** `overall_percent` is now identical to `onboarding_percent`. `is_complete` requires only `onboarding_percent >= 100` — the `profile_photo_uploaded` boolean is still returned for backward-compat / debugging but no longer gates completion or email triggers.
+- **Reminder email:** removed the "Profile photo — not uploaded yet" line item, removed the dual-metric Onboarding/Photo badge, simplified copy ("until your onboarding is fully verified").
+- **Success email:** removed the "Profile picture · Uploaded & live" card; trigger condition is now onboarding-only.
+- **Admin dashboard:** removed the "Profile Photo" column, removed "No Photo" filter chip + summary card, removed the "Overall" duplicate column (since it now equals Onboarding). Page title changed to "Onboarding Completion".
+- **Employee sidebar:** unchanged (already labelled "Onboarding", points to `/employee/onboarding`).
+
+**Validation:**
+- ✅ 6/6 unit tests in `test_onboarding_completion.py` re-asserted with new math (verified-only = 100%, no photo penalty)
+- ✅ Backend lint clean · Frontend lint clean
+- ✅ Live API verified: Rishi's row returns `overall_percent == onboarding_percent` post-fix
+- ✅ Reminder email layout unchanged structurally; only the "still pending" list no longer prepends a photo bullet
+
+**Files touched:** `/app/backend/onboarding_completion.py`, `/app/backend/email_templates.py` (two functions), `/app/frontend/src/pages/OnboardingCompletion.js`, `/app/frontend/src/components/Layout.js` (label rename), `/app/backend/tests/test_onboarding_completion.py`.
+
+
 ## Latest Update — 2026-05-20 (Onboarding & Profile Photo Completion Email Automation)
 **Feature:** Automated lifecycle emails — every 48 hours, incomplete employees get a reminder; a one-time success email fires once both onboarding (4 mandatory docs verified) AND profile photo are 100% complete. Phase-1 pilot mode restricts ALL emails to `rishi.nayak@blubridge.com` until `enable_bulk_onboarding_mail` is flipped on by an admin.
 

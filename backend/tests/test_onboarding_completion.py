@@ -53,8 +53,8 @@ def test_completion_all_verified_no_photo():
     assert snap["onboarding_status"] == "complete"
     assert snap["onboarding_percent"] == 100
     assert snap["profile_photo_uploaded"] is False
-    # 70% from onboarding only → overall 70%
-    assert snap["overall_percent"] == 70
+    # Onboarding-only metric — overall == onboarding_percent now
+    assert snap["overall_percent"] == 100
 
 
 def test_completion_fully_complete():

@@ -370,25 +370,19 @@ def onboarding_reminder_email(
     employee_name: str,
     overall_percent: int,
     onboarding_percent: int,
-    profile_photo_uploaded: bool,
     missing_sections: list,
     cta_url: str,
+    **_ignored,
 ) -> str:
-    """Reminder email — sent every 48 hours until both onboarding & photo
-    reach 100%. Premium, mobile-responsive, action-oriented."""
+    """Reminder email — sent every 48 hours until onboarding reaches 100%.
+    Premium, mobile-responsive, action-oriented."""
     first_name = (employee_name or "there").split()[0]
 
-    bar_color = GOOD if overall_percent >= 75 else (BRAND_ACCENT if overall_percent >= 40 else BAD)
+    bar_color = GOOD if onboarding_percent >= 75 else (BRAND_ACCENT if onboarding_percent >= 40 else BAD)
 
     missing_html = ""
-    if missing_sections or not profile_photo_uploaded:
+    if missing_sections:
         items = []
-        if not profile_photo_uploaded:
-            items.append(
-                f"<li style=\"padding:6px 0;color:{TEXT};font-size:14px;\">"
-                f"<b style=\"color:{BAD};\">·</b> Profile photo — not uploaded yet"
-                f"</li>"
-            )
         for m in (missing_sections or []):
             items.append(
                 f"<li style=\"padding:6px 0;color:{TEXT};font-size:14px;\">"
@@ -407,30 +401,24 @@ def onboarding_reminder_email(
     progress_html = f"""
       <div style="margin:8px 0 18px 0;">
         <div style="display:flex;justify-content:space-between;font-size:12px;color:{MUTED};margin-bottom:6px;">
-          <span>Overall completion</span><span style="font-weight:700;color:{TEXT};">{overall_percent}%</span>
+          <span>Onboarding completion</span><span style="font-weight:700;color:{TEXT};">{onboarding_percent}%</span>
         </div>
         <div style="height:10px;border-radius:999px;background:#eef2f7;overflow:hidden;">
-          <div style="width:{overall_percent}%;height:10px;background:{bar_color};border-radius:999px;"></div>
-        </div>
-        <div style="margin-top:10px;font-size:12px;color:{MUTED};">
-          Onboarding documents: <b style="color:{TEXT};">{onboarding_percent}%</b>
-          &nbsp;·&nbsp;
-          Profile photo: <b style="color:{TEXT};">{'Uploaded' if profile_photo_uploaded else 'Not uploaded'}</b>
+          <div style="width:{onboarding_percent}%;height:10px;background:{bar_color};border-radius:999px;"></div>
         </div>
       </div>
     """
 
     intro = (
-        "This is a friendly reminder to finish setting up your BluBridge HRMS profile. "
+        "This is a friendly reminder to finish your BluBridge HRMS onboarding. "
         "It only takes a few minutes and unlocks the full HRMS experience for you — attendance, "
         "leave, payroll, and more."
     )
 
     body = progress_html + missing_html + f"""
       <p style="color:{MUTED};font-size:13px;line-height:1.6;margin:12px 0 0 0;">
-        You'll continue to receive a reminder every 48 hours until you complete onboarding
-        and upload your profile picture. Once you're done, the reminders stop and you'll
-        receive a quick confirmation email.
+        You'll continue to receive a reminder every 48 hours until your onboarding is fully verified.
+        Once it's done, the reminders stop and you'll receive a quick confirmation email.
       </p>
     """
 
@@ -445,40 +433,33 @@ def onboarding_reminder_email(
 
 
 def onboarding_success_email(*, employee_name: str) -> str:
-    """One-time congratulations email — sent ONLY after both onboarding (100%)
-    and profile photo (uploaded) are complete."""
+    """One-time congratulations email — sent ONLY after onboarding reaches 100%
+    (all mandatory documents verified)."""
     first_name = (employee_name or "there").split()[0]
 
     intro = (
-        "Congratulations — your BluBridge HRMS profile is now <b>100% complete</b>. "
-        "All onboarding documents are in place and your profile picture is live across "
-        "the platform."
+        "Congratulations — your BluBridge HRMS onboarding is now <b>100% complete</b>. "
+        "All mandatory documents have been verified and you're all set across the platform."
     )
 
     body = f"""
       <div style="margin:20px 0;padding:24px;border-radius:14px;background:linear-gradient(135deg,#dcfce7 0%,#bbf7d0 100%);border:1px solid #86efac;text-align:center;">
         <div style="font-size:42px;line-height:1;margin-bottom:6px;">✅</div>
         <div style="font-size:18px;font-weight:700;color:{TEXT};margin-bottom:4px;">All set!</div>
-        <div style="font-size:13px;color:#166534;">Your profile is verified and visible across the HRMS.</div>
+        <div style="font-size:13px;color:#166534;">Your onboarding is verified and your HRMS access is fully active.</div>
       </div>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0 0 0;border:1px solid {BORDER};border-radius:12px;">
         <tr>
-          <td style="padding:14px 18px;border-bottom:1px solid {BORDER};">
+          <td style="padding:14px 18px;">
             <div style="font-size:12px;color:{MUTED};text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;">Onboarding documents</div>
             <div style="font-size:14px;font-weight:700;color:{GOOD};">100% verified</div>
           </td>
         </tr>
-        <tr>
-          <td style="padding:14px 18px;">
-            <div style="font-size:12px;color:{MUTED};text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px;">Profile picture</div>
-            <div style="font-size:14px;font-weight:700;color:{GOOD};">Uploaded &amp; live</div>
-          </td>
-        </tr>
       </table>
       <p style="color:{MUTED};font-size:13px;line-height:1.7;margin:20px 0 0 0;">
-        You'll no longer receive completion reminders — this is the final email of the
-        onboarding sequence. If you ever need to update your photo or documents, head to
-        your profile from the HRMS sidebar at any time.
+        You'll no longer receive onboarding reminders — this is the final email of the
+        onboarding sequence. If you ever need to update a document, head to your profile
+        from the HRMS sidebar at any time.
       </p>
     """
 

@@ -131,9 +131,11 @@ def compute_completion(
     avatar_url = (employee or {}).get("avatar")
     profile_photo_uploaded = bool(avatar_url and str(avatar_url).strip())
 
-    # Overall: 70% weight to onboarding (compliance-critical) + 30% photo.
-    overall = int(round(onboarding_percent * 0.7 + (100 if profile_photo_uploaded else 0) * 0.3))
-    overall = max(0, min(100, overall))
+    # Completion is now determined SOLELY by the 4 mandatory onboarding
+    # documents. The profile photo lives in the Employee Profile module and
+    # is NOT part of the onboarding gate (per product decision 2026-05-20 —
+    # avoid asking the employee to upload the same photo twice).
+    overall = onboarding_percent
 
     return {
         "onboarding_status": onboarding_status,
@@ -287,7 +289,7 @@ async def list_completion_dashboard(
         else:
             reminder_pending = True  # never sent yet
 
-        is_complete = snap["onboarding_percent"] >= 100 and snap["profile_photo_uploaded"]
+        is_complete = snap["onboarding_percent"] >= 100
         # Once both are 100%, the employee should never be classified as
         # "reminder_pending" again.
         if is_complete:
@@ -556,7 +558,7 @@ async def run_completion_cycle(
         snap = compute_completion(emp, docs_by_emp.get(emp["id"], []))
         state = state_by_emp.get(emp["id"], {})
 
-        is_complete = snap["onboarding_percent"] >= 100 and snap["profile_photo_uploaded"]
+        is_complete = snap["onboarding_percent"] >= 100
 
         if is_complete:
             if not state.get("completion_success_mail_sent"):
