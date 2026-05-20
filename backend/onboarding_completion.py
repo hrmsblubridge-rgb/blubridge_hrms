@@ -52,7 +52,8 @@ MANDATORY_DOCUMENT_TYPES: list[dict] = [
     {"type": "aadhaar_card", "label": "Aadhaar Card"},
     {"type": "pan_card", "label": "PAN Card"},
     {"type": "education", "label": "Education Certificates"},
-    {"type": "photo", "label": "Passport-size Photograph"},
+    # 2026-05-20 — Passport-size Photograph removed: the avatar (Employee
+    # Profile) already covers this. Three mandatory docs now drive 100%.
 ]
 
 

@@ -5,6 +5,27 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-20 (Passport-size Photograph document fully removed)
+**User feedback (with screenshots):** The previous fix removed only the avatar/profile-photo metric, but the **"Passport-size Photograph" document** (a separate onboarding doc type) was still appearing on:
+1. The employee's Onboarding upload page ("Passport-size Photograph · REQUIRED · Approved · Pragathi.jpg")
+2. The admin completion dashboard's `Missing` list ("Missing: Aadhaar Card, PAN Card, Education Certificates, Passport-size Photograph")
+
+**Root cause:** The doc-type `photo` was still in `REQUIRED_DOCUMENTS` (server.py) and `MANDATORY_DOCUMENT_TYPES` (onboarding_completion.py). The Employee Profile avatar covers this need — the duplicate doc-type was confusing both sides.
+
+**Surgical fix (4 changes):**
+- **`REQUIRED_DOCUMENTS`** in `server.py` — removed the `photo` row. New employees no longer get a Passport-size Photograph placeholder created during `get_my_onboarding_status` bootstrap.
+- **`MANDATORY_DOCUMENT_TYPES`** in `onboarding_completion.py` — reduced from 4 to 3 mandatory docs (Aadhaar, PAN, Education). All completion math automatically updates.
+- **Startup migration** in server.py — idempotent `db.onboarding_documents.delete_many({"document_type":"photo"})` runs on every boot. First boot pruned **50 legacy photo rows** from production.
+- **`compute_completion()`** is naturally defensive — it only counts doc types listed in `MANDATORY_DOCUMENT_TYPES`. New test `test_completion_ignores_legacy_photo_doc` proves a stray legacy `photo` row in the DB will NOT affect onboarding %.
+
+**End-to-end verified (live):**
+- ✅ `GET /api/onboarding/my-status` (kasper) — `required_documents` no longer contains `photo`; `documents` array in DB no longer contains `photo`
+- ✅ `GET /api/admin/onboarding-completion/dashboard?search=Rishi` — `missing_sections = [Aadhaar Card, PAN Card, Education Certificates]` (3 items, no photo)
+- ✅ HR Verification queue (reads from same collection) — no photo entries
+- ✅ 7/7 unit tests pass · backend + frontend lint clean
+- ✅ Startup log: `Pruned 50 legacy onboarding photo document(s)`
+
+
 ## Latest Update — 2026-05-20 (Onboarding-only scope — photo dropped from completion gate)
 **User request:** "Only in the app Onboarding & Photo only remove photo option… Already that option Employee Profile…So better Onboarding section photograph upload option should be removed."
 

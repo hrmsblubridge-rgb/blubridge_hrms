@@ -309,7 +309,10 @@ REQUIRED_DOCUMENTS = [
     {"type": DocumentType.EXPERIENCE, "label": "Experience Certificates", "required": False},
     {"type": DocumentType.OFFER_LETTER, "label": "Offer / Appointment Letter", "required": False},
     {"type": DocumentType.RELIEVING_LETTER, "label": "Relieving Letter", "required": False},
-    {"type": DocumentType.PHOTO, "label": "Passport-size Photograph", "required": True},
+    # NOTE (2026-05-20): Passport-size Photograph removed from onboarding —
+    # the employee's profile picture (avatar) already serves this purpose and
+    # is managed from the Employee Profile page. Old `photo` rows in
+    # `onboarding_documents` are pruned on startup (see _prune_onboarding_photo_docs).
 ]
 
 # ============== HOLIDAYS DATA ==============
@@ -14509,6 +14512,16 @@ async def ensure_indexes():
         _start_email_scheduler(db)
     except Exception as e:
         print(f"Email scheduler startup failed: {e}")
+
+    # 2026-05-20 — Prune legacy `photo` onboarding_documents (the
+    # "Passport-size Photograph" requirement was retired in favour of the
+    # Employee Profile avatar). Idempotent: safe to re-run on every boot.
+    try:
+        res = await db.onboarding_documents.delete_many({"document_type": "photo"})
+        if res.deleted_count:
+            print(f"Pruned {res.deleted_count} legacy onboarding `photo` document(s)")
+    except Exception as e:
+        print(f"Onboarding photo prune failed: {e}")
 
     # Password reset tokens — unique on token + TTL on expires_at
     try:

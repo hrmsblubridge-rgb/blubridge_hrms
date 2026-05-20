@@ -1,10 +1,7 @@
-"""Pytest regression for the onboarding+profile-photo completion engine.
+"""Pytest regression for the onboarding completion engine.
 
-Validates the pure `compute_completion` function across the canonical states:
-  • zero docs / no photo                       → pending, 0%
-  • some uploaded, no photo                    → partial, photo missing
-  • all verified, no photo                     → 100% onboarding but overall <100%
-  • all verified + photo                       → fully complete (overall 100%)
+After 2026-05-20: 3 mandatory documents only — Aadhaar, PAN, Education.
+The passport-size photograph requirement was retired (avatar covers it).
 """
 from __future__ import annotations
 
@@ -24,9 +21,8 @@ def test_completion_zero_state():
     snap = compute_completion({"avatar": None}, [])
     assert snap["onboarding_status"] == "pending"
     assert snap["onboarding_percent"] == 0
-    assert snap["profile_photo_uploaded"] is False
     assert snap["overall_percent"] == 0
-    assert len(snap["missing_sections"]) == 4
+    assert len(snap["missing_sections"]) == 3  # aadhaar + pan + education
 
 
 def test_completion_partial_uploaded():
@@ -36,40 +32,34 @@ def test_completion_partial_uploaded():
     ]
     snap = compute_completion({"avatar": None}, docs)
     assert snap["onboarding_status"] == "partial"
-    # 1 verified (1.0) + 1 uploaded (0.5) of 4 → 37.5% → 38 (rounded)
-    assert snap["onboarding_percent"] in (37, 38)
-    assert snap["profile_photo_uploaded"] is False
-    assert snap["photo_missing"] is True
+    # 1 verified (1.0) + 1 uploaded (0.5) of 3 → 50%
+    assert snap["onboarding_percent"] == 50
 
 
-def test_completion_all_verified_no_photo():
+def test_completion_all_verified_no_avatar():
     docs = [
         _doc("aadhaar_card", "verified"),
         _doc("pan_card", "verified"),
         _doc("education", "verified"),
-        _doc("photo", "verified"),
     ]
     snap = compute_completion({"avatar": None}, docs)
     assert snap["onboarding_status"] == "complete"
     assert snap["onboarding_percent"] == 100
-    assert snap["profile_photo_uploaded"] is False
-    # Onboarding-only metric — overall == onboarding_percent now
+    # Avatar is irrelevant to onboarding completion now
     assert snap["overall_percent"] == 100
 
 
-def test_completion_fully_complete():
+def test_completion_fully_complete_with_avatar():
     docs = [
         _doc("aadhaar_card", "verified"),
         _doc("pan_card", "verified"),
         _doc("education", "verified"),
-        _doc("photo", "verified"),
     ]
     snap = compute_completion(
         {"avatar": "https://res.cloudinary.com/x/y.jpg"}, docs,
     )
     assert snap["onboarding_status"] == "complete"
     assert snap["onboarding_percent"] == 100
-    assert snap["profile_photo_uploaded"] is True
     assert snap["overall_percent"] == 100
     assert snap["missing_sections"] == []
 
@@ -79,13 +69,11 @@ def test_completion_pending_review_caps_at_99():
         _doc("aadhaar_card", "uploaded"),
         _doc("pan_card", "uploaded"),
         _doc("education", "uploaded"),
-        _doc("photo", "uploaded"),
     ]
     snap = compute_completion({"avatar": None}, docs)
     # All uploaded but none verified — strictly NOT complete.
     assert snap["onboarding_status"] == "partial"
     assert snap["onboarding_percent"] < 100
-    assert snap["profile_photo_uploaded"] is False
 
 
 def test_completion_rejected_counts_as_missing():
@@ -93,11 +81,25 @@ def test_completion_rejected_counts_as_missing():
         _doc("aadhaar_card", "verified"),
         _doc("pan_card", "rejected"),
         _doc("education", "verified"),
-        _doc("photo", "verified"),
     ]
     snap = compute_completion({"avatar": "x"}, docs)
     assert snap["onboarding_status"] == "partial"
-    # rejected is treated as missing in `missing_sections`
     assert any(m["type"] == "pan_card" for m in snap["missing_sections"])
-    # 3 of 4 verified → 75% raw, but with 1 missing it's still partial
-    assert snap["onboarding_percent"] == 75
+    # 2 of 3 verified → 67% rounded
+    assert snap["onboarding_percent"] == 67
+
+
+def test_completion_ignores_legacy_photo_doc():
+    """A `photo` document still present in the DB (pre-prune) must NOT
+    count toward or against onboarding completion."""
+    docs = [
+        _doc("aadhaar_card", "verified"),
+        _doc("pan_card", "verified"),
+        _doc("education", "verified"),
+        _doc("photo", "verified"),       # legacy
+        _doc("photo", "not_uploaded"),   # legacy
+    ]
+    snap = compute_completion({"avatar": None}, docs)
+    assert snap["onboarding_status"] == "complete"
+    assert snap["onboarding_percent"] == 100
+    assert all(m["type"] != "photo" for m in snap["missing_sections"])
