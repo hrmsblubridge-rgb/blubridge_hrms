@@ -5374,6 +5374,152 @@ async def update_profile_upload_email_settings(body: dict, current_user: dict = 
     return {"success": True, "enable_bulk": enable_bulk}
 
 
+# =========================================================================
+# Onboarding + Profile Photo Completion Tracking & Email Automation
+# =========================================================================
+#  • GET  /api/admin/onboarding-completion/dashboard   admin tracking grid
+#  • GET  /api/admin/onboarding-completion/settings    feature flag + pilot
+#  • PUT  /api/admin/onboarding-completion/settings
+#  • POST /api/admin/onboarding-completion/run-now     manual trigger
+#  • GET  /api/employee/my-completion                  employee self-status
+# =========================================================================
+from onboarding_completion import (  # noqa: E402
+    compute_completion as _oc_compute,
+    list_completion_dashboard as _oc_list_dashboard,
+    get_settings as _oc_get_settings,
+    update_settings as _oc_update_settings,
+    run_completion_cycle as _oc_run_cycle,
+    ensure_state_indexes as _oc_ensure_indexes,
+    PILOT_RECIPIENT_EMAIL as _OC_PILOT_DEFAULT,
+)
+
+
+@api_router.get("/admin/onboarding-completion/dashboard")
+async def onboarding_completion_dashboard(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    department: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    rows = await _oc_list_dashboard(
+        db, status_filter=status, search=search, department=department,
+    )
+    # Summary counts for filter chips
+    total = len(rows)
+    completed = sum(1 for r in rows if r["is_complete"])
+    no_photo = sum(1 for r in rows if not r["profile_photo_uploaded"])
+    reminder_pending = sum(1 for r in rows if r["reminder_pending"] and not r["is_complete"])
+    success_pending = sum(1 for r in rows if r["is_complete"] and not r["completion_success_mail_sent"])
+    return {
+        "rows": rows,
+        "summary": {
+            "total": total,
+            "completed": completed,
+            "incomplete": total - completed,
+            "no_photo": no_photo,
+            "reminder_pending": reminder_pending,
+            "success_pending": success_pending,
+        },
+    }
+
+
+@api_router.get("/admin/onboarding-completion/settings")
+async def get_onboarding_completion_settings(current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    return await _oc_get_settings(db)
+
+
+@api_router.put("/admin/onboarding-completion/settings")
+async def update_onboarding_completion_settings(
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    enable_bulk = body.get("enable_bulk_onboarding_mail")
+    if enable_bulk is None:
+        enable_bulk = body.get("enable_bulk")  # alias accepted
+    pilot_email = body.get("pilot_email")
+    new_settings = await _oc_update_settings(
+        db,
+        enable_bulk=enable_bulk if enable_bulk is not None else None,
+        pilot_email=pilot_email if pilot_email else None,
+        actor_user_id=current_user["id"],
+    )
+    await log_audit(
+        current_user["id"],
+        "toggle_onboarding_completion_mail",
+        "settings",
+        "onboarding_completion_mail",
+        f"enable_bulk={new_settings.get('enable_bulk_onboarding_mail')}, "
+        f"pilot_email={new_settings.get('pilot_email')}",
+    )
+    return {"success": True, **new_settings}
+
+
+@api_router.post("/admin/onboarding-completion/run-now")
+async def run_onboarding_completion_now(
+    body: Optional[dict] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Manual trigger of the completion cycle. Bypasses the 48-hour cadence
+    so HR can verify the flow end-to-end. Pilot/bulk gating IS still respected
+    — bulk only fires if `enable_bulk_onboarding_mail` has been flipped on.
+    """
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    target_employee_id = (body or {}).get("employee_id") or None
+    summary = await _oc_run_cycle(
+        db, force=True, target_employee_id=target_employee_id,
+    )
+    await log_audit(
+        current_user["id"],
+        "run_onboarding_completion_now",
+        "email",
+        target_employee_id or "all",
+        f"Reminders sent: {summary.get('reminders_sent')}, "
+        f"Success sent: {summary.get('success_sent')}, "
+        f"Pilot mode: {summary.get('pilot_mode')}",
+    )
+    return {"success": True, **summary}
+
+
+@api_router.get("/employee/my-completion")
+async def get_my_onboarding_completion(current_user: dict = Depends(get_current_user)):
+    """Employee self-view — same calculation engine as the admin dashboard."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    emp = await db.employees.find_one(
+        {"id": employee_id},
+        {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "avatar": 1,
+         "department": 1, "designation": 1, "emp_id": 1},
+    )
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    docs = await db.onboarding_documents.find(
+        {"employee_id": employee_id},
+        {"_id": 0, "document_type": 1, "status": 1},
+    ).to_list(20)
+    snap = _oc_compute(emp, docs)
+    state = await db.onboarding_completion_state.find_one(
+        {"employee_id": employee_id}, {"_id": 0}
+    ) or {}
+    return {
+        **snap,
+        "employee_id": employee_id,
+        "full_name": emp.get("full_name"),
+        "avatar": emp.get("avatar"),
+        "reminder_count": int(state.get("reminder_count") or 0),
+        "last_reminder_sent_at": state.get("last_reminder_sent_at"),
+        "completion_success_mail_sent": bool(state.get("completion_success_mail_sent")),
+        "completed_at": state.get("completed_at"),
+    }
+
+
 # ============== ATTENDANCE ROUTES ==============
 
 @api_router.get("/attendance")
@@ -14359,6 +14505,7 @@ async def ensure_indexes():
     try:
         await _ensure_email_indexes(db)
         await _ensure_cron_settings_seed(db, list(_CRON_JOB_META.keys()))
+        await _oc_ensure_indexes(db)
         _start_email_scheduler(db)
     except Exception as e:
         print(f"Email scheduler startup failed: {e}")

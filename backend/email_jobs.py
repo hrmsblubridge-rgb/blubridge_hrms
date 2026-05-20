@@ -76,6 +76,11 @@ JOB_META: dict[str, dict] = {
         "schedule": "Daily 09:30 IST",
         "scope": "yesterday",
     },
+    "onboarding_completion": {
+        "label": "Onboarding & Profile Completion Reminder",
+        "schedule": "Every 6 hours (48-hour cadence per employee)",
+        "scope": "incomplete employees",
+    },
 }
 
 
@@ -668,6 +673,27 @@ no_login_job = _gated("no_login")(no_login_job_inner)
 
 
 # =========================================================================
+# Onboarding + Profile Photo Completion Reminder
+# =========================================================================
+async def onboarding_completion_job_inner(
+    db: AsyncIOMotorDatabase, force: bool = False
+) -> None:
+    """Scan all employees, send the 48-hour reminder to incompletes and the
+    one-time success email to those who just hit 100%.
+
+    Pilot gating + cadence enforcement live in `onboarding_completion.run_completion_cycle`.
+    """
+    from onboarding_completion import run_completion_cycle
+    summary = await run_completion_cycle(db, force=force)
+    logger.info("[cron:onboarding_completion] %s", summary)
+
+
+onboarding_completion_job = _gated("onboarding_completion")(
+    onboarding_completion_job_inner
+)
+
+
+# =========================================================================
 # Scheduler bootstrap
 # =========================================================================
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -708,10 +734,19 @@ def start_email_scheduler(db: AsyncIOMotorDatabase) -> AsyncIOScheduler:
         trigger=CronTrigger(hour=9, minute=30, timezone=IST),
         id="noLoginCron", **common,
     )
+    # Onboarding + profile photo completion reminder — every 6 hours.
+    # The job itself enforces the 48-hour cadence per employee, so running
+    # every 6h simply means a freshly-due employee gets the email within
+    # a 6h window instead of waiting for a 1-per-day cron tick.
+    sch.add_job(
+        onboarding_completion_job, args=[db],
+        trigger=CronTrigger(hour="*/6", minute=0, timezone=IST),
+        id="onboardingCompletionCron", **common,
+    )
 
     sch.start()
     _scheduler = sch
-    logger.info("HRMS email scheduler started with 5 jobs")
+    logger.info("HRMS email scheduler started with 6 jobs")
     return sch
 
 
@@ -723,4 +758,5 @@ def get_job_handlers() -> dict:
         "missed_punch": missed_punch_job,
         "early_out": early_out_job,
         "no_login": no_login_job,
+        "onboarding_completion": onboarding_completion_job,
     }
