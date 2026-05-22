@@ -5,6 +5,34 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-22 (Research Unit Policy — full content replacement)
+**User request:** Replace the existing "AI Research / Research Publication Bonus Policy" with the new "BluBridge — HR Induction, Company Conduct & Leave Policy", and ensure ONLY the Research Unit department sees it.
+
+**Changes:**
+- **`policy_research`** content fully replaced in `COMPANY_POLICIES` (server.py) — bumped to v2.0, effective 2026-02-12, name = "BluBridge — HR Induction, Company Conduct & Leave Policy (Research Unit)". Eight structured sections covering:
+  1. Working Hours & Productivity Expectations (11h total / 9h30 productive / 1h30 breaks table)
+  2. EOD Reporting (To/CC table + 6-item content checklist)
+  3. Leave Communication Format (To/CC/subject-line table + email template items)
+  4. Leave Policy & Attendance Compliance (4-row leave-type matrix table)
+  5. Leave Approval Process (3-step workflow)
+  6. Company Conduct & Workplace Protocol (workplace discipline, comms, devices, branding)
+  7. Reimbursement Policy (PG accommodation — Accounts/Front Office table)
+  8. Acknowledgment & Acceptance section
+- **`HIDDEN_POLICIES` cleared** — `policy_research` was previously hidden from everyone; removed so Research Unit + admins can now see it.
+- **`DEPARTMENT_RESTRICTED_POLICIES["policy_research"] = {"Research Unit"}`** — unchanged; this enforces "only Research Unit + admins see it" via the existing `_is_policy_visible_to_user()` firewall.
+- **New startup migration** — any policy whose code-side `version` differs from the DB record is auto-replaced on every backend boot. Triggered on `policy_research` v1.0 → v2.0 on this restart. Idempotent and additive.
+
+**Verification (live):**
+- ✅ Sys admin (`sysadmin`) — sees policy_research (8 sections, v2.0, new name)
+- ✅ Research Unit employee (`aparna.a` / Research Unit dept) — sees policy_research ✅
+- ✅ Non-Research Unit employee (`kasper` / System Engineer dept) — does NOT see policy_research ✅
+- ✅ Backend lint clean for my edit (pre-existing warnings in monolith unchanged)
+
+**Files touched:**
+- `/app/backend/server.py` — COMPANY_POLICIES[policy_research] content, HIDDEN_POLICIES, startup version-bump migration
+- `/app/memory/test_credentials.md` — added aparna.a credential (reset to TestRU#2026 for verification)
+
+
 ## Latest Update — 2026-05-20 (Photo Wall Admin Upload + Clipboard Paste)
 **Feature:** Admin can now click any employee card on the Photo Wall to open a modal upload dialog that supports **click-to-upload, drag-and-drop, AND CTRL+V clipboard paste** (screenshots, copied images, WhatsApp images, etc.) — plus replace, remove, and live preview.
 

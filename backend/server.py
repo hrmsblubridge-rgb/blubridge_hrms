@@ -498,90 +498,133 @@ COMPANY_POLICIES = [
     },
     {
         "id": "policy_research",
-        "name": "Research Publication Bonus Policy",
+        "name": "BluBridge — HR Induction, Company Conduct & Leave Policy (Research Unit)",
         "category": "Department",
-        "version": "1.0",
-        "effective_date": "2025-12-15",
-        "applicable_to": "All interns and employees in the Research Unit",
+        "version": "2.0",
+        "effective_date": "2026-02-12",
+        "applicable_to": "Research Unit",
         "content": {
-            "overview": "This Policy outlines the structure and eligibility for the Research Publication Bonus awarded to individuals contributing to publications under the BluBridge affiliation. It encourages original research, fosters innovation, and rewards successful publication, peer review, and citation efforts that strengthen BluBridge's research excellence.",
+            "overview": "Mandatory HR induction document covering working hours, EOD reporting, leave protocol, company conduct, and reimbursement guidelines for every employee and intern of the Research Unit. Read carefully and acknowledge at the end.",
             "sections": [
                 {
-                    "title": "1. Objective",
-                    "text": "This Policy outlines the structure and eligibility for the Research Publication Bonus awarded to individuals contributing to publications under the BluBridge affiliation. It encourages original research, fosters innovation, and rewards successful publication, peer review, and citation efforts that strengthen BluBridge's research excellence."
-                },
-                {
-                    "title": "2. Scope",
-                    "text": "This Policy applies to all interns and employees in the Research Unit who author, co-author, or contribute to any research paper submitted, accepted, or published under the BluBridge Technologies Private Limited affiliation."
-                },
-                {
-                    "title": "3. Bonus Structure",
-                    "text": "The total eligible Research Publication Bonus per paper, per person is \u20b9 99,000 (Rupees Ninety-Nine Thousand only), disbursed in stages based on specific publication milestones and citation performance. Each stage's bonus will be released upon successful verification of the corresponding milestone.",
+                    "title": "1. Working Hours & Productivity Expectations",
+                    "text": "Working Hours Framework",
+                    "items": [
+                        "Total working duration expected per day: 11 hours",
+                        "Active productive learning/research/work engagement: 9 hours 30 minutes",
+                        "Total break duration permitted during the day: 1 hour 30 minutes"
+                    ],
+                    "footer": "Important Clarification: The minimum productive engagement requirement of 9 hours 30 minutes is calculated exclusive of all breaks, lunch, snacks, dinner, and personal downtime. Employees are expected to remain actively involved in learning, research, task execution, collaboration, or company-assigned activities during this duration. The above timings represent the minimum expected standards and should not be interpreted as a restriction on additional productive contribution wherever required by project priorities or learning objectives.",
                     "table": {
-                        "headers": ["Milestone", "Description", "Bonus (\u20b9)", "Condition of Payment"],
+                        "headers": ["Break", "Window"],
                         "rows": [
-                            [
-                                "A. At Publishing",
-                                "Upon successful publication or acceptance of the paper on arXiv (authenticated pre-print).",
-                                "10,000",
-                                "Released upon arXiv posting and verification of BluBridge affiliation."
-                            ],
-                            [
-                                "B. Peer Review (Conference / Journal)",
-                                "Upon completion of peer review or acceptance in an approved international conference or journal.",
-                                "45,000",
-                                "Released after peer-review acknowledgement or presentation confirmation."
-                            ],
-                            [
-                                "C. Citation-Based Bonus\n(Based on total citations achieved within the first year after publication)",
-                                "\u2022 1 \u2013 9 citations\n\u2022 10 \u2013 19 citations\n\u2022 20 and above citations",
-                                "5,000\n19,500\n19,500",
-                                "Released upon reaching this citation range.\nReleased upon reaching this citation range.\nReleased upon reaching this citation range."
-                            ],
-                            [
-                                "Total Potential Bonus (Per Paper, Per Author):",
-                                "",
-                                "\u20b999,000",
-                                ""
-                            ]
+                            ["Morning Break", "11:00 AM"],
+                            ["Lunch Break", "01:00 PM"],
+                            ["Evening Break", "05:00 PM"],
+                            ["Dinner Break", "09:00 PM"]
+                        ]
+                    }
+                },
+                {
+                    "title": "2. End of Day (EOD) Reporting Policy",
+                    "text": "Mandatory Daily EOD Submission — All employees are required to submit a detailed End of Day (EOD) report via official email communication on every working day without exception.",
+                    "table": {
+                        "headers": ["Field", "Detail"],
+                        "rows": [
+                            ["To", "Manoj"],
+                            ["CC", "Praveen, Kripa & Team"],
+                            ["Submission Timeline", "EOD reports must be submitted before logging off for the day."]
                         ]
                     },
-                    "footer": "The list of recommended publication and presentation venues is provided in Appendix A of this Policy for reference and compliance."
+                    "items": [
+                        "Tasks completed",
+                        "Research/work undertaken",
+                        "Learning progress",
+                        "Pending activities",
+                        "Challenges/blockers (if any)",
+                        "Planned priorities for the next working day"
+                    ],
+                    "footer": "Compliance Requirement: Reports must be structured, professional, accurate, and sufficiently detailed. Incomplete, vague, or misleading updates will be treated as non-compliance. Failure to submit EOD reports consistently may impact performance evaluation, accountability assessment, and internal review processes."
                 },
                 {
-                    "title": "4. Eligibility & Conditions",
+                    "title": "3. Leave Communication Format",
+                    "text": "All leave-related communication must strictly follow the below-mentioned formal structure.",
+                    "table": {
+                        "headers": ["Field", "Detail"],
+                        "rows": [
+                            ["To", "Manoj"],
+                            ["CC", "Praveen, Kripa, HR Team"],
+                            ["Subject Line Format", "[Leave Type] – [Full Day/Half Day] – [Date]"],
+                            ["Example", "Sick Leave – Full Day – 12 Feb 2026"]
+                        ]
+                    },
                     "items": [
-                        "Each BluBridge-affiliated author is independently eligible to receive the full \u20b9 99,000 Performance Bonus per published paper.",
-                        "The publication must clearly mention BluBridge Technologies Pvt. Ltd. as an official author affiliation.",
-                        "The employee or intern must be on active engagement or payroll at the time of bonus disbursement.",
-                        "Proof of publication, arXiv link, acceptance communication, and verified citation data must be submitted to the Super Team Lead and Management.",
-                        "Citation-based payouts occur once the verified citation count enters an eligible range within the first year after publication.",
-                        "All approvals are subject to validation by the Super Team Lead and Management.",
-                        "The Company reserves the right to revise, defer, or withdraw this Policy based on organizational or research priorities."
+                        "Email opening: \"Hello Sir,\"",
+                        "Type of Leave: (Emergency / Sick / Pre-Planned / Late Coming)",
+                        "Date(s): (Mention exact date or duration)",
+                        "Reason: (Provide a clear, professional, and detailed explanation)",
+                        "Expected Rejoining Time: (If applicable)",
+                        "Closing: \"Kindly approve my request. Thanks & Regards, [Employee Name]\""
+                    ],
+                    "footer": "Important: All details must be complete, accurate, and professionally communicated. Incomplete leave requests may result in delays or rejection of approval. Employees must adhere strictly to the timelines defined under the leave policy."
+                },
+                {
+                    "title": "4. Leave Policy & Attendance Compliance",
+                    "text": "Refer to the table below for the four sanctioned leave categories and their compliance requirements.",
+                    "table": {
+                        "headers": ["Leave Type", "Intimation Window", "Documentation", "Notes"],
+                        "rows": [
+                            ["Emergency Leave (Half / Full Day)", "Between 9:45 AM and 10:00 AM at the latest", "Supporting documents/evidence mandatory wherever applicable", "Only for unforeseen, urgent, or unavoidable situations"],
+                            ["Sick Leave (Half / Full Day)", "Before 7:00 AM", "Medical documentation may be requested", "Upon recovery, reply to the same email thread with date of rejoining and expected reporting time"],
+                            ["Pre-Planned Leave (Half / Full Day)", "Minimum of 4 days in advance", "Formal application required", "Subject to managerial approval"],
+                            ["Late Coming (LC)", "Before 9:45 AM (max 10:00 AM)", "Communication must include reason for delay & expected arrival time", "Repeated instances reviewed under performance & discipline policies"]
+                        ]
+                    },
+                    "footer": "Attendance & Productivity Compliance: Employees reporting late shall still be required to complete a minimum of 9 hours 30 minutes of active productive engagement (excluding breaks, lunch, snacks, dinner) AND a minimum total working duration of 11 hours. Upon completion of the above, the day shall be considered a Full Working Day, and salary/stipend eligibility for that day shall remain unaffected, subject to management approval and overall attendance compliance. Half-Day Eligibility: Employees must complete a minimum of 5 hours of productive engagement (excluding breaks and meal durations) to qualify."
+                },
+                {
+                    "title": "Leave Approval Process",
+                    "text": "All leave requests are subject to the following mandatory approval workflow. Leave shall be considered approved only upon completion of all steps below.",
+                    "items": [
+                        "Prior approval from management through Microsoft Teams",
+                        "Formal leave email submission",
+                        "HRMS portal update and regularization"
                     ]
                 },
                 {
-                    "title": "5. Effective Date and Validity",
-                    "text": "This Policy is effective from 15 December 2025 and will remain in force until amended, superseded, versioned, or withdrawn by BluBridge Technologies Private Limited. The Company reserves the right to modify, update, withdraw, or reissue this Policy in line with organizational, operational, or research-related requirements."
+                    "title": "5. Company Conduct & Workplace Protocol",
+                    "text": "Salary / Stipend Processing — Salary or stipend shall normally be processed on the 1st day of every month. If the 1st falls on a Sunday or declared holiday, payment shall be processed on the previous working day.",
+                    "items": [
+                        "Workplace Discipline — Sleeping on the office floor or within work premises is strictly prohibited. Employees feeling fatigued are advised to utilize approved break durations responsibly and resume work promptly.",
+                        "Professional Communication — Remain active and reachable on Microsoft Teams and Google Chat during working hours; monitor official channels regularly.",
+                        "Stay logged into Official Email, Microsoft Teams, and HRMS Portal on personal mobile devices for operational accessibility and urgent communication.",
+                        "Attendance Compliance — Biometric attendance punch and attendance register signing are mandatory. Non-compliance may result in attendance discrepancies and payroll processing delays.",
+                        "Device Usage Policy — Mobile phone usage is restricted on the work floor unless officially permitted. Personal devices must be kept in the designated reception/storage area during working hours.",
+                        "Professional Presence & Branding — Update your LinkedIn profile appropriately after joining the organization."
+                    ],
+                    "footer": "Employee Facilities Provided: Lunch, Evening snacks, Dinner, Tea and coffee. These facilities are provided as employee support amenities and shall NOT be considered part of productive working duration."
                 },
                 {
-                    "title": "Appendix A \u2014 Recognized Publication and Presentation Venues",
+                    "title": "6. Reimbursement Policy (If Applicable)",
+                    "text": "PG (Paying Guest) Accommodation Reimbursement — Eligibility: Interns. The company may reimburse 50% of PG accommodation expenses, subject to a maximum limit of ₹5,000 per month. Reimbursement is applicable only against valid bills/invoices.",
                     "table": {
-                        "headers": ["Category", "Name of Venue / Repository", "Type", "Remarks / Scope"],
+                        "headers": ["Field", "Detail"],
                         "rows": [
-                            ["Publishing (Pre-Print Repository)", "arXiv (relevant CS sections)", "Open Repository", "For authenticated pre-print publishing under BluBridge affiliation"],
-                            ["Conferences & Journals", "NeurIPS \u2013 Neural Information Processing Systems", "International Conference", "Machine Learning and AI Research"],
-                            ["", "ICML \u2013 International Conference on Machine Learning", "International Conference", "Core ML Research"],
-                            ["", "ICLR \u2013 International Conference on Learning Representations", "International Conference", "Representation Learning / Deep Networks"],
-                            ["", "AAAI \u2013 Association for the Advancement of AI", "International Conference", "General AI Applications"],
-                            ["", "IJCAI \u2013 International Joint Conference on Artificial Intelligence", "International Conference", "Cross-domain AI Research"],
-                            ["", "ACL \u2013 Association for Computational Linguistics", "International Conference", "NLP and Language Models"],
-                            ["", "JMLR \u2013 Journal of Machine Learning Research", "Peer-Reviewed Journal", "ML Research and Theory"],
-                            ["", "TPAMI \u2013 IEEE Transactions on Pattern Analysis and Machine Intelligence", "Peer-Reviewed Journal", "Vision, AI, and Pattern Recognition"],
-                            ["", "AIJ \u2013 Artificial Intelligence Journal", "Peer-Reviewed Journal", "General AI and Methodologies"],
-                            ["", "Nature Machine Intelligence", "Peer-Reviewed Journal", "Foundational and Applied AI Research"]
+                            ["To", "Accounts Team, Front Office"],
+                            ["CC", "HR Team, Kripa, Praveen"],
+                            ["Required attachments", "Expense details, valid supporting bills/invoices, relevant approval references (if applicable)"]
                         ]
-                    }
+                    },
+                    "footer": "Compliance Guidelines: Claims must be submitted promptly within the applicable reimbursement cycle."
+                },
+                {
+                    "title": "Acknowledgment & Acceptance",
+                    "text": "I, the undersigned, acknowledge that I have carefully read, understood, and agreed to comply with the BLUBRIDGE HR Induction, Company Conduct, Attendance, and Leave Policy guidelines stated above. I understand that failure to adhere to these policies may result in disciplinary review, performance implications, or administrative action as deemed appropriate by the management.",
+                    "items": [
+                        "Employee Name: _______________________",
+                        "Employee Signature: ____________________",
+                        "Date: ____________________"
+                    ]
                 }
             ]
         }
@@ -10882,7 +10925,7 @@ DEPARTMENT_RESTRICTED_POLICIES = {
 
 # Policies that are completely hidden from every user (including admins).
 # To re-enable a policy, simply remove its id from this set.
-HIDDEN_POLICIES: set = {"policy_research"}
+HIDDEN_POLICIES: set = set()
 
 # Policies that bypass ALL access checks (department / club / role) and must
 # always be visible to every authenticated user. Used for organisation-wide
@@ -14520,6 +14563,26 @@ async def ensure_indexes():
         _start_email_scheduler(db)
     except Exception as e:
         print(f"Email scheduler startup failed: {e}")
+
+    # 2026-05-22 — Refresh any policy whose code-side `version` is newer than
+    # the DB record (so content updates pushed via deploy reach existing
+    # records without manual DB intervention). Idempotent.
+    try:
+        from datetime import datetime as _dt
+        _now = get_ist_now().isoformat()
+        for _p in COMPANY_POLICIES:
+            _existing = await db.policies.find_one({"id": _p["id"]}, {"_id": 0, "version": 1})
+            if not _existing:
+                await db.policies.insert_one({**_p, "created_at": _now, "updated_at": _now})
+                print(f"Seeded policy: {_p['id']}")
+            elif _existing.get("version") != _p.get("version"):
+                await db.policies.replace_one(
+                    {"id": _p["id"]},
+                    {**_p, "created_at": _existing.get("created_at", _now), "updated_at": _now},
+                )
+                print(f"Refreshed policy: {_p['id']} → v{_p.get('version')}")
+    except Exception as e:
+        print(f"Policy version refresh failed: {e}")
 
     # 2026-05-20 — Prune legacy `photo` onboarding_documents (the
     # "Passport-size Photograph" requirement was retired in favour of the
