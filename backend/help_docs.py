@@ -107,6 +107,126 @@ COMMON_NOTIFICATIONS = (
     ["The bell auto-refreshes every minute — no manual reload required."],
 )
 
+
+# ---------------------------------------------------------------------------
+# Newer / recently added modules (2026-05 wave)
+# ---------------------------------------------------------------------------
+
+ONBOARDING_COMPLETION_ADMIN = (
+    "Onboarding Completion Dashboard (NEW — 2026-05)",
+    "Single source of truth for tracking onboarding completion + automated 48-hour reminder & success email automation. Phase-1 is in TEST MODE — emails only fire to the pilot recipient until you flip the bulk toggle.",
+    [
+        "Open 'Onboarding' from the left sidebar (HR / System Admin).",
+        "The page lists every active employee with their onboarding %, last reminder timestamp, total reminders sent, and success-mail status.",
+        "Use the 6 filter pills at the top — All / Incomplete / 100% Completed / Reminder Pending / Success Mail Pending — to slice the list.",
+        "Use the search box (name, EMP ID, or email) to find a specific employee.",
+        "Click 'Refresh' at any time to reload the latest state from the database.",
+        "Click any per-row 'Send' icon to fire an immediate email for that one employee (bypasses the 48h cadence — useful for ad-hoc testing).",
+        "Click the big 'Run Now (Bypass 48h Cadence)' button to scan every employee at once and dispatch all due reminders + success emails.",
+    ],
+    [
+        "Completion is now driven by THREE mandatory documents only — Aadhaar, PAN, Education Certificates. The old 'Passport-size Photograph' requirement has been retired (the avatar in Employee Profile covers it).",
+        "Reminder cadence: every 48 hours per employee, enforced in business logic — the cron itself wakes every 6h but skips any employee whose last send was <48h ago.",
+        "Success email is one-time only — once an employee hits 100% onboarding, they receive a single celebration email and are never reminded again.",
+        "PILOT mode (default): ALL emails route to the pilot recipient (rishi.nayak@blubridge.com). The scan is also restricted to the pilot only — no other employee row is touched.",
+        "BULK mode: the Switch in the page header. Flipping it ON dispatches emails to every employee's real official email — confirm the pilot worked before toggling.",
+        "Audit: every send (reminder or success) writes a row to email_audit_logs with the Resend provider_id.",
+    ],
+)
+
+PHOTO_WALL_ADMIN = (
+    "Photo Wall + Admin Photo Upload (NEW — 2026-05)",
+    "Visual employee directory with admin-side photo upload supporting click, drag-and-drop, CTRL+V clipboard paste, and mobile camera capture. The uploaded photo reflects instantly across the entire HRMS — Attendance, Leave, Payroll, Dashboard, Directory, ID Card, etc.",
+    [
+        "Open 'Photo Wall' from the left sidebar (Employees → Photo Wall).",
+        "Use the search and department filter at the top to narrow employees.",
+        "Each card shows the employee's avatar, name, designation, EMP ID and a status badge (✓ Photo uploaded / Pending Photo).",
+        "Hover any card — a camera icon overlays the avatar circle to signal click-to-edit.",
+        "Click any card to open the upload modal. You'll see the current photo (or initials) and a dropzone.",
+        "Method 1 — CLICK: Click the dropzone to open your file picker. Pick a JPG / PNG / WebP file up to 5 MB.",
+        "Method 2 — DRAG-AND-DROP: Drag an image from your desktop / file manager directly onto the modal. The whole modal flashes blue while you're dragging.",
+        "Method 3 — CTRL+V PASTE: Copy any image (screenshot, WhatsApp image, Snipping Tool, browser, etc.) and press Ctrl+V while the modal is open. The image is auto-detected and previewed.",
+        "Method 4 — MOBILE CAMERA: On phones/tablets, the file picker opens your camera. Snap a photo and confirm.",
+        "Review the live preview, then click 'Upload' (or 'Replace' if the employee already has a photo). A progress bar runs from 0 → 100%.",
+        "To remove an existing photo, click the red 'Remove' button in the footer and confirm.",
+        "On success, the photo updates instantly on the card AND across all other HRMS modules — no page reload needed.",
+        "If an employee has no photo, click the 'Invite' chip on their card to send them a one-click upload email (Resend-powered).",
+    ],
+    [
+        "Validation: only JPG / JPEG / PNG / WebP files are accepted. Max size 5 MB. Other formats and oversized files are rejected with a friendly toast.",
+        "Photos are auto-resized to 512×512 with face-aware cropping (Cloudinary `c_fill,g_face`).",
+        "Audit log entry is written on every upload/remove with PREVIOUS_URL → UPDATED_URL + actor role.",
+        "Permission: only HR / System Admin / Office Admin (and the employee themselves on their own profile) can update an avatar. Employees attempting to update other employees' photos get a 403.",
+    ],
+)
+
+EMAIL_DISPATCH_CONFIG = (
+    "Email Dispatch Configuration (Onboarding page footer)",
+    "Phase-1 safety controls for the automated reminder + success email pipeline.",
+    [
+        "On the Onboarding page, scroll to the 'Email Dispatch Configuration' card.",
+        "Edit 'Phase 1 — Pilot Recipient' to change which inbox receives test emails while bulk is off.",
+        "Tab/click out of the field to auto-save (a 'Settings updated' toast appears).",
+        "Toggle 'enable_bulk_onboarding_mail' to switch from PILOT mode → LIVE bulk mode.",
+        "A confirmation dialog will pop up when enabling bulk — read carefully before clicking OK.",
+    ],
+    [
+        "The Switch state is persisted in the `settings` collection (`_id=onboarding_completion_mail`).",
+        "Once bulk is ON, every incomplete employee will start receiving reminders every 48 hours until they complete onboarding.",
+        "Flip it OFF anytime to pause campaigns — in-flight sends are not retroactively cancelled but no new sends will be dispatched.",
+    ],
+)
+
+EMPLOYEE_PROFILE_PHOTO = (
+    "Profile Photo Upload (NEW)",
+    "Upload your own profile picture; it reflects instantly across the entire HRMS.",
+    [
+        "Open 'Profile' from your avatar in the top-right or the sidebar.",
+        "Hover over your avatar circle and click the camera badge.",
+        "Either drag-and-drop an image, click to pick from your device, or paste from the clipboard.",
+        "Mobile: the file picker opens your camera so you can snap a fresh photo.",
+        "Confirm the preview, then click 'Upload'. A short progress bar runs to 100%.",
+        "Your new photo appears immediately on the sidebar, dashboard, attendance, leave records, and everywhere else.",
+        "If you receive the 'Upload your profile photo' email from BluBridge HR, click the button — it takes you to a secure one-click upload page.",
+    ],
+    [
+        "Supported formats: JPG, JPEG, PNG, WebP. Max size 5 MB.",
+        "Photos are auto-cropped to a square with face-aware framing.",
+        "You can also use the 'Remove' button to clear your current photo and revert to initials.",
+    ],
+)
+
+RESEARCH_UNIT_POLICY = (
+    "Research Unit — HR Induction Policy (NEW — 2026-05-22)",
+    "Department-restricted policy visible ONLY to Research Unit employees and admins. Includes working-hour rules, EOD reporting, leave formats, conduct, and reimbursement.",
+    [
+        "Open 'Policies' from the sidebar.",
+        "Look for 'BluBridge — HR Induction, Company Conduct & Leave Policy (Research Unit)' (v2.0, effective 12-Feb-2026).",
+        "Click to read the 8 sections: Working Hours & Productivity, EOD Reporting, Leave Communication Format, Leave Policy & Attendance Compliance, Leave Approval Process, Company Conduct & Workplace Protocol, Reimbursement Policy, and the Acknowledgement section.",
+        "Tables (break schedule, leave-type matrix, reimbursement recipients) render natively inside the policy view.",
+        "Click 'Mark as Read' at the bottom — your acknowledgement is captured in the audit log.",
+    ],
+    [
+        "If you're not in the Research Unit, this policy is hidden from your view (department-restricted visibility).",
+        "Admins can see acknowledgement counts under '/admin/policy-acknowledgements/summary'.",
+    ],
+)
+
+ONBOARDING_DOC_TYPES_NOTE = (
+    "What's Changed in Onboarding (Important Update)",
+    "Effective 20-May-2026, the mandatory onboarding-document set is reduced to THREE items.",
+    [
+        "Mandatory documents: Aadhaar Card, PAN Card, Education Certificates. That's it.",
+        "Optional documents still supported: Passport, Voter ID, Experience Certificates, Offer / Appointment Letter, Relieving Letter.",
+        "The old 'Passport-size Photograph' onboarding row has been REMOVED — your profile photo (Employee Profile → Avatar) now serves that purpose.",
+        "Your onboarding % is recalculated automatically — no action needed from you.",
+    ],
+    [
+        "If you previously uploaded a passport-size photograph in the Onboarding section, that record has been pruned. Upload an avatar from Employee Profile if you haven't already.",
+        "HR can see the new 3-doc completion math in the Onboarding tracking dashboard.",
+    ],
+)
+
 # ---------- HR modules ----------
 HR_MODULES = [
     COMMON_LOGIN,
@@ -151,6 +271,10 @@ HR_MODULES = [
         ],
         ["Check the badge counter in the sidebar — it updates every 60 seconds."],
     ),
+    ONBOARDING_COMPLETION_ADMIN,
+    EMAIL_DISPATCH_CONFIG,
+    PHOTO_WALL_ADMIN,
+    ONBOARDING_DOC_TYPES_NOTE,
     (
         "Operational Setup (Checklist)",
         "Track office setup tasks for every new joiner.",
@@ -222,6 +346,7 @@ HR_MODULES = [
         ],
         ["Replace an existing policy by uploading a new version; old versions stay archived."],
     ),
+    RESEARCH_UNIT_POLICY,
     (
         "Star Reward",
         "Recognise employees with star points.",
@@ -352,6 +477,8 @@ SYSADMIN_MODULES = [
             "Role changes log out the affected user only on their next request.",
         ],
     ),
+    ONBOARDING_COMPLETION_ADMIN,
+    PHOTO_WALL_ADMIN,
     (
         "Audit Logs",
         "Investigate user actions for compliance or incident response.",
@@ -420,6 +547,7 @@ OFFICEADMIN_MODULES = [
         ],
         ["Office holidays reflect instantly for every employee."],
     ),
+    PHOTO_WALL_ADMIN,
     COMMON_PROFILE,
     COMMON_NOTIFICATIONS,
 ]
@@ -536,6 +664,9 @@ EMPLOYEE_MODULES = [
         ],
         ["HR can audit who has acknowledged each policy."],
     ),
+    RESEARCH_UNIT_POLICY,
+    ONBOARDING_DOC_TYPES_NOTE,
+    EMPLOYEE_PROFILE_PHOTO,
     (
         "My Documents",
         "Access employer-issued documents.",
