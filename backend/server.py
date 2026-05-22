@@ -11288,6 +11288,206 @@ async def admin_policy_ack_list(
     }
 
 
+# ============== POLICY ACKNOWLEDGEMENT — EMAIL REMINDER ==============
+# Phase-1 (TEST MODE) pilot: emails ONLY go to the configured pilot_email
+# (defaults to rishi.nayak@blubridge.com) until enable_bulk_policy_ack_mail
+# is flipped on by an admin. Same safety pattern as the onboarding-completion
+# campaign.
+POLICY_ACK_SETTINGS_DOC_ID = "policy_ack_mail"
+POLICY_ACK_PILOT_DEFAULT_EMAIL = "rishi.nayak@blubridge.com"
+
+
+async def _get_policy_ack_settings() -> dict:
+    doc = await db.settings.find_one({"_id": POLICY_ACK_SETTINGS_DOC_ID}) or {}
+    return {
+        "enable_bulk_policy_ack_mail": bool(doc.get("enable_bulk_policy_ack_mail", False)),
+        "pilot_email": doc.get("pilot_email") or POLICY_ACK_PILOT_DEFAULT_EMAIL,
+        "updated_at": doc.get("updated_at"),
+        "updated_by": doc.get("updated_by"),
+    }
+
+
+async def _list_pending_policies_for_employee(emp_id: str, emp_role: str, emp_dept: str) -> list:
+    """Return policies visible to this employee that they have NOT yet acknowledged."""
+    all_policies = await db.policies.find(
+        {"id": {"$nin": list(HIDDEN_POLICIES)}},
+        {"_id": 0, "id": 1, "name": 1, "category": 1, "version": 1, "effective_date": 1, "applicable_to": 1},
+    ).to_list(200)
+
+    visible: list = []
+    pseudo_user = {"role": emp_role, "department": emp_dept, "employee_id": emp_id}
+    for p in all_policies:
+        if await _is_policy_visible_to_user(p["id"], pseudo_user):
+            visible.append(p)
+
+    if not visible:
+        return []
+
+    acked_cursor = db.policy_acknowledgements.find(
+        {"employee_id": emp_id, "policy_id": {"$in": [p["id"] for p in visible]}},
+        {"_id": 0, "policy_id": 1},
+    )
+    acked_ids = {a["policy_id"] async for a in acked_cursor}
+    return [p for p in visible if p["id"] not in acked_ids]
+
+
+@api_router.get("/admin/policy-acknowledgement/settings")
+async def get_policy_ack_settings_endpoint(current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    return await _get_policy_ack_settings()
+
+
+@api_router.put("/admin/policy-acknowledgement/settings")
+async def update_policy_ack_settings_endpoint(body: dict, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    patch: dict = {"updated_at": get_ist_now().isoformat(), "updated_by": current_user["id"]}
+    if "enable_bulk_policy_ack_mail" in body:
+        patch["enable_bulk_policy_ack_mail"] = bool(body["enable_bulk_policy_ack_mail"])
+    if "pilot_email" in body and body["pilot_email"]:
+        patch["pilot_email"] = str(body["pilot_email"]).strip()
+    await db.settings.update_one(
+        {"_id": POLICY_ACK_SETTINGS_DOC_ID},
+        {"$set": patch, "$setOnInsert": {"_id": POLICY_ACK_SETTINGS_DOC_ID}},
+        upsert=True,
+    )
+    await log_audit(current_user["id"], "toggle_policy_ack_mail", "settings", POLICY_ACK_SETTINGS_DOC_ID, str(patch))
+    return await _get_policy_ack_settings()
+
+
+@api_router.get("/admin/policy-acknowledgement/preview")
+async def preview_pending_policies(
+    employee_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Show which policies WOULD be sent in the acknowledgement reminder email
+    for a target employee — used by the admin UI before clicking Send Test."""
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    emp = await db.employees.find_one(
+        {"id": employee_id},
+        {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "department": 1},
+    )
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    user = await db.users.find_one({"employee_id": employee_id}, {"_id": 0, "role": 1})
+    role = (user or {}).get("role", "employee")
+    pending = await _list_pending_policies_for_employee(
+        employee_id, role, emp.get("department") or "",
+    )
+    return {
+        "employee_id": employee_id,
+        "employee_name": emp.get("full_name"),
+        "official_email": emp.get("official_email"),
+        "department": emp.get("department"),
+        "role": role,
+        "pending_count": len(pending),
+        "pending_policies": pending,
+    }
+
+
+@api_router.post("/admin/policy-acknowledgement/send-test")
+async def send_policy_ack_test_email(
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Send the policy-acknowledgement reminder email to ONE employee.
+
+    Body: {"employee_id": "<uuid>"}.  Pilot mode (default): the recipient
+    address is OVERRIDDEN to settings.pilot_email so we never accidentally
+    spam a real employee during testing. Bulk mode: sends to the employee's
+    own official_email.
+    """
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+
+    employee_id = (body or {}).get("employee_id")
+    force_all_visible = bool((body or {}).get("force_all_visible", False))
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="employee_id is required")
+
+    emp = await db.employees.find_one(
+        {"id": employee_id},
+        {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "department": 1},
+    )
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    user = await db.users.find_one({"employee_id": employee_id}, {"_id": 0, "role": 1})
+    role = (user or {}).get("role", "employee")
+
+    if force_all_visible:
+        # Test-mode override: list ALL policies visible to this employee
+        # regardless of whether they have already acknowledged them.
+        all_policies = await db.policies.find(
+            {"id": {"$nin": list(HIDDEN_POLICIES)}},
+            {"_id": 0, "id": 1, "name": 1, "category": 1, "version": 1, "effective_date": 1},
+        ).to_list(200)
+        pseudo_user = {"role": role, "department": emp.get("department") or "", "employee_id": employee_id}
+        pending = [p for p in all_policies if await _is_policy_visible_to_user(p["id"], pseudo_user)]
+    else:
+        pending = await _list_pending_policies_for_employee(
+            employee_id, role, emp.get("department") or "",
+        )
+    if not pending:
+        return {
+            "success": True,
+            "sent": False,
+            "reason": "no_pending_policies",
+            "employee_name": emp.get("full_name"),
+        }
+
+    settings = await _get_policy_ack_settings()
+    pilot_only = not settings["enable_bulk_policy_ack_mail"]
+    pilot_email = settings["pilot_email"] or POLICY_ACK_PILOT_DEFAULT_EMAIL
+    to_email = pilot_email if pilot_only else (emp.get("official_email") or pilot_email)
+
+    if not to_email:
+        raise HTTPException(status_code=400, detail="No recipient email available")
+
+    # Deep link: open /policies and surface pending list. The auth-protected
+    # route at /policies will redirect to /login first; after login the
+    # employee lands directly on the Policies module.
+    from email_service import absolute_url, send_hrms_email
+    from email_templates import policy_acknowledgement_email
+    cta_url = absolute_url("/policies", query={"src": "ack_email"})
+
+    html = policy_acknowledgement_email(
+        employee_name=emp.get("full_name") or "there",
+        pending_policies=pending,
+        cta_url=cta_url,
+    )
+
+    sent = await send_hrms_email(
+        db,
+        email_type="policy_acknowledgement_reminder",
+        scope_key=f"{employee_id}:{get_ist_now().strftime('%Y%m%dT%H')}",
+        to_email=to_email,
+        subject=f"Action Required — {len(pending)} polic{'ies' if len(pending) != 1 else 'y'} awaiting your acknowledgement",
+        html=html,
+        employee_id=employee_id,
+        force=True,  # admin-triggered manual send always dispatches
+    )
+
+    await log_audit(
+        current_user["id"],
+        "send_policy_ack_email",
+        "policy",
+        employee_id,
+        f"Sent={sent} to={to_email} pilot={pilot_only} pending={len(pending)}",
+    )
+
+    return {
+        "success": True,
+        "sent": bool(sent),
+        "to": to_email,
+        "pilot_mode": pilot_only,
+        "employee_name": emp.get("full_name"),
+        "pending_count": len(pending),
+        "pending_policy_names": [p.get("name") for p in pending],
+    }
+
+
 # ============== EMPLOYEE EDUCATION & EXPERIENCE ROUTES ==============
 
 class EducationEntry(BaseModel):

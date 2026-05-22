@@ -15,6 +15,15 @@ MUTED = "#64748b"
 GOOD = "#10b981"
 BAD = "#ef4444"
 
+# Hosted BluBridge wordmark — Cloudinary CDN (auto-converted to PNG for
+# email client compatibility, sized to height 56px for a premium header).
+# 2026-05-22: original .webp re-hosted from the user-provided URL so the
+# image never breaks if the customer-assets URL expires.
+LOGO_URL = (
+    "https://res.cloudinary.com/drtqmenn4/image/upload/"
+    "f_png,h_56,q_auto/blubridge/branding/wordmark.webp"
+)
+
 
 def _footer_html() -> str:
     year = datetime.now().year
@@ -62,9 +71,9 @@ def base_email_template(
   <tr><td align="center">
     <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:{CARD_BG};border:1px solid {BORDER};border-radius:12px;overflow:hidden;">
       <tr>
-        <td style="padding:28px 32px;background:linear-gradient(135deg,{BRAND_PRIMARY} 0%, #0a56c2 100%);color:#fff;">
-          <div style="font-weight:700;letter-spacing:3px;font-size:20px;">BLU<span style="color:{BRAND_ACCENT};">B</span>RIDGE</div>
-          <div style="font-size:12px;color:#c9d6ea;letter-spacing:2px;margin-top:2px;">HRMS PLATFORM</div>
+        <td style="padding:32px 32px 22px 32px;background:#04183f;text-align:center;border-bottom:3px solid {BRAND_ACCENT};">
+          <img src="{LOGO_URL}" alt="BluBridge" height="40" style="display:inline-block;height:40px;max-height:40px;width:auto;border:0;outline:none;text-decoration:none;" />
+          <div style="font-size:11px;color:#7591b8;letter-spacing:4px;margin-top:10px;text-transform:uppercase;font-weight:600;">HRMS Platform</div>
         </td>
       </tr>
       <tr>
@@ -469,4 +478,74 @@ def onboarding_success_email(*, employee_name: str) -> str:
         intro_html=intro,
         body_html=body,
         accent=GOOD,
+    )
+
+
+
+def policy_acknowledgement_email(
+    *,
+    employee_name: str,
+    pending_policies: list,
+    cta_url: str,
+) -> str:
+    """Reminder to acknowledge unread company policies.
+
+    pending_policies: list of dicts {"id","name","category","version","effective_date"}
+    cta_url: deep link to the Policies page (employee logs in and lands directly there).
+    """
+    first_name = (employee_name or "there").split()[0]
+
+    rows_html = []
+    for p in pending_policies:
+        name = p.get("name") or "Untitled Policy"
+        cat = p.get("category") or "—"
+        ver = p.get("version") or "1.0"
+        eff = p.get("effective_date") or "—"
+        rows_html.append(
+            f"""
+            <tr>
+              <td style="padding:14px 18px;border-bottom:1px solid {BORDER};vertical-align:top;">
+                <div style="font-size:14px;font-weight:700;color:{TEXT};line-height:1.4;">{name}</div>
+                <div style="font-size:11px;color:{MUTED};margin-top:4px;letter-spacing:.4px;">
+                  {cat.upper()} &nbsp;·&nbsp; v{ver} &nbsp;·&nbsp; Effective {eff}
+                </div>
+              </td>
+              <td style="padding:14px 18px;border-bottom:1px solid {BORDER};vertical-align:top;text-align:right;white-space:nowrap;">
+                <span style="display:inline-block;font-size:11px;font-weight:700;color:{BAD};background:#fee2e2;padding:4px 10px;border-radius:999px;letter-spacing:.5px;">PENDING</span>
+              </td>
+            </tr>
+            """
+        )
+    table_html = "".join(rows_html) or (
+        f"<tr><td style='padding:18px;color:{MUTED};text-align:center;font-style:italic;'>No pending policies.</td></tr>"
+    )
+
+    intro = (
+        f"You have <b>{len(pending_policies)}</b> compan"
+        + ("ies" if len(pending_policies) != 1 else "y")
+        + " polic"
+        + ("ies" if len(pending_policies) != 1 else "y")
+        + " awaiting your acknowledgement. Please review and confirm each one — "
+        + "this keeps our records compliant and ensures you are fully informed about workplace expectations."
+    )
+
+    body = f"""
+      <div style="margin:18px 0 6px 0;font-size:12px;color:{MUTED};letter-spacing:.6px;text-transform:uppercase;font-weight:700;">Pending Policies</div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid {BORDER};border-radius:12px;overflow:hidden;margin-bottom:14px;">
+        {table_html}
+      </table>
+      <div style="margin-top:18px;padding:14px 16px;background:#f1f5f9;border-radius:10px;border-left:3px solid {BRAND_PRIMARY};">
+        <div style="font-size:13px;color:{TEXT};line-height:1.6;">
+          <b style="color:{BRAND_PRIMARY};">How to acknowledge:</b> click the button below, sign in to BluBridge HRMS, and you'll land directly on the Policies page. Open each pending policy, read it, and click <b>"Mark as Read"</b>. Done.
+        </div>
+      </div>
+    """
+
+    return base_email_template(
+        title="Action Required — Policy Acknowledgement",
+        greeting=f"Hi {first_name},",
+        intro_html=intro,
+        body_html=body,
+        cta=[{"label": "Review &amp; Acknowledge Now", "url": cta_url, "style": "primary"}],
+        accent=BRAND_PRIMARY,
     )
