@@ -11488,6 +11488,74 @@ async def send_policy_ack_test_email(
     }
 
 
+# ---- Cron handler glue for the policy-ack 48h reminder cycle ----
+async def _policy_ack_list_pending(emp_id: str, role: str, dept: str) -> list:
+    """Resolver used by the cron — same logic as the manual endpoint but
+    inlined so policy_ack.py stays decoupled from server.py."""
+    return await _list_pending_policies_for_employee(emp_id, role, dept)
+
+
+async def _policy_ack_send_reminder(*, emp: dict, pending: list, to_email: str) -> bool:
+    """Builder + dispatcher used by the cron. Idempotent via the email_audit
+    scope_key (employee_id + hour-bucket)."""
+    from email_service import absolute_url, send_hrms_email
+    from email_templates import policy_acknowledgement_email
+    cta_url = absolute_url("/policies", query={"src": "ack_email"})
+    html = policy_acknowledgement_email(
+        employee_name=emp.get("full_name") or "there",
+        pending_policies=pending,
+        cta_url=cta_url,
+    )
+    return bool(await send_hrms_email(
+        db,
+        email_type="policy_acknowledgement_reminder",
+        scope_key=f"{emp.get('id')}:{get_ist_now().strftime('%Y%m%dT%H')}",
+        to_email=to_email,
+        subject=f"Action Required — {len(pending)} polic{'ies' if len(pending) != 1 else 'y'} awaiting your acknowledgement",
+        html=html,
+        employee_id=emp.get("id"),
+    ))
+
+
+def get_policy_ack_handlers() -> dict:
+    """Exposed for `email_jobs.policy_ack_job_inner` — keeps policy-visibility
+    rules + Resend wiring in one place (this file) while the scheduler stays
+    in email_jobs.py."""
+    return {
+        "list_pending": _policy_ack_list_pending,
+        "send_reminder": _policy_ack_send_reminder,
+    }
+
+
+@api_router.post("/admin/policy-acknowledgement/run-now")
+async def run_policy_ack_now(
+    body: Optional[dict] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Manual trigger of the policy-ack cycle. Bypasses the 48h cadence
+    so HR can verify the cron path end-to-end. Pilot/bulk gating IS still
+    respected — bulk only fires if `enable_bulk_policy_ack_mail` is true."""
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    target_employee_id = (body or {}).get("employee_id") or None
+    from policy_ack import run_policy_ack_cycle
+    summary = await run_policy_ack_cycle(
+        db,
+        list_pending_for_employee=_policy_ack_list_pending,
+        send_reminder_email=_policy_ack_send_reminder,
+        force=True,
+        target_employee_id=target_employee_id,
+    )
+    await log_audit(
+        current_user["id"],
+        "run_policy_ack_now",
+        "email",
+        target_employee_id or "all",
+        f"Reminders sent: {summary.get('reminders_sent')}, pilot={summary.get('pilot_mode')}",
+    )
+    return {"success": True, **summary}
+
+
 # ============== EMPLOYEE EDUCATION & EXPERIENCE ROUTES ==============
 
 class EducationEntry(BaseModel):
@@ -14762,6 +14830,8 @@ async def ensure_indexes():
         await _ensure_email_indexes(db)
         await _ensure_cron_settings_seed(db, list(_CRON_JOB_META.keys()))
         await _oc_ensure_indexes(db)
+        from policy_ack import ensure_state_indexes as _pa_ensure_indexes
+        await _pa_ensure_indexes(db)
         _start_email_scheduler(db)
     except Exception as e:
         print(f"Email scheduler startup failed: {e}")

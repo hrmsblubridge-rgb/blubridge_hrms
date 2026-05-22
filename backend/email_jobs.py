@@ -81,6 +81,11 @@ JOB_META: dict[str, dict] = {
         "schedule": "Every 6 hours (48-hour cadence per employee)",
         "scope": "incomplete employees",
     },
+    "policy_ack": {
+        "label": "Policy Acknowledgement Reminder",
+        "schedule": "Every 6 hours (48-hour cadence per employee)",
+        "scope": "employees with pending policy acknowledgements",
+    },
 }
 
 
@@ -694,6 +699,39 @@ onboarding_completion_job = _gated("onboarding_completion")(
 
 
 # =========================================================================
+# Policy Acknowledgement Reminder
+# =========================================================================
+async def policy_ack_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> None:
+    """Scan employees and send the 48-hour policy-ack reminder to anyone with
+    pending acknowledgements. Pilot/cadence safety enforced inside
+    `policy_ack.run_policy_ack_cycle`.
+
+    The pending-policy resolver and the e-mail builder live in server.py
+    (they depend on `_is_policy_visible_to_user` and Resend wiring), so we
+    inject them via `get_policy_ack_handlers()` to avoid a circular import.
+    """
+    try:
+        from server import get_policy_ack_handlers  # type: ignore
+    except Exception as e:
+        logger.warning("policy_ack handlers not yet available: %s", e)
+        return
+    handlers = get_policy_ack_handlers()
+    if not handlers:
+        return
+    from policy_ack import run_policy_ack_cycle
+    summary = await run_policy_ack_cycle(
+        db,
+        list_pending_for_employee=handlers["list_pending"],
+        send_reminder_email=handlers["send_reminder"],
+        force=force,
+    )
+    logger.info("[cron:policy_ack] %s", summary)
+
+
+policy_ack_job = _gated("policy_ack")(policy_ack_job_inner)
+
+
+# =========================================================================
 # Scheduler bootstrap
 # =========================================================================
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -743,10 +781,18 @@ def start_email_scheduler(db: AsyncIOMotorDatabase) -> AsyncIOScheduler:
         trigger=CronTrigger(hour="*/6", minute=0, timezone=IST),
         id="onboardingCompletionCron", **common,
     )
+    # Policy acknowledgement reminder — also every 6h, business logic
+    # enforces the per-employee 48h cadence. Different `minute` to avoid
+    # both heavy scans hitting the DB at the same time.
+    sch.add_job(
+        policy_ack_job, args=[db],
+        trigger=CronTrigger(hour="*/6", minute=30, timezone=IST),
+        id="policyAckCron", **common,
+    )
 
     sch.start()
     _scheduler = sch
-    logger.info("HRMS email scheduler started with 6 jobs")
+    logger.info("HRMS email scheduler started with 7 jobs")
     return sch
 
 
@@ -759,4 +805,5 @@ def get_job_handlers() -> dict:
         "early_out": early_out_job,
         "no_login": no_login_job,
         "onboarding_completion": onboarding_completion_job,
+        "policy_ack": policy_ack_job,
     }

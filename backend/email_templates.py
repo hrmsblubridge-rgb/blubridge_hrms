@@ -539,6 +539,11 @@ def policy_acknowledgement_email(
           <b style="color:{BRAND_PRIMARY};">How to acknowledge:</b> click the button below, sign in to BluBridge HRMS, and you'll land directly on the Policies page. Open each pending policy, read it, and click <b>"Mark as Read"</b>. Done.
         </div>
       </div>
+      <div style="margin-top:14px;padding:12px 14px;background:#fff7ed;border-radius:10px;border-left:3px solid {BRAND_ACCENT};">
+        <div style="font-size:12px;color:{TEXT};line-height:1.55;">
+          <b style="color:{BRAND_ACCENT};">⏱ Gentle reminder cadence:</b> if you don't acknowledge within 48 hours, you'll receive another friendly nudge. Once every pending policy is marked as read, the reminders stop automatically.
+        </div>
+      </div>
     """
 
     return base_email_template(
