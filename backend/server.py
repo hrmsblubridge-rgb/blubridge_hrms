@@ -11445,12 +11445,11 @@ async def send_policy_ack_test_email(
     if not to_email:
         raise HTTPException(status_code=400, detail="No recipient email available")
 
-    # Deep link: open /policies and surface pending list. The auth-protected
-    # route at /policies will redirect to /login first; after login the
-    # employee lands directly on the Policies module.
+    # Deep link: route through /login with ?next=/policies so the user lands
+    # directly on the Policies page after sign-in (not the default /dashboard).
     from email_service import absolute_url, send_hrms_email
     from email_templates import policy_acknowledgement_email
-    cta_url = absolute_url("/policies", query={"src": "ack_email"})
+    cta_url = absolute_url("/login", query={"next": "/policies", "src": "ack_email"})
 
     html = policy_acknowledgement_email(
         employee_name=emp.get("full_name") or "there",
@@ -11500,7 +11499,10 @@ async def _policy_ack_send_reminder(*, emp: dict, pending: list, to_email: str) 
     scope_key (employee_id + hour-bucket)."""
     from email_service import absolute_url, send_hrms_email
     from email_templates import policy_acknowledgement_email
-    cta_url = absolute_url("/policies", query={"src": "ack_email"})
+    # Deep-link goes through /login with ?next=/policies so Login.js redirects
+    # the user straight to the Policies page after sign-in (instead of the
+    # default /dashboard landing).
+    cta_url = absolute_url("/login", query={"next": "/policies", "src": "ack_email"})
     html = policy_acknowledgement_email(
         employee_name=emp.get("full_name") or "there",
         pending_policies=pending,

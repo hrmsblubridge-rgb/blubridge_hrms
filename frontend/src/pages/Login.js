@@ -19,9 +19,39 @@ const Login = () => {
   const { login, user, needsOnboarding } = useAuth();
   const navigate = useNavigate();
 
+  // Honour ?next=/policies (or any safe internal path) from email/deep-link
+  // CTAs so a user clicking "Review & Acknowledge" lands on the Policies page
+  // straight after login instead of bouncing to /dashboard.
+  // Also remaps the role-agnostic /policies → /employee/policies for employees.
+  const resolveNextForRole = (rawNext, role) => {
+    if (!rawNext) return null;
+    if (!rawNext.startsWith('/') || rawNext.startsWith('//')) return null;
+    // Role-aware aliases — email CTAs use the simple /policies form;
+    // employees route to their own variant of the page.
+    if (role === 'employee') {
+      if (rawNext === '/policies') return '/employee/policies';
+      if (rawNext === '/dashboard') return '/employee/dashboard';
+    }
+    return rawNext;
+  };
+
+  const getNextPath = (role) => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const raw = sp.get('next') || sp.get('redirect');
+      return resolveNextForRole(raw, role);
+    } catch (e) { /* noop */ }
+    return null;
+  };
+
   useEffect(() => {
     // If user is already logged in, redirect appropriately
     if (user) {
+      const next = getNextPath(user.role);
+      if (next) {
+        navigate(next);
+        return;
+      }
       if (user.role === 'employee') {
         if (needsOnboarding()) {
           navigate('/employee/onboarding');
@@ -62,10 +92,14 @@ const Login = () => {
 
     if (result.success) {
       toast.success('Welcome to BluBridge HRMS');
-      
-      // Check if employee needs onboarding
+
+      // Honour ?next=... deep-link from email CTA (e.g. "Review & Acknowledge"
+      // button → /policies). Falls back to role-based default destination.
       const userData = result.user;
-      if (userData?.role === 'employee' && userData?.onboarding_status !== 'approved' && !userData?.onboarding_completed) {
+      const next = getNextPath(userData?.role);
+      if (next) {
+        navigate(next);
+      } else if (userData?.role === 'employee' && userData?.onboarding_status !== 'approved' && !userData?.onboarding_completed) {
         navigate('/employee/onboarding');
       } else if (userData?.role === 'employee') {
         navigate('/employee/dashboard');
