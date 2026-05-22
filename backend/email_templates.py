@@ -15,13 +15,14 @@ MUTED = "#64748b"
 GOOD = "#10b981"
 BAD = "#ef4444"
 
-# Hosted BluBridge wordmark — Cloudinary CDN (auto-converted to PNG for
-# email client compatibility, sized to height 56px for a premium header).
-# 2026-05-22: original .webp re-hosted from the user-provided URL so the
-# image never breaks if the customer-assets URL expires.
+# Hosted BluBridge wordmark — Cloudinary CDN, 735×115 transparent PNG
+# (white letters on transparent background, crisply pre-scaled in PIL before
+# upload so it stays sharp even on retina email clients).
+# 2026-05-22: v2 published with proper 5× upscale + fresh public_id so any
+# Cloudinary/Gmail CDN cache from the previous tiny 147×23 asset is bypassed.
 LOGO_URL = (
     "https://res.cloudinary.com/drtqmenn4/image/upload/"
-    "f_png,h_56,q_auto/blubridge/branding/wordmark.webp"
+    "q_auto,f_png/blubridge/branding/wordmark_v2.png"
 )
 
 
@@ -71,9 +72,9 @@ def base_email_template(
   <tr><td align="center">
     <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:{CARD_BG};border:1px solid {BORDER};border-radius:12px;overflow:hidden;">
       <tr>
-        <td style="padding:32px 32px 22px 32px;background:#04183f;text-align:center;border-bottom:3px solid {BRAND_ACCENT};">
-          <img src="{LOGO_URL}" alt="BluBridge" height="40" style="display:inline-block;height:40px;max-height:40px;width:auto;border:0;outline:none;text-decoration:none;" />
-          <div style="font-size:11px;color:#7591b8;letter-spacing:4px;margin-top:10px;text-transform:uppercase;font-weight:600;">HRMS Platform</div>
+        <td style="padding:36px 32px 26px 32px;background:#04183f;text-align:center;border-bottom:3px solid {BRAND_ACCENT};">
+          <img src="{LOGO_URL}" alt="BluBridge" width="220" style="display:inline-block;width:220px;max-width:60%;height:auto;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;" />
+          <div style="font-size:11px;color:#7591b8;letter-spacing:4px;margin-top:14px;text-transform:uppercase;font-weight:600;">HRMS Platform</div>
         </td>
       </tr>
       <tr>
