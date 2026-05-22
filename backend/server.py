@@ -10925,7 +10925,9 @@ DEPARTMENT_RESTRICTED_POLICIES = {
 
 # Policies that are completely hidden from every user (including admins).
 # To re-enable a policy, simply remove its id from this set.
-HIDDEN_POLICIES: set = set()
+# • policy_research_hr — superseded by the new policy_research (BluBridge HR
+#   Induction, Conduct & Leave Policy v2.0). Hidden 2026-05-22.
+HIDDEN_POLICIES: set = {"policy_research_hr"}
 
 # Policies that bypass ALL access checks (department / club / role) and must
 # always be visible to every authenticated user. Used for organisation-wide
