@@ -2747,6 +2747,123 @@ async def delete_cloudinary_asset(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ============== SECURE DOCUMENT VIEWING ==============
+# Cloudinary's default account security blocks public delivery of PDF/ZIP via
+# /image/upload/ — resulting in 401 "deny or ACL failure" when the admin clicks
+# View/Download on an onboarding document. This endpoint generates a short-lived,
+# server-signed Cloudinary Admin-API download URL that ALWAYS works regardless
+# of the public-delivery setting. RBAC ensures only admins/HR or the owning
+# employee can request a signed URL for a given document.
+
+def _ext_from_file_url(file_url: str, file_name: Optional[str] = None) -> Optional[str]:
+    """Extract lowercase extension (e.g. 'pdf', 'jpg') from file_url or file_name."""
+    for candidate in (file_url or "", file_name or ""):
+        if not candidate:
+            continue
+        # strip query string + path
+        path = candidate.split("?", 1)[0]
+        last = path.rsplit("/", 1)[-1]
+        if "." in last:
+            ext = last.rsplit(".", 1)[-1].lower().strip()
+            if 1 <= len(ext) <= 6 and ext.isalnum():
+                return ext
+    return None
+
+
+@api_router.get("/documents/secure-url")
+async def get_document_secure_url(
+    employee_id: str = Query(..., description="Employee UUID owning the document"),
+    document_type: str = Query(..., description="Document type key (e.g. aadhaar_card, pan_card)"),
+    disposition: str = Query("inline", regex="^(inline|attachment)$"),
+    source: str = Query("onboarding", regex="^(onboarding|employee)$",
+                        description="onboarding=KYC docs, employee=HR-issued letters"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate a short-lived signed Cloudinary download URL for an employee document.
+
+    Bypasses Cloudinary's default PDF/ZIP delivery restriction by using the
+    Admin-API signed download endpoint. URL is valid for 15 minutes.
+    Supports both onboarding KYC docs and HR-issued letters via `source`.
+    """
+    # --- RBAC: admin/HR roles OR the owning employee ---
+    role = current_user.get("role")
+    is_privileged = role in (UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN)
+    is_owner = current_user.get("employee_id") == employee_id
+    if not (is_privileged or is_owner):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # --- Locate the document record (search the requested collection, then
+    # fall back to the other one so callers don't have to guess) ---
+    collections = (
+        [db.onboarding_documents, db.employee_documents]
+        if source == "onboarding"
+        else [db.employee_documents, db.onboarding_documents]
+    )
+    doc = None
+    for coll in collections:
+        doc = await coll.find_one(
+            {"employee_id": employee_id, "document_type": document_type},
+            {"_id": 0},
+        )
+        if doc:
+            break
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    public_id = doc.get("file_public_id")
+    file_url = doc.get("file_url")
+    file_name = doc.get("file_name")
+    if not public_id and not file_url:
+        raise HTTPException(status_code=404, detail="Document has not been uploaded")
+
+    ext = _ext_from_file_url(file_url, file_name)
+
+    # If we don't have a public_id (legacy records), fall back to the stored URL
+    # (works for images that aren't blocked by the PDF restriction).
+    if not public_id:
+        return {"url": file_url, "expires_in": 0, "signed": False}
+
+    # Cloudinary `image` resource_type covers JPG/PNG/PDF (PDFs are stored as
+    # image type with format=pdf by the uploader). Raw type would only be used
+    # for non-image binaries — none of our employee docs use that today.
+    expires_at = int(time.time()) + 900  # 15 minutes
+    try:
+        signed_url = await asyncio.to_thread(
+            cloudinary.utils.private_download_url,
+            public_id,
+            ext or "",
+            resource_type="image",
+            type="upload",
+            expires_at=expires_at,
+            attachment=(disposition == "attachment"),
+        )
+    except Exception as e:
+        # Fall back to the stored URL rather than 500 — at worst the user sees
+        # the same 401 they had before for PDFs (images still work).
+        return {"url": file_url, "expires_in": 0, "signed": False, "error": str(e)}
+
+    # Audit (privileged users only — owner views are noisy/redundant)
+    if is_privileged:
+        try:
+            await log_audit(
+                current_user["id"],
+                "view_document",
+                "employee_document",
+                employee_id,
+                f"Issued signed URL for {document_type} ({disposition})",
+            )
+        except Exception:
+            pass
+
+    return {
+        "url": signed_url,
+        "expires_in": 900,
+        "signed": True,
+        "file_name": file_name,
+    }
+
+
 # ============== AUTH ROUTES ==============
 
 @api_router.post("/auth/login", response_model=LoginResponse)

@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import EmployeeAvatar from '../components/EmployeeAvatar';
+import { viewSecureDocument, downloadSecureDocument } from '../lib/documentAccess';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -506,25 +507,34 @@ const Verification = () => {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => window.open(doc.file_url, '_blank')}
+                                onClick={() =>
+                                  viewSecureDocument({
+                                    employeeId: selectedEmployee?.employee_id,
+                                    documentType: doc.document_type,
+                                    fallbackUrl: doc.file_url,
+                                  })
+                                }
                                 title="View document"
+                                data-testid={`verify-view-${doc.document_type}`}
                               >
                                 <Eye className="w-4 h-4" />
                               </Button>
-                              <a 
-                                href={doc.file_url} 
-                                download={doc.file_name || 'document'}
-                                target="_blank"
-                                rel="noopener noreferrer"
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                title="Download document"
+                                onClick={() =>
+                                  downloadSecureDocument({
+                                    employeeId: selectedEmployee?.employee_id,
+                                    documentType: doc.document_type,
+                                    fileName: doc.file_name || 'document',
+                                    fallbackUrl: doc.file_url,
+                                  })
+                                }
+                                data-testid={`verify-download-${doc.document_type}`}
                               >
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  title="Download document"
-                                >
-                                  <Download className="w-4 h-4" />
-                                </Button>
-                              </a>
+                                <Download className="w-4 h-4" />
+                              </Button>
                             </>
                           )}
                           

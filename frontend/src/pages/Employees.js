@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import SalarySlip from '../components/SalarySlip';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
 import EmployeeAvatar from '../components/EmployeeAvatar';
+import { viewSecureDocument, downloadSecureDocument } from '../lib/documentAccess';
 import AvatarUploader from '../components/AvatarUploader';
 import { useTableSort, SortableTh } from '../components/useTableSort';
 import {
@@ -1890,24 +1891,39 @@ const Employees = () => {
                                 </div>
                               </div>
                               <div className="flex items-center gap-2">
-                                <a 
-                                  href={documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    viewSecureDocument({
+                                      employeeId: selectedEmployee?.id,
+                                      documentType: 'offer_letter',
+                                      fallbackUrl: documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_url,
+                                      source: 'employee',
+                                    })
+                                  }
                                   className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                                   data-testid="view-offer-letter-btn"
                                 >
                                   <ExternalLink className="w-4 h-4" />
                                   View
-                                </a>
-                                <a 
-                                  href={documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_url}
-                                  download
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    downloadSecureDocument({
+                                      employeeId: selectedEmployee?.id,
+                                      documentType: 'offer_letter',
+                                      fileName: documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_name,
+                                      fallbackUrl: documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_url,
+                                      source: 'employee',
+                                    })
+                                  }
                                   className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                                  data-testid="download-offer-letter-btn"
                                 >
                                   <Download className="w-4 h-4" />
                                   Download
-                                </a>
+                                </button>
                               </div>
                             </div>
                           </div>

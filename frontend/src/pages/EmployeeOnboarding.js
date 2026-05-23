@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { viewSecureDocument } from '../lib/documentAccess';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Button } from '../components/ui/button';
@@ -390,7 +391,14 @@ const EmployeeOnboarding = () => {
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => window.open(doc.file_url, '_blank')}
+                            onClick={() =>
+                              viewSecureDocument({
+                                employeeId: user?.employee_id,
+                                documentType: doc.document_type,
+                                fallbackUrl: doc.file_url,
+                                source: 'onboarding',
+                              })
+                            }
                           >
                             <Eye className="w-4 h-4" />
                           </Button>

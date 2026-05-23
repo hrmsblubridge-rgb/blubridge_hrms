@@ -5,6 +5,47 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-23 (URGENT FIX — Document View 401 Unauthorized resolved)
+**User issue (P0/URGENT):** Clicking the View / Download icons on uploaded onboarding documents (Aadhaar, PAN, Education certs, Offer Letter) returned **401 Unauthorized** from Cloudinary for PDF files. Root cause: Cloudinary account-level "Restricted media types" blocks public delivery of PDF/ZIP via `/image/upload/` — raw signed URLs (`sign_url=True`, `fl_attachment`) also fail. The only working bypass is the Cloudinary **Admin-API `private_download_url`** with `type=upload`, which produces a time-limited signed URL on `api.cloudinary.com` that returns 200 OK regardless of the PDF restriction.
+
+**Implementation (single endpoint + shared frontend helper):**
+- **`GET /api/documents/secure-url`** (server.py, right after `/cloudinary/{public_id}`):
+  - Query params: `employee_id`, `document_type`, `disposition=inline|attachment`, `source=onboarding|employee`.
+  - RBAC: HR / SYSTEM_ADMIN / OFFICE_ADMIN OR the owning employee (else 403).
+  - Looks up the document in `onboarding_documents` first (or `employee_documents` if `source=employee`), with automatic fallback to the other collection.
+  - Returns a 15-minute signed Cloudinary URL: `cloudinary.utils.private_download_url(public_id, ext, resource_type="image", type="upload", expires_at=..., attachment=...)`.
+  - Falls back to the raw `file_url` if `file_public_id` is missing (legacy records) so JPG/PNG self-hosted images still resolve.
+  - Privileged users get an audit log entry per signed URL issued.
+- **`/app/frontend/src/lib/documentAccess.js`** (new, ~70 lines): centralised `viewSecureDocument` / `downloadSecureDocument` / `fetchSignedDocumentUrl` helpers — fetches the signed URL via the new endpoint, then `window.open` or anchor-click download. Toast on failure with the backend `detail` message.
+- Wired into four pages (View + Download icons replaced):
+  - `Verification.js` (admin onboarding queue) — uses `selectedEmployee.employee_id`.
+  - `EmployeeDocuments.js` (employee self-view) — onboarding row + Offer Letter card + Other Documents list, all use `user.employee_id` and the correct `source` per section.
+  - `EmployeeOnboarding.js` (employee upload page) — uses `user.employee_id`.
+  - `Employees.js` (admin → Employee → Documents tab) — Offer Letter View/Download buttons use `selectedEmployee.id` with `source=employee`.
+
+**Verification (live):**
+- ✅ `private_download_url` signed URL for a previously-401 PDF (Aadhaar Card.pdf) returns **HTTP/2 200 Content-Type: application/pdf**.
+- ✅ Pytest `/app/backend/tests/test_documents_secure_url.py` — 7/7 passing:
+  1. `test_admin_can_get_signed_url` (signature/expires_at/format params verified)
+  2. `test_signed_url_returns_200_from_cloudinary` (HEAD the signed URL → 200)
+  3. `test_attachment_disposition_flag` (`attachment=1` query param when `disposition=attachment`)
+  4. `test_non_owner_employee_is_blocked` (kasper → 403 on other employee's doc)
+  5. `test_unauthenticated_is_rejected` (no token → 401/403)
+  6. `test_missing_doc_returns_404` (fake UUID → 404)
+  7. `test_invalid_disposition_is_rejected` (disposition=evil → 422)
+- ✅ Frontend ESLint clean for all 5 touched files.
+- ✅ Direct curl confirms RBAC matrix: sysadmin → 200, kasper (non-owner employee) → 403.
+
+**Files touched:**
+- `/app/backend/server.py` — new `_ext_from_file_url` helper + `GET /documents/secure-url` endpoint (~95 LoC).
+- `/app/frontend/src/lib/documentAccess.js` — NEW shared helper.
+- `/app/frontend/src/pages/Verification.js`
+- `/app/frontend/src/pages/EmployeeDocuments.js`
+- `/app/frontend/src/pages/EmployeeOnboarding.js`
+- `/app/frontend/src/pages/Employees.js`
+- `/app/backend/tests/test_documents_secure_url.py` — NEW (7 tests).
+
+
 ## Latest Update — 2026-05-22 (Research Unit Policy — full content replacement)
 **User request:** Replace the existing "AI Research / Research Publication Bonus Policy" with the new "BluBridge — HR Induction, Company Conduct & Leave Policy", and ensure ONLY the Research Unit department sees it.
 

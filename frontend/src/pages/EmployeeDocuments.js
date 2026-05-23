@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { viewSecureDocument, downloadSecureDocument } from '../lib/documentAccess';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
@@ -72,7 +73,7 @@ const ONBOARDING_DOC_ICONS = {
 };
 
 const EmployeeDocuments = () => {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -333,7 +334,14 @@ const EmployeeDocuments = () => {
                             variant="outline"
                             size="sm"
                             className="rounded-lg"
-                            onClick={() => window.open(row.file_url, '_blank')}
+                            onClick={() =>
+                              viewSecureDocument({
+                                employeeId: user?.employee_id,
+                                documentType: row.type,
+                                fallbackUrl: row.file_url,
+                                source: 'onboarding',
+                              })
+                            }
                             data-testid={`onboarding-view-${row.type}`}
                           >
                             <ExternalLink className="w-4 h-4 mr-1" />
@@ -443,19 +451,36 @@ const EmployeeDocuments = () => {
                   <div className="flex items-center gap-3">
                     <Button
                       variant="outline"
-                      onClick={() => window.open(offerLetter.file_url, '_blank')}
+                      onClick={() =>
+                        viewSecureDocument({
+                          employeeId: user?.employee_id,
+                          documentType: 'offer_letter',
+                          fallbackUrl: offerLetter.file_url,
+                          source: 'employee',
+                        })
+                      }
                       className="rounded-xl"
                       data-testid="view-offer-btn"
                     >
                       <ExternalLink className="w-4 h-4 mr-2" />
                       View
                     </Button>
-                    <a href={offerLetter.file_url} download>
-                      <Button className="bg-[#063c88] hover:bg-[#052d66] rounded-xl" data-testid="download-offer-btn">
-                        <Download className="w-4 h-4 mr-2" />
-                        Download
-                      </Button>
-                    </a>
+                    <Button
+                      onClick={() =>
+                        downloadSecureDocument({
+                          employeeId: user?.employee_id,
+                          documentType: 'offer_letter',
+                          fileName: offerLetter.file_name,
+                          fallbackUrl: offerLetter.file_url,
+                          source: 'employee',
+                        })
+                      }
+                      className="bg-[#063c88] hover:bg-[#052d66] rounded-xl"
+                      data-testid="download-offer-btn"
+                    >
+                      <Download className="w-4 h-4 mr-2" />
+                      Download
+                    </Button>
                   </div>
                 </div>
               ) : (
@@ -514,16 +539,34 @@ const EmployeeDocuments = () => {
                               <Button
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => window.open(doc.file_url, '_blank')}
+                                onClick={() =>
+                                  viewSecureDocument({
+                                    employeeId: user?.employee_id,
+                                    documentType: doc.document_type,
+                                    fallbackUrl: doc.file_url,
+                                    source: 'employee',
+                                  })
+                                }
                                 className="text-slate-600"
                               >
                                 <ExternalLink className="w-4 h-4" />
                               </Button>
-                              <a href={doc.file_url} download>
-                                <Button variant="ghost" size="sm" className="text-slate-600">
-                                  <Download className="w-4 h-4" />
-                                </Button>
-                              </a>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-slate-600"
+                                onClick={() =>
+                                  downloadSecureDocument({
+                                    employeeId: user?.employee_id,
+                                    documentType: doc.document_type,
+                                    fileName: doc.file_name,
+                                    fallbackUrl: doc.file_url,
+                                    source: 'employee',
+                                  })
+                                }
+                              >
+                                <Download className="w-4 h-4" />
+                              </Button>
                             </div>
                           </div>
                         </div>
