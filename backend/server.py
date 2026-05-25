@@ -2009,6 +2009,7 @@ def _leave_code_for_status(leave_type: str, leave_split: str) -> str:
         Sick          Full → SF | Half → SH
         Emergency     Full → EF | Half → EH
         Optional      Any  → OH        (Optional Holiday — no half/full split)
+        Paid Leave    Full → PA | Half → PP
         Casual / Earned / Annual / Maternity / Paternity / Bereavement /
         General Leave Full → PA | Half → PP   (Paid Leave bucket)
     """
@@ -2025,8 +2026,169 @@ def _leave_code_for_status(leave_type: str, leave_split: str) -> str:
     if lt.startswith("optional"):
         # Optional Holiday — single code regardless of split
         return "OH"
+    if lt.startswith("paid"):
+        return "PP" if is_half else "PA"
     # Everything else → Paid Leave bucket
     return "PP" if is_half else "PA"
+
+
+# ============== PAID LEAVE BALANCE HELPERS ==============
+# Paid Leave business rules (HR spec 2026-05-23):
+# - Every employee earns 1 Paid Leave credit per calendar month (counting the
+#   joining month).
+# - Unused balance carries forward indefinitely.
+# - Half-day usage consumes 0.5; the remaining 0.5 stays usable.
+# - Balance is validated against the LEAVE START DATE (so past-date applications
+#   only see credits earned up to that date — no future credits borrowed).
+# - is_lop is forced to False for any Paid Leave (it is, by definition, paid).
+
+def _is_paid_leave_type(leave_type: Optional[str]) -> bool:
+    if not leave_type:
+        return False
+    return leave_type.strip().lower().startswith("paid")
+
+
+def _leave_days_count(start_date: str, end_date: str, leave_split: str) -> float:
+    """Number of leave-days consumed by a single leave record."""
+    split = (leave_split or "Full Day").strip()
+    if split in ("First Half", "Second Half", "Half Day", "Half"):
+        return 0.5
+    try:
+        sd = datetime.strptime(start_date, "%Y-%m-%d").date()
+        ed = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return 1.0
+    return float(max(1, (ed - sd).days + 1))
+
+
+async def calculate_paid_leave_balance(
+    employee_id: str,
+    reference_date=None,
+    ignore_leave_id: Optional[str] = None,
+) -> dict:
+    """Return {earned, used, balance} as of ``reference_date`` (inclusive).
+
+    earned = number of calendar months from employee.date_of_joining through
+             reference_date (1 credit per month, including the joining month).
+    used   = sum of approved + pending Paid Leave days whose start_date <=
+             reference_date. Pending leaves are also counted to prevent
+             double-booking the same credit while a request is awaiting
+             approval.
+    balance = earned - used  (can be 0 but not negative; the validator below
+             guards against over-booking).
+
+    For DISPLAY (no reference_date), we use today's earned credits but count
+    ALL committed (approved + pending) Paid Leaves regardless of date, so the
+    employee correctly sees future-booked leaves drawing from their balance.
+
+    For VALIDATION (reference_date = new leave's start_date), we use the
+    strict point-in-time semantics above — earned-by-then minus already-used-
+    by-then. This is the correct check because by the time the new leave is
+    consumed, the employee will have at least `earned-by-then` credits.
+
+    ``ignore_leave_id`` lets edit/approve flows recalculate balance without
+    double-counting the leave currently being updated.
+    """
+    if reference_date is None:
+        reference_date = get_ist_now().date()
+        display_mode = True
+    else:
+        display_mode = False
+    if isinstance(reference_date, datetime):
+        reference_date = reference_date.date()
+
+    emp = await db.employees.find_one(
+        {"id": employee_id, "is_deleted": {"$ne": True}},
+        {"_id": 0, "date_of_joining": 1},
+    )
+    if not emp:
+        return {"earned": 0.0, "used": 0.0, "balance": 0.0}
+
+    doj = _parse_date_flex(emp.get("date_of_joining")) or reference_date
+    if isinstance(doj, datetime):
+        doj = doj.date()
+
+    if doj > reference_date:
+        earned = 0.0
+    else:
+        earned = float(
+            (reference_date.year - doj.year) * 12
+            + (reference_date.month - doj.month)
+            + 1
+        )
+
+    ref_iso = reference_date.strftime("%Y-%m-%d")
+    used = 0.0
+    query = {
+        "employee_id": employee_id,
+        "leave_type": {"$regex": "^paid", "$options": "i"},
+        "status": {"$in": ["approved", "pending"]},
+    }
+    # In validation mode, restrict to leaves whose start <= reference_date.
+    # In display mode, count ALL committed Paid Leaves regardless of date.
+    if not display_mode:
+        query["start_date"] = {"$lte": ref_iso}
+
+    cursor = db.leaves.find(
+        query,
+        {"_id": 0, "id": 1, "leave_split": 1, "start_date": 1, "end_date": 1},
+    )
+    async for lv in cursor:
+        if ignore_leave_id and lv.get("id") == ignore_leave_id:
+            continue
+        sd = _parse_date_flex(lv.get("start_date"))
+        ed = _parse_date_flex(lv.get("end_date")) or sd
+        if not sd:
+            continue
+        if isinstance(sd, datetime):
+            sd = sd.date()
+        if isinstance(ed, datetime):
+            ed = ed.date()
+        # In validation mode, clamp to reference_date so a multi-day leave
+        # that overlaps the reference only counts its consumed-by-then days.
+        if not display_mode:
+            ed = min(ed, reference_date)
+        split = (lv.get("leave_split") or "Full Day").strip()
+        if split in ("First Half", "Second Half", "Half Day", "Half"):
+            used += 0.5
+        else:
+            used += float(max(1, (ed - sd).days + 1))
+
+    return {
+        "earned": earned,
+        "used": round(used, 1),
+        "balance": round(earned - used, 1),
+    }
+
+
+async def _validate_paid_leave_balance(
+    employee_id: str,
+    leave_type: str,
+    start_date: str,
+    end_date: str,
+    leave_split: str,
+    ignore_leave_id: Optional[str] = None,
+) -> None:
+    """Raise HTTPException(400) if the employee does not have enough Paid Leave
+    balance for the requested range. No-op for non-Paid leave types."""
+    if not _is_paid_leave_type(leave_type):
+        return
+    try:
+        ref_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return  # let the caller's date-format validation handle this
+
+    needed = _leave_days_count(start_date, end_date, leave_split)
+    bal = await calculate_paid_leave_balance(employee_id, ref_date, ignore_leave_id=ignore_leave_id)
+    if bal["balance"] + 1e-9 < needed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Insufficient Paid Leave balance. As of {start_date}: "
+                f"earned={bal['earned']:g}, used={bal['used']:g}, "
+                f"available={bal['balance']:g}, requested={needed:g}."
+            ),
+        )
 
 async def _prefetch_payroll_data(employee_ids: list, year: int, month_num: int, days_in_month: int) -> dict:
     """Batch-prefetch all payroll-related data for a set of employees in one month."""
@@ -6704,7 +6866,13 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
     employee = await db.employees.find_one({"id": data.employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
-    
+
+    # Paid Leave: balance must cover the requested range. By definition, Paid
+    # Leave is non-LOP — force is_lop=False below.
+    await _validate_paid_leave_balance(
+        data.employee_id, data.leave_type, data.start_date, data.end_date, data.leave_split,
+    )
+
     start = datetime.strptime(data.start_date, "%Y-%m-%d")
     end = datetime.strptime(data.end_date, "%Y-%m-%d")
     
@@ -6733,7 +6901,15 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
         duration_str = f"{duration} day(s)"
     
     is_admin = current_user["role"] in ALL_ADMIN_ROLES
-    
+
+    # Paid Leave is — by definition — paid (non-LOP). Override any conflicting
+    # is_lop hint coming from the client/import.
+    paid_leave = _is_paid_leave_type(data.leave_type)
+    final_is_lop = (
+        False if paid_leave
+        else (data.is_lop if (data.auto_approve and is_admin) else None)
+    )
+
     leave = LeaveRequest(
         employee_id=data.employee_id,
         emp_name=employee["full_name"],
@@ -6749,7 +6925,7 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
         supporting_document_name=data.supporting_document_name,
         applied_by_admin=is_admin,
         status="approved" if (data.auto_approve and is_admin) else "pending",
-        is_lop=data.is_lop if (data.auto_approve and is_admin) else None,
+        is_lop=final_is_lop,
         approved_by=current_user["id"] if (data.auto_approve and is_admin) else None
     )
     doc = leave.model_dump()
@@ -7380,6 +7556,18 @@ async def admin_edit_leave(leave_id: str, data: LeaveAdminEdit, current_user: di
     new_split = update.get("leave_split", leave.get("leave_split", "Full Day"))
     new_start = update.get("start_date", leave.get("start_date"))
     new_end = update.get("end_date", leave.get("end_date"))
+    new_type = update.get("leave_type", leave.get("leave_type"))
+
+    # Paid Leave: revalidate balance for the (possibly new) range.
+    # `ignore_leave_id` avoids double-counting the record being edited.
+    if _is_paid_leave_type(new_type):
+        await _validate_paid_leave_balance(
+            leave["employee_id"], new_type, new_start, new_end, new_split,
+            ignore_leave_id=leave_id,
+        )
+        # Paid Leave is always non-LOP — force it.
+        update["is_lop"] = False
+
     try:
         if new_split in ("First Half", "Second Half"):
             update["duration"] = "0.5 day(s)"
@@ -7408,7 +7596,16 @@ async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = Non
     leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
     if not leave:
         raise HTTPException(status_code=404, detail="Leave request not found")
-    
+
+    # Paid Leave: re-validate balance at approval time (between submission and
+    # now, other Paid Leaves may have been approved and consumed credits).
+    if _is_paid_leave_type(leave.get("leave_type")):
+        await _validate_paid_leave_balance(
+            leave["employee_id"], leave["leave_type"], leave["start_date"],
+            leave["end_date"], leave.get("leave_split", "Full Day"),
+            ignore_leave_id=leave_id,
+        )
+
     update_fields = {
         "status": "approved",
         "approved_by": current_user["id"],
@@ -7418,6 +7615,10 @@ async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = Non
         update_fields["is_lop"] = data.is_lop
     if data and data.lop_remark:
         update_fields["lop_remark"] = data.lop_remark
+
+    # Paid Leave is always non-LOP, overriding any LOP hint from the approver.
+    if _is_paid_leave_type(leave.get("leave_type")):
+        update_fields["is_lop"] = False
     
     result = await db.leaves.update_one(
         {"id": leave_id},
@@ -9130,6 +9331,46 @@ async def get_employee_leaves(current_user: dict = Depends(get_current_user)):
         "history_count": len(history)
     }
 
+@api_router.get("/employee/paid-leave-balance")
+async def get_paid_leave_balance(
+    reference_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return the employee's current Paid Leave balance.
+
+    Optional ``reference_date`` (YYYY-MM-DD) computes balance as-of a given
+    date — used by the apply form to show "available as of the leave start
+    date" so past-dated applications show the right number.
+    """
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    ref = None
+    if reference_date:
+        try:
+            ref = datetime.strptime(reference_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="reference_date must be YYYY-MM-DD")
+    return await calculate_paid_leave_balance(current_user["employee_id"], ref)
+
+
+@api_router.get("/admin/employees/{employee_id}/paid-leave-balance")
+async def admin_get_paid_leave_balance(
+    employee_id: str,
+    reference_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Admin-side Paid Leave balance lookup for the apply-on-behalf dialog."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    ref = None
+    if reference_date:
+        try:
+            ref = datetime.strptime(reference_date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="reference_date must be YYYY-MM-DD")
+    return await calculate_paid_leave_balance(employee_id, ref)
+
+
 @api_router.post("/employee/leaves/apply")
 async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = Depends(get_current_user)):
     """Apply for leave with optional document upload"""
@@ -9178,7 +9419,11 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
         if working_days < 4:
             raise HTTPException(status_code=400, detail="Casual leave must be applied at least 4 working days in advance (excluding Sundays)")
     # Emergency leave: no restrictions
-    
+    # Paid leave: no date restrictions, but balance must cover the range.
+    await _validate_paid_leave_balance(
+        employee_id, data.leave_type, start_date, end_date, data.leave_split,
+    )
+
     # JOB 7: Single leave per day - check all dates in range
     current_date = start_dt
     while current_date <= end_dt:
@@ -9259,7 +9504,13 @@ async def update_employee_leave(leave_id: str, data: EmployeeLeaveCreate, curren
     
     start_dt = datetime.strptime(data.start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(data.end_date, "%Y-%m-%d")
-    
+
+    # Paid Leave: revalidate balance for the (possibly new) range.
+    await _validate_paid_leave_balance(
+        employee_id, data.leave_type, data.start_date, data.end_date,
+        data.leave_split, ignore_leave_id=leave_id,
+    )
+
     if data.leave_split in ["First Half", "Second Half"]:
         duration_str = "0.5 day(s)"
     else:

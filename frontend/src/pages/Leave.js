@@ -39,6 +39,7 @@ const Leave = () => {
   const [editForm, setEditForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '' });
   const [employees, setEmployees] = useState([]);
   const [applyForm, setApplyForm] = useState({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false });
+  const [adminPaidBalance, setAdminPaidBalance] = useState(null);
   const [filters, setFilters] = useState({ empName: '', team: 'All', fromDate: '', toDate: '', leaveType: 'All', status: 'All' });
   // Bulk Import state
   const [showImportDialog, setShowImportDialog] = useState(false);
@@ -74,6 +75,16 @@ const Leave = () => {
   }, [getAuthHeaders]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Refresh admin Paid Leave balance hint when employee or start_date changes
+  useEffect(() => {
+    if (!showApplyDialog || !applyForm.employee_id) { setAdminPaidBalance(null); return; }
+    if (applyForm.leave_type !== 'Paid') { setAdminPaidBalance(null); return; }
+    const params = applyForm.start_date ? { reference_date: applyForm.start_date } : {};
+    axios.get(`${API}/admin/employees/${applyForm.employee_id}/paid-leave-balance`, { headers: getAuthHeaders(), params })
+      .then(r => setAdminPaidBalance(r.data))
+      .catch(() => setAdminPaidBalance(null));
+  }, [showApplyDialog, applyForm.employee_id, applyForm.leave_type, applyForm.start_date, getAuthHeaders]);
 
   const handleFilter = async () => {
     try {
@@ -355,6 +366,7 @@ const Leave = () => {
                 <SelectItem value="Emergency">Emergency</SelectItem>
                 <SelectItem value="Preplanned">Preplanned</SelectItem>
                 <SelectItem value="Optional">Optional</SelectItem>
+                <SelectItem value="Paid">Paid Leave</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -735,8 +747,15 @@ const Leave = () => {
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
                     <SelectItem value="Optional">Optional</SelectItem>
+                    <SelectItem value="Paid">Paid Leave</SelectItem>
                   </SelectContent>
                 </Select>
+                {applyForm.leave_type === 'Paid' && adminPaidBalance && (
+                  <p className="text-[11px] text-emerald-700 mt-1" data-testid="admin-paid-balance-hint">
+                    Available Paid Leave: <strong>{adminPaidBalance.balance}</strong> day(s)
+                    {' '}(earned {adminPaidBalance.earned}, used {adminPaidBalance.used})
+                  </p>
+                )}
               </div>
               <div><Label>Leave Split</Label>
                 <Select value={applyForm.leave_split} onValueChange={v => setApplyForm({ ...applyForm, leave_split: v })}>
@@ -926,6 +945,7 @@ const Leave = () => {
                       <SelectItem value="Emergency">Emergency</SelectItem>
                       <SelectItem value="Preplanned">Preplanned</SelectItem>
                       <SelectItem value="Optional">Optional</SelectItem>
+                      <SelectItem value="Paid">Paid Leave</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

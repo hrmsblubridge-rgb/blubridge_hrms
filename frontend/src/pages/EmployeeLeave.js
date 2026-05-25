@@ -27,6 +27,7 @@ const EmployeeLeave = () => {
   const [docUploading, setDocUploading] = useState(false);
   const [form, setForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' });
   const [viewReason, setViewReason] = useState(null); // { reason, leave_type, start_date, end_date }
+  const [paidBalance, setPaidBalance] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const { sortedRows: sortedLeaves, sortField, sortDir, toggleSort } = useTableSort(leaves);
@@ -53,6 +54,17 @@ const EmployeeLeave = () => {
   }, [getAuthHeaders]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Refresh Paid Leave balance hint when employee opens the apply dialog or
+  // changes the selected start date (so past-date apply shows historical
+  // balance, future-date apply shows current balance).
+  useEffect(() => {
+    if (!showApplyDialog || form.leave_type !== 'Paid') { setPaidBalance(null); return; }
+    const params = form.start_date ? { reference_date: form.start_date } : {};
+    axios.get(`${API}/employee/paid-leave-balance`, { headers: getAuthHeaders(), params })
+      .then(r => setPaidBalance(r.data))
+      .catch(() => setPaidBalance(null));
+  }, [showApplyDialog, form.leave_type, form.start_date, getAuthHeaders]);
 
   const handleDocUpload = async (file) => {
     if (!file) return;
@@ -270,6 +282,7 @@ const EmployeeLeave = () => {
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
                     <SelectItem value="Optional">Optional</SelectItem>
+                    <SelectItem value="Paid">Paid Leave</SelectItem>
                   </SelectContent>
                 </Select>
                 {/* Leave rule hints */}
@@ -277,6 +290,12 @@ const EmployeeLeave = () => {
                 {form.leave_type === 'Casual' && <p className="text-[11px] text-blue-600 mt-1">Casual leave: min 4 working days in advance (excl. Sundays)</p>}
                 {form.leave_type === 'Emergency' && <p className="text-[11px] text-emerald-600 mt-1">Emergency leave: no date restrictions</p>}
                 {form.leave_type === 'Optional' && <p className="text-[11px] text-violet-600 mt-1">Optional leave: no balance / policy restrictions — pick any date</p>}
+                {form.leave_type === 'Paid' && paidBalance && (
+                  <p className="text-[11px] text-emerald-700 mt-1" data-testid="paid-leave-balance-hint">
+                    Available Paid Leave: <strong>{paidBalance.balance}</strong> day(s)
+                    {' '}(earned {paidBalance.earned}, used {paidBalance.used}) — 1 credit/month, carries forward.
+                  </p>
+                )}
               </div>
               <div>
                 <Label className="text-sm font-medium text-slate-700">Leave Split</Label>

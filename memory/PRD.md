@@ -5,6 +5,67 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-23 (Paid Leave system — surgical end-to-end implementation)
+**Scope:** Add a brand-new "Paid Leave" leave-type to the existing leave/payroll/attendance pipeline. SURGICAL — no UI redesign, no payroll engine rewrite, no schema migration, no impact on existing leave types.
+
+**Business rules implemented (per HR spec):**
+- 1 Paid Leave credit earned per calendar month (counting the joining month).
+- Unused balance carries forward indefinitely.
+- Full-day usage consumes 1.0, half-day consumes 0.5 (remaining 0.5 stays usable).
+- Past + future date applications supported.
+- Balance validation is **point-in-time** against the leave's `start_date` (earned-by-then minus already-used-by-then), so retroactive applications check the historical balance.
+- Display balance (no `reference_date`) counts ALL committed Paid Leaves (incl. future) so employees see what's actually available.
+- `is_lop` is **forced to False** for any Paid Leave on create/edit/approve — Paid Leave is, by definition, paid.
+
+**Backend (`/app/backend/server.py` — minimal, isolated additions):**
+- New helpers near `_leave_code_for_status`: `_is_paid_leave_type`, `_leave_days_count`, `calculate_paid_leave_balance(employee_id, reference_date, ignore_leave_id)`, `_validate_paid_leave_balance(...)`.
+- `_leave_code_for_status` now has an explicit `paid` → PA/PP branch (defensive — the existing fallback already routed to the Paid Leave bucket, so no payroll regression).
+- Validation hooks added (no existing logic modified):
+  - `POST /api/leaves` (admin Apply)
+  - `POST /api/employee/leaves/apply` (employee Apply)
+  - `PUT /api/leaves/{leave_id}` (admin Edit)
+  - `PUT /api/leaves/{leave_id}/approve` (HR Approve — revalidated to prevent race-condition over-booking)
+  - `PUT /api/employee/leaves/{leave_id}` (employee Edit of own pending leave)
+- New endpoints:
+  - `GET /api/employee/paid-leave-balance?reference_date=YYYY-MM-DD`
+  - `GET /api/admin/employees/{employee_id}/paid-leave-balance?reference_date=YYYY-MM-DD`
+
+**Frontend (3 dropdowns + 2 balance hints — no UI redesign):**
+- `Leave.js` (admin): "Paid Leave" added to Apply, Edit, and Filter dropdowns. Real-time balance hint in Apply dialog when employee + Paid Leave selected (fetches `/api/admin/employees/.../paid-leave-balance` with `reference_date` = leave start_date).
+- `EmployeeLeave.js`: "Paid Leave" option + real-time balance hint with the same point-in-time `reference_date` semantics.
+- `Payroll.js` legend: **no change needed** — PA/PP markers already labelled "Paid Leave (Full)" / "Paid Leave (Half)" in the legend.
+
+**Payroll integration (zero engine changes):**
+- Paid Leave flows through the existing approved-non-LOP leave pipeline.
+- `_leave_code_for_status("Paid", "Full Day")` → `PA` (existing style — same as Casual/Earned/Annual bucket).
+- `_leave_code_for_status("Paid", "First Half" | "Second Half")` → `PP`.
+- Payroll engine treats PA/PP as approved non-LOP leave: **no LOP deducted, full salary payable for full-day, half-salary handled by existing half-day logic.**
+
+**Verification:**
+- ✅ `/app/backend/tests/test_paid_leave_balance.py` — **12/12 passing**:
+  - Balance accumulates 1/month from DOJ
+  - Balance is 0 before DOJ
+  - Half-day consumes 0.5
+  - Full-day consumes 1.0
+  - Over-balance Paid Leave is blocked with descriptive 400
+  - Sufficient balance Paid Leave is approved with `is_lop=False`
+  - `is_lop=True` from admin is force-overridden to `False` for Paid Leave
+  - Sick / Casual / Emergency leaves are NOT subject to Paid Leave validator (no regression)
+  - 0.5 + 0.5 = 1.0 cap; a 3rd half-day in same month blocked
+  - Past-date application uses historical balance (allowed when affordable then)
+  - Future-date application uses future projected balance
+  - Display balance includes future-committed leaves
+- ✅ `/app/backend/tests/test_payroll_leave_codes.py` — **27/27 passing** (existing regression — PA/PP/SF/SH/EF/EH/PF/PH/OH mappings + payroll engine semantics).
+- ✅ Backend lint: no new errors introduced (61 pre-existing monolith warnings unchanged).
+- ✅ Frontend lint: clean.
+
+**Files touched:**
+- `/app/backend/server.py` — helpers + endpoints + validator hooks (~220 LoC added, no existing logic deleted/modified beyond hook points).
+- `/app/frontend/src/pages/Leave.js` — Paid Leave dropdown items + balance fetch effect + hint.
+- `/app/frontend/src/pages/EmployeeLeave.js` — Paid Leave dropdown item + balance fetch effect + hint.
+- `/app/backend/tests/test_paid_leave_balance.py` — NEW (12 tests, includes regression guard for Sick leave).
+
+
 ## Latest Update — 2026-05-23 (URGENT FIX — Document View 401 Unauthorized resolved)
 **User issue (P0/URGENT):** Clicking the View / Download icons on uploaded onboarding documents (Aadhaar, PAN, Education certs, Offer Letter) returned **401 Unauthorized** from Cloudinary for PDF files. Root cause: Cloudinary account-level "Restricted media types" blocks public delivery of PDF/ZIP via `/image/upload/` — raw signed URLs (`sign_url=True`, `fl_attachment`) also fail. The only working bypass is the Cloudinary **Admin-API `private_download_url`** with `type=upload`, which produces a time-limited signed URL on `api.cloudinary.com` that returns 200 OK regardless of the PDF restriction.
 
