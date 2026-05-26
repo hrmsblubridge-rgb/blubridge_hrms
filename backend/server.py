@@ -343,7 +343,7 @@ COMPANY_POLICIES = [
         "id": "policy_leave",
         "name": "Notice \u2013 List of Holidays",
         "category": "HR",
-        "version": "2026.1",
+        "version": "2026.2",
         "effective_date": "2026-01-01",
         "applicable_to": "All Employees & Interns",
         "content": {
@@ -378,7 +378,7 @@ COMPANY_POLICIES = [
                             ["3", "Ramzan*", "21-Mar-2026*", "Saturday*"],
                             ["4", "Mahavir Jayanti", "31-Mar-2026", "Tuesday"],
                             ["5", "Good Friday", "03-Apr-2026", "Friday"],
-                            ["6", "Bakrid*", "27-May-2026*", "Wednesday*"],
+                            ["6", "Bakrid*", "28-May-2026*", "Thursday*"],
                             ["7", "Muharram*", "06-Jul-2026*", "Monday*"],
                             ["8", "Vinayaka Chaturthi", "22-Aug-2026", "Saturday"],
                             ["9", "Diwali", "09-Nov-2026", "Monday"],
