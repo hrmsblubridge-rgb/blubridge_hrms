@@ -5,6 +5,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { User, Mail, Phone, Calendar, Briefcase, MapPin, Building2, Users, Sparkles } from 'lucide-react';
 import AvatarUploader from '../components/AvatarUploader';
+import EmployeeAvatar from '../components/EmployeeAvatar';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -99,23 +100,21 @@ const EmployeeProfile = () => {
           {/* Avatar & Basic Info */}
           <div className="text-center md:text-left">
             <div className="mx-auto md:mx-0 w-fit">
-              <AvatarUploader
+              {/* Employee-side photo upload disabled per HR policy. Admins
+                  can still update photos from the Photo Wall. */}
+              <EmployeeAvatar
                 employee={profile}
-                mode="self"
-                token={token}
+                employeeId={profile?.id}
+                name={profile?.full_name}
                 size="xl"
                 shape="square"
-                onUpdated={handleAvatarUpdated}
-                testIdPrefix="my-profile-avatar"
+                testId="my-profile-avatar"
               />
             </div>
             <div className="mt-4">
               <h2 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>{profile?.full_name}</h2>
               <p className="text-slate-500">{profile?.designation}</p>
               <p className="text-sm text-[#063c88] font-medium mt-1">{profile?.emp_id}</p>
-              <p className="text-[11px] text-slate-400 mt-3 max-w-[220px]">
-                Click the camera icon to upload a profile photo. JPG/PNG/WebP, max 5 MB.
-              </p>
             </div>
           </div>
 
