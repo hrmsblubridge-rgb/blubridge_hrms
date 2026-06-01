@@ -348,11 +348,9 @@ const Attendance = () => {
                       <td className="text-slate-600 whitespace-nowrap">{formatDate(record.date)}</td>
                       <td>
                         <div className="text-slate-900 font-medium">{record.check_in || '-'}</div>
-                        {record.expected_login && <div className="text-xs text-slate-400">Expected: {record.expected_login}</div>}
                       </td>
                       <td>
                         <div className="text-slate-900 font-medium">{record.check_out || '-'}</div>
-                        {record.expected_logout && <div className="text-xs text-slate-400">Expected: {record.expected_logout}</div>}
                       </td>
                       <td className="text-slate-600 font-medium">{record.total_hours || '-'}</td>
                       <td>
