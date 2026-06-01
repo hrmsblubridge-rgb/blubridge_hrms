@@ -28,6 +28,7 @@
 
 ## Employee Accounts
 - **Employee**: `spartasolace1` / `spar@1230`
+- **Employee** (Phase-2 dashboard widget tests): `user` / `pass123` — has attendance for current week, used by `tests/test_dashboard_widgets.py`
 - **Employee**: `vijayan.k` / `pass123` (created 2026-04-27, onboarding approved)
 - **Employee**: `kasper` / `pass123` (kasper@blubridge.com, EMP0050, reactivated 2026-04-27, dept=System Engineer)
 - **Employee**: `Umesh.Gana` / `pass123` (used for password-reset flow tests; restored after each suite)

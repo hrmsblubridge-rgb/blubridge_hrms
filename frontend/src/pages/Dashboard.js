@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import EmployeeAvatar from '../components/EmployeeAvatar';
+import BirthdayWidget from '../components/BirthdayWidget';
 import { 
   Users, 
   CalendarDays, 
@@ -827,6 +828,9 @@ const Dashboard = () => {
           </div>
         )}
       </div>
+
+      {/* Upcoming Birthdays */}
+      <BirthdayWidget windowDays={7} />
 
       {/* Employee Detail Sheet */}
       <Sheet open={showDetailSheet} onOpenChange={setShowDetailSheet}>

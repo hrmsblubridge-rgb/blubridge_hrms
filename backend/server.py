@@ -8185,6 +8185,149 @@ async def get_dashboard_stats(
         "attendance": attendance_stats,
     }
 
+@api_router.get("/dashboard/birthdays")
+async def get_dashboard_birthdays(
+    window_days: int = 7,
+    current_user: dict = Depends(get_current_user),
+):
+    """Today's + upcoming birthdays for the dashboard widget.
+
+    - "today" = employees whose DOB month-day equals today's date in IST
+    - "upcoming" = next ``window_days`` days (exclusive of today), chronological
+    Both lists exclude inactive / deleted employees and are sorted by next
+    occurrence (month-day-aware, ignoring year so the list rolls over December
+    into January correctly).
+    """
+    today = get_ist_now().date()
+    today_md = (today.month, today.day)
+
+    todays: list = []
+    upcoming: list = []
+
+    cursor = db.employees.find(
+        {
+            "is_deleted": {"$ne": True},
+            "employee_status": {"$ne": "Inactive"},
+            "date_of_birth": {"$exists": True, "$ne": None},
+        },
+        {"_id": 0, "id": 1, "full_name": 1, "department": 1, "team": 1,
+         "date_of_birth": 1, "designation": 1, "emp_id": 1},
+    )
+    async for emp in cursor:
+        dob = _parse_date_flex(emp.get("date_of_joining") if False else emp.get("date_of_birth"))
+        if not dob:
+            continue
+        if isinstance(dob, datetime):
+            dob = dob.date()
+        emp_md = (dob.month, dob.day)
+        item = {
+            "id": emp.get("id"),
+            "emp_id": emp.get("emp_id"),
+            "full_name": emp.get("full_name"),
+            "department": emp.get("department"),
+            "team": emp.get("team"),
+            "designation": emp.get("designation"),
+            "date_of_birth": emp.get("date_of_birth"),
+            "dob_display": f"{dob.day:02d}-{['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dob.month-1]}",
+        }
+        if emp_md == today_md:
+            todays.append(item)
+            continue
+        # Days until next occurrence
+        try:
+            next_occ = dob.replace(year=today.year)
+        except ValueError:
+            # Feb 29 in non-leap year — fall back to Feb 28
+            next_occ = dob.replace(year=today.year, day=28)
+        if next_occ <= today:
+            try:
+                next_occ = dob.replace(year=today.year + 1)
+            except ValueError:
+                next_occ = dob.replace(year=today.year + 1, day=28)
+        days_until = (next_occ - today).days
+        if 0 < days_until <= window_days:
+            item["days_until"] = days_until
+            item["next_date_display"] = next_occ.strftime("%d-") + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][next_occ.month-1] + next_occ.strftime("-%Y")
+            upcoming.append(item)
+
+    upcoming.sort(key=lambda x: x["days_until"])
+    return {"today": todays, "upcoming": upcoming, "window_days": window_days}
+
+
+@api_router.get("/employee/dashboard/weekly-hours")
+async def get_employee_weekly_hours(current_user: dict = Depends(get_current_user)):
+    """Real working-hours-per-day for the current ISO week (Mon–Sun) of the
+    logged-in employee. Reads `attendance.total_hours` ("Xh Ym" format) and
+    converts to decimal hours. Days without attendance return 0 (the UI shows
+    a flat segment, no crash). Avg is computed from days with > 0 hours only.
+    """
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+
+    employee_id = current_user["employee_id"]
+    today = get_ist_now().date()
+    monday = today - timedelta(days=today.weekday())  # 0=Mon
+    sunday = monday + timedelta(days=6)
+
+    # attendance.date is stored as DD-MM-YYYY string
+    iso_dates = [(monday + timedelta(days=i)) for i in range(7)]
+    dd_mm_dates = [d.strftime("%d-%m-%Y") for d in iso_dates]
+
+    records = await db.attendance.find(
+        {"employee_id": employee_id, "date": {"$in": dd_mm_dates}},
+        {"_id": 0, "date": 1, "total_hours": 1, "status": 1, "check_in": 1, "check_out": 1},
+    ).to_list(10)
+    by_date = {r["date"]: r for r in records}
+
+    def parse_hours(val) -> float:
+        if val is None:
+            return 0.0
+        if isinstance(val, (int, float)):
+            return max(0.0, float(val))
+        s = str(val).strip()
+        if not s:
+            return 0.0
+        # "11h 36m" / "11h" / "0h 45m" / "8.5"
+        try:
+            return max(0.0, float(s))
+        except ValueError:
+            pass
+        h = m = 0
+        import re
+        mh = re.search(r"(\d+)\s*h", s)
+        mm = re.search(r"(\d+)\s*m", s)
+        if mh:
+            h = int(mh.group(1))
+        if mm:
+            m = int(mm.group(1))
+        return h + m / 60.0
+
+    WEEKDAYS_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    days: list = []
+    for i, d in enumerate(iso_dates):
+        key = dd_mm_dates[i]
+        rec = by_date.get(key)
+        hours = parse_hours(rec.get("total_hours") if rec else None)
+        days.append({
+            "day": WEEKDAYS_SHORT[i],
+            "date": d.strftime("%Y-%m-%d"),
+            "hours": round(hours, 2),
+            "status": (rec or {}).get("status"),
+            "check_in": (rec or {}).get("check_in"),
+            "check_out": (rec or {}).get("check_out"),
+        })
+
+    worked = [x["hours"] for x in days if x["hours"] > 0]
+    avg = round(sum(worked) / len(worked), 2) if worked else 0.0
+    return {
+        "week_start": monday.strftime("%Y-%m-%d"),
+        "week_end": sunday.strftime("%Y-%m-%d"),
+        "days": days,
+        "avg_hours": avg,
+        "total_hours": round(sum(worked), 2),
+    }
+
+
 @api_router.get("/dashboard/leave-list")
 async def get_dashboard_leave_list(
     from_date: Optional[str] = None,

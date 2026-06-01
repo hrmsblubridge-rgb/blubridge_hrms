@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { CalendarCheck, CalendarX, Clock, Clock4, AlertTriangle, CalendarDays, User, FileText, Star, TrendingUp, Activity } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { formatDateWithDay } from '../lib/dateFormat';
+import BirthdayWidget from '../components/BirthdayWidget';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -16,16 +17,27 @@ const EmployeeDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  // Mock working hours data for chart
-  const [workingHoursData] = useState([
-    { day: 'Mon', hours: 8.5 },
-    { day: 'Tue', hours: 9.2 },
-    { day: 'Wed', hours: 7.8 },
-    { day: 'Thu', hours: 8.0 },
-    { day: 'Fri', hours: 8.7 },
-    { day: 'Sat', hours: 4.0 },
+  // Live working-hours-this-week (Mon → Sun) — backed by real attendance.
+  // Empty placeholder until the first fetch resolves so the chart never
+  // renders mock/stale data.
+  const ZERO_WEEK = [
+    { day: 'Mon', hours: 0 }, { day: 'Tue', hours: 0 }, { day: 'Wed', hours: 0 },
+    { day: 'Thu', hours: 0 }, { day: 'Fri', hours: 0 }, { day: 'Sat', hours: 0 },
     { day: 'Sun', hours: 0 },
-  ]);
+  ];
+  const [workingHoursData, setWorkingHoursData] = useState(ZERO_WEEK);
+  const [weeklyAvg, setWeeklyAvg] = useState(0);
+
+  const fetchWeeklyHours = useCallback(async () => {
+    try {
+      const r = await axios.get(`${API}/employee/dashboard/weekly-hours`, { headers: getAuthHeaders() });
+      const days = (r.data?.days || []).map(d => ({ day: d.day, hours: d.hours || 0 }));
+      if (days.length === 7) setWorkingHoursData(days);
+      setWeeklyAvg(r.data?.avg_hours || 0);
+    } catch {
+      // Leave the zeroed-out chart in place — never crash the dashboard
+    }
+  }, [getAuthHeaders]);
 
   const fetchDashboard = useCallback(async () => {
     try {
@@ -40,6 +52,7 @@ const EmployeeDashboard = () => {
   }, [getAuthHeaders]);
 
   useEffect(() => { fetchDashboard(); }, [fetchDashboard]);
+  useEffect(() => { fetchWeeklyHours(); }, [fetchWeeklyHours]);
   useEffect(() => { const timer = setInterval(() => setCurrentTime(new Date()), 1000); return () => clearInterval(timer); }, []);
 
   if (loading) {
@@ -149,7 +162,7 @@ const EmployeeDashboard = () => {
               </div>
               <div className="flex items-center gap-2 text-sm">
                 <Activity className="w-4 h-4 text-[#3271ec]" />
-                <span className="text-slate-600">Avg: 7.5 hrs</span>
+                <span className="text-slate-600">Avg: {weeklyAvg ? `${weeklyAvg.toFixed(1)} hrs` : '0 hrs'}</span>
               </div>
             </div>
             <div className="h-[200px]">
@@ -172,6 +185,9 @@ const EmployeeDashboard = () => {
           </div>
         </div>
       </div>
+
+      {/* Upcoming Birthdays */}
+      <BirthdayWidget windowDays={7} />
 
       {/* Quick Links */}
       <div className="card-flat p-6">

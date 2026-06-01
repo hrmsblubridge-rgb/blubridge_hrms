@@ -5,6 +5,51 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-26 (Phase 2 — Upcoming Birthdays + Live Working Hours)
+
+### Upcoming Birthdays Dashboard Widget
+- **Backend** `GET /api/dashboard/birthdays?window_days=7` (default 7):
+  - Returns `{ today: [...], upcoming: [...], window_days }`.
+  - "today" = employees with DOB month-day == today (IST).
+  - "upcoming" = next `window_days` days (exclusive of today), sorted by `days_until`.
+  - Skips inactive / deleted employees.
+  - Each item: `{ id, emp_id, full_name, department, team, designation, date_of_birth, dob_display: "01-Jun", next_date_display: "02-Jun-2026", days_until }`.
+  - Feb-29 fallback to Feb-28 in non-leap years (no crash).
+- **Frontend** `/app/frontend/src/components/BirthdayWidget.jsx` (NEW, ~115 LoC):
+  - Auto-refreshes once per minute so midnight roll-over is automatic.
+  - Today's rows highlighted in rose/amber gradient with 🎂 Today badge + PartyPopper icon.
+  - Upcoming rows show `dd-Mon-yyyy` + "in N days".
+  - Empty state and loading state both render gracefully.
+  - Wired into BOTH `pages/Dashboard.js` (admin) and `pages/EmployeeDashboard.js` (employee).
+- Live verified: 3 employees in next 14 days returned.
+
+### Working Hours This Week — Live Data
+- **Backend** `GET /api/employee/dashboard/weekly-hours` (employee role required):
+  - Computes Mon→Sun for the current ISO week of the logged-in employee.
+  - Reads `attendance.total_hours` (stored as `"11h 36m"` strings) and converts to decimal hours via robust regex; also handles numeric and `"8.5"` formats.
+  - Returns `{ week_start, week_end, days: [{day, date, hours, status, check_in, check_out}×7], avg_hours, total_hours }`.
+  - `avg_hours` computed only over days with hours > 0 (so a partial week doesn't dilute the average).
+  - Day-without-attendance returns `hours: 0` — no crash.
+- **Frontend** `pages/EmployeeDashboard.js`:
+  - Removed the hardcoded `workingHoursData` mock array.
+  - Replaced with `useState(ZERO_WEEK)` + `fetchWeeklyHours()` calling the live endpoint on mount.
+  - Hardcoded "Avg: 7.5 hrs" replaced with live `weeklyAvg` (1-decimal).
+  - Chart style / colors / responsiveness — **unchanged** (only data source swapped).
+
+### Verification
+- ✅ `/app/backend/tests/test_dashboard_widgets.py` — **8/8 passing** (birthday structure, chronological sort, window param, auth, weekly-hours shape, RBAC).
+- ✅ Frontend ESLint clean for all 3 touched files (`BirthdayWidget.jsx`, `EmployeeDashboard.js`, `Dashboard.js`).
+- ✅ Live API check confirms birthday + weekly hours endpoints return real DB data.
+
+### Files Touched
+- `backend/server.py` — 2 new endpoints (~140 LoC).
+- `frontend/src/components/BirthdayWidget.jsx` — NEW.
+- `frontend/src/pages/EmployeeDashboard.js` — live working hours + birthday widget.
+- `frontend/src/pages/Dashboard.js` — birthday widget.
+- `backend/tests/test_dashboard_widgets.py` — NEW (8 tests).
+- `memory/test_credentials.md` — added `user / pass123` for the weekly-hours test.
+
+
 ## Latest Update — 2026-05-26 (Phase 1 — Date format / Attendance wrap / Approver name / Hard delete)
 Four surgical updates in one batch. Phase 2 (Birthday widget + Working Hours This Week live wiring) pending user kickoff.
 
