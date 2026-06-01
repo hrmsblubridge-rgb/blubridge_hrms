@@ -735,7 +735,7 @@ const EmployeeLeaveDetail = ({ employee, onClose }) => {
                             {leave.status}
                           </Badge>
                         </td>
-                        <td className="text-slate-600">{leave.approved_by || '-'}</td>
+                        <td className="text-slate-600">{leave.approved_by_name || (leave.approved_by ? 'System' : '-')}</td>
                       </tr>
                     ))}
                   </tbody>

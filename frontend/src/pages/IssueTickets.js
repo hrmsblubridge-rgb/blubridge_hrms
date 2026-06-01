@@ -23,6 +23,7 @@ import {
   DialogTitle
 } from '../components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { formatDate } from '../lib/dateFormat';
 import {
   Search,
   Plus,
@@ -418,7 +419,7 @@ const IssueTickets = () => {
                           <span className="text-slate-300">•</span>
                           <div className="flex items-center gap-1.5">
                             <Calendar className="w-3.5 h-3.5" />
-                            <span>{new Date(ticket.created_at).toLocaleDateString()}</span>
+                            <span>{formatDate(ticket.created_at)}</span>
                           </div>
                           {ticket.attachments?.length > 0 && (
                             <>

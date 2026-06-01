@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
+import { formatDate } from '../lib/dateFormat';
 import {
   Select,
   SelectContent,
@@ -416,7 +417,7 @@ const Verification = () => {
                       </TableCell>
                       <TableCell>
                         <p className="text-sm text-slate-600">
-                          {record.submitted_at ? new Date(record.submitted_at).toLocaleDateString() : '-'}
+                          {record.submitted_at ? formatDate(record.submitted_at) : '-'}
                         </p>
                       </TableCell>
                       <TableCell className="text-right">

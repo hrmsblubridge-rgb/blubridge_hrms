@@ -8,6 +8,7 @@ import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 
+import { formatDate } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const AdminProfile = () => {
@@ -120,7 +121,7 @@ const AdminProfile = () => {
               <Label className="text-sm font-medium text-slate-700">Account Created</Label>
               <div className="mt-1.5 flex items-center gap-2 p-3 bg-slate-50 rounded-lg text-slate-600 text-sm">
                 <Calendar className="w-4 h-4" />
-                {profile.joined_date ? new Date(profile.joined_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'N/A'}
+                {profile.joined_date ? formatDate(profile.joined_date) : 'N/A'}
               </div>
             </div>
           </div>

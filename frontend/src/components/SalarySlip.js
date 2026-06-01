@@ -1,5 +1,6 @@
 import { forwardRef } from 'react';
 
+import { formatDate } from '../lib/dateFormat';
 const fmt = (v) => {
   if (!v && v !== 0) return '-';
   return Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 });
@@ -14,7 +15,7 @@ const SalarySlip = forwardRef(({ employee, salary, month }, ref) => {
   const tier = employee?.tier_level || '-';
   const dept = employee?.department || '-';
   const doj = employee?.date_of_joining || '-';
-  const monthLabel = month || new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+  const monthLabel = month || formatDate();
 
   const BLUE = '#0a3d7c';
   const LIGHT_BG = '#f0f5fb';

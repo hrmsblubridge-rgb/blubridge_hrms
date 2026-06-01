@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
+import { formatDate } from '../lib/dateFormat';
 import {
   FileText,
   Download,
@@ -310,11 +311,7 @@ const EmployeeDocuments = () => {
                             <p className="text-xs text-slate-500 mt-1 truncate" title={row.file_name}>
                               {row.file_name}
                               {row.uploaded_at &&
-                                ` • Uploaded ${new Date(row.uploaded_at).toLocaleDateString('en-IN', {
-                                  day: 'numeric',
-                                  month: 'short',
-                                  year: 'numeric',
-                                })}`}
+                                ` • Uploaded ${formatDate(row.uploaded_at)}`}
                             </p>
                           )}
                           {row.status === 'rejected' && row.rejection_reason && (
@@ -435,11 +432,7 @@ const EmployeeDocuments = () => {
                       <div className="flex items-center gap-4 mt-1 text-sm text-slate-500">
                         <span className="flex items-center gap-1">
                           <Clock className="w-4 h-4" />
-                          {new Date(offerLetter.uploaded_at).toLocaleDateString('en-IN', {
-                            day: 'numeric',
-                            month: 'short',
-                            year: 'numeric',
-                          })}
+                          {formatDate(offerLetter.uploaded_at)}
                         </span>
                         <span className="flex items-center gap-1">
                           <User className="w-4 h-4" />
@@ -531,7 +524,7 @@ const EmployeeDocuments = () => {
                               <div>
                                 <p className="font-medium text-slate-900">{config.label}</p>
                                 <p className="text-xs text-slate-500">
-                                  {new Date(doc.uploaded_at).toLocaleDateString()} • {doc.file_name}
+                                  {formatDate(doc.uploaded_at)} • {doc.file_name}
                                 </p>
                               </div>
                             </div>

@@ -33,6 +33,7 @@ import {
 } from '../components/ui/sheet';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 
+import { formatDate } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 // Premium Stat Card Component
@@ -303,7 +304,7 @@ const Dashboard = () => {
     setLoadingDetails(true);
     
     try {
-      const today = new Date().toLocaleDateString('en-GB').split('/').join('-');
+      const today = formatDate().split('/').join('-');
       const fromDate = appliedFilters.fromDate ? formatDateForAPI(appliedFilters.fromDate) : today;
       const toDate = appliedFilters.toDate ? formatDateForAPI(appliedFilters.toDate) : today;
       

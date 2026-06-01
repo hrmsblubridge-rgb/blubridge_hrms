@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../co
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
+import { formatDate } from '../lib/dateFormat';
 import {
   Select,
   SelectContent,
@@ -343,7 +344,7 @@ const Tickets = () => {
                       </TableCell>
                       <TableCell>
                         <p className="text-sm text-slate-600">
-                          {new Date(ticket.created_at).toLocaleDateString()}
+                          {formatDate(ticket.created_at)}
                         </p>
                       </TableCell>
                       <TableCell className="text-right">
@@ -435,7 +436,7 @@ const Tickets = () => {
           <DialogHeader>
             <DialogTitle>{selectedTicket?.subject}</DialogTitle>
             <DialogDescription>
-              Created on {selectedTicket && new Date(selectedTicket.created_at).toLocaleDateString()}
+              Created on {selectedTicket && formatDate(selectedTicket.created_at)}
             </DialogDescription>
           </DialogHeader>
           

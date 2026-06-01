@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import { formatDate } from '../lib/dateFormat';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import { useTableSort, SortableTh } from '../components/useTableSort';
 import { 
@@ -344,7 +345,7 @@ const Attendance = () => {
                         </div>
                       </td>
                       <td className="text-slate-600">{record.team}</td>
-                      <td className="text-slate-600">{record.date}</td>
+                      <td className="text-slate-600 whitespace-nowrap">{formatDate(record.date)}</td>
                       <td>
                         <div className="text-slate-900 font-medium">{record.check_in || '-'}</div>
                         {record.expected_login && <div className="text-xs text-slate-400">Expected: {record.expected_login}</div>}

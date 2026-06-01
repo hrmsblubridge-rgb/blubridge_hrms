@@ -40,6 +40,7 @@ import {
 import jsPDF from 'jspdf';
 import html2canvas from 'html2canvas';
 
+import { formatDate } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const EmployeeSalary = () => {
@@ -133,7 +134,7 @@ const EmployeeSalary = () => {
       const margin = 15;
       let yPos = margin;
       
-      const monthYear = new Date(payslip.month + '-01').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+      const monthYear = formatDate(payslip.month + '-01');
       
       // Helper function to add text
       const addText = (text, x, y, options = {}) => {
@@ -499,7 +500,7 @@ const EmployeeSalary = () => {
       pdf.setFontSize(8);
       pdf.setFont('helvetica', 'normal');
       pdf.text('This is a computer-generated payslip and does not require a signature.', pageWidth / 2, yPos, { align: 'center' });
-      pdf.text(`Generated on ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} | ${payslip.company_name}`, pageWidth / 2, yPos + 5, { align: 'center' });
+      pdf.text(`Generated on ${formatDate()} | ${payslip.company_name}`, pageWidth / 2, yPos + 5, { align: 'center' });
       
       // Save PDF
       pdf.save(`Payslip_${payslip.emp_id}_${payslip.month}.pdf`);
@@ -516,7 +517,7 @@ const EmployeeSalary = () => {
   const generateCompensationPDF = () => {
     if (!payslip) return '';
     
-    const monthYear = new Date(payslip.month + '-01').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+    const monthYear = formatDate(payslip.month + '-01');
     
     return `
       <!DOCTYPE html>
@@ -912,7 +913,7 @@ const EmployeeSalary = () => {
           <!-- Footer -->
           <div class="footer">
             <p>This is a computer-generated payslip and does not require a signature.</p>
-            <p>Generated on ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} | ${payslip.company_name}</p>
+            <p>Generated on ${formatDate()} | ${payslip.company_name}</p>
           </div>
         </div>
       </body>
@@ -1000,7 +1001,7 @@ const EmployeeSalary = () => {
                 ₹{formatCurrency(payslip?.net_pay || salary?.net_salary)}
               </p>
               <p className="text-blue-200 text-sm mt-2">
-                {new Date(selectedMonth + '-01').toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
+                {formatDate(selectedMonth + '-01')}
               </p>
             </div>
             <div className="flex gap-4">

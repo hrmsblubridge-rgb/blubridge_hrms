@@ -13,6 +13,7 @@ import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { formatDate } from '../lib/dateFormat';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle
 } from '../components/ui/sheet';
@@ -353,7 +354,7 @@ export default function OperationalChecklist() {
                               </p>
                               {item.completed_by && (
                                 <p className="text-[10px] text-slate-400 mt-0.5">
-                                  by {item.completed_by} {item.completed_at ? `on ${new Date(item.completed_at).toLocaleDateString()}` : ''}
+                                  by {item.completed_by} {item.completed_at ? `on ${formatDate(item.completed_at)}` : ''}
                                 </p>
                               )}
                               {item.notes && (

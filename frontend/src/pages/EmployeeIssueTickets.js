@@ -23,6 +23,7 @@ import {
   DialogTitle
 } from '../components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { formatDate } from '../lib/dateFormat';
 import {
   Search,
   Plus,
@@ -385,7 +386,7 @@ const EmployeeIssueTickets = () => {
                         <span className="text-slate-300">•</span>
                         <div className="flex items-center gap-1.5">
                           <Calendar className="w-3.5 h-3.5" />
-                          <span>{new Date(ticket.created_at).toLocaleDateString()}</span>
+                          <span>{formatDate(ticket.created_at)}</span>
                         </div>
                         {ticket.attachments?.length > 0 && (
                           <>
@@ -592,7 +593,7 @@ const EmployeeIssueTickets = () => {
                     {selectedTicket.priority} Priority
                   </Badge>
                   <span className="text-xs text-slate-500 ml-auto">
-                    Created {new Date(selectedTicket.created_at).toLocaleDateString()}
+                    Created {formatDate(selectedTicket.created_at)}
                   </span>
                 </div>
                 
@@ -618,7 +619,7 @@ const EmployeeIssueTickets = () => {
                     <p className="text-sm text-emerald-800">{selectedTicket.resolution}</p>
                     {selectedTicket.resolved_by_name && (
                       <p className="text-xs text-emerald-600 mt-2">
-                        Resolved by {selectedTicket.resolved_by_name} on {new Date(selectedTicket.resolved_at).toLocaleDateString()}
+                        Resolved by {selectedTicket.resolved_by_name} on {formatDate(selectedTicket.resolved_at)}
                       </p>
                     )}
                   </div>

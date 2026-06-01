@@ -4848,13 +4848,13 @@ async def employee_force_delete(
     current_user: dict = Depends(get_current_user),
 ):
     """DESTRUCTIVE: deletes the employee AND every linked record across all
-    modules. Super Admin (system_admin) only.
+    modules. HR + Super Admin allowed.
 
     Body must include `confirmation_text: "DELETE"` to proceed — mirrors the
     forced-input safety gate enforced by the UI.
     """
-    if current_user["role"] != UserRole.SYSTEM_ADMIN:
-        raise HTTPException(status_code=403, detail="Force delete is restricted to Super Admin")
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
 
     if (payload or {}).get("confirmation_text", "").strip() != "DELETE":
         raise HTTPException(status_code=400, detail='Force delete requires confirmation_text="DELETE"')
@@ -6859,6 +6859,24 @@ async def get_leaves(
             query["start_date"] = {"$lte": to_date}
     
     leaves = await db.leaves.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+    # Enrich each leave row with `approved_by_name` so the UI shows a human
+    # name in the Approved-By column instead of a UUID. Single bulk fetch
+    # keeps the cost O(1) per request.
+    approver_ids = {l.get("approved_by") for l in leaves if l.get("approved_by")}
+    name_map = {}
+    if approver_ids:
+        async for u in db.users.find(
+            {"id": {"$in": list(approver_ids)}},
+            {"_id": 0, "id": 1, "full_name": 1, "username": 1, "name": 1, "email": 1},
+        ):
+            name_map[u["id"]] = (
+                u.get("full_name") or u.get("name") or u.get("username") or u.get("email")
+            )
+    for l in leaves:
+        aid = l.get("approved_by")
+        l["approved_by_name"] = name_map.get(aid) if aid else None
+
     return [serialize_doc(l) for l in leaves]
 
 @api_router.post("/leaves")
@@ -9304,6 +9322,21 @@ async def get_employee_leaves(current_user: dict = Depends(get_current_user)):
     
     # Get all leaves for this employee
     all_leaves = await db.leaves.find({"employee_id": employee_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+
+    # Enrich `approved_by_name` so leave history shows a human name in the UI
+    approver_ids = {l.get("approved_by") for l in all_leaves if l.get("approved_by")}
+    approver_name_map = {}
+    if approver_ids:
+        async for u in db.users.find(
+            {"id": {"$in": list(approver_ids)}},
+            {"_id": 0, "id": 1, "full_name": 1, "username": 1, "name": 1, "email": 1},
+        ):
+            approver_name_map[u["id"]] = (
+                u.get("full_name") or u.get("name") or u.get("username") or u.get("email")
+            )
+    for l in all_leaves:
+        aid = l.get("approved_by")
+        l["approved_by_name"] = approver_name_map.get(aid) if aid else None
     
     # Separate into requests (future/current) and history (past)
     requests = []

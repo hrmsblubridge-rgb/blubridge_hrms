@@ -83,6 +83,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { PageSizeSelector } from '../components/PageSizeSelector';
 
+import { formatDate } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 // Premium Stat Card
@@ -1149,22 +1150,10 @@ const Employees = () => {
                                         <span>Deactivate Employee</span>
                                       </DropdownMenuItem>
                                     )}
-                                    <DropdownMenuItem onClick={() => openPermDelete(emp)} data-testid={`perm-delete-${emp.id}`}>
-                                      <Trash2 className="w-4 h-4 mr-2 text-red-500" />
+                                    <DropdownMenuItem onClick={() => openForceDelete(emp)} data-testid={`perm-delete-${emp.id}`} className="text-rose-700 focus:text-rose-800 focus:bg-rose-50">
+                                      <Trash2 className="w-4 h-4 mr-2" />
                                       <span>Delete Permanently</span>
                                     </DropdownMenuItem>
-                                    {isSuperAdmin && (
-                                      <>
-                                        <DropdownMenuSeparator />
-                                        <DropdownMenuLabel className="text-rose-600 text-xs uppercase tracking-wider flex items-center gap-1.5">
-                                          <ShieldAlert className="w-3 h-3" /> Danger Zone
-                                        </DropdownMenuLabel>
-                                        <DropdownMenuItem onClick={() => openForceDelete(emp)} data-testid={`force-delete-${emp.id}`} className="text-rose-700 focus:text-rose-800 focus:bg-rose-50">
-                                          <AlertTriangle className="w-4 h-4 mr-2" />
-                                          <span>Delete Permanently (All Records)</span>
-                                        </DropdownMenuItem>
-                                      </>
-                                    )}
                                   </DropdownMenuContent>
                                 </DropdownMenu>
                               </>
@@ -1886,7 +1875,7 @@ const Employees = () => {
                                     {documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_name || 'Offer Letter'}
                                   </p>
                                   <p className="text-xs text-slate-500">
-                                    Uploaded by {documentsData.documents.find(d => d.document_type === 'offer_letter')?.uploaded_by_name} • {new Date(documentsData.documents.find(d => d.document_type === 'offer_letter')?.uploaded_at).toLocaleDateString()}
+                                    Uploaded by {documentsData.documents.find(d => d.document_type === 'offer_letter')?.uploaded_by_name} • {formatDate(documentsData.documents.find(d => d.document_type === 'offer_letter')?.uploaded_at)}
                                   </p>
                                 </div>
                               </div>
@@ -2397,7 +2386,7 @@ const Employees = () => {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-rose-700">
-              <AlertTriangle className="w-5 h-5" /> Delete Permanently (All Records)
+              <AlertTriangle className="w-5 h-5" /> Delete Permanently
             </DialogTitle>
             <DialogDescription>
               Step {forceStep} of 3 — destructive action for <b>{selectedEmployee?.full_name}</b>
@@ -2668,7 +2657,7 @@ const Employees = () => {
               ref={salarySlipRef}
               employee={selectedEmployee}
               salary={salaryData}
-              month={new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}
+              month={formatDate()}
             />
           </div>
           <DialogFooter className="px-6 pb-5 pt-2 border-t border-slate-100 flex gap-2">

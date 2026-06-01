@@ -5,6 +5,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import { CalendarCheck, CalendarX, Clock, Clock4, AlertTriangle, CalendarDays, User, FileText, Star, TrendingUp, Activity } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { formatDateWithDay } from '../lib/dateFormat';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -65,7 +66,7 @@ const EmployeeDashboard = () => {
             Good {currentTime.getHours() < 12 ? 'Morning' : currentTime.getHours() < 17 ? 'Afternoon' : 'Evening'}, {user?.name?.split(' ')[0]}!
           </h1>
           <p className="text-white/80 mt-1">
-            {currentTime.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+            {formatDateWithDay(currentTime)}
           </p>
         </div>
       </div>
@@ -105,7 +106,7 @@ const EmployeeDashboard = () => {
                 {currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
               </div>
               <p className="text-sm text-slate-500 mt-1">
-                {currentTime.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                {formatDateWithDay(currentTime)}
               </p>
             </div>
 

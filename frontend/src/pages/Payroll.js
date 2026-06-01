@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { MonthPicker } from '../components/ui/month-picker';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
+import { formatDate } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const Payroll = () => {
@@ -92,7 +93,7 @@ const Payroll = () => {
 
   const formatMonthDisplay = () => {
     const [year, month] = selectedMonth.split('-').map(Number);
-    const monthName = new Date(year, month - 1, 1).toLocaleDateString('en-US', { month: 'long' });
+    const monthName = formatDate(year, month - 1, 1);
     return `${monthName} ${year}`;
   };
 

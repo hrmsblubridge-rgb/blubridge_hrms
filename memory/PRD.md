@@ -5,6 +5,50 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-26 (Phase 1 — Date format / Attendance wrap / Approver name / Hard delete)
+Four surgical updates in one batch. Phase 2 (Birthday widget + Working Hours This Week live wiring) pending user kickoff.
+
+### 1) Global Date Format Standardization (display-only)
+- **Single source of truth:** `/app/frontend/src/lib/dateFormat.js` exports `formatDate`, `formatDateTime`, `formatDateWithDay`. Output: `01-May-2026` (`DD-Mon-YYYY`).
+- **Parses:** Date / ISO `2026-05-01` / DD-MM-YYYY / DD/MM/YYYY / RFC datetime / number. Returns `-` for invalid input.
+- **Rollout:** `/app/scripts/apply_date_formatter.py` did a one-shot pattern-safe AST-style sweep of `new Date(X).toLocaleDateString(...)` / `.toDateString()` across the frontend. **17 files auto-patched** (Layout, EmployeeLayout, Dashboard, EmployeeDashboard, Employees, Verification, Payroll, Policies, AuditLogs, EmployeeAttendance, EmployeeDocuments, EmployeeIssueTickets, EmployeeSalary, IssueTickets, OperationalChecklist, SalarySlip, Tickets, AdminProfile).
+- Dashboard greeting + time-tracker date → `formatDateWithDay()` → `Mon, 01-May-2026`.
+- Shadcn `<DatePicker>` (`ui/date-picker.jsx`) trigger now shows `dd-MMM-yyyy` (consistent with the formatter; underlying API value stays `yyyy-MM-dd`).
+- **Date pickers note:** Per user choice (`Q1: a`), native `<input type="date">` browsers retain OS-locale display inside the picker chrome (display-only standardization scope). Full custom picker replacement is in backlog.
+- **Currency formatting (`toLocaleString('en-IN')`) untouched.** Weekday-only / month-only chart labels untouched (they aren't dates).
+
+### 2) Attendance Admin Table — Date Column Wrap Fix
+- `/app/frontend/src/pages/Attendance.js`: date column now `whitespace-nowrap` and rendered via `formatDate(record.date)`. Single visual line on all viewport widths; no horizontal-overflow regression (table is inside `overflow-x-auto`).
+
+### 3) Leave History — Approved By Name
+- **Backend** (`server.py`): both `GET /api/leaves` (admin) and `GET /api/employee/leaves` enrich each row with `approved_by_name` via a single bulk `db.users.find({ id: { $in: [...] } })` lookup (O(1) per request). Fallback chain: `full_name → name → username → email`. UUID kept in `approved_by` for backward compat.
+- **Frontend** (`components/EmployeeLeaveDetail.js`): leave-history table now renders `leave.approved_by_name || (leave.approved_by ? 'System' : '-')`. No UUIDs ever exposed.
+
+### 4) Hard Delete — Cascade with Safe Gate
+- 3-dot `Delete Permanently` menu now routes to the existing **3-step force-delete flow** that cascades to every linked record (attendance / payroll / leaves / late-/early-/missed-punch requests / documents / employee user account). Dialog already shows records-to-be-deleted preview and requires typed `DELETE`.
+- The redundant "Delete Permanently (All Records)" Danger Zone entry has been removed (now equivalent to the primary action).
+- **Backend** `DELETE /api/employees/{id}/force` opened from `system_admin`-only to `HR + system_admin` so the regular HR-admin user can perform the action via the 3-dot menu.
+- Existing `_employee_record_counts` / `EMPLOYEE_LINKED_COLLECTIONS` machinery used as-is — no new cascade logic.
+
+### Verification
+- ✅ Backend tests: 45/45 passing (paid leave + payroll codes + documents secure-url, minus 1 env-only error on a pre-deactivated test account).
+- ✅ Frontend ESLint clean for all 18 touched files.
+- ✅ Formatter unit-test (Node): all parse paths return `01-May-2026`; invalid → `-`.
+- ✅ Live API check: `GET /api/leaves?status=approved` now returns `approved_by_name: "HR Admin"` next to each row.
+
+### Files touched
+- `frontend/src/lib/dateFormat.js` — NEW (single formatter module).
+- `frontend/src/components/ui/date-picker.jsx` — display format `dd-MMM-yyyy`.
+- `frontend/src/pages/Attendance.js` — whitespace-nowrap + `formatDate(record.date)`.
+- `frontend/src/components/EmployeeLeaveDetail.js` — `approved_by_name` rendering.
+- `frontend/src/pages/Employees.js` — 3-dot menu routes to force-delete dialog; danger-zone duplicate removed; dialog title cleaned.
+- `frontend/src/pages/EmployeeDashboard.js` — greeting + time-tracker date use `formatDateWithDay`.
+- `frontend/src/components/Layout.js` / `EmployeeLayout.js` — top-bar today's date uses `formatDateWithDay`.
+- 17 files auto-patched by `apply_date_formatter.py` (see "Rollout" above).
+- `backend/server.py` — `GET /api/leaves` + `GET /api/employee/leaves` enrich `approved_by_name`; `/employees/{id}/force` opened to HR.
+- `scripts/apply_date_formatter.py` — NEW (re-runnable sweep utility).
+
+
 ## Latest Update — 2026-05-23 (Paid Leave system — surgical end-to-end implementation)
 **Scope:** Add a brand-new "Paid Leave" leave-type to the existing leave/payroll/attendance pipeline. SURGICAL — no UI redesign, no payroll engine rewrite, no schema migration, no impact on existing leave types.
 

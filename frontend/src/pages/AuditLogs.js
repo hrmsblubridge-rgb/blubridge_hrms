@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
+import { formatDate } from '../lib/dateFormat';
 import {
   Select,
   SelectContent,
@@ -179,8 +180,8 @@ const AuditLogs = () => {
                 <p className="text-xs text-slate-500">Logins Today</p>
                 <p className="text-2xl font-bold text-emerald-600">
                   {logs.filter(l => {
-                    const today = new Date().toDateString();
-                    return l.action === 'login' && new Date(l.timestamp).toDateString() === today;
+                    const today = formatDate();
+                    return l.action === 'login' && formatDate(l.timestamp) === today;
                   }).length}
                 </p>
               </div>
@@ -198,9 +199,9 @@ const AuditLogs = () => {
                 <p className="text-xs text-slate-500">Changes Today</p>
                 <p className="text-2xl font-bold text-amber-600">
                   {logs.filter(l => {
-                    const today = new Date().toDateString();
+                    const today = formatDate();
                     return ['create', 'update', 'delete'].includes(l.action.split('_')[0]) && 
-                           new Date(l.timestamp).toDateString() === today;
+                           formatDate(l.timestamp) === today;
                   }).length}
                 </p>
               </div>

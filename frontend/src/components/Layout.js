@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { Button } from './ui/button';
 import EmployeeAvatar from './EmployeeAvatar';
+import { formatDate, formatDateWithDay } from '../lib/dateFormat';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -301,7 +302,7 @@ const Layout = ({ children }) => {
                   {getPageTitle()}
                 </h2>
                 <p className="text-xs text-slate-500 hidden sm:block">
-                  {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                  {formatDateWithDay(new Date())}
                 </p>
               </div>
             </div>

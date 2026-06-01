@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
+import { formatDate } from '../lib/dateFormat';
 import {
   FileText, Loader2, BookOpen, Calendar, Users, Building2,
   Laptop, FlaskConical, ShieldCheck, Sparkles, Check, CheckCircle2, Clock,
@@ -184,7 +185,7 @@ const PolicyDocument = ({ policy, onAcknowledge, isEmployee }) => {
             <div className="flex flex-wrap gap-x-5 gap-y-1 mt-2.5 text-[12px] text-white/85">
               <span className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> {policy.applicable_to}</span>
               {policy.effective_date && (
-                <span className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> Effective: {new Date(policy.effective_date).toLocaleDateString()}</span>
+                <span className="flex items-center gap-1.5"><Calendar className="w-3.5 h-3.5" /> Effective: {formatDate(policy.effective_date)}</span>
               )}
               {isEmployee && (
                 acknowledged ? (
@@ -299,7 +300,7 @@ const PolicyDocument = ({ policy, onAcknowledge, isEmployee }) => {
       {/* Footer */}
       <footer className="px-7 py-3 border-t border-slate-100 bg-slate-50/60 flex flex-wrap items-center justify-between gap-2 text-[12px] text-slate-500">
         <span className="flex items-center gap-1.5"><ShieldCheck className="w-3.5 h-3.5" /> Internal — login required</span>
-        <span>Last updated: {new Date(policy.updated_at || policy.created_at || Date.now()).toLocaleDateString()}</span>
+        <span>Last updated: {formatDate(policy.updated_at || policy.created_at || Date.now())}</span>
       </footer>
     </article>
   );
