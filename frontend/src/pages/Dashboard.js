@@ -830,8 +830,8 @@ const Dashboard = () => {
         )}
       </div>
 
-      {/* Upcoming Birthdays */}
-      <BirthdayWidget windowDays={7} />
+      {/* Upcoming Birthdays — defaults to 30 days (single source of truth in BirthdayWidget). */}
+      <BirthdayWidget />
 
       {/* Employee Detail Sheet */}
       <Sheet open={showDetailSheet} onOpenChange={setShowDetailSheet}>

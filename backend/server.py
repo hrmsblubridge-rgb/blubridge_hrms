@@ -8221,8 +8221,12 @@ async def get_dashboard_birthdays(
 
     - "today" = employees whose DOB month-day equals today's date in IST
     - "upcoming" = next ``window_days`` days (exclusive of today), chronological
-    Excludes only soft-deleted employees so HR sees the next-up birthday even
-    if the closest one happens to be on a recently inactive employee.
+    Excludes:
+      • soft-deleted employees (``is_deleted=True``)
+      • non-Active employees (``employee_status != 'Active'`` — i.e. Inactive
+        / Resigned / Disabled employees no longer appear in the widget).
+    Single source of truth for both admin + employee dashboards (same API,
+    same query, same window — see ``BirthdayWidget``).
     """
     today = get_ist_now().date()
     today_md = (today.month, today.day)
@@ -8233,6 +8237,7 @@ async def get_dashboard_birthdays(
     cursor = db.employees.find(
         {
             "is_deleted": {"$ne": True},
+            "employee_status": EmployeeStatus.ACTIVE,
             "date_of_birth": {"$exists": True, "$ne": None},
         },
         {"_id": 0, "id": 1, "full_name": 1, "department": 1, "team": 1,

@@ -41,7 +41,8 @@ def test_birthdays_endpoint_returns_today_and_upcoming(admin_token):
     body = r.json()
     assert "today" in body and isinstance(body["today"], list)
     assert "upcoming" in body and isinstance(body["upcoming"], list)
-    assert body["window_days"] == 7
+    # Default window is 30 days — unified across admin + employee dashboards.
+    assert body["window_days"] == 30
 
 
 def test_birthdays_upcoming_is_chronologically_sorted(admin_token):

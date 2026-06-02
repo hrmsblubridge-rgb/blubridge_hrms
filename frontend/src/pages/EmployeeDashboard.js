@@ -198,8 +198,8 @@ const EmployeeDashboard = () => {
         </div>
       </div>
 
-      {/* Upcoming Birthdays */}
-      <BirthdayWidget windowDays={30} />
+      {/* Upcoming Birthdays — uses widget default (30 days). */}
+      <BirthdayWidget />
       <div className="card-flat p-6">
         <h3 className="text-lg font-semibold text-slate-900 mb-4" style={{ fontFamily: 'Outfit' }}>Quick Actions</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

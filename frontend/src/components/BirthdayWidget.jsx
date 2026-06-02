@@ -13,7 +13,7 @@ import EmployeeAvatar from './EmployeeAvatar';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
-const BirthdayWidget = ({ windowDays = 7 }) => {
+const BirthdayWidget = ({ windowDays = 30 }) => {
   const { getAuthHeaders } = useAuth();
   const [data, setData] = useState({ today: [], upcoming: [] });
   const [loading, setLoading] = useState(true);
