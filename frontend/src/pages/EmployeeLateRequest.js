@@ -9,7 +9,9 @@ import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
+import { DatePicker } from '../components/ui/date-picker';
 import { useTableSort, SortableTh } from '../components/useTableSort';
+import { formatDate } from '../lib/dateFormat';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -91,7 +93,7 @@ const EmployeeLateRequest = () => {
               <tbody>
                 {sortedRequests.length === 0 ? <tr><td colSpan="7" className="text-center py-12 text-slate-500">No late requests found</td></tr> : sortedRequests.map((r) => (
                   <tr key={r.id}>
-                    <td className="font-medium text-slate-900">{r.date}</td>
+                    <td className="font-medium text-slate-900 whitespace-nowrap">{formatDate(r.date)}</td>
                     <td className="text-slate-600">{r.expected_time || '-'}</td>
                     <td className="text-slate-600">{r.actual_time || '-'}</td>
                     <td className="text-slate-600 max-w-[200px] truncate">{r.reason}</td>
@@ -110,7 +112,7 @@ const EmployeeLateRequest = () => {
         <DialogContent className="bg-[#fffdf7] rounded-2xl">
           <DialogHeader><DialogTitle style={{ fontFamily: 'Outfit' }}>{editingId ? 'Edit' : 'Apply'} Late Request</DialogTitle><DialogDescription>Submit your late login request</DialogDescription></DialogHeader>
           <div className="space-y-4 py-4">
-            <div><Label>Date</Label><Input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="late-date-input" /></div>
+            <div><Label>Date</Label><DatePicker value={form.date} onChange={(v) => setForm({ ...form, date: v })} placeholder="Select date" className="mt-1.5 rounded-lg" data-testid="late-date-input" /></div>
             <div className="grid grid-cols-2 gap-4">
               <div><Label>Expected Login Time</Label><Input type="time" value={form.expected_time} onChange={e => setForm({ ...form, expected_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
               <div><Label>Actual Login Time</Label><Input type="time" value={form.actual_time} onChange={e => setForm({ ...form, actual_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>

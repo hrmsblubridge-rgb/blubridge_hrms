@@ -17,10 +17,20 @@ const EmployeeAttendance = () => {
   const { getAuthHeaders } = useAuth();
   const [attendance, setAttendance] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Draft filter state — what the user is currently typing/selecting. NOT
+  // committed to the API until the Apply button is clicked. This eliminates
+  // the previous auto-trigger-on-every-keystroke bug.
   const [period, setPeriod] = useState('this_month');
   const [statusFilter, setStatusFilter] = useState('All');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
+  // Applied filter state — committed snapshot used by the API effect.
+  const [appliedFilters, setAppliedFilters] = useState({
+    period: 'this_month',
+    statusFilter: 'All',
+    customFrom: '',
+    customTo: '',
+  });
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -29,10 +39,11 @@ const EmployeeAttendance = () => {
   const fetchAttendance = useCallback(async () => {
     try {
       setLoading(true);
-      const params = { duration: period, status_filter: statusFilter };
-      if (period === 'custom' && customFrom && customTo) {
-        params.from_date = formatDateForAPI(customFrom);
-        params.to_date = formatDateForAPI(customTo);
+      const f = appliedFilters;
+      const params = { duration: f.period, status_filter: f.statusFilter };
+      if (f.period === 'custom' && f.customFrom && f.customTo) {
+        params.from_date = formatDateForAPI(f.customFrom);
+        params.to_date = formatDateForAPI(f.customTo);
       }
       const response = await axios.get(`${API}/employee/attendance`, { headers: getAuthHeaders(), params });
       setAttendance(response.data);
@@ -42,13 +53,45 @@ const EmployeeAttendance = () => {
     } finally {
       setLoading(false);
     }
-  }, [getAuthHeaders, period, statusFilter, customFrom, customTo]);
+  }, [getAuthHeaders, appliedFilters]);
 
   useEffect(() => { fetchAttendance(); }, [fetchAttendance]);
 
+  const handleApply = () => {
+    // Guard: custom range needs both dates
+    if (period === 'custom' && (!customFrom || !customTo)) {
+      toast.error('Please pick both From Date and To Date');
+      return;
+    }
+    setAppliedFilters({ period, statusFilter, customFrom, customTo });
+  };
+
+  const handleReset = () => {
+    const defaults = { period: 'this_month', statusFilter: 'All', customFrom: '', customTo: '' };
+    setPeriod(defaults.period);
+    setStatusFilter(defaults.statusFilter);
+    setCustomFrom(defaults.customFrom);
+    setCustomTo(defaults.customTo);
+    setAppliedFilters(defaults);
+  };
+
+  // Presentation-layer status mapping for the Employee Portal ONLY.
+  // Admin Attendance + Payroll + LOP engine continue to use "Loss of Pay".
+  // Here we surface a friendlier "Late" label when the LOP was caused by
+  // a late login, so the employee sees "Late" instead of "Loss of Pay".
+  const getDisplayStatus = (record) => {
+    const reason = (record.lop_reason || '').toLowerCase();
+    if (record.is_lop && reason.includes('late login')) return 'Late';
+    if (record.is_lop && reason.includes('early')) return 'Early Out';
+    if (record.is_lop) return 'Loss of Pay';
+    return record.status;
+  };
+
   const getStatusBadge = (status, isLop) => {
+    if (status === 'Late') return 'badge-warning font-bold';
+    if (status === 'Early Out') return 'badge-error font-bold';
     if (isLop || status === 'Loss of Pay') return 'badge-error font-bold';
-    const styles = { 'Login': 'badge-success', 'Completed': 'badge-info', 'Present': 'badge-success', 'Not Logged': 'badge-neutral', 'Early Out': 'badge-error', 'Late Login': 'badge-warning', 'Late': 'badge-warning', 'Leave': 'bg-purple-50 text-purple-700 border border-purple-200/50', 'Absent': 'badge-error', 'Sunday': 'bg-slate-100 text-slate-500 border border-slate-200/50', 'NA': 'bg-slate-50 text-slate-400 border border-slate-200/50' };
+    const styles = { 'Login': 'badge-success', 'Completed': 'badge-info', 'Present': 'badge-success', 'Not Logged': 'badge-neutral', 'Late Login': 'badge-warning', 'Leave': 'bg-purple-50 text-purple-700 border border-purple-200/50', 'Absent': 'badge-error', 'Sunday': 'bg-slate-100 text-slate-500 border border-slate-200/50', 'NA': 'bg-slate-50 text-slate-400 border border-slate-200/50' };
     // Handle leave type variants like "Sick Leave", "Casual Leave"
     if (status && status.includes('Leave')) return 'bg-purple-50 text-purple-700 border border-purple-200/50';
     return styles[status] || 'badge-neutral';
@@ -56,8 +99,16 @@ const EmployeeAttendance = () => {
 
   const stats = {
     present: attendance.filter(a => ['Present', 'Completed', 'Login'].includes(a.status)).length,
-    late: attendance.filter(a => a.status === 'Late Login' || a.status === 'Late').length,
-    absent: attendance.filter(a => a.status === 'Absent' || a.status === 'Not Logged' || a.is_lop).length,
+    late: attendance.filter(a => {
+      const reason = (a.lop_reason || '').toLowerCase();
+      return a.status === 'Late Login' || a.status === 'Late' || (a.is_lop && reason.includes('late login'));
+    }).length,
+    absent: attendance.filter(a => {
+      const reason = (a.lop_reason || '').toLowerCase();
+      // LOP from late-login is now classified under "Late" stat, not Absent/LOP
+      if (a.is_lop && reason.includes('late login')) return false;
+      return a.status === 'Absent' || a.status === 'Not Logged' || a.is_lop;
+    }).length,
     leave: attendance.filter(a => a.status === 'Leave' || (a.status && a.status.includes('Leave'))).length,
   };
 
@@ -147,8 +198,11 @@ const EmployeeAttendance = () => {
               </SelectContent>
             </Select>
           </div>
-          <Button onClick={fetchAttendance} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="apply-filter-btn">
+          <Button onClick={handleApply} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="apply-filter-btn">
             <Filter className="w-4 h-4 mr-2" /> Apply
+          </Button>
+          <Button onClick={handleReset} variant="outline" className="rounded-lg" data-testid="reset-filter-btn">
+            Reset
           </Button>
         </div>
       </div>
@@ -177,16 +231,19 @@ const EmployeeAttendance = () => {
                 {paginatedAttendance.length === 0 ? (
                   <tr><td colSpan="6" className="text-center py-12 text-slate-500">No attendance records found</td></tr>
                 ) : (
-                  paginatedAttendance.map((record, index) => (
+                  paginatedAttendance.map((record, index) => {
+                    const displayStatus = getDisplayStatus(record);
+                    return (
                     <tr key={index} className={record.is_lop ? 'bg-red-50/50' : ''}>
-                      <td className="font-medium text-slate-900">{record.date}</td>
+                      <td className="font-medium text-slate-900 whitespace-nowrap">{formatDate(record.date)}</td>
                       <td className="text-slate-600">{record.day}</td>
                       <td className="text-slate-600">{record.login || record.check_in || '-'}</td>
                       <td className="text-slate-600">{record.logout || record.check_out || '-'}</td>
                       <td className="text-slate-600">{record.total_hours || '-'}</td>
-                      <td><Badge className={getStatusBadge(record.status, record.is_lop)}>{record.is_lop ? 'Loss of Pay' : record.status}</Badge></td>
+                      <td><Badge className={getStatusBadge(displayStatus, record.is_lop)} data-testid={`status-${record.date}`}>{displayStatus}</Badge></td>
                     </tr>
-                  ))
+                    );
+                  })
                 )}
               </tbody>
             </table>

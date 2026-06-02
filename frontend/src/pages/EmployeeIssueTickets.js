@@ -23,7 +23,7 @@ import {
   DialogTitle
 } from '../components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
-import { formatDate } from '../lib/dateFormat';
+import { formatDate, formatDateTime } from '../lib/dateFormat';
 import {
   Search,
   Plus,
@@ -661,7 +661,7 @@ const EmployeeIssueTickets = () => {
                                 {update.status}
                               </Badge>
                               <span className="text-xs text-slate-500">
-                                {new Date(update.updated_at).toLocaleString()}
+                                {formatDateTime(update.updated_at)}
                               </span>
                             </div>
                             {update.notes && (

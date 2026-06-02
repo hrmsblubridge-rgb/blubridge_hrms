@@ -10,8 +10,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
+import { DatePicker } from '../components/ui/date-picker';
 import { Pagination } from '../components/Pagination';
 import { useTableSort, SortableTh } from '../components/useTableSort';
+import { formatDate } from '../lib/dateFormat';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -224,8 +226,8 @@ const EmployeeLeave = () => {
                     <tr key={index}>
                       <td className="font-medium text-slate-900">{leave.leave_type}</td>
                       <td className="text-slate-600">{leave.leave_split || 'Full Day'}</td>
-                      <td className="text-slate-600">{leave.start_date}</td>
-                      <td className="text-slate-600">{leave.end_date}</td>
+                      <td className="text-slate-600 whitespace-nowrap">{formatDate(leave.start_date)}</td>
+                      <td className="text-slate-600 whitespace-nowrap">{formatDate(leave.end_date)}</td>
                       <td className="text-slate-600">{leave.duration}</td>
                       <td className="text-slate-600">
                         {leave.reason ? (
@@ -311,10 +313,10 @@ const EmployeeLeave = () => {
             </div>
             <div>
               <Label className="text-sm font-medium text-slate-700">Leave Date</Label>
-              <Input
-                type="date"
+              <DatePicker
                 value={form.start_date}
-                onChange={(e) => setForm({ ...form, start_date: e.target.value })}
+                onChange={(v) => setForm({ ...form, start_date: v })}
+                placeholder="Select date"
                 max={form.leave_type === 'Sick' ? new Date().toISOString().split('T')[0] : undefined}
                 min={form.leave_type === 'Casual' ? (() => { let d = new Date(); let days = 0; while (days < 4) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0) days++; } return d.toISOString().split('T')[0]; })() : undefined}
                 className="mt-1.5 rounded-lg"
@@ -353,8 +355,8 @@ const EmployeeLeave = () => {
             <DialogTitle style={{ fontFamily: 'Outfit' }}>Leave Reason</DialogTitle>
             {viewReason && (
               <DialogDescription>
-                {viewReason.leave_type} · {viewReason.start_date}
-                {viewReason.end_date && viewReason.end_date !== viewReason.start_date ? ` to ${viewReason.end_date}` : ''}
+                {viewReason.leave_type} · {formatDate(viewReason.start_date)}
+                {viewReason.end_date && viewReason.end_date !== viewReason.start_date ? ` to ${formatDate(viewReason.end_date)}` : ''}
               </DialogDescription>
             )}
           </DialogHeader>

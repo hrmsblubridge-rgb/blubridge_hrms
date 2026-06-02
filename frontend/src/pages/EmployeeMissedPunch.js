@@ -10,7 +10,9 @@ import { Badge } from '../components/ui/badge';
 import { Textarea } from '../components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
+import { DatePicker } from '../components/ui/date-picker';
 import { useTableSort, SortableTh } from '../components/useTableSort';
+import { formatDate, formatDateTime } from '../lib/dateFormat';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -86,10 +88,10 @@ const EmployeeMissedPunch = () => {
               <tbody>
                 {sortedRequests.length === 0 ? <tr><td colSpan="7" className="text-center py-12 text-slate-500">No missed punch requests found</td></tr> : sortedRequests.map((r) => (
                   <tr key={r.id}>
-                    <td className="font-medium text-slate-900">{r.date}</td>
+                    <td className="font-medium text-slate-900 whitespace-nowrap">{formatDate(r.date)}</td>
                     <td className="text-slate-600">{r.punch_type}</td>
-                    <td className="text-slate-600">{r.check_in_time ? (r.check_in_time.includes('T') ? new Date(r.check_in_time).toLocaleString('en-IN', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:true}) : r.check_in_time) : '-'}</td>
-                    <td className="text-slate-600">{r.check_out_time ? (r.check_out_time.includes('T') ? new Date(r.check_out_time).toLocaleString('en-IN', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:true}) : r.check_out_time) : '-'}</td>
+                    <td className="text-slate-600">{r.check_in_time ? (r.check_in_time.includes('T') ? formatDateTime(r.check_in_time) : r.check_in_time) : '-'}</td>
+                    <td className="text-slate-600">{r.check_out_time ? (r.check_out_time.includes('T') ? formatDateTime(r.check_out_time) : r.check_out_time) : '-'}</td>
                     <td className="text-slate-600 max-w-[200px] truncate">{r.reason}</td>
                     <td><Badge className={getStatusBadge(r.status)}>{r.status}</Badge></td>
                     <td>{r.status === 'pending' && <Button size="sm" variant="outline" onClick={() => handleEdit(r)} className="rounded-lg"><Edit2 className="w-3 h-3" /></Button>}</td>
@@ -105,7 +107,7 @@ const EmployeeMissedPunch = () => {
         <DialogContent className="bg-[#fffdf7] rounded-2xl">
           <DialogHeader><DialogTitle style={{ fontFamily: 'Outfit' }}>{editingId ? 'Edit' : 'Apply'} Missed Punch</DialogTitle><DialogDescription>Select punch type and provide details</DialogDescription></DialogHeader>
           <div className="space-y-4 py-4">
-            <div><Label>Date</Label><Input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="mt-1.5 rounded-lg" /></div>
+            <div><Label>Date</Label><DatePicker value={form.date} onChange={(v) => setForm({ ...form, date: v })} placeholder="Select date" className="mt-1.5 rounded-lg" data-testid="missed-punch-date-input" /></div>
             <div>
               <Label>Punch Type</Label>
               <Select value={form.punch_type} onValueChange={v => setForm({ ...form, punch_type: v, check_in_time: v === 'Check-out' ? '' : form.check_in_time, check_out_time: v === 'Check-in' ? '' : form.check_out_time })}>
