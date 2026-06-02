@@ -588,6 +588,24 @@ async def early_out_job_inner(db: AsyncIOMotorDatabase, force: bool = False) -> 
         if not (a.get("check_in") and a.get("check_out")):
             continue
 
+        # ====== HR rule 2026-05-26 — defense in depth ======
+        # NEVER email Early Out if the employee completed their required
+        # shift hours. The attendance engine now classifies these as
+        # "Late Login" (no LOP), but legacy records may still carry the
+        # old "Loss of Pay" status. Re-validate worked-vs-required here
+        # so we can never regress on this user-visible rule.
+        try:
+            worked_dec = float(a.get("total_hours_decimal") or 0)
+        except (TypeError, ValueError):
+            worked_dec = 0.0
+        required_dec = float(a.get("required_hours") or a.get("shift_total_hours") or 0)
+        if worked_dec > 0 and required_dec > 0 and worked_dec >= required_dec:
+            logger.info(
+                "[cron:early_out] skip %s — completed required hours (%.2fh ≥ %.2fh)",
+                emp_id, worked_dec, required_dec,
+            )
+            continue
+
         if await _has_leave_on(db, emp_id, ymd):
             continue
         if await _has_early_out_request_on(db, emp_id, dmy):

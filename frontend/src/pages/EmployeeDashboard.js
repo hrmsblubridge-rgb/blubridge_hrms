@@ -66,8 +66,20 @@ const EmployeeDashboard = () => {
     );
   }
 
-  const todayStatus = dashboardData?.today_attendance;
-  const isCompleted = todayStatus?.status === 'Completed' || todayStatus?.check_out;
+  // Live attendance from /api/employee/dashboard (`today` block holds the
+  // authoritative biometric punch data). Fall back to the legacy
+  // `today_attendance` shape for forward-compat in case the endpoint is
+  // ever updated to include both keys.
+  const todayApi = dashboardData?.today || {};
+  const todayStatus = {
+    check_in: todayApi.login_time || dashboardData?.today_attendance?.check_in || null,
+    check_out: todayApi.logout_time || dashboardData?.today_attendance?.check_out || null,
+    hours: todayApi.hours_today || dashboardData?.today_attendance?.total_hours || null,
+    status:
+      dashboardData?.today_attendance?.status ||
+      (todayApi.is_logged_out ? 'Completed' : (todayApi.is_logged_in ? 'Logged In' : 'Not Logged In')),
+  };
+  const isCompleted = todayStatus.status === 'Completed' || !!todayStatus.check_out;
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="employee-dashboard">
@@ -187,9 +199,7 @@ const EmployeeDashboard = () => {
       </div>
 
       {/* Upcoming Birthdays */}
-      <BirthdayWidget windowDays={7} />
-
-      {/* Quick Links */}
+      <BirthdayWidget windowDays={30} />
       <div className="card-flat p-6">
         <h3 className="text-lg font-semibold text-slate-900 mb-4" style={{ fontFamily: 'Outfit' }}>Quick Actions</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

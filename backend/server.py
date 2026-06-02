@@ -1931,11 +1931,38 @@ def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_tim
         total_hours_decimal = total_mins / 60
         result["total_hours_decimal"] = total_hours_decimal
 
+    # Late-login handling (HR rule 2026-05-26):
+    #   - Late + completed required hours  → status = "Late Login" (NOT LOP),
+    #     so the Early-Out cron does NOT email these employees.
+    #   - Late + did NOT complete required hours → "Loss of Pay" (cron emails).
     if is_late:
         late_mins = actual_login - expected_login
-        result["status"] = AttendanceStatus.LOSS_OF_PAY
-        result["is_lop"] = True
-        result["lop_reason"] = f"Late login by {late_mins} minute(s). Expected: {shift_timings['login_time']}, Actual: {check_in_24h}"
+        if check_out_24h:
+            required_worked = required_hours - (early_grace / 60.0)
+            if total_hours_decimal >= required_worked:
+                # Late but met required hours — record as Late Login only.
+                result["status"] = AttendanceStatus.LATE_LOGIN
+                result["lop_reason"] = (
+                    f"Late by {late_mins} minute(s); required hours completed "
+                    f"({total_hours_decimal:.2f}h ≥ {required_worked:.2f}h)."
+                )
+                return result
+            # Late AND under-worked → LOP
+            short_mins = int(round((required_worked - total_hours_decimal) * 60))
+            result["status"] = AttendanceStatus.LOSS_OF_PAY
+            result["is_lop"] = True
+            result["lop_reason"] = (
+                f"Late login by {late_mins} minute(s) and short by {short_mins} "
+                f"minute(s). Worked: {total_hours_decimal:.2f}h, Required: "
+                f"{required_worked:.2f}h"
+            )
+            return result
+        # Late and still logged in (no checkout yet) — mark Late Login provisionally.
+        result["status"] = AttendanceStatus.LATE_LOGIN
+        result["lop_reason"] = (
+            f"Late login by {late_mins} minute(s). Expected: "
+            f"{shift_timings['login_time']}, Actual: {check_in_24h}"
+        )
         return result
     
     # Not late — check early logout / short hours using TOTAL WORKED vs REQUIRED.
@@ -8187,16 +8214,15 @@ async def get_dashboard_stats(
 
 @api_router.get("/dashboard/birthdays")
 async def get_dashboard_birthdays(
-    window_days: int = 7,
+    window_days: int = 30,
     current_user: dict = Depends(get_current_user),
 ):
     """Today's + upcoming birthdays for the dashboard widget.
 
     - "today" = employees whose DOB month-day equals today's date in IST
     - "upcoming" = next ``window_days`` days (exclusive of today), chronological
-    Both lists exclude inactive / deleted employees and are sorted by next
-    occurrence (month-day-aware, ignoring year so the list rolls over December
-    into January correctly).
+    Excludes only soft-deleted employees so HR sees the next-up birthday even
+    if the closest one happens to be on a recently inactive employee.
     """
     today = get_ist_now().date()
     today_md = (today.month, today.day)
@@ -8207,11 +8233,10 @@ async def get_dashboard_birthdays(
     cursor = db.employees.find(
         {
             "is_deleted": {"$ne": True},
-            "employee_status": {"$ne": "Inactive"},
             "date_of_birth": {"$exists": True, "$ne": None},
         },
         {"_id": 0, "id": 1, "full_name": 1, "department": 1, "team": 1,
-         "date_of_birth": 1, "designation": 1, "emp_id": 1},
+         "date_of_birth": 1, "designation": 1, "emp_id": 1, "employee_status": 1},
     )
     async for emp in cursor:
         dob = _parse_date_flex(emp.get("date_of_joining") if False else emp.get("date_of_birth"))
@@ -9332,12 +9357,23 @@ async def get_employee_attendance(
     
     # Calculate date range based on duration
     if duration == "custom" and custom_from and custom_to:
-        try:
-            start = datetime.strptime(custom_from, "%d-%m-%Y")
-            end = datetime.strptime(custom_to, "%d-%m-%Y")
-        except:
+        # Accept both DD-MM-YYYY (canonical API format) AND ISO YYYY-MM-DD
+        # so filters from older clients or external integrations don't
+        # silently fall back to "this_week".
+        def _parse_any(s):
+            for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+                try:
+                    return datetime.strptime(s, fmt)
+                except ValueError:
+                    continue
+            return None
+        start = _parse_any(custom_from)
+        end = _parse_any(custom_to)
+        if not (start and end):
             start = now - timedelta(days=now.weekday())
             end = start + timedelta(days=6)
+        elif end < start:
+            start, end = end, start  # swap if user inverted them
     elif duration == "this_week":
         # Monday to Sunday of current week
         start = now - timedelta(days=now.weekday())
@@ -9388,61 +9424,86 @@ async def get_employee_attendance(
                 "status": "NA"
             }
         else:
-            # Look up actual attendance (query both date formats for compatibility)
             date_str_iso = current_date.strftime("%Y-%m-%d")
+
+            # Evaluation order (matches admin attendance engine):
+            # 1) Approved Leave  2) Holiday  3) Attendance record  4) Absent
+            # — Sunday/future already handled above.
+
+            # 1) Approved Leave
+            leave = await db.leaves.find_one({
+                "employee_id": employee_id,
+                "status": "approved",
+                "start_date": {"$lte": date_str_iso},
+                "end_date": {"$gte": date_str_iso}
+            }, {"_id": 0})
+
+            # 2) Company Holiday (takes precedence over "Absent" — fixes the
+            #    May-1-shows-Absent bug)
+            holiday = None
+            if not leave:
+                holiday = await db.holidays.find_one(
+                    {"date": date_str_iso},
+                    {"_id": 0, "name": 1, "is_optional": 1}
+                )
+
+            # 3) Attendance record (query both DD-MM-YYYY and YYYY-MM-DD)
             att = await db.attendance.find_one({
                 "employee_id": employee_id,
                 "date": {"$in": [date_str, date_str_iso]}
             }, {"_id": 0})
-            
-            # Check for approved leave
-            leave = await db.leaves.find_one({
-                "employee_id": employee_id,
-                "status": "approved",
-                "start_date": {"$lte": current_date.strftime("%Y-%m-%d")},
-                "end_date": {"$gte": current_date.strftime("%Y-%m-%d")}
-            }, {"_id": 0})
-            
+
             if leave:
-                # Show leave type instead of generic "Leave"
                 leave_type = leave.get("leave_type", "Leave")
+                record = {
+                    "date": date_str,
+                    "day": day_name,
+                    "login": att.get("check_in", "-") if att else "-",
+                    "logout": att.get("check_out", "-") if att else "-",
+                    "total_hours": att.get("total_hours", "-") if att else "-",
+                    "status": f"{leave_type} Leave",
+                }
+            elif holiday and not att:
+                # Holiday with no punch → Holiday status. If the employee did
+                # punch in on a holiday (rare), keep the attendance record's
+                # own status so HR can see it.
                 record = {
                     "date": date_str,
                     "day": day_name,
                     "login": "-",
                     "logout": "-",
                     "total_hours": "-",
-                    "status": f"{leave_type} Leave"
+                    "status": "Holiday",
+                    "holiday_name": holiday.get("name"),
                 }
             elif att:
-                # Determine display status
-                display_status = "Present"
-                if att.get("status") == "Late Login":
-                    display_status = "Late"
-                elif att.get("status") == "Early Out":
-                    display_status = "Early Out"
-                elif att.get("status") == "Completed":
-                    display_status = "Present"
-                elif att.get("status") == "Login":
-                    display_status = "Present"
-                
+                # Preserve the admin engine's status verbatim — no renaming.
+                # This fixes the "Admin shows Late Login, Employee shows
+                # Present" inconsistency.
+                raw_status = att.get("status") or "Present"
+                if att.get("is_lop"):
+                    display_status = "Loss of Pay"
+                else:
+                    display_status = raw_status
                 record = {
                     "date": date_str,
                     "day": day_name,
                     "login": att.get("check_in", "-"),
                     "logout": att.get("check_out", "-"),
                     "total_hours": att.get("total_hours", "-"),
-                    "status": display_status
+                    "status": display_status,
+                    "is_lop": bool(att.get("is_lop")),
+                    "lop_reason": att.get("lop_reason"),
                 }
             else:
-                # No attendance record - absent
+                # No leave / no holiday / no punch → Absent
                 record = {
                     "date": date_str,
                     "day": day_name,
                     "login": "-",
                     "logout": "-",
                     "total_hours": "-",
-                    "status": "Absent"
+                    "status": "Absent",
                 }
         
         # Apply status filter
