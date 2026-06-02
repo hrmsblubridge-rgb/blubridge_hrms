@@ -9361,9 +9361,15 @@ async def get_employee_attendance(
         # so filters from older clients or external integrations don't
         # silently fall back to "this_week".
         def _parse_any(s):
-            for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
+            if not isinstance(s, str):
+                return None
+            s = s.strip()
+            for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%b-%Y", "%d %b %Y"):
                 try:
-                    return datetime.strptime(s, fmt)
+                    # Attach IST tzinfo so the parsed datetime is comparable
+                    # with `now = get_ist_now()` (which is tz-aware). Without
+                    # this, `current_date > now` raises TypeError.
+                    return datetime.strptime(s, fmt).replace(tzinfo=IST)
                 except ValueError:
                     continue
             return None
