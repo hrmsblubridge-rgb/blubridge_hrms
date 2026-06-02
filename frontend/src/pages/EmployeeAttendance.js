@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { PageSizeSelector } from '../components/PageSizeSelector';
 import { useTableSort, SortableTh } from '../components/useTableSort';
 
-import { formatDate } from '../lib/dateFormat';
+import { formatDate, formatDateForAPI } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const EmployeeAttendance = () => {
@@ -31,8 +31,8 @@ const EmployeeAttendance = () => {
       setLoading(true);
       const params = { duration: period, status_filter: statusFilter };
       if (period === 'custom' && customFrom && customTo) {
-        params.from_date = formatDate(customFrom).split('/').join('-');
-        params.to_date = formatDate(customTo).split('/').join('-');
+        params.from_date = formatDateForAPI(customFrom);
+        params.to_date = formatDateForAPI(customTo);
       }
       const response = await axios.get(`${API}/employee/attendance`, { headers: getAuthHeaders(), params });
       setAttendance(response.data);

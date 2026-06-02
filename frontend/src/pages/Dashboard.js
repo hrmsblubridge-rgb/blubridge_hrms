@@ -5,6 +5,7 @@ import axios from 'axios';
 import { toast } from 'sonner';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import BirthdayWidget from '../components/BirthdayWidget';
+import { formatDateForAPI as centralFormatDateForAPI } from '../lib/dateFormat';
 import { 
   Users, 
   CalendarDays, 
@@ -135,14 +136,9 @@ const Dashboard = () => {
   ]);
   const [chartLoading, setChartLoading] = useState(false);
 
-  const formatDateForAPI = (dateStr) => {
-    if (!dateStr) return null;
-    const date = new Date(dateStr);
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = date.getFullYear();
-    return `${day}-${month}-${year}`;
-  };
+  // Backend API expects DD-MM-YYYY — delegate to the central helper so this
+  // page can never drift away from the rest of the HRMS.
+  const formatDateForAPI = centralFormatDateForAPI;
 
   const fetchData = useCallback(async () => {
     try {
@@ -305,7 +301,12 @@ const Dashboard = () => {
     setLoadingDetails(true);
     
     try {
-      const today = formatDate().split('/').join('-');
+      // Default to today (in DD-MM-YYYY, the canonical API format) — uses
+      // the central `formatDateForAPI` so the detail click ALWAYS uses the
+      // same date format as the summary stats query. This was the regression
+      // root cause: the previous `formatDate().split('/').join('-')` pattern
+      // silently produced "-" after the global date-format sweep.
+      const today = centralFormatDateForAPI(new Date());
       const fromDate = appliedFilters.fromDate ? formatDateForAPI(appliedFilters.fromDate) : today;
       const toDate = appliedFilters.toDate ? formatDateForAPI(appliedFilters.toDate) : today;
       

@@ -88,4 +88,18 @@ export function formatDateWithDay(input, fallback = '-') {
   return `${WEEKDAYS[d.getDay()]}, ${formatDate(d)}`;
 }
 
+/**
+ * "DD-MM-YYYY" — backend API date format used by `/api/attendance`,
+ * `/api/dashboard/stats`, etc. Centralised here so frontend display and
+ * API params share ONE source of truth (no more query-drift regressions).
+ */
+export function formatDateForAPI(input) {
+  const d = parseToDate(input);
+  if (!d) return null;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
+
 export default formatDate;

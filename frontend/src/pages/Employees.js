@@ -108,13 +108,32 @@ const Employees = () => {
   const [stats, setStats] = useState(null);
   const [teams, setTeams] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [designations, setDesignations] = useState([]);
   // Centralized client-side sort (works on the currently-paginated page set)
   const { sortedRows: sortedEmployees, sortField: empSortField, sortDir: empSortDir, toggleSort: toggleEmpSort } = useTableSort(employees);
 
-  // Fixed dropdown values
-  const FIXED_DEPARTMENTS = ['Research Unit', 'Support Staff', 'Business & Product'];
-  const FIXED_TEAMS = ['Data', 'Parallelism', 'Quantization', 'Compiler', 'Tensor & Ops', 'Hardware', 'Administation', 'IT', 'Product Team', 'Unknown'];
-  const FIXED_DESIGNATIONS = ['AI Research scientist', 'AI Research - Intern', 'Research', 'Front Office', 'Junior Admin', 'Junior System admin', 'Business & Product - Product Team', 'System Engineer'];
+  // Defensive fallbacks — used ONLY if the Settings master-data APIs are
+  // unreachable. The dropdowns now always render the live Settings list
+  // (`/api/departments`, `/api/teams`, `/api/settings/designations`) so HR
+  // can add a Department/Team/Designation in Settings and have it appear
+  // here immediately.
+  const FALLBACK_DEPARTMENTS = ['Research Unit', 'Support Staff', 'Business & Product'];
+  const FALLBACK_TEAMS = ['Data', 'Parallelism', 'Quantization', 'Compiler', 'Tensor & Ops', 'Hardware', 'Administation', 'IT', 'Product Team', 'Unknown'];
+  const FALLBACK_DESIGNATIONS = ['AI Research scientist', 'AI Research - Intern', 'Research', 'Front Office', 'Junior Admin', 'Junior System admin', 'Business & Product - Product Team', 'System Engineer'];
+
+  // Computed lists used by every dropdown in this page. Sorted A→Z so newly
+  // added Settings entries slot in naturally. Falls back to the legacy
+  // hardcoded list only when the API list is empty (resilient to startup
+  // race / network blip — never empty dropdowns).
+  const departmentOptions = (departments && departments.length > 0)
+    ? Array.from(new Set(departments.map(d => d.name).filter(Boolean))).sort()
+    : FALLBACK_DEPARTMENTS;
+  const teamOptions = (teams && teams.length > 0)
+    ? Array.from(new Set(teams.map(t => t.name).filter(Boolean))).sort()
+    : FALLBACK_TEAMS;
+  const designationOptions = (designations && designations.length > 0)
+    ? Array.from(new Set(designations.map(d => d.name).filter(Boolean))).sort()
+    : FALLBACK_DESIGNATIONS;
   const [allEmployees, setAllEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [pagination, setPagination] = useState({ page: 1, limit: 25, total: 0, pages: 0 });
@@ -280,11 +299,12 @@ const Employees = () => {
         ...(inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
       };
       
-      const [employeesRes, statsRes, teamsRes, deptsRes, allEmpRes] = await Promise.all([
+      const [employeesRes, statsRes, teamsRes, deptsRes, designationsRes, allEmpRes] = await Promise.all([
         axios.get(`${API}/employees`, { headers: getAuthHeaders(), params }),
         axios.get(`${API}/employees/stats`, { headers: getAuthHeaders() }),
         axios.get(`${API}/teams`, { headers: getAuthHeaders() }),
         axios.get(`${API}/departments`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/settings/designations`, { headers: getAuthHeaders() }).catch(() => ({ data: [] })),
         axios.get(`${API}/employees/all`, { headers: getAuthHeaders() })
       ]);
       
@@ -293,6 +313,7 @@ const Employees = () => {
       setStats(statsRes.data);
       setTeams(teamsRes.data);
       setDepartments(deptsRes.data);
+      setDesignations(designationsRes.data || []);
       setAllEmployees(allEmpRes.data);
     } catch (error) {
       console.error('Fetch error:', error);
@@ -1005,7 +1026,7 @@ const Employees = () => {
               <SelectTrigger className="rounded-lg" data-testid="filter-department"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
-                {FIXED_DEPARTMENTS.map(dept => <SelectItem key={dept} value={dept}>{dept}</SelectItem>)}
+                {departmentOptions.map(dept => <SelectItem key={dept} value={dept}>{dept}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -1015,7 +1036,7 @@ const Employees = () => {
               <SelectTrigger className="rounded-lg" data-testid="filter-team"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
-                {FIXED_TEAMS.map(team => <SelectItem key={team} value={team}>{team}</SelectItem>)}
+                {teamOptions.map(team => <SelectItem key={team} value={team}>{team}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
@@ -1269,7 +1290,7 @@ const Employees = () => {
                     <Select value={form.designation} onValueChange={(val) => setForm(prev => ({ ...prev, designation: val }))}>
                       <SelectTrigger className="mt-1.5 rounded-lg" data-testid="input-designation"><SelectValue placeholder="Select Designation" /></SelectTrigger>
                       <SelectContent>
-                        {FIXED_DESIGNATIONS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                        {designationOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1311,7 +1332,7 @@ const Employees = () => {
                     <Select value={form.department} onValueChange={(val) => setForm(prev => ({ ...prev, department: val, team: '' }))}>
                       <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Department" /></SelectTrigger>
                       <SelectContent>
-                        {FIXED_DEPARTMENTS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                        {departmentOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1320,7 +1341,7 @@ const Employees = () => {
                     <Select value={form.team} onValueChange={(val) => setForm(prev => ({ ...prev, team: val }))}>
                       <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Team" /></SelectTrigger>
                       <SelectContent>
-                        {FIXED_TEAMS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                        {teamOptions.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1480,7 +1501,7 @@ const Employees = () => {
                     <Select value={form.designation} onValueChange={(val) => setForm(prev => ({ ...prev, designation: val }))}>
                       <SelectTrigger className="mt-1.5 rounded-lg" data-testid="input-designation"><SelectValue placeholder="Select Designation" /></SelectTrigger>
                       <SelectContent>
-                        {FIXED_DESIGNATIONS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                        {designationOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1522,7 +1543,7 @@ const Employees = () => {
                     <Select value={form.department} onValueChange={(val) => setForm(prev => ({ ...prev, department: val, team: '' }))}>
                       <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Department" /></SelectTrigger>
                       <SelectContent>
-                        {FIXED_DEPARTMENTS.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                        {departmentOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>
@@ -1531,7 +1552,7 @@ const Employees = () => {
                     <Select value={form.team} onValueChange={(val) => setForm(prev => ({ ...prev, team: val }))}>
                       <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Team" /></SelectTrigger>
                       <SelectContent>
-                        {FIXED_TEAMS.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                        {teamOptions.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
                       </SelectContent>
                     </Select>
                   </div>

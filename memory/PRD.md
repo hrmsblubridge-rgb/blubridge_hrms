@@ -5,6 +5,52 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-05-26 (Critical Regression Fix — Dashboard Drill-down + Settings SSOT)
+
+### Issue #1 — Dashboard Attendance Status Drill-down Regression
+**Symptom:** "Early Out" / "Late Login" tiles on admin Dashboard showed correct counts, but clicking them returned "No records found".
+
+**Root Cause:** Phase-1's global date-format sweep replaced `new Date().toLocaleDateString('en-GB')` (which produced `DD/MM/YYYY` then `.split('/').join('-')` → `DD-MM-YYYY` for backend) with `formatDate()` whose no-arg call returns the fallback `"-"`. As a result, `today = "-"` and the `from_date` / `to_date` API params were both literally `"-"` → backend returned an empty list. The summary tile still worked because it uses `/api/dashboard/stats` with its own filter logic.
+
+**Why the Phase-1 fix was vulnerable:** the sweep script was AST-aware about the call site but blind to downstream `.split()/.join()` chained operations on its output. `formatDate()` (no input) returning `"-"` masked the bug instead of raising.
+
+**Permanent Fix:**
+1. Added `formatDateForAPI(date)` to `/app/frontend/src/lib/dateFormat.js` — a **central backend-canonical (DD-MM-YYYY) formatter** so display and API params now share ONE source of truth.
+2. Replaced `formatDate().split('/').join('-')` patterns in `pages/Dashboard.js` (drill-down today default) and `pages/EmployeeAttendance.js` (custom date filter) with `formatDateForAPI(...)`.
+3. The local duplicate `formatDateForAPI` inside `Dashboard.js` now delegates to the central helper — eliminates query-drift forever.
+
+**Regression Test:** `/app/backend/tests/test_dashboard_drilldown_consistency.py` — **7/7 passing**:
+- `test_dashboard_count_matches_detail_count[logged_in|logout|early_out|late_login]` — parameterised assertion that the tile count == the number of records the detail click would render
+- `test_early_out_and_late_login_are_mutually_exclusive` — guards predicate over-classification
+- `test_dashboard_drilldown_dates_are_correctly_formatted` — explicit guard that the `today` default is a valid DD-MM-YYYY (would have caught the original `"-"` bug)
+- `test_unauthenticated_drilldown_rejected`
+
+### Issue #2 — Settings Master Data SSOT
+**Symptom:** Departments / Teams / Designations added in Settings did not appear in the Employees form dropdowns because `Employees.js` used hardcoded `FIXED_DEPARTMENTS` / `FIXED_TEAMS` / `FIXED_DESIGNATIONS` arrays.
+
+**Fix:**
+- Added `designations` state and fetch from `/api/settings/designations` to `pages/Employees.js` (was already fetching `/api/departments` and `/api/teams` but not using them in dropdowns).
+- Replaced `FIXED_*` arrays with computed `departmentOptions` / `teamOptions` / `designationOptions` derived from live API data, sorted A→Z, with a `FALLBACK_*` array used **only** if the API list is empty (defensive: dropdowns never go blank if backend hiccups during startup).
+- Shifts were already SSOT-compliant via `/api/settings/shifts`.
+
+**Regression Test:** `/app/backend/tests/test_settings_ssot.py` — **6/6 passing**:
+- POST a unique department/team/designation via Settings → immediately visible in the consumer-side `/api/departments` / `/api/teams` / `/api/settings/designations` reads
+- DELETE via Settings → no longer in consumer view (no orphan / stale leakage)
+- `test_no_hardcoded_FIXED_dropdowns_in_consumer_pages` — scans every JS/JSX file for `const FIXED_DEPARTMENTS = …` and friends — fails the test suite if any reappear
+
+### Combined Suite
+- **All 60 tests passing** across SSOT + drill-down + widgets + Paid Leave + payroll codes + secure docs.
+- Frontend ESLint clean for all 4 touched files.
+
+### Files Touched
+- `frontend/src/lib/dateFormat.js` — added `formatDateForAPI(value)`.
+- `frontend/src/pages/Dashboard.js` — drill-down date fix + local helper delegation.
+- `frontend/src/pages/EmployeeAttendance.js` — custom date filter fix.
+- `frontend/src/pages/Employees.js` — live SSOT dropdowns (`departmentOptions` / `teamOptions` / `designationOptions`).
+- `backend/tests/test_dashboard_drilldown_consistency.py` — NEW (7 tests).
+- `backend/tests/test_settings_ssot.py` — NEW (6 tests).
+
+
 ## Latest Update — 2026-05-26 (Phase 2 — Upcoming Birthdays + Live Working Hours)
 
 ### Upcoming Birthdays Dashboard Widget
