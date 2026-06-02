@@ -40,7 +40,12 @@ const EmployeeAttendance = () => {
     try {
       setLoading(true);
       const f = appliedFilters;
-      const params = { duration: f.period, status_filter: f.statusFilter };
+      // NOTE: status filtering is intentionally done CLIENT-side via
+      // getDisplayStatus() to keep the displayed label, the stats counter
+      // and the filter result perfectly synchronized. The backend stores
+      // late/early-out as `status="Loss of Pay"` + `lop_reason="..."`, so a
+      // server-side `status_filter=Late` would always return zero rows.
+      const params = { duration: f.period, status_filter: 'All' };
       if (f.period === 'custom' && f.customFrom && f.customTo) {
         params.from_date = formatDateForAPI(f.customFrom);
         params.to_date = formatDateForAPI(f.customTo);
@@ -114,12 +119,27 @@ const EmployeeAttendance = () => {
 
   // Sort + pagination — sort first, then slice
   const { sortedRows: sortedAttendance, sortField, sortDir, toggleSort } = useTableSort(attendance);
-  const totalRecords = sortedAttendance.length;
+
+  // CLIENT-SIDE STATUS FILTER (SINGLE SOURCE OF TRUTH = getDisplayStatus).
+  // The dropdown value (e.g. "Late") is the same string the table cell
+  // renders — so filter result, table label, and stats stay in lock-step.
+  // The backend always returns the full window (status_filter='All') so
+  // there is zero coupling between backend status enums and the UI labels.
+  const matchesStatusFilter = (record) => {
+    const f = appliedFilters.statusFilter;
+    if (!f || f === 'All') return true;
+    const display = getDisplayStatus(record);
+    if (f === 'Leave') return typeof display === 'string' && display.includes('Leave');
+    return display === f;
+  };
+  const filteredAttendance = sortedAttendance.filter(matchesStatusFilter);
+
+  const totalRecords = filteredAttendance.length;
   const totalPages = Math.max(1, Math.ceil(totalRecords / rowsPerPage));
   const safeCurrentPage = Math.min(currentPage, totalPages);
   const startIndex = (safeCurrentPage - 1) * rowsPerPage;
   const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
-  const paginatedAttendance = sortedAttendance.slice(startIndex, endIndex);
+  const paginatedAttendance = filteredAttendance.slice(startIndex, endIndex);
 
   return (
     <div className="space-y-6 animate-fade-in" data-testid="employee-attendance-page">
@@ -191,9 +211,13 @@ const EmployeeAttendance = () => {
               <SelectContent>
                 <SelectItem value="All">All Status</SelectItem>
                 <SelectItem value="Present">Present</SelectItem>
+                <SelectItem value="Login">Logged In</SelectItem>
                 <SelectItem value="Late">Late</SelectItem>
                 <SelectItem value="Early Out">Early Out</SelectItem>
+                <SelectItem value="Loss of Pay">Loss of Pay</SelectItem>
                 <SelectItem value="Absent">Absent</SelectItem>
+                <SelectItem value="Leave">Leave</SelectItem>
+                <SelectItem value="Holiday">Holiday</SelectItem>
                 <SelectItem value="Sunday">Sunday</SelectItem>
               </SelectContent>
             </Select>
