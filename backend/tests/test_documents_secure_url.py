@@ -54,9 +54,9 @@ def admin_token():
 
 @pytest.fixture(scope="module")
 def employee_token():
-    """Non-owner employee token (kasper) used to verify 403."""
-    t = _login("kasper", "pass123")
-    assert t, "Failed to login as kasper"
+    """Non-owner employee token used to verify 403."""
+    t = _login("user", "pass123")
+    assert t, "Failed to login as employee 'user'"
     return t
 
 
@@ -110,6 +110,22 @@ def test_unauthenticated_is_rejected(doc_target):
     r = _get("/documents/secure-url",
              params={"employee_id": emp_id, "document_type": doc_type})
     assert r.status_code in (401, 403)
+
+
+def test_bad_token_is_rejected_with_401(doc_target):
+    """REGRESSION GUARD: the previous P0 bug had the frontend reading the
+    wrong localStorage key, sending `Authorization: Bearer null`. Confirm
+    the backend still rejects malformed Bearer tokens — so any frontend
+    regression that re-introduces the wrong-key bug fails fast at the
+    network layer (status visible in DevTools) instead of silently
+    cascading into a raw-URL fallback that triggers Cloudinary 401."""
+    emp_id, doc_type, _ = doc_target
+    r = _get("/documents/secure-url", token="null",
+             params={"employee_id": emp_id, "document_type": doc_type})
+    assert r.status_code in (401, 403), r.text
+    r2 = _get("/documents/secure-url", token="this-is-not-a-jwt",
+              params={"employee_id": emp_id, "document_type": doc_type})
+    assert r2.status_code in (401, 403), r2.text
 
 
 def test_missing_doc_returns_404(admin_token):
