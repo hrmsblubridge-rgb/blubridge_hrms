@@ -535,6 +535,29 @@ def register(api_router, deps):
     #  Office Locations (SSOT — same pattern as Designations)
     # --------------------------------------------------------
 
+    import re as _re_module
+    def _norm_office_name(s: str) -> str:
+        """Collapse whitespace + lowercase for uniqueness checks. Prevents
+        creating logical duplicates like 'Mandaveli  -  Chennai' vs
+        'Mandaveli - Chennai' that would render as duplicate report rows."""
+        return _re_module.sub(r"\s+", " ", (s or "").strip()).casefold()
+
+    async def _find_office_collision(name: str, exclude_id: str = None):
+        """Return any non-deleted office whose normalized name matches
+        `name`'s normalized form. Excludes the row being updated when
+        ``exclude_id`` is given. Returns ``None`` if no collision."""
+        target = _norm_office_name(name)
+        cursor = db.office_locations.find(
+            {"is_deleted": {"$ne": True}},
+            {"_id": 0, "id": 1, "name": 1},
+        )
+        async for doc in cursor:
+            if exclude_id and doc["id"] == exclude_id:
+                continue
+            if _norm_office_name(doc.get("name", "")) == target:
+                return doc
+        return None
+
     async def _seed_office_locations_from_employees():
         """First-boot bootstrap: harvest any unique non-empty
         office_location values from existing employee rows so the
@@ -579,9 +602,15 @@ def register(api_router, deps):
         name = data.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="Name is required")
-        clash = await db.office_locations.find_one({"name": name, "is_deleted": {"$ne": True}})
+        # Normalization-aware uniqueness: catches whitespace / case variants
+        # that would otherwise produce duplicate logical rows in the Office
+        # Attendance Report.
+        clash = await _find_office_collision(name)
         if clash:
-            raise HTTPException(status_code=409, detail="Office Location with this name already exists")
+            raise HTTPException(
+                status_code=409,
+                detail=f"Office Location '{clash['name']}' already exists",
+            )
         doc = {
             "id": str(uuid.uuid4()),
             "name": name,
@@ -603,9 +632,12 @@ def register(api_router, deps):
             raise HTTPException(status_code=404, detail="Office Location not found")
         updates = {k: v for k, v in data.model_dump().items() if v is not None}
         if "name" in updates and updates["name"] != existing["name"]:
-            clash = await db.office_locations.find_one({"name": updates["name"], "is_deleted": {"$ne": True}})
+            clash = await _find_office_collision(updates["name"], exclude_id=loc_id)
             if clash:
-                raise HTTPException(status_code=409, detail="Office Location already exists")
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Office Location '{clash['name']}' already exists",
+                )
         if not updates:
             return serialize_doc(existing)
         updates["updated_at"] = _now_iso()

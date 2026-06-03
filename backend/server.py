@@ -8905,14 +8905,30 @@ async def _build_office_attendance_rows(from_date: str, to_date: str):
         cur += timedelta(days=1)
     date_int_list = [d.year * 10000 + d.month * 100 + d.day for d in date_list]
 
-    # 1) SSOT — pull every configured office location.
+    # 1) SSOT — pull every configured office location. Use a normalized key
+    #    (whitespace-collapsed, case-insensitive) for grouping so name-variant
+    #    typos like "Mandaveli  -  Chennai" vs "Mandaveli - Chennai" produce
+    #    a SINGLE row per date, not duplicates. The first master row seen for
+    #    a normalized key wins as the display label.
+    import re as _re
+    def _norm_office(name: str) -> str:
+        return _re.sub(r"\s+", " ", (name or "").strip()).casefold()
     loc_docs = await db.office_locations.find(
         {"is_deleted": {"$ne": True}}, {"_id": 0, "name": 1}
     ).sort("name", 1).to_list(500)
-    office_names = [doc["name"] for doc in loc_docs]
+    canon_label: dict = {}                  # norm_key → canonical display name
+    for doc in loc_docs:
+        n = doc.get("name", "")
+        k = _norm_office(n)
+        if not k:
+            continue
+        canon_label.setdefault(k, n.strip())
+    office_keys = list(canon_label.keys())   # canonical, unique
     # Capture an "Unassigned" bucket too — only emitted if employees actually
     # land there. Keeps the report honest without forcing a master entry.
     UNASSIGNED = "Unassigned"
+    UNASSIGNED_KEY = _norm_office(UNASSIGNED)
+    canon_label[UNASSIGNED_KEY] = UNASSIGNED
 
     # 2) All employees with their office tag, DOJ, status and last working day.
     emp_cursor = db.employees.find(
@@ -8925,7 +8941,8 @@ async def _build_office_attendance_rows(from_date: str, to_date: str):
         emp["_doj_int"] = _normalize_date_to_int(emp.get("date_of_joining"))
         last_day = emp.get("last_day_payable") or emp.get("inactive_date")
         emp["_last_int"] = _normalize_date_to_int(last_day)
-        emp["_office"] = (emp.get("office_location") or "").strip() or UNASSIGNED
+        raw_office = (emp.get("office_location") or "").strip()
+        emp["_office_key"] = _norm_office(raw_office) if raw_office else UNASSIGNED_KEY
 
     emp_ids = [e["id"] for e in employees]
 
@@ -8971,13 +8988,15 @@ async def _build_office_attendance_rows(from_date: str, to_date: str):
         if hi is not None and f_int <= hi <= t_int:
             holiday_ints.add(hi)
 
-    # 6) Aggregate per (date, office)
+    # 6) Aggregate per (date, office) using the canonical office KEY so that
+    #    name-variant duplicates (e.g. extra spaces, casing) collapse into
+    #    exactly one logical row per date.
     rows = []
     for d, d_int in zip(date_list, date_int_list):
         is_sunday = d.weekday() == 6
         is_holiday = d_int in holiday_ints
-        # Per-office buckets for this date
-        bucket: dict = {}  # office → counts
+        # Per-office buckets for this date — keyed by canonical norm key.
+        bucket: dict = {}  # office_key → counts
         for emp in employees:
             # Date-aware employment check
             doj_int = emp["_doj_int"]
@@ -8989,21 +9008,22 @@ async def _build_office_attendance_rows(from_date: str, to_date: str):
                 # Inactive/Resigned: include only if they were still employed on this date
                 if last_int is None or last_int < d_int:
                     continue
-            office = emp["_office"]
-            b = bucket.setdefault(office, {"total": 0, "present": 0, "on_leave": 0})
+            office_key = emp["_office_key"]
+            b = bucket.setdefault(office_key, {"total": 0, "present": 0, "on_leave": 0})
             b["total"] += 1
             if (d_int, emp["id"]) in present_set:
                 b["present"] += 1
             elif (d_int, emp["id"]) in on_leave_set:
                 b["on_leave"] += 1
 
-        # Emit ONE row per known office (even if 0 employees, for shape stability)
-        # PLUS the Unassigned bucket only if non-empty.
-        all_offices_today = list(office_names)
-        if UNASSIGNED in bucket and UNASSIGNED not in all_offices_today:
-            all_offices_today.append(UNASSIGNED)
-        for office in all_offices_today:
-            b = bucket.get(office, {"total": 0, "present": 0, "on_leave": 0})
+        # Emit ONE row per canonical office key (every SSOT office for shape
+        # stability) PLUS the Unassigned bucket only if non-empty.
+        keys_today = list(office_keys)
+        if UNASSIGNED_KEY in bucket and UNASSIGNED_KEY not in keys_today:
+            keys_today.append(UNASSIGNED_KEY)
+        for k in keys_today:
+            display = canon_label.get(k, k)
+            b = bucket.get(k, {"total": 0, "present": 0, "on_leave": 0})
             total = b["total"]
             present = b["present"]
             on_leave = b["on_leave"]
@@ -9022,7 +9042,7 @@ async def _build_office_attendance_rows(from_date: str, to_date: str):
             rows.append({
                 "date_iso": d.isoformat(),
                 "date_display": d.strftime("%d-%b-%Y"),
-                "office_location": office,
+                "office_location": display,
                 "total_employees": total,
                 "present": present,
                 "absent": absent,

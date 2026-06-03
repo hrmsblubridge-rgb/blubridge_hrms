@@ -301,3 +301,95 @@ async def test_approved_leave_employee_is_on_leave_not_absent(admin_token):
                 headers=_h(admin_token),
                 timeout=HTTP_TIMEOUT,
             )
+
+
+# ---------------------------------------------------------------------------
+# 9) DUPLICATE-ROW REGRESSION GUARD — the bug this test file was extended for.
+#    Even if the master collection somehow ends up with name-variant duplicates
+#    (extra spaces, casing, etc), the report MUST collapse them into exactly
+#    one row per (date, normalized_office).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_name_variant_duplicates_collapse_to_one_row(admin_token):
+    """Insert TWO master rows that differ only in whitespace and verify the
+    report still emits ONE canonical row per date. Guards the bug where
+    'Mandaveli - Chennai' and 'Mandaveli  -  Chennai' produced duplicate
+    output rows."""
+    from server import db  # noqa
+
+    canonical = f"DUPE-TEST-{uuid.uuid4().hex[:6]}"
+    variant = canonical.replace("-", "  -  ")   # extra spaces around the dash
+
+    canonical_id = str(uuid.uuid4())
+    variant_id = str(uuid.uuid4())
+    try:
+        # Insert both rows directly (bypasses the new uniqueness check so we
+        # can simulate legacy/corrupt master data).
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        now_iso = _dt.now(_tz(_td(hours=5, minutes=30))).isoformat()
+        await db.office_locations.insert_many([
+            {"id": canonical_id, "name": canonical, "description": "",
+             "is_deleted": False, "created_at": now_iso, "updated_at": now_iso},
+            {"id": variant_id, "name": variant, "description": "",
+             "is_deleted": False, "created_at": now_iso, "updated_at": now_iso},
+        ])
+
+        rows = _fetch(admin_token, "02-03-2026", "03-03-2026")
+        # Count how many rows in the response refer to our synthetic office
+        # under either normalized form
+        norm = lambda s: " ".join(s.lower().split())
+        my_rows = [r for r in rows if norm(r["office_location"]) == norm(canonical)]
+        # Window of 2 days → MUST be exactly 2 rows (one per date), NOT 4
+        assert len(my_rows) == 2, (
+            f"Expected 2 rows (one per date) after dedup, got {len(my_rows)}: "
+            f"{[r['office_location'] for r in my_rows]}"
+        )
+        # Verify both dates show up, exactly once each
+        dates = sorted(r["date_iso"] for r in my_rows)
+        assert dates == ["2026-03-02", "2026-03-03"]
+    finally:
+        await db.office_locations.delete_many({"id": {"$in": [canonical_id, variant_id]}})
+
+
+# ---------------------------------------------------------------------------
+# 10) Settings-layer protection: API rejects whitespace/case variants
+# ---------------------------------------------------------------------------
+
+def test_settings_rejects_whitespace_variant_duplicate(admin_token):
+    # Use the actual bug pattern: name has single-spaces around a dash;
+    # variants insert extra spaces or change case.
+    base = f"WS - Test - {uuid.uuid4().hex[:6]}"
+    created_id = None
+    try:
+        r1 = httpx.post(
+            f"{API}/settings/office-locations",
+            json={"name": base},
+            headers=_h(admin_token),
+            timeout=HTTP_TIMEOUT,
+        )
+        assert r1.status_code == 200, r1.text
+        created_id = r1.json()["id"]
+        # Each variant has the SAME normalized form (whitespace-collapsed + casefolded)
+        for variant in (
+            base.replace(" - ", "  -  "),   # extra spaces around dash
+            f"  {base}  ",                  # leading + trailing spaces
+            base.lower(),                    # case change
+            base.upper(),                    # case change
+        ):
+            r = httpx.post(
+                f"{API}/settings/office-locations",
+                json={"name": variant},
+                headers=_h(admin_token),
+                timeout=HTTP_TIMEOUT,
+            )
+            assert r.status_code == 409, (
+                f"Expected 409 for whitespace/case variant {variant!r}, got {r.status_code}: {r.text}"
+            )
+    finally:
+        if created_id:
+            httpx.delete(
+                f"{API}/settings/office-locations/{created_id}",
+                headers=_h(admin_token),
+                timeout=HTTP_TIMEOUT,
+            )
