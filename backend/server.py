@@ -8850,6 +8850,283 @@ async def get_employee_report(
     records = await db.employees.find(query, {"_id": 0}).to_list(10000)
     return [serialize_doc(r) for r in records]
 
+
+# ----------------------------------------------------------------------------
+#  Office Attendance Report (per-day, per-office summary)
+# ----------------------------------------------------------------------------
+#
+#  GET  /api/reports/office-attendance          → JSON (preview)
+#  GET  /api/reports/office-attendance/export   → XLSX download
+#
+#  One row per (date, office_location) inside [from_date, to_date]. The
+#  Total Employees count is DATE-AWARE — an employee who became Inactive
+#  on 15-Mar-2026 is included in rows up to and including 15-Mar but NOT
+#  after. Office Locations come from the SSOT master so adding a new
+#  location in Settings makes the next export pick it up automatically.
+#
+#  Counting rules (aligned with the existing attendance engine):
+#    • Total Employees   – employees assigned to the office who are
+#                          "employed on this date" (DOJ ≤ date and
+#                          (employee_status == Active OR last_day ≥ date)).
+#    • Present           – employee has an attendance punch on that date.
+#    • On Leave          – an APPROVED leave covers the date.
+#    • Holiday           – the date is a company holiday (single, not per-emp).
+#    • Weekly Off        – Sunday (matches the rest of the platform's logic).
+#    • Absent            – Total − Present − On-Leave  (only on working days).
+#
+#  Holidays and Sundays are NOT counted as Absent (per spec).
+# ----------------------------------------------------------------------------
+
+
+async def _build_office_attendance_rows(from_date: str, to_date: str):
+    """Shared engine for the preview + export endpoints.
+
+    Returns a list of dicts with keys:
+        date_iso (YYYY-MM-DD), date_display (DD-MMM-YYYY), office_location,
+        total_employees, present, absent, on_leave, holiday, weekly_off,
+        attendance_pct (float, 0–100).
+    """
+    f_int = _normalize_date_to_int(from_date)
+    t_int = _normalize_date_to_int(to_date)
+    if f_int is None or t_int is None or f_int > t_int:
+        raise HTTPException(status_code=400, detail="Invalid date range")
+
+    # Parse to date objects for iteration
+    def _parse(ds):
+        ds = ds.split("T")[0].replace("/", "-")
+        if len(ds.split("-")[0]) == 4:
+            return datetime.strptime(ds, "%Y-%m-%d").date()
+        return datetime.strptime(ds, "%d-%m-%Y").date()
+    f_d, t_d = _parse(from_date), _parse(to_date)
+    date_list: list = []
+    cur = f_d
+    while cur <= t_d:
+        date_list.append(cur)
+        cur += timedelta(days=1)
+    date_int_list = [d.year * 10000 + d.month * 100 + d.day for d in date_list]
+
+    # 1) SSOT — pull every configured office location.
+    loc_docs = await db.office_locations.find(
+        {"is_deleted": {"$ne": True}}, {"_id": 0, "name": 1}
+    ).sort("name", 1).to_list(500)
+    office_names = [doc["name"] for doc in loc_docs]
+    # Capture an "Unassigned" bucket too — only emitted if employees actually
+    # land there. Keeps the report honest without forcing a master entry.
+    UNASSIGNED = "Unassigned"
+
+    # 2) All employees with their office tag, DOJ, status and last working day.
+    emp_cursor = db.employees.find(
+        {"is_deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "office_location": 1, "employee_status": 1,
+         "date_of_joining": 1, "inactive_date": 1, "last_day_payable": 1}
+    )
+    employees = await emp_cursor.to_list(20000)
+    for emp in employees:
+        emp["_doj_int"] = _normalize_date_to_int(emp.get("date_of_joining"))
+        last_day = emp.get("last_day_payable") or emp.get("inactive_date")
+        emp["_last_int"] = _normalize_date_to_int(last_day)
+        emp["_office"] = (emp.get("office_location") or "").strip() or UNASSIGNED
+
+    emp_ids = [e["id"] for e in employees]
+
+    # 3) Attendance rows for the entire window (one query — no N+1).
+    att_cursor = db.attendance.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "date": 1, "check_in": 1, "check_in_24h": 1, "status": 1}
+    )
+    att_records = await att_cursor.to_list(200000)
+    # Index by (date_int, employee_id) → True if there's a valid check-in
+    present_set: set = set()
+    for r in att_records:
+        d_int = _normalize_date_to_int(r.get("date"))
+        if d_int is None or not (f_int <= d_int <= t_int):
+            continue
+        if r.get("check_in") or r.get("check_in_24h"):
+            present_set.add((d_int, r.get("employee_id")))
+
+    # 4) Approved leaves overlapping the window (one query, expand to per-day).
+    leaves = await db.leaves.find(
+        {"employee_id": {"$in": emp_ids},
+         "status": {"$in": ["approved", "Approved", "APPROVED"]}},
+        {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1}
+    ).to_list(20000)
+    on_leave_set: set = set()
+    for lv in leaves:
+        s_int = _normalize_date_to_int(lv.get("start_date"))
+        e_int = _normalize_date_to_int(lv.get("end_date")) or s_int
+        if s_int is None:
+            continue
+        # Window-clip + iterate days
+        for d_int in date_int_list:
+            if s_int <= d_int <= e_int:
+                on_leave_set.add((d_int, lv.get("employee_id")))
+
+    # 5) Holidays overlapping the window (one query).
+    holiday_ints: set = set()
+    holidays = await db.holidays.find(
+        {}, {"_id": 0, "date": 1}
+    ).to_list(2000)
+    for h in holidays:
+        hi = _normalize_date_to_int(h.get("date"))
+        if hi is not None and f_int <= hi <= t_int:
+            holiday_ints.add(hi)
+
+    # 6) Aggregate per (date, office)
+    rows = []
+    for d, d_int in zip(date_list, date_int_list):
+        is_sunday = d.weekday() == 6
+        is_holiday = d_int in holiday_ints
+        # Per-office buckets for this date
+        bucket: dict = {}  # office → counts
+        for emp in employees:
+            # Date-aware employment check
+            doj_int = emp["_doj_int"]
+            if doj_int is not None and doj_int > d_int:
+                continue   # not yet joined on this date
+            status = emp.get("employee_status")
+            last_int = emp["_last_int"]
+            if status != EmployeeStatus.ACTIVE:
+                # Inactive/Resigned: include only if they were still employed on this date
+                if last_int is None or last_int < d_int:
+                    continue
+            office = emp["_office"]
+            b = bucket.setdefault(office, {"total": 0, "present": 0, "on_leave": 0})
+            b["total"] += 1
+            if (d_int, emp["id"]) in present_set:
+                b["present"] += 1
+            elif (d_int, emp["id"]) in on_leave_set:
+                b["on_leave"] += 1
+
+        # Emit ONE row per known office (even if 0 employees, for shape stability)
+        # PLUS the Unassigned bucket only if non-empty.
+        all_offices_today = list(office_names)
+        if UNASSIGNED in bucket and UNASSIGNED not in all_offices_today:
+            all_offices_today.append(UNASSIGNED)
+        for office in all_offices_today:
+            b = bucket.get(office, {"total": 0, "present": 0, "on_leave": 0})
+            total = b["total"]
+            present = b["present"]
+            on_leave = b["on_leave"]
+            # Holidays / weekly offs: not counted as absent.
+            if is_holiday or is_sunday:
+                absent = 0
+            else:
+                absent = max(0, total - present - on_leave)
+            # Attendance % = present / (total - on_leave) on working days, 0
+            # on holiday/Sunday rows (no denominator that makes sense).
+            if is_holiday or is_sunday:
+                pct = 0.0
+            else:
+                denom = max(1, total - on_leave)
+                pct = round((present / denom) * 100, 2)
+            rows.append({
+                "date_iso": d.isoformat(),
+                "date_display": d.strftime("%d-%b-%Y"),
+                "office_location": office,
+                "total_employees": total,
+                "present": present,
+                "absent": absent,
+                "on_leave": on_leave,
+                "holiday": 1 if is_holiday else 0,
+                "weekly_off": 1 if is_sunday else 0,
+                "attendance_pct": pct,
+            })
+    return rows
+
+
+@api_router.get("/reports/office-attendance")
+async def get_office_attendance_report(
+    from_date: str,
+    to_date: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """JSON preview of the Office Attendance report — one row per
+    (date, office) pair. See `_build_office_attendance_rows` for full
+    counting semantics."""
+    rows = await _build_office_attendance_rows(from_date, to_date)
+    return rows
+
+
+@api_router.get("/reports/office-attendance/export")
+async def export_office_attendance_report(
+    from_date: str,
+    to_date: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """XLSX download of the Office Attendance report. Layout:
+
+      Date | Office Location | Total Employees | Present | Absent |
+      On Leave | Holiday | Weekly Off | Attendance %
+
+    Date format is the HRMS universal DD-MMM-YYYY (e.g. 01-Mar-2026).
+    """
+    rows = await _build_office_attendance_rows(from_date, to_date)
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+    from io import BytesIO
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Office Attendance"
+
+    headers = [
+        "Date", "Office Location", "Total Employees",
+        "Present", "Absent", "On Leave",
+        "Holiday", "Weekly Off", "Attendance %",
+    ]
+    bold = Font(bold=True, color="FFFFFFFF")
+    fill = PatternFill("solid", fgColor="FF063C88")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center")
+    thin = Side(border_style="thin", color="FFCCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Header row
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col_idx, value=h)
+        c.font = bold
+        c.fill = fill
+        c.alignment = center
+        c.border = border
+
+    # Data rows
+    for r_idx, r in enumerate(rows, start=2):
+        values = [
+            r["date_display"],
+            r["office_location"],
+            r["total_employees"],
+            r["present"],
+            r["absent"],
+            r["on_leave"],
+            "Yes" if r["holiday"] else "",
+            "Yes" if r["weekly_off"] else "",
+            f'{r["attendance_pct"]}%' if not (r["holiday"] or r["weekly_off"]) else "",
+        ]
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=r_idx, column=col_idx, value=val)
+            cell.border = border
+            cell.alignment = left if col_idx == 2 else center
+
+    # Auto-fit-ish column widths
+    widths = [14, 28, 17, 11, 11, 11, 10, 12, 14]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[1].height = 28
+    ws.freeze_panes = "A2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"office_attendance_{from_date}_to_{to_date}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 # ============== PAYROLL ROUTES ==============
 
 @api_router.get("/payroll")

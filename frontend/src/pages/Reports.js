@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { FileText, Download, RotateCcw, FileBarChart, FileSpreadsheet } from 'lucide-react';
+import { FileText, Download, RotateCcw, FileBarChart, FileSpreadsheet, Building } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -23,6 +23,8 @@ const Reports = () => {
   
   const [leaveFilters, setLeaveFilters] = useState({ fromDate: '', toDate: '', empName: '', team: 'All', leaveType: 'All', department: 'All' });
   const [attendanceFilters, setAttendanceFilters] = useState({ fromDate: '', toDate: '', empName: '', team: 'All', status: 'All', department: 'All' });
+  // Office Attendance Report — minimal filter set per spec (date range only).
+  const [officeFilters, setOfficeFilters] = useState({ fromDate: '', toDate: '' });
   const { sortedRows: sortedReportData, sortField, sortDir, toggleSort } = useTableSort(reportData);
 
   useEffect(() => { fetchTeamsAndDepts(); }, []);
@@ -43,7 +45,35 @@ const Reports = () => {
   const handleExport = async () => {
     try {
       setLoading(true);
-      const filters = activeTab === 'leave' ? leaveFilters : attendanceFilters;
+      const filters = activeTab === 'leave' ? leaveFilters : (activeTab === 'attendance' ? attendanceFilters : officeFilters);
+
+      // Office Attendance Report — daily, per-office summary (XLSX)
+      if (activeTab === 'office_attendance') {
+        if (!officeFilters.fromDate || !officeFilters.toDate) {
+          toast.error('Please select From and To dates');
+          setLoading(false);
+          return;
+        }
+        const params = { from_date: officeFilters.fromDate, to_date: officeFilters.toDate };
+        const resp = await axios.get(`${API}/reports/office-attendance/export`, {
+          headers: getAuthHeaders(),
+          params,
+          responseType: 'blob',
+        });
+        const blob = new Blob([resp.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+        const a = document.createElement('a');
+        a.href = window.URL.createObjectURL(blob);
+        a.download = `office_attendance_${officeFilters.fromDate}_to_${officeFilters.toDate}.xlsx`;
+        a.click();
+        // On-screen preview
+        try {
+          const previewResp = await axios.get(`${API}/reports/office-attendance`, { headers: getAuthHeaders(), params });
+          setReportData(previewResp.data);
+        } catch (_) { /* preview optional */ }
+        toast.success('Office attendance report exported');
+        setLoading(false);
+        return;
+      }
 
       // Attendance: download wide-pivot XLSX directly from backend (matches reference template)
       if (activeTab === 'attendance') {
@@ -122,7 +152,8 @@ const Reports = () => {
 
   const handleReset = () => {
     if (activeTab === 'leave') setLeaveFilters({ fromDate: '', toDate: '', empName: '', team: 'All', leaveType: 'All', department: 'All' });
-    else setAttendanceFilters({ fromDate: '', toDate: '', empName: '', team: 'All', status: 'All', department: 'All' });
+    else if (activeTab === 'attendance') setAttendanceFilters({ fromDate: '', toDate: '', empName: '', team: 'All', status: 'All', department: 'All' });
+    else setOfficeFilters({ fromDate: '', toDate: '' });
     setReportData([]);
     toast.info('Filters reset');
   };
@@ -166,12 +197,19 @@ const Reports = () => {
         >
           <FileBarChart className="w-4 h-4 mr-2" /> Attendance Report
         </Button>
+        <Button
+          onClick={() => { setActiveTab('office_attendance'); setReportData([]); }}
+          className={`rounded-xl px-6 ${activeTab === 'office_attendance' ? 'bg-[#063c88] text-white shadow-lg shadow-[#063c88]/20' : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'}`}
+          data-testid="tab-office-attendance"
+        >
+          <Building className="w-4 h-4 mr-2" /> Office Attendance Report
+        </Button>
       </div>
 
       {/* Filters */}
       <div className="card-premium p-8">
         <h3 className="text-lg font-semibold text-slate-900 mb-6" style={{ fontFamily: 'Outfit' }}>
-          {activeTab === 'leave' ? 'Leave Report Filters' : 'Attendance Report Filters'}
+          {activeTab === 'leave' ? 'Leave Report Filters' : activeTab === 'attendance' ? 'Attendance Report Filters' : 'Office Attendance Report Filters'}
         </h3>
         
         {activeTab === 'leave' ? (
@@ -228,7 +266,7 @@ const Reports = () => {
               </Select>
             </div>
           </div>
-        ) : (
+        ) : activeTab === 'attendance' ? (
           <div key="attendance-filters-grid" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             <div>
               <label className="text-sm text-slate-600 mb-2 block font-medium">From Date</label>
@@ -282,6 +320,17 @@ const Reports = () => {
               </Select>
             </div>
           </div>
+        ) : (
+          <div key="office-att-filters-grid" className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div>
+              <label className="text-sm text-slate-600 mb-2 block font-medium">From Date</label>
+              <DatePicker value={officeFilters.fromDate} onChange={(val) => setOfficeFilters({ ...officeFilters, fromDate: val })} placeholder="Select date" data-testid="office-att-filter-from" />
+            </div>
+            <div>
+              <label className="text-sm text-slate-600 mb-2 block font-medium">To Date</label>
+              <DatePicker value={officeFilters.toDate} onChange={(val) => setOfficeFilters({ ...officeFilters, toDate: val })} placeholder="Select date" data-testid="office-att-filter-to" />
+            </div>
+          </div>
         )}
 
         <div className="flex justify-end gap-4 mt-8 pt-6 border-t border-slate-100">
@@ -300,7 +349,7 @@ const Reports = () => {
         <div className="card-premium overflow-hidden">
           <div className="p-6 border-b border-slate-100 flex items-center justify-between">
             <h3 className="font-semibold text-slate-900" style={{ fontFamily: 'Outfit' }}>
-              {activeTab === 'leave' ? 'Leave' : 'Attendance'} Report Results
+              {activeTab === 'leave' ? 'Leave' : activeTab === 'attendance' ? 'Attendance' : 'Office Attendance'} Report Results
             </h3>
             <Badge className="bg-[#063c88]/10 text-[#063c88] border-0 px-3 py-1">{reportData.length} records</Badge>
           </div>
@@ -315,6 +364,16 @@ const Reports = () => {
                     <SortableTh field="check_in" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Check-In</SortableTh>
                     <SortableTh field="check_out" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Check-Out</SortableTh>
                     <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
+                  </tr>
+                ) : activeTab === 'office_attendance' ? (
+                  <tr>
+                    <SortableTh field="date_display" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
+                    <SortableTh field="office_location" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Office Location</SortableTh>
+                    <SortableTh field="total_employees" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Total Employees</SortableTh>
+                    <SortableTh field="present" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Present</SortableTh>
+                    <SortableTh field="absent" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Absent</SortableTh>
+                    <SortableTh field="on_leave" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>On Leave</SortableTh>
+                    <SortableTh field="attendance_pct" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Attendance %</SortableTh>
                   </tr>
                 ) : (
                   <tr>
@@ -338,6 +397,18 @@ const Reports = () => {
                       <td className="text-slate-600">{record.check_in || '-'}</td>
                       <td className="text-slate-600">{record.check_out || '-'}</td>
                       <td><Badge className={getStatusBadge(record.status)}>{record.status}</Badge></td>
+                    </tr>
+                  ))
+                ) : activeTab === 'office_attendance' ? (
+                  sortedReportData.map((record, index) => (
+                    <tr key={index} data-testid={`office-att-row-${index}`}>
+                      <td className="font-medium text-slate-900 whitespace-nowrap">{record.date_display}</td>
+                      <td className="text-slate-600">{record.office_location}</td>
+                      <td className="text-center text-slate-700">{record.total_employees}</td>
+                      <td className="text-center text-emerald-700 font-medium">{record.present}</td>
+                      <td className="text-center text-rose-700 font-medium">{record.absent}</td>
+                      <td className="text-center text-slate-600">{record.on_leave}</td>
+                      <td className="text-center">{(record.holiday || record.weekly_off) ? <Badge className="bg-slate-100 text-slate-500 border-0">{record.holiday ? 'Holiday' : 'Weekly Off'}</Badge> : `${record.attendance_pct}%`}</td>
                     </tr>
                   ))
                 ) : (
