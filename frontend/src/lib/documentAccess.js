@@ -81,25 +81,29 @@ export async function fetchSignedDocumentUrl({
  * Open a document in a new tab using a signed URL (View action).
  *
  * Popup-blocker-safe: opens a placeholder tab synchronously on the user
- * gesture, then redirects it once the signed URL resolves.
+ * gesture, then redirects it once the signed URL resolves. We NEVER
+ * navigate the current tab — that would yank the admin out of the
+ * Verification / Employees screen they were working on, losing context.
  */
 export async function viewSecureDocument({
   employeeId, documentType, source = 'onboarding',
 }) {
   // 1) Open the placeholder tab on the user gesture so popup blockers allow it.
   const newTab = window.open('about:blank', '_blank', 'noopener,noreferrer');
-  const url = await fetchSignedDocumentUrl({ employeeId, documentType, disposition: 'inline', source });
-  if (!url) {
-    // Don't fall back to the raw URL — it's guaranteed to 401 for PDFs.
-    if (newTab) newTab.close();
+  if (!newTab) {
+    // Popup was blocked BEFORE we could even fetch the signed URL.
+    // Tell the user how to fix it — do NOT hijack the current tab.
+    toast.error('Popup blocked — please allow popups for this site to view documents');
     return;
   }
-  if (newTab) {
-    newTab.location.href = url;
-  } else {
-    // Popup was blocked — try direct navigation as the last resort.
-    window.location.href = url;
+  const url = await fetchSignedDocumentUrl({ employeeId, documentType, disposition: 'inline', source });
+  if (!url) {
+    // No silent fallback to the raw URL (guaranteed 401 for PDFs). Close
+    // the placeholder tab; fetchSignedDocumentUrl already toasted the error.
+    newTab.close();
+    return;
   }
+  newTab.location.href = url;
 }
 
 /**

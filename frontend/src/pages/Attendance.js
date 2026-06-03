@@ -167,12 +167,29 @@ const Attendance = () => {
     return null;
   };
 
-  // Stats
+  // Stats — categorization rules (kept in lock-step with the row badge logic):
+  //   • PRESENT     – clocked-in, completed shift, NOT late, NOT early out, NOT LOP
+  //   • LOGGED IN   – currently inside their shift (Login state)
+  //   • LATE LOGIN  – arrived late; includes late-login LOPs from the engine
+  //   • ABSENT      – truly non-working day: Absent / Not Logged / On Leave
+  //
+  // NOTE: late-login LOPs do NOT fall into Absent — they belong in Late Login.
+  // Same applies for early-out LOPs (kept out of Absent; surfaced by the
+  // row badge separately). This keeps the four counters mutually exclusive
+  // and aligned with the row-level status the admin actually sees.
+  const isLateLoginLop = (a) => a.is_lop && (a.lop_reason || '').toLowerCase().includes('late login');
   const stats = {
-    present: sortedAttendance.filter(a => a.status === 'Present' || a.status === 'Completed').length,
+    present: sortedAttendance.filter(a =>
+      (a.status === 'Present' || a.status === 'Completed') && !a.is_lop
+    ).length,
     login: sortedAttendance.filter(a => a.status === 'Login').length,
-    late: sortedAttendance.filter(a => a.status === 'Late Login').length,
-    absent: sortedAttendance.filter(a => a.status === 'Not Logged' || a.is_lop).length,
+    late: sortedAttendance.filter(a => a.status === 'Late Login' || isLateLoginLop(a)).length,
+    absent: sortedAttendance.filter(a => {
+      // Late-login LOPs belong in Late Login, NOT Absent
+      if (isLateLoginLop(a)) return false;
+      const s = a.status || '';
+      return s === 'Absent' || s === 'Not Logged' || s.includes('Leave');
+    }).length,
   };
 
   // Handle employee click to show leave detail
@@ -206,7 +223,7 @@ const Attendance = () => {
           { label: 'Present', value: stats.present, icon: LogOutIcon, color: 'emerald' },
           { label: 'Logged In', value: stats.login, icon: LogIn, color: 'blue' },
           { label: 'Late Login', value: stats.late, icon: Clock, color: 'amber' },
-          { label: 'Absent/LOP', value: stats.absent, icon: AlertCircle, color: 'red' },
+          { label: 'Absent', value: stats.absent, icon: AlertCircle, color: 'red' },
         ].map((stat, i) => (
           <div key={i} className="card-flat p-4 flex items-center gap-4">
             <div className={`w-10 h-10 rounded-xl bg-${stat.color}-100 flex items-center justify-center`}>

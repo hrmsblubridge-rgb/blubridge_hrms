@@ -621,16 +621,35 @@ const Leave = () => {
                 </div>
               </div>
               <div className="space-y-4">
-                {[
-                  { label: 'Leave Type', value: selectedLeave.leave_type },
-                  { label: 'Start Date', value: selectedLeave.start_date },
-                  { label: 'End Date', value: selectedLeave.end_date },
-                  { label: 'Duration', value: selectedLeave.duration },
-                  { label: 'Status', value: selectedLeave.status, isBadge: true },
-                ].map((item, i) => (
+                {(() => {
+                  // Half-day leaves carry a `leave_split` of "First Half" or
+                  // "Second Half". Surface it explicitly in the detail sheet
+                  // so HR can see the session at a glance and not have to
+                  // infer from the duration string. Full-day leaves omit the
+                  // row entirely to preserve the existing layout.
+                  const split = selectedLeave.leave_split;
+                  const isHalf = split === 'First Half' || split === 'Second Half';
+                  const rows = [
+                    { label: 'Leave Type', value: selectedLeave.leave_type },
+                    { label: 'Start Date', value: selectedLeave.start_date },
+                    { label: 'End Date', value: selectedLeave.end_date },
+                    { label: 'Duration', value: selectedLeave.duration },
+                  ];
+                  if (isHalf) rows.push({ label: 'Session', value: split, isSession: true });
+                  rows.push({ label: 'Status', value: selectedLeave.status, isBadge: true });
+                  return rows;
+                })().map((item, i) => (
                   <div key={i} className="flex justify-between items-center py-3 border-b border-dashed border-slate-200">
                     <span className="text-slate-500 text-sm">{item.label}</span>
-                    {item.isBadge ? <Badge className={getStatusBadge(selectedLeave.status)}>{selectedLeave.status}</Badge> : <span className="font-medium text-slate-900">{item.value}</span>}
+                    {item.isBadge ? (
+                      <Badge className={getStatusBadge(selectedLeave.status)}>{selectedLeave.status}</Badge>
+                    ) : item.isSession ? (
+                      <Badge data-testid="leave-session-badge" className="bg-amber-50 text-amber-700 border border-amber-200/50 font-medium">
+                        {item.value}
+                      </Badge>
+                    ) : (
+                      <span className="font-medium text-slate-900">{item.value}</span>
+                    )}
                   </div>
                 ))}
                 {selectedLeave.reason && (
@@ -670,6 +689,12 @@ const Leave = () => {
                 <p><span className="text-slate-500">Employee:</span> <span className="font-medium">{selectedLeave.emp_name}</span></p>
                 <p><span className="text-slate-500">Type:</span> <span className="font-medium">{selectedLeave.leave_type}</span></p>
                 <p><span className="text-slate-500">Duration:</span> <span className="font-medium">{selectedLeave.duration}</span></p>
+                {(selectedLeave.leave_split === 'First Half' || selectedLeave.leave_split === 'Second Half') && (
+                  <p data-testid="approve-leave-session">
+                    <span className="text-slate-500">Session:</span>{' '}
+                    <span className="font-medium text-amber-700">{selectedLeave.leave_split}</span>
+                  </p>
+                )}
               </div>
               <div>
                 <Label className="text-sm font-medium text-slate-700">LOP Status</Label>
