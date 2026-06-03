@@ -173,3 +173,158 @@ def test_explicit_window_param_overrides_default(admin_token):
     # No upcoming entry beyond the requested window
     for u in body["upcoming"]:
         assert u["days_until"] <= 7
+
+
+# ---------------------------------------------------------------------------
+# 4) DOB format tolerance — guards against the "silent skip" regression
+#    where employees with valid-but-unusual DOB strings were dropped.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dob_format_value_builder", [
+    # YYYY-MM-DD
+    lambda today: today.replace(year=1990).isoformat(),
+    # DD-MM-YYYY (Indian numeric)
+    lambda today: today.replace(year=1990).strftime("%d-%m-%Y"),
+    # DD/MM/YYYY
+    lambda today: today.replace(year=1990).strftime("%d/%m/%Y"),
+    # DD-Mon-YYYY (the new global display format)
+    lambda today: today.replace(year=1990).strftime("%d-%b-%Y"),
+    # ISO datetime with time (what JS Date.toISOString() emits)
+    lambda today: today.replace(year=1990).isoformat() + "T00:00:00.000Z",
+])
+async def test_today_birthday_shown_for_every_dob_format(admin_token, dob_format_value_builder):
+    """The widget MUST surface today's birthday regardless of the format
+    the DOB happens to be stored in. Previously `_parse_date_flex` silently
+    returned None for several legitimate formats and the employee was
+    skipped — this parametric test locks that bug closed."""
+    from server import db, get_ist_now, EmployeeStatus  # noqa
+
+    today = get_ist_now().date()
+    emp_id = str(uuid.uuid4())
+    dob_value = dob_format_value_builder(today)
+
+    await db.employees.insert_one({
+        "id": emp_id,
+        "emp_id": f"BDAY-FMT-{emp_id[:8]}",
+        "full_name": "__BDAY_FMT_TEST__",
+        "department": "Test",
+        "team": "Test",
+        "designation": "Test",
+        "date_of_birth": dob_value,
+        "employee_status": EmployeeStatus.ACTIVE,
+        "is_deleted": False,
+    })
+
+    try:
+        body = _birthdays(admin_token)
+        today_ids = [e["id"] for e in body["today"]]
+        assert emp_id in today_ids, (
+            f"Today's birthday DROPPED for DOB format {dob_value!r}. "
+            f"today_ids={today_ids}"
+        )
+    finally:
+        await db.employees.delete_one({"id": emp_id})
+
+
+# ---------------------------------------------------------------------------
+# 5) Boundary cases (today / tomorrow / N+30 / leap-year)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("days_offset,expected_bucket", [
+    (0, "today"),
+    (1, "upcoming"),
+    (15, "upcoming"),
+    (30, "upcoming"),    # exactly on window boundary — must appear
+    (31, "neither"),     # one day outside — must NOT appear
+])
+async def test_birthday_window_boundaries(admin_token, days_offset, expected_bucket):
+    from datetime import timedelta
+    from server import db, get_ist_now, EmployeeStatus  # noqa
+
+    today = get_ist_now().date()
+    target = today + timedelta(days=days_offset)
+    dob_value = target.replace(year=1990).isoformat()
+    emp_id = str(uuid.uuid4())
+
+    await db.employees.insert_one({
+        "id": emp_id,
+        "emp_id": f"BDAY-BNDRY-{emp_id[:8]}",
+        "full_name": "__BDAY_BNDRY__",
+        "department": "Test",
+        "team": "Test",
+        "designation": "Test",
+        "date_of_birth": dob_value,
+        "employee_status": EmployeeStatus.ACTIVE,
+        "is_deleted": False,
+    })
+
+    try:
+        body = _birthdays(admin_token)
+        today_ids = [e["id"] for e in body["today"]]
+        upcoming_ids = [e["id"] for e in body["upcoming"]]
+        if expected_bucket == "today":
+            assert emp_id in today_ids
+        elif expected_bucket == "upcoming":
+            assert emp_id in upcoming_ids, (
+                f"+{days_offset}d expected in upcoming, missing. upcoming={upcoming_ids}"
+            )
+        else:
+            assert emp_id not in today_ids and emp_id not in upcoming_ids
+    finally:
+        await db.employees.delete_one({"id": emp_id})
+
+
+@pytest.mark.asyncio
+async def test_leap_year_dob_does_not_crash(admin_token):
+    """A DOB of Feb-29 must not 500 the endpoint in non-leap years."""
+    from server import db, EmployeeStatus  # noqa
+    emp_id = str(uuid.uuid4())
+    await db.employees.insert_one({
+        "id": emp_id,
+        "emp_id": f"BDAY-LEAP-{emp_id[:8]}",
+        "full_name": "__BDAY_LEAP__",
+        "department": "Test",
+        "team": "Test",
+        "designation": "Test",
+        "date_of_birth": "2000-02-29",
+        "employee_status": EmployeeStatus.ACTIVE,
+        "is_deleted": False,
+    })
+    try:
+        body = _birthdays(admin_token)
+        # Whether it lands in window or not depends on the current date,
+        # but the endpoint MUST respond 200 — no Feb-29-in-2025 crash.
+        assert "today" in body and "upcoming" in body
+    finally:
+        await db.employees.delete_one({"id": emp_id})
+
+
+@pytest.mark.asyncio
+async def test_multiple_employees_same_day_all_appear(admin_token):
+    """If 3 employees share the same DOB (today), all 3 must appear."""
+    from server import db, get_ist_now, EmployeeStatus  # noqa
+    today = get_ist_now().date()
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    docs = [{
+        "id": i,
+        "emp_id": f"BDAY-MULTI-{i[:8]}",
+        "full_name": f"__BDAY_MULTI_{n}__",
+        "department": "Test",
+        "team": "Test",
+        "designation": "Test",
+        "date_of_birth": today.replace(year=1985 + n).isoformat(),
+        "employee_status": EmployeeStatus.ACTIVE,
+        "is_deleted": False,
+    } for n, i in enumerate(ids)]
+    for d in docs:
+        await db.employees.insert_one(d)
+    try:
+        body = _birthdays(admin_token)
+        today_ids = {e["id"] for e in body["today"]}
+        for i in ids:
+            assert i in today_ids, f"missing synthetic id {i} in today bucket"
+    finally:
+        for i in ids:
+            await db.employees.delete_one({"id": i})

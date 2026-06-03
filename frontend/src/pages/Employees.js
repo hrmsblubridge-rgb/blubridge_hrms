@@ -240,10 +240,13 @@ const Employees = () => {
     full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
     date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
     reporting_manager_id: '', department: '', team: '', work_location: 'Office',
+    office_location: '',
     leave_policy: 'Standard', shift_type: 'General', custom_login_time: '', custom_logout_time: '',
     monthly_salary: 0, attendance_tracking_enabled: true, user_role: 'employee', login_enabled: true,
     custom_employee_id: '', biometric_id: ''
   });
+  
+  const [officeLocations, setOfficeLocations] = useState([]);
   
   const [config, setConfig] = useState({
     employmentTypes: [], employeeStatuses: [], tierLevels: [], workLocations: [], userRoles: []
@@ -299,13 +302,14 @@ const Employees = () => {
         ...(inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
       };
       
-      const [employeesRes, statsRes, teamsRes, deptsRes, designationsRes, allEmpRes] = await Promise.all([
+      const [employeesRes, statsRes, teamsRes, deptsRes, designationsRes, allEmpRes, officeLocsRes] = await Promise.all([
         axios.get(`${API}/employees`, { headers: getAuthHeaders(), params }),
         axios.get(`${API}/employees/stats`, { headers: getAuthHeaders() }),
         axios.get(`${API}/teams`, { headers: getAuthHeaders() }),
         axios.get(`${API}/departments`, { headers: getAuthHeaders() }),
         axios.get(`${API}/settings/designations`, { headers: getAuthHeaders() }).catch(() => ({ data: [] })),
-        axios.get(`${API}/employees/all`, { headers: getAuthHeaders() })
+        axios.get(`${API}/employees/all`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/settings/office-locations`, { headers: getAuthHeaders() }).catch(() => ({ data: [] })),
       ]);
       
       setEmployees(employeesRes.data.employees);
@@ -315,6 +319,7 @@ const Employees = () => {
       setDepartments(deptsRes.data);
       setDesignations(designationsRes.data || []);
       setAllEmployees(allEmpRes.data);
+      setOfficeLocations(officeLocsRes.data || []);
     } catch (error) {
       console.error('Fetch error:', error);
       toast.error('Failed to load employee data');
@@ -338,6 +343,7 @@ const Employees = () => {
       full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
       date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
       reporting_manager_id: '', department: '', team: '', work_location: 'Office',
+      office_location: '',
       leave_policy: 'Standard', shift_type: 'General', custom_login_time: '', custom_logout_time: '',
       monthly_salary: 0, attendance_tracking_enabled: true, user_role: 'employee', login_enabled: true,
       custom_employee_id: '', biometric_id: ''
@@ -407,7 +413,9 @@ const Employees = () => {
       employment_type: employee.employment_type || 'Full-time', designation: employee.designation || '',
       tier_level: employee.tier_level || 'Mid', reporting_manager_id: employee.reporting_manager_id || '',
       department: employee.department || '', team: employee.team || '',
-      work_location: employee.work_location || 'Office', leave_policy: employee.leave_policy || 'Standard',
+      work_location: employee.work_location || 'Office',
+      office_location: employee.office_location || '',
+      leave_policy: employee.leave_policy || 'Standard',
       shift_type: shiftValue, custom_login_time: employee.custom_login_time || '',
       custom_logout_time: employee.custom_logout_time || '', monthly_salary: employee.monthly_salary || 0,
       attendance_tracking_enabled: employee.attendance_tracking_enabled ?? true,
@@ -1323,6 +1331,16 @@ const Employees = () => {
                       </SelectContent>
                     </Select>
                   </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Office Location</Label>
+                    <Select value={form.office_location || '__none__'} onValueChange={(val) => setForm(prev => ({ ...prev, office_location: val === '__none__' ? '' : val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="office-location-select"><SelectValue placeholder="Select Office Location" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Unassigned</SelectItem>
+                        {officeLocations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </TabsContent>
               <TabsContent value="organization" className="space-y-4">
@@ -1534,6 +1552,16 @@ const Employees = () => {
                       </SelectContent>
                     </Select>
                   </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Office Location</Label>
+                    <Select value={form.office_location || '__none__'} onValueChange={(val) => setForm(prev => ({ ...prev, office_location: val === '__none__' ? '' : val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="office-location-select"><SelectValue placeholder="Select Office Location" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Unassigned</SelectItem>
+                        {officeLocations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
               </TabsContent>
               <TabsContent value="organization" className="space-y-4">
@@ -1728,6 +1756,10 @@ const Employees = () => {
                         <div className="flex items-center gap-3"><Briefcase className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Joined: {selectedEmployee.date_of_joining}</span></div>
                         <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.department} / {selectedEmployee.team}</span></div>
                         <div className="flex items-center gap-3"><MapPin className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.work_location}</span></div>
+                        <div className="flex items-center gap-3" data-testid="employee-office-location">
+                          <MapPin className="w-4 h-4 text-slate-400" />
+                          <span className="text-sm text-slate-600">Office: {selectedEmployee.office_location || 'Unassigned'}</span>
+                        </div>
                       </div>
                     </div>
                   </div>

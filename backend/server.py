@@ -928,6 +928,9 @@ class Employee(BaseModel):
     department: str
     team: str
     work_location: str = WorkLocation.OFFICE
+    # Office Location (SSOT — /api/settings/office-locations). Optional /
+    # default empty so existing employee profiles are NEVER broken.
+    office_location: Optional[str] = ""
     
     # HR Configuration
     leave_policy: Optional[str] = "Standard"
@@ -984,6 +987,7 @@ class EmployeeCreate(BaseModel):
     department: str
     team: str
     work_location: str = WorkLocation.OFFICE
+    office_location: Optional[str] = ""
     
     # HR Configuration
     leave_policy: Optional[str] = "Standard"
@@ -1024,6 +1028,7 @@ class EmployeeUpdate(BaseModel):
     department: Optional[str] = None
     team: Optional[str] = None
     work_location: Optional[str] = None
+    office_location: Optional[str] = None
     
     # HR Configuration
     leave_policy: Optional[str] = None
@@ -2000,12 +2005,54 @@ DEPARTMENT_WORK_HOURS = {
 }
 
 def _parse_date_flex(date_str):
-    """Parse date string from multiple formats to a date object."""
+    """Parse a date from many tolerant formats → ``date`` (or ``None``).
+
+    Centralised parser used by the birthday widget, payroll engine, and
+    several CSV importers. **Returns `None` only for genuinely invalid
+    input** — never for legitimate stored formats. Robust against the
+    formats that the global DD-MMM-YYYY rollout introduced.
+
+    Accepts:
+      • Python ``datetime`` / ``date`` (passes through, naturally
+        timezone-stripped to a date)
+      • ``YYYY-MM-DD``                — ISO date
+      • ``YYYY-MM-DDTHH:MM[:SS][Z]``  — ISO datetime (drops time)
+      • ``DD-MM-YYYY``                — Indian numeric
+      • ``DD/MM/YYYY``                — slash variant
+      • ``DD-Mon-YYYY`` / ``DD Mon YYYY``  — display format (03-Jun-2004)
+      • Trailing/leading whitespace is stripped.
+
+    Silent `None` returns historically caused the birthday widget to
+    drop legitimate employees; the regression test
+    ``test_birthday_widget_consistency.py`` guards every format above.
+    """
     if not date_str:
         return None
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"):
+    # Native datetime / date — pass through.
+    if isinstance(date_str, datetime):
+        return date_str.date()
+    try:
+        from datetime import date as _date_cls
+        if isinstance(date_str, _date_cls):
+            return date_str
+    except Exception:
+        pass
+    s = str(date_str).strip()
+    if not s:
+        return None
+    # Drop ISO time component if present (e.g. "2004-06-03T00:00:00.000Z").
+    if "T" in s:
+        s = s.split("T", 1)[0]
+    for fmt in (
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%d-%b-%Y",      # 03-Jun-2004 (DD-Mon-YYYY)
+        "%d %b %Y",      # 03 Jun 2004
+        "%d-%B-%Y",      # 03-June-2004
+    ):
         try:
-            return datetime.strptime(str(date_str).strip(), fmt).date()
+            return datetime.strptime(s, fmt).date()
         except ValueError:
             continue
     return None
@@ -8244,7 +8291,7 @@ async def get_dashboard_birthdays(
          "date_of_birth": 1, "designation": 1, "emp_id": 1, "employee_status": 1},
     )
     async for emp in cursor:
-        dob = _parse_date_flex(emp.get("date_of_joining") if False else emp.get("date_of_birth"))
+        dob = _parse_date_flex(emp.get("date_of_birth"))
         if not dob:
             continue
         if isinstance(dob, datetime):

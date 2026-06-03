@@ -71,6 +71,16 @@ class DesignationUpdate(BaseModel):
     description: Optional[str] = None
 
 
+class OfficeLocationIn(BaseModel):
+    name: str
+    description: Optional[str] = ""
+
+
+class OfficeLocationUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
 class HolidayIn(BaseModel):
     name: str
     holiday_date: str            # YYYY-MM-DD
@@ -520,6 +530,118 @@ def register(api_router, deps):
         )
         await log_audit(current_user["id"], "delete_designation", "designation", desig_id)
         return {"message": "Designation deleted"}
+
+    # --------------------------------------------------------
+    #  Office Locations (SSOT — same pattern as Designations)
+    # --------------------------------------------------------
+
+    async def _seed_office_locations_from_employees():
+        """First-boot bootstrap: harvest any unique non-empty
+        office_location values from existing employee rows so the
+        Settings list never starts empty when the company already has
+        location data captured elsewhere. Idempotent — only runs once."""
+        existing = await db.office_locations.count_documents({})
+        if existing > 0:
+            return
+        seen = set()
+        cursor = db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "office_location": 1})
+        async for e in cursor:
+            loc = (e.get("office_location") or "").strip()
+            if loc and loc.lower() not in seen:
+                seen.add(loc.lower())
+                await db.office_locations.insert_one({
+                    "id": str(uuid.uuid4()),
+                    "name": loc,
+                    "description": "",
+                    "is_deleted": False,
+                    "created_at": _now_iso(),
+                    "updated_at": _now_iso(),
+                })
+
+    @api_router.get("/settings/office-locations")
+    async def settings_list_office_locations(include_deleted: bool = False,
+                                             current_user: dict = Depends(get_current_user)):
+        await _seed_office_locations_from_employees()
+        q = {} if include_deleted else {"is_deleted": {"$ne": True}}
+        locs = await db.office_locations.find(q, {"_id": 0}).sort("name", 1).to_list(500)
+        for loc in locs:
+            loc["employee_count"] = await db.employees.count_documents({
+                "office_location": loc["name"],
+                "is_deleted": {"$ne": True},
+                "employee_status": EmployeeStatus.ACTIVE,
+            })
+        return [serialize_doc(loc) for loc in locs]
+
+    @api_router.post("/settings/office-locations")
+    async def settings_create_office_location(data: OfficeLocationIn,
+                                              current_user: dict = Depends(get_current_user)):
+        _require_settings_write(current_user)
+        name = data.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name is required")
+        clash = await db.office_locations.find_one({"name": name, "is_deleted": {"$ne": True}})
+        if clash:
+            raise HTTPException(status_code=409, detail="Office Location with this name already exists")
+        doc = {
+            "id": str(uuid.uuid4()),
+            "name": name,
+            "description": data.description or "",
+            "is_deleted": False,
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+        }
+        await db.office_locations.insert_one(doc.copy())
+        await log_audit(current_user["id"], "create_office_location", "office_location", doc["id"], name)
+        return serialize_doc(doc)
+
+    @api_router.put("/settings/office-locations/{loc_id}")
+    async def settings_update_office_location(loc_id: str, data: OfficeLocationUpdate,
+                                              current_user: dict = Depends(get_current_user)):
+        _require_settings_write(current_user)
+        existing = await db.office_locations.find_one({"id": loc_id}, {"_id": 0})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Office Location not found")
+        updates = {k: v for k, v in data.model_dump().items() if v is not None}
+        if "name" in updates and updates["name"] != existing["name"]:
+            clash = await db.office_locations.find_one({"name": updates["name"], "is_deleted": {"$ne": True}})
+            if clash:
+                raise HTTPException(status_code=409, detail="Office Location already exists")
+        if not updates:
+            return serialize_doc(existing)
+        updates["updated_at"] = _now_iso()
+        await db.office_locations.update_one({"id": loc_id}, {"$set": updates})
+        # Cascade rename across employee rows so the SSOT stays consistent.
+        if "name" in updates and updates["name"] != existing["name"]:
+            await db.employees.update_many(
+                {"office_location": existing["name"]},
+                {"$set": {"office_location": updates["name"]}},
+            )
+        await log_audit(current_user["id"], "update_office_location", "office_location", loc_id)
+        updated = await db.office_locations.find_one({"id": loc_id}, {"_id": 0})
+        return serialize_doc(updated)
+
+    @api_router.delete("/settings/office-locations/{loc_id}")
+    async def settings_delete_office_location(loc_id: str,
+                                              current_user: dict = Depends(get_current_user)):
+        _require_settings_write(current_user)
+        existing = await db.office_locations.find_one({"id": loc_id}, {"_id": 0})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Office Location not found")
+        # Safe-delete gate — never orphan employee rows.
+        emp_count = await db.employees.count_documents({
+            "office_location": existing["name"], "is_deleted": {"$ne": True},
+        })
+        if emp_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot delete: {emp_count} employees are still assigned this office location",
+            )
+        await db.office_locations.update_one(
+            {"id": loc_id},
+            {"$set": {"is_deleted": True, "deleted_at": _now_iso()}},
+        )
+        await log_audit(current_user["id"], "delete_office_location", "office_location", loc_id)
+        return {"message": "Office Location deleted"}
 
     # --------------------------------------------------------
     #  Holidays (thin wrapper enforcing unique date + is_paid)

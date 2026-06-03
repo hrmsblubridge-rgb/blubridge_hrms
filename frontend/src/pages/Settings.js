@@ -16,6 +16,7 @@ import {
   Loader2,
   Search,
   RefreshCw,
+  MapPin,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -91,6 +92,9 @@ const Settings = () => {
           <TabsTrigger value="designations" data-testid="tab-designations" className="gap-2">
             <Briefcase className="w-4 h-4" /> Designations
           </TabsTrigger>
+          <TabsTrigger value="office-locations" data-testid="tab-office-locations" className="gap-2">
+            <MapPin className="w-4 h-4" /> Office Locations
+          </TabsTrigger>
           <TabsTrigger value="holidays" data-testid="tab-holidays" className="gap-2">
             <PartyPopper className="w-4 h-4" /> Holidays
           </TabsTrigger>
@@ -110,6 +114,9 @@ const Settings = () => {
         </TabsContent>
         <TabsContent value="designations" className="mt-5">
           <DesignationsTab authHeaders={authHeaders} />
+        </TabsContent>
+        <TabsContent value="office-locations" className="mt-5">
+          <OfficeLocationsTab authHeaders={authHeaders} />
         </TabsContent>
         <TabsContent value="holidays" className="mt-5">
           <HolidaysTab authHeaders={authHeaders} />
@@ -598,6 +605,154 @@ const DesignationsTab = ({ authHeaders }) => {
           <DialogHeader>
             <DialogTitle>Delete Designation</DialogTitle>
             <DialogDescription>Are you sure you want to delete <b>{confirmDel?.name}</b>?</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDel(null)}>Cancel</Button>
+            <Button onClick={confirmDelete} disabled={saving} className="bg-red-600 hover:bg-red-700">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Delete'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+};
+
+// ============================================================
+//  Office Locations Tab  (SSOT — mirrors Designations CRUD)
+// ============================================================
+
+const OfficeLocationsTab = ({ authHeaders }) => {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [dlg, setDlg] = useState(emptyDialogState);
+  const [form, setForm] = useState({ name: '', description: '' });
+  const [saving, setSaving] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [search, setSearch] = useState('');
+
+  const fetchRows = async () => {
+    try {
+      setLoading(true);
+      const r = await axios.get(`${API}/settings/office-locations`, { headers: authHeaders });
+      setRows(r.data || []);
+    } catch {
+      toast.error('Failed to load office locations');
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { fetchRows(); }, []); // eslint-disable-line
+
+  const filtered = rows.filter((r) => !search || r.name.toLowerCase().includes(search.toLowerCase()));
+
+  const openCreate = () => { setForm({ name: '', description: '' }); setDlg({ open: true, mode: 'create', data: null }); };
+  const openEdit = (row) => { setForm({ name: row.name, description: row.description || '' }); setDlg({ open: true, mode: 'edit', data: row }); };
+
+  const submit = async () => {
+    if (!form.name.trim()) return toast.error('Name is required');
+    setSaving(true);
+    try {
+      if (dlg.mode === 'create') {
+        await axios.post(`${API}/settings/office-locations`, form, { headers: authHeaders });
+        toast.success('Office location added');
+      } else {
+        await axios.put(`${API}/settings/office-locations/${dlg.data.id}`, form, { headers: authHeaders });
+        toast.success('Office location updated');
+      }
+      setDlg(emptyDialogState);
+      await fetchRows();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Save failed');
+    } finally { setSaving(false); }
+  };
+
+  const confirmDelete = async () => {
+    if (!confirmDel) return;
+    setSaving(true);
+    try {
+      await axios.delete(`${API}/settings/office-locations/${confirmDel.id}`, { headers: authHeaders });
+      toast.success('Office location deleted'); setConfirmDel(null); await fetchRows();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Delete failed');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <>
+      <Card
+        title="Office Locations"
+        subtitle={`${filtered.length} of ${rows.length} locations`}
+        action={
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <Input value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9 w-64" placeholder="Search..." data-testid="office-location-search" />
+            </div>
+            <Button onClick={openCreate} data-testid="add-office-location-btn" className="bg-[#063c88] hover:bg-[#04274f]">
+              <Plus className="w-4 h-4 mr-1" /> Add Location
+            </Button>
+          </div>
+        }
+      >
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Description</TableHead>
+              <TableHead className="text-center">Employees</TableHead>
+              <TableHead className="text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading && <TableRow><TableCell colSpan={4} className="text-center py-6"><Loader2 className="w-4 h-4 animate-spin inline" /></TableCell></TableRow>}
+            {!loading && filtered.length === 0 && <EmptyRow cols={4} />}
+            {!loading && filtered.map((r) => (
+              <TableRow key={r.id} data-testid={`office-loc-row-${r.id}`}>
+                <TableCell className="font-medium">{r.name}</TableCell>
+                <TableCell className="text-sm text-slate-600">{r.description || '—'}</TableCell>
+                <TableCell className="text-center">{r.employee_count || 0}</TableCell>
+                <TableCell className="text-right">
+                  <Button variant="ghost" size="sm" onClick={() => openEdit(r)} data-testid={`edit-office-loc-${r.id}`}>
+                    <Edit2 className="w-4 h-4" />
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => setConfirmDel(r)} data-testid={`delete-office-loc-${r.id}`} className="text-red-600 hover:text-red-700">
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Card>
+
+      <Dialog open={dlg.open} onOpenChange={(o) => !o && setDlg(emptyDialogState)}>
+        <DialogContent data-testid="office-location-dialog">
+          <DialogHeader>
+            <DialogTitle>{dlg.mode === 'create' ? 'Add Office Location' : 'Edit Office Location'}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <Label>Name *</Label>
+              <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="office-location-name-input" placeholder="e.g. Chennai Office" />
+            </div>
+            <div>
+              <Label>Description</Label>
+              <Textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Optional address / notes" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDlg(emptyDialogState)}>Cancel</Button>
+            <Button onClick={submit} disabled={saving} data-testid="save-office-location-btn" className="bg-[#063c88] hover:bg-[#04274f]">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Save'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!confirmDel} onOpenChange={(o) => !o && setConfirmDel(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Office Location</DialogTitle>
+            <DialogDescription>Are you sure you want to delete <b>{confirmDel?.name}</b>? The action will be blocked if any active employees are still assigned to it.</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmDel(null)}>Cancel</Button>
