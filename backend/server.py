@@ -3007,8 +3007,45 @@ def _ext_from_file_url(file_url: str, file_name: Optional[str] = None) -> Option
     return None
 
 
+_DOC_STREAM_TOKEN_TTL_SECONDS = 600   # 10 minutes – matches the new-tab use case
+_DOC_STREAM_AUD = "doc-stream"        # JWT audience claim, isolates from auth tokens
+
+
+def _mint_doc_stream_token(*, user_id: str, employee_id: str, document_type: str, source: str) -> str:
+    """Mint a short-lived JWT for the document streaming proxy.
+
+    Embedded in the URL (query string) because ``window.open`` cannot attach
+    an Authorization header.  Distinct ``aud`` claim so a leaked stream token
+    cannot be replayed against the rest of the API.
+    """
+    now = datetime.now(timezone.utc)
+    payload = {
+        "aud": _DOC_STREAM_AUD,
+        "uid": user_id,
+        "eid": employee_id,
+        "dt": document_type,
+        "src": source,
+        "iat": now,
+        "exp": now + timedelta(seconds=_DOC_STREAM_TOKEN_TTL_SECONDS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _decode_doc_stream_token(token: str) -> dict:
+    """Decode + validate a doc-stream token; raises HTTPException on failure."""
+    try:
+        return jwt.decode(
+            token, JWT_SECRET, algorithms=[JWT_ALGORITHM], audience=_DOC_STREAM_AUD,
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Document link expired — please reopen")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid document link")
+
+
 @api_router.get("/documents/secure-url")
 async def get_document_secure_url(
+    request: Request,
     employee_id: str = Query(..., description="Employee UUID owning the document"),
     document_type: str = Query(..., description="Document type key (e.g. aadhaar_card, pan_card)"),
     disposition: str = Query("inline", regex="^(inline|attachment)$"),
@@ -3055,6 +3092,46 @@ async def get_document_secure_url(
 
     ext = _ext_from_file_url(file_url, file_name)
 
+    # --- INLINE VIEW: route through our streaming proxy ---------------------
+    # Cloudinary's signed `private_download_url` endpoint forces
+    # `Content-Disposition: attachment` (it's the *download* API). Pointing
+    # `window.open` at it yields a blank tab in modern browsers (they refuse
+    # to inline-render a response marked as attachment, or the inline preview
+    # fails for PDFs depending on account security). The proxy below fetches
+    # the bytes server-side and re-streams them with `Content-Disposition:
+    # inline`, which renders correctly in every browser.
+    if disposition == "inline":
+        stream_token = _mint_doc_stream_token(
+            user_id=current_user["id"],
+            employee_id=employee_id,
+            document_type=document_type,
+            source=source,
+        )
+        # Build the absolute stream URL from the request the browser actually
+        # made (handles preview vs. prod vs. local dev without configuration).
+        # Honour the standard reverse-proxy forwarded headers our ingress
+        # sets so the URL matches what the browser can reach.
+        fwd_proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+        fwd_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+        base = f"{fwd_proto}://{fwd_host}".rstrip("/")
+        stream_url = f"{base}/api/documents/stream?token={stream_token}"
+        if is_privileged:
+            try:
+                await log_audit(
+                    current_user["id"], "view_document", "employee_document",
+                    employee_id, f"Issued inline stream URL for {document_type}",
+                )
+            except Exception:
+                pass
+        return {
+            "url": stream_url,
+            "expires_in": _DOC_STREAM_TOKEN_TTL_SECONDS,
+            "signed": True,
+            "file_name": file_name,
+            "proxied": True,
+        }
+
+    # --- DOWNLOAD: Cloudinary signed download URL (unchanged, working path) -
     # If we don't have a public_id (legacy records), fall back to the stored URL
     # (works for images that aren't blocked by the PDF restriction).
     if not public_id:
@@ -3072,7 +3149,7 @@ async def get_document_secure_url(
             resource_type="image",
             type="upload",
             expires_at=expires_at,
-            attachment=(disposition == "attachment"),
+            attachment=True,
         )
     except Exception as e:
         # Fall back to the stored URL rather than 500 — at worst the user sees
@@ -3098,6 +3175,122 @@ async def get_document_secure_url(
         "signed": True,
         "file_name": file_name,
     }
+
+
+# ---------------------------------------------------------------------------
+# Document streaming proxy
+# ---------------------------------------------------------------------------
+# Purpose:
+#   • `window.open(signed_cloudinary_url)` renders blank for PDFs because
+#     Cloudinary's `/download` endpoint returns Content-Disposition: attachment.
+#   • Embedding a Bearer header on `window.open` is impossible (no header
+#     control on a new-tab navigation), so the auth token rides in the query
+#     string as a short-lived, audience-scoped JWT (NOT the user session
+#     token — that one never leaves localStorage).
+# Behaviour:
+#   • Validates the short-lived token + re-authorizes against the document
+#     record (defence in depth — token forgery still has to match a real doc).
+#   • Streams the asset bytes from Cloudinary with the correct Content-Type
+#     and `Content-Disposition: inline; filename=...` so the browser renders
+#     the PDF / image inline.
+_DOC_MIME_BY_EXT = {
+    "pdf": "application/pdf",
+    "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic", "heif": "image/heif",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+@api_router.get("/documents/stream")
+async def stream_document(token: str = Query(..., min_length=10)):
+    """Stream a previously authorised document inline so it renders in
+    the browser's new-tab viewer. See module docstring above for design notes."""
+    payload = _decode_doc_stream_token(token)
+    employee_id = payload["eid"]
+    document_type = payload["dt"]
+    source = payload.get("src", "onboarding")
+
+    # Re-fetch the document record (the JWT only proves *which* doc was
+    # authorised, not that the asset still exists / hasn't been replaced).
+    collections = (
+        [db.onboarding_documents, db.employee_documents]
+        if source == "onboarding"
+        else [db.employee_documents, db.onboarding_documents]
+    )
+    doc = None
+    for coll in collections:
+        doc = await coll.find_one(
+            {"employee_id": employee_id, "document_type": document_type},
+            {"_id": 0},
+        )
+        if doc:
+            break
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    public_id = doc.get("file_public_id")
+    file_url = doc.get("file_url")
+    file_name = doc.get("file_name") or f"{document_type}"
+
+    # Build the upstream URL we will pull bytes from.
+    # 1) If we have a public_id → mint a signed Cloudinary download URL
+    #    server-side (bypasses public-delivery PDF restriction).
+    # 2) Otherwise fall back to whatever stored URL we have.
+    ext = _ext_from_file_url(file_url, file_name) or ""
+    upstream_url: Optional[str] = None
+    if public_id:
+        expires_at = int(time.time()) + 300
+        try:
+            upstream_url = await asyncio.to_thread(
+                cloudinary.utils.private_download_url,
+                public_id,
+                ext,
+                resource_type="image",
+                type="upload",
+                expires_at=expires_at,
+                attachment=True,  # download from CDN; we re-serve as inline
+            )
+        except Exception as exc:
+            logger.warning("Cloudinary signed URL build failed: %s", exc)
+            upstream_url = None
+    if not upstream_url:
+        upstream_url = file_url
+    if not upstream_url:
+        raise HTTPException(status_code=404, detail="Document has not been uploaded")
+
+    content_type = _DOC_MIME_BY_EXT.get(ext, "application/octet-stream")
+
+    # Stream the bytes back. `httpx.AsyncClient.stream` keeps memory usage
+    # bounded for large files (e.g. multi-MB scanned PDFs).
+    import httpx  # local import keeps cold-start light
+
+    async def _iter_bytes():
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+            async with client.stream("GET", upstream_url) as upstream:
+                if upstream.status_code != 200:
+                    # Surface a meaningful error instead of an empty body that
+                    # would also render as a blank tab.
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Upstream document fetch failed ({upstream.status_code})",
+                    )
+                async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
+                    yield chunk
+
+    # `inline` so the browser renders it (PDF viewer / <img>) rather than
+    # downloading. The filename is still set for "Save As".
+    safe_name = (file_name or document_type).replace('"', '')
+    headers = {
+        "Content-Disposition": f'inline; filename="{safe_name}"',
+        "Cache-Control": "private, max-age=0, no-store",
+        # Allow embedding in our own app if the frontend ever wants to iframe it
+        "X-Content-Type-Options": "nosniff",
+    }
+    return StreamingResponse(_iter_bytes(), media_type=content_type, headers=headers)
 
 
 # ============== AUTH ROUTES ==============

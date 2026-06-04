@@ -5,6 +5,38 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-04 (P0 — Verification Document View renders BLANK in new tab)
+
+### Issue
+Admin clicks the "View" (eye) icon → new tab opens but renders **completely blank** (PDF & images). Download works fine.
+
+### Root Cause
+The backend `GET /api/documents/secure-url?disposition=inline` was returning a Cloudinary `private_download_url`. That URL points at Cloudinary's `/download` API endpoint, which is the *download* API — modern browsers refuse to inline-render its response (forced attachment / blocked-PDF behaviour on accounts with the default PDF-delivery restriction). The signed URL itself was valid; the inline preview semantics were impossible to achieve directly from Cloudinary.
+
+### Permanent Fix — Backend Streaming Proxy
+1. **New endpoint** `GET /api/documents/stream?token=<jwt>` in `backend/server.py`:
+   - Validates a short-lived (10 min) JWT with `aud=doc-stream` (cannot be replayed against session-token endpoints).
+   - Re-fetches the document record and signs a **server-side** Cloudinary download URL (bypasses public-delivery PDF restriction).
+   - Streams the bytes back with `Content-Type: application/pdf` (or matching MIME) and `Content-Disposition: inline; filename="..."` so the browser renders inline.
+2. **`GET /api/documents/secure-url?disposition=inline`** now returns the proxy stream URL (no Authorization header needed → safe for `window.open`). The token rides in the query string and is audience-scoped.
+3. **Download path is intentionally unchanged** — still returns a direct Cloudinary signed URL with `attachment=1` (preserves the already-working behaviour).
+4. **Frontend `documentAccess.js`** required NO change: it already opens the URL returned by `/api/documents/secure-url` in a new tab. The viewer now sees a proper PDF inline.
+
+### Regression Coverage
+`backend/tests/test_documents_secure_url.py` — **11/11 passing**:
+- `test_admin_can_get_signed_url` — inline path returns `proxied=true` + `/api/documents/stream?token=...`
+- `test_signed_url_returns_200_from_cloudinary` — fetches the stream URL end-to-end, asserts `Content-Type: application/pdf`, `Content-Disposition: inline`, and `%PDF` magic bytes
+- `test_attachment_path_still_uses_cloudinary` — guards that the working download path was not collateral-damaged
+- `test_stream_rejects_bad_token` / `test_stream_rejects_session_token_replay` — token forgery and audience-confusion guards
+- Plus existing RBAC / 404 / 422 guards.
+
+### Files Changed
+- `/app/backend/server.py` — added `_mint_doc_stream_token`, `_decode_doc_stream_token`, `stream_document` endpoint; reworked `get_document_secure_url` to route inline through the proxy and use the request's own host (no hardcoded base URL).
+- `/app/backend/tests/test_documents_secure_url.py` — updated assertions for the new contract + 3 new guards.
+
+---
+
+
 ## Latest Update — 2026-05-26 (Critical Regression Fix — Dashboard Drill-down + Settings SSOT)
 
 ### Issue #1 — Dashboard Attendance Status Drill-down Regression
