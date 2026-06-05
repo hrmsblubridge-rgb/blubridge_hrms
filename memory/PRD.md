@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Vigilance — Sample Template Download respects ALL filters) ✅ TESTED
+
+**User requirement:** "Download Sample Template" must respect the ENTIRE filter state, not just From/To dates — i.e. Employee Name, Department, Designation, Team + active-in-range + date expansion. Default fallback Today→Today for all active employees when no filters. Validation message "Please select both From Date and To Date". Zero regressions.
+
+**Fix (surgical):**
+- **`backend/vigilance/router.py`** — `GET /api/vigilance/template` now accepts `employee_name, department, designation, team`; filters the active-employee set via the shared `svc.emp_passes_filters` (public alias of `_emp_passes`, the SAME helper the table/entries use → consistent semantics). Per-day `is_active_on` still bounds rows to each employee's valid working dates; attendance prefilled (— when missing). Missing-date message updated.
+- **`frontend/src/pages/OperationalVigilance.js`** — `handleDownloadTemplate` now sends all filter params (same shape as the Filter/Export calls); validation shows "Please select both From Date and To Date".
+
+**Verified (curl + pytest):** Employee Name "Harshini V M" 01–05 Jun → exactly 1 employee × 5 day-rows; Team filter → only that team's active employees; no filters → all 51 active for today; missing date rejected. New `TestTemplate::test_template_respects_team_filter` + `test_template_respects_employee_name_filter`; full suite **29/29 pass**. (Note: re-synced `madhan.s`/`dinesh.t` to `Vigil@123` — hashes had drifted.)
+
+---
+
+
 ## Latest Update — 2026-06-05 (Vigilance — duration columns accept HH:MM **and** HH:MM:SS) ✅ TESTED
 
 **User requirement:** Vigilance duration/total columns must accept BOTH `HH:MM` and `HH:MM:SS` on upload (sheet + Add/Edit), normalize storage, render clean, export without truncation, reject invalid, no regressions. Applies ONLY to duration fields (Total Research Hours, Total Break Hours, every break Total incl. dynamic Extra-BreakN). Clock fields (Punch-In/Out, System Login/Logout, break From/To) untouched.

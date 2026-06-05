@@ -104,6 +104,55 @@ class TestTemplate:
                          headers=_hdr(tokens["vig1"]))
         assert r.status_code == 400
 
+    def _names_dates(self, content):
+        wb = load_workbook(io.BytesIO(content), read_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        h = list(rows[0])
+        ni, di = h.index("Name"), h.index("Date")
+        data = [r for r in rows[2:] if r[ni]]
+        return ({r[ni] for r in data}, {r[di] for r in data}, len(data))
+
+    def test_template_respects_team_filter(self, tokens):
+        # full = all active employees for the day, with their teams
+        full = requests.get(f"{BASE_URL}/api/vigilance/template",
+                            params={"from_date": FROM_D, "to_date": TO_D},
+                            headers=_hdr(tokens["admin"]))
+        wb = load_workbook(io.BytesIO(full.content), read_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        h = list(rows[0])
+        ni, ti = h.index("Name"), h.index("Team")
+        full_data = [(r[ni], r[ti]) for r in rows[2:] if r[ni]]
+        full_names = {n for n, _ in full_data}
+        # pick a team that actually has active employees today
+        team = next(t for _, t in full_data if t)
+        expected = {n for n, t in full_data if t == team}
+
+        r = requests.get(f"{BASE_URL}/api/vigilance/template",
+                         params={"from_date": FROM_D, "to_date": TO_D, "team": team},
+                         headers=_hdr(tokens["admin"]))
+        assert r.status_code == 200
+        names, _, _ = self._names_dates(r.content)
+        assert names, "team-filtered template must still have rows"
+        assert names <= full_names, "filtered set must be a subset of all active employees"
+        assert names == expected, "team filter must return exactly the employees of that team"
+
+    def test_template_respects_employee_name_filter(self, tokens):
+        meta = requests.get(f"{BASE_URL}/api/vigilance/filters-meta", headers=_hdr(tokens["admin"])).json()
+        target = meta["employees"][0]["name"]
+        r = requests.get(f"{BASE_URL}/api/vigilance/template",
+                         params={"from_date": "01-Jun-2026", "to_date": "05-Jun-2026", "employee_name": target},
+                         headers=_hdr(tokens["admin"]))
+        assert r.status_code == 200
+        names, dates, n = self._names_dates(r.content)
+        # only the matched employee(s); name filter is substring so assert all contain target
+        assert all(target.lower() in nm.lower() for nm in names)
+        # if active across the range, expect up to 5 day-rows for a single employee
+        if len(names) == 1:
+            assert n <= 5 and len(dates) <= 5
+
+
 
 # ---------------- Helpers to author filled xlsx ----------------
 def _author_filled(template_bytes, target_email, fills, extra_label=None, extra_vals=None):

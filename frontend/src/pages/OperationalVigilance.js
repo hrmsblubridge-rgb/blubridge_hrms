@@ -111,10 +111,17 @@ export default function OperationalVigilance() {
   };
 
   const handleDownloadTemplate = async () => {
-    if (!validRange) { toast.error('Both dates are required and To Date must be ≥ From Date.'); return; }
+    if (!filters.fromDate || !filters.toDate) { toast.error('Please select both From Date and To Date'); return; }
+    if (!validRange) { toast.error('To Date must be the same as or after From Date.'); return; }
     setDownloading(true);
     try {
-      await blobDownload(`${API}/vigilance/template`, { from_date: filters.fromDate, to_date: filters.toDate }, 'Vigilance-Template.xlsx');
+      await blobDownload(`${API}/vigilance/template`, {
+        from_date: filters.fromDate, to_date: filters.toDate,
+        ...(filters.employeeName && { employee_name: filters.employeeName }),
+        ...(filters.department !== 'All' && { department: filters.department }),
+        ...(filters.designation !== 'All' && { designation: filters.designation }),
+        ...(filters.team !== 'All' && { team: filters.team }),
+      }, 'Vigilance-Template.xlsx');
       toast.success('Template downloaded');
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Template download failed');

@@ -96,16 +96,21 @@ def get_vigilance_router(db, get_current_user):
     # ------------------------------------------------------------- template
     @router.get("/template")
     async def template(from_date: str = Query(...), to_date: str = Query(...),
+                       employee_name: Optional[str] = None, department: Optional[str] = None,
+                       designation: Optional[str] = None, team: Optional[str] = None,
                        current_user: dict = Depends(get_current_user)):
         await context(current_user)
         iso_from = svc.to_iso(from_date)
         iso_to = svc.to_iso(to_date)
         if not iso_from or not iso_to:
-            raise HTTPException(status_code=400, detail="From Date and To Date are required (DD-MMM-YYYY).")
+            raise HTTPException(status_code=400, detail="Please select both From Date and To Date.")
         if iso_to < iso_from:
             raise HTTPException(status_code=400, detail="To Date must be the same as or after From Date.")
 
-        emps = await svc.get_active_employees(db, iso_from, iso_to)
+        # Respect the full filter state (Employee Name / Department / Designation / Team)
+        f = {"employee_name": employee_name, "department": department,
+             "designation": designation, "team": team}
+        emps = [e for e in await svc.get_active_employees(db, iso_from, iso_to) if svc.emp_passes_filters(e, f)]
         emp_ids = [e["id"] for e in emps]
         att = await svc.get_attendance_map(db, emp_ids, iso_from, iso_to)
         days = svc.daterange_iso(iso_from, iso_to)

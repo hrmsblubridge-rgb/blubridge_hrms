@@ -586,6 +586,10 @@ def _emp_passes(e, filters):
     return True
 
 
+# Public alias — used by the template endpoint to honour the full filter state.
+emp_passes_filters = _emp_passes
+
+
 def _doc_passes(d, filters):
     """Filter a vigilance doc by the same criteria (for fallback rows of
     employees that fall outside the active-employee base grid)."""
