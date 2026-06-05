@@ -6,6 +6,8 @@ import { toast } from 'sonner';
 import { CalendarDays, Search, Filter, RotateCcw, Check, X, ChevronUp, ChevronDown, Eye, AlertTriangle, Clock, CheckCircle2, XCircle, Plus, Upload, Download, Pencil, Undo2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
+import { formatDate } from '../lib/dateFormat';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
@@ -350,11 +352,11 @@ const Leave = () => {
           </div>
           <div>
             <label className="text-sm text-slate-600 mb-1.5 block font-medium">From</label>
-            <Input type="date" value={filters.fromDate} onChange={(e) => setFilters({ ...filters, fromDate: e.target.value })} className="rounded-lg" data-testid="filter-from" />
+            <DatePicker value={filters.fromDate} onChange={(val) => setFilters({ ...filters, fromDate: val })} className="rounded-lg" data-testid="filter-from" />
           </div>
           <div>
             <label className="text-sm text-slate-600 mb-1.5 block font-medium">To</label>
-            <Input type="date" value={filters.toDate} onChange={(e) => setFilters({ ...filters, toDate: e.target.value })} className="rounded-lg" data-testid="filter-to" />
+            <DatePicker value={filters.toDate} onChange={(val) => setFilters({ ...filters, toDate: val })} className="rounded-lg" data-testid="filter-to" />
           </div>
           <div>
             <label className="text-sm text-slate-600 mb-1.5 block font-medium">Leave Type</label>
@@ -451,7 +453,7 @@ const Leave = () => {
                           <td className="font-medium text-slate-900">{leave.emp_name}</td>
                           <td className="text-slate-600">{leave.team}</td>
                           <td className="text-slate-600">{leave.leave_type}</td>
-                          <td className="text-slate-600">{leave.start_date}</td>
+                          <td className="text-slate-600">{formatDate(leave.start_date)}</td>
                           <td className="text-slate-600">{leave.duration}</td>
                           <td className="text-slate-600 max-w-[220px]">
                             <div
@@ -525,7 +527,7 @@ const Leave = () => {
                         <td className="font-medium text-slate-900">{leave.emp_name}</td>
                         <td className="text-slate-600">{leave.team}</td>
                         <td className="text-slate-600">{leave.leave_type}</td>
-                        <td className="text-slate-600">{leave.start_date}</td>
+                        <td className="text-slate-600">{formatDate(leave.start_date)}</td>
                         <td className="text-slate-600">{leave.duration}</td>
                         <td className="text-slate-600 max-w-[220px]">
                           <div
@@ -631,8 +633,8 @@ const Leave = () => {
                   const isHalf = split === 'First Half' || split === 'Second Half';
                   const rows = [
                     { label: 'Leave Type', value: selectedLeave.leave_type },
-                    { label: 'Start Date', value: selectedLeave.start_date },
-                    { label: 'End Date', value: selectedLeave.end_date },
+                    { label: 'Start Date', value: formatDate(selectedLeave.start_date) },
+                    { label: 'End Date', value: formatDate(selectedLeave.end_date) },
                     { label: 'Duration', value: selectedLeave.duration },
                   ];
                   if (isHalf) rows.push({ label: 'Session', value: split, isSession: true });
@@ -795,7 +797,7 @@ const Leave = () => {
             </div>
             <div>
               <Label>Leave Date</Label>
-              <Input type="date" value={applyForm.start_date} onChange={e => setApplyForm({ ...applyForm, start_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="admin-apply-leave-date" />
+              <DatePicker value={applyForm.start_date} onChange={(val) => setApplyForm({ ...applyForm, start_date: val })} className="mt-1.5 rounded-lg" data-testid="admin-apply-leave-date" />
             </div>
             <div><Label>Reason (min 10 chars)</Label><Textarea value={applyForm.reason} onChange={e => setApplyForm({ ...applyForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Reason for leave..." /></div>
             <div className="flex items-center gap-4 pt-2">
@@ -987,7 +989,7 @@ const Leave = () => {
               </div>
               <div>
                 <Label>Leave Date</Label>
-                <Input type="date" value={editForm.start_date} onChange={e => setEditForm({ ...editForm, start_date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-leave-date" />
+                <DatePicker value={editForm.start_date} onChange={(val) => setEditForm({ ...editForm, start_date: val })} className="mt-1.5 rounded-lg" data-testid="edit-leave-date" />
               </div>
               <div>
                 <Label>Reason (min 10 chars)</Label>

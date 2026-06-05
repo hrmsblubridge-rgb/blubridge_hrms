@@ -6,6 +6,8 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
+import { formatDate } from '../lib/dateFormat';
 import { Textarea } from '../components/ui/textarea';
 import {
   Select,
@@ -356,7 +358,7 @@ const EmployeeEducationExperience = () => {
                       <p className="text-sm text-slate-700 mt-0.5">{exp.company_name}</p>
                       <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
                         <Calendar className="w-3 h-3" />
-                        {exp.start_date} - {exp.is_current ? 'Present' : exp.end_date}
+                        {formatDate(exp.start_date)} - {exp.is_current ? 'Present' : formatDate(exp.end_date)}
                       </p>
                       {exp.responsibilities && (
                         <p className="text-xs text-slate-600 mt-2">{exp.responsibilities}</p>
@@ -480,19 +482,17 @@ const EmployeeEducationExperience = () => {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-sm font-medium text-slate-700">Start Date *</label>
-                <Input
-                  type="date"
+                <DatePicker
                   value={expForm.start_date}
-                  onChange={(e) => setExpForm({ ...expForm, start_date: e.target.value })}
+                  onChange={(val) => setExpForm({ ...expForm, start_date: val })}
                   data-testid="exp-start-input"
                 />
               </div>
               <div>
                 <label className="text-sm font-medium text-slate-700">End Date</label>
-                <Input
-                  type="date"
+                <DatePicker
                   value={expForm.end_date}
-                  onChange={(e) => setExpForm({ ...expForm, end_date: e.target.value })}
+                  onChange={(val) => setExpForm({ ...expForm, end_date: val })}
                   disabled={expForm.is_current}
                 />
               </div>

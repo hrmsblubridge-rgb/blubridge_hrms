@@ -6,6 +6,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
 import {
   Select,
   SelectContent,
@@ -453,10 +454,9 @@ const Holidays = () => {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="text-sm font-medium text-slate-700">Date *</label>
-                <Input
-                  type="date"
+                <DatePicker
                   value={formData.date}
-                  onChange={(e) => handleDateChange(e.target.value)}
+                  onChange={handleDateChange}
                   data-testid="holiday-date-input"
                 />
               </div>

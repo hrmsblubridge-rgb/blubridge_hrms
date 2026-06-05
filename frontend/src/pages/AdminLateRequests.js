@@ -5,6 +5,8 @@ import { toast } from 'sonner';
 import { Clock, Search, Check, X, Plus, Eye, AlertTriangle, Pencil, Undo2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
+import { formatDate } from '../lib/dateFormat';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
 import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
@@ -147,7 +149,7 @@ const AdminLateRequests = () => {
             <tr key={r.id}>
               <td className="font-medium text-slate-900">{r.emp_name}</td>
               <td className="text-slate-600">{r.team}</td>
-              <td className="text-slate-600">{r.date}</td>
+              <td className="text-slate-600">{formatDate(r.date)}</td>
               <td className="text-slate-600">{r.expected_time || '-'}</td>
               <td className="text-slate-600">{r.actual_time || '-'}</td>
               <td className="text-slate-600 max-w-[180px] truncate">{r.reason}</td>
@@ -218,7 +220,7 @@ const AdminLateRequests = () => {
       <Dialog open={showApprove} onOpenChange={setShowApprove}>
         <DialogContent className="bg-[#fffdf7] rounded-2xl"><DialogHeader><DialogTitle style={{ fontFamily: 'Outfit' }}><Check className="w-5 h-5 text-emerald-500 inline mr-2" />Approve Late Request</DialogTitle><DialogDescription>Choose LOP status</DialogDescription></DialogHeader>
           <div className="py-4 space-y-4">
-            {selected && <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — {selected.date}</p>}
+            {selected && <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — {formatDate(selected.date)}</p>}
             <div><Label>LOP Status</Label>
               <Select value={lopChoice} onValueChange={setLopChoice}><SelectTrigger className="mt-1.5 rounded-lg" data-testid="lop-select"><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="no_lop">No LOP</SelectItem><SelectItem value="lop">LOP (Loss of Pay)</SelectItem></SelectContent>
@@ -233,7 +235,7 @@ const AdminLateRequests = () => {
       {/* Reject Dialog */}
       <Dialog open={showReject} onOpenChange={setShowReject}>
         <DialogContent className="bg-[#fffdf7] rounded-2xl"><DialogHeader><DialogTitle style={{ fontFamily: 'Outfit' }}><AlertTriangle className="w-5 h-5 text-red-500 inline mr-2" />Reject Late Request</DialogTitle><DialogDescription>Are you sure you want to reject?</DialogDescription></DialogHeader>
-          {selected && <p className="py-4 text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — {selected.date}</p>}
+          {selected && <p className="py-4 text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — {formatDate(selected.date)}</p>}
           <DialogFooter><Button variant="outline" onClick={() => setShowReject(false)} disabled={actionLoading} className="rounded-lg">Cancel</Button><Button onClick={handleReject} disabled={actionLoading} className="bg-red-500 hover:bg-red-600 text-white rounded-lg">{actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Confirm Reject'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
@@ -247,7 +249,7 @@ const AdminLateRequests = () => {
                 <SelectContent>{employees.map(e => <SelectItem key={e.id} value={e.id}>{e.full_name} ({e.team})</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div><Label>Date</Label><Input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="mt-1.5 rounded-lg" /></div>
+            <div><Label>Date</Label><DatePicker value={form.date} onChange={(val) => setForm({ ...form, date: val })} className="mt-1.5 rounded-lg" /></div>
             <div className="grid grid-cols-2 gap-4">
               <div><Label>Expected Time</Label><Input type="time" value={form.expected_time} onChange={e => setForm({ ...form, expected_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
               <div><Label>Actual Time</Label><Input type="time" value={form.actual_time} onChange={e => setForm({ ...form, actual_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
@@ -274,7 +276,7 @@ const AdminLateRequests = () => {
           {selected && (
             <div className="space-y-4 py-2">
               <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — <Badge className={getStatusBadge(selected.status)}>{selected.status}</Badge></p>
-              <div><Label>Date</Label><Input type="date" value={editForm.date} onChange={e => setEditForm({ ...editForm, date: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-late-date" /></div>
+              <div><Label>Date</Label><DatePicker value={editForm.date} onChange={(val) => setEditForm({ ...editForm, date: val })} className="mt-1.5 rounded-lg" data-testid="edit-late-date" /></div>
               <div className="grid grid-cols-2 gap-4">
                 <div><Label>Expected Time</Label><Input type="time" value={editForm.expected_time} onChange={e => setEditForm({ ...editForm, expected_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-late-expected" /></div>
                 <div><Label>Actual Time</Label><Input type="time" value={editForm.actual_time} onChange={e => setEditForm({ ...editForm, actual_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-late-actual" /></div>

@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { User, Mail, Phone, Calendar, Briefcase, MapPin, Building2, Users, Sparkles } from 'lucide-react';
+import { formatDate } from '../lib/dateFormat';
 import AvatarUploader from '../components/AvatarUploader';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 
@@ -123,8 +124,8 @@ const EmployeeProfile = () => {
             {[
               { icon: Mail, label: 'Email', value: profile?.official_email },
               { icon: Phone, label: 'Phone', value: profile?.phone_number || '-' },
-              { icon: Calendar, label: 'Date of Birth', value: profile?.date_of_birth || '-' },
-              { icon: Calendar, label: 'Date of Joining', value: profile?.date_of_joining || '-' },
+              { icon: Calendar, label: 'Date of Birth', value: formatDate(profile?.date_of_birth) },
+              { icon: Calendar, label: 'Date of Joining', value: formatDate(profile?.date_of_joining) },
               { icon: Building2, label: 'Department', value: profile?.department },
               { icon: Users, label: 'Team', value: profile?.team },
               { icon: Briefcase, label: 'Employment Type', value: profile?.employment_type },

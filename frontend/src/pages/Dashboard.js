@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Badge } from '../components/ui/badge';
 import {
@@ -502,18 +503,16 @@ const Dashboard = () => {
           {/* Custom Date Range */}
           {chartFilters.dateRange === 'custom' && (
             <div className="flex items-center gap-3 mb-4 p-3 bg-slate-50 rounded-xl">
-              <Input 
-                type="date" 
+              <DatePicker 
                 value={chartFilters.customFrom} 
-                onChange={(e) => setChartFilters(prev => ({ ...prev, customFrom: e.target.value }))}
+                onChange={(val) => setChartFilters(prev => ({ ...prev, customFrom: val }))}
                 className="w-[140px] h-9 rounded-lg text-sm"
                 data-testid="chart-custom-from"
               />
               <span className="text-slate-400 text-sm">to</span>
-              <Input 
-                type="date" 
+              <DatePicker 
                 value={chartFilters.customTo} 
-                onChange={(e) => setChartFilters(prev => ({ ...prev, customTo: e.target.value }))}
+                onChange={(val) => setChartFilters(prev => ({ ...prev, customTo: val }))}
                 className="w-[140px] h-9 rounded-lg text-sm"
                 data-testid="chart-custom-to"
               />
@@ -616,20 +615,18 @@ const Dashboard = () => {
         <div className="flex flex-wrap items-end gap-4">
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-600 font-medium">From:</span>
-            <Input
-              type="date"
+            <DatePicker
               value={draftFilters.fromDate}
-              onChange={(e) => setDraftFilters({ ...draftFilters, fromDate: e.target.value })}
+              onChange={(val) => setDraftFilters({ ...draftFilters, fromDate: val })}
               className="w-40 bg-white rounded-lg"
               data-testid="filter-from-date"
             />
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-slate-600 font-medium">To:</span>
-            <Input
-              type="date"
+            <DatePicker
               value={draftFilters.toDate}
-              onChange={(e) => setDraftFilters({ ...draftFilters, toDate: e.target.value })}
+              onChange={(val) => setDraftFilters({ ...draftFilters, toDate: val })}
               className="w-40 bg-white rounded-lg"
               data-testid="filter-to-date"
             />
@@ -772,7 +769,7 @@ const Dashboard = () => {
                       {activeAttendanceTab === 'not_logged' ? (
                         <>
                           <td className="text-slate-600">{item.leave_type || '-'}</td>
-                          <td className="text-slate-600">{item.date}</td>
+                          <td className="text-slate-600">{formatDate(item.date)}</td>
                           <td className="text-slate-600 max-w-[240px]">
                             {item.reason ? (
                               <div
@@ -790,7 +787,7 @@ const Dashboard = () => {
                       ) : activeAttendanceTab === 'logged_in' ? (
                         <>
                           <td className="text-slate-600">{item.check_in || '-'}</td>
-                          <td className="text-slate-600">{item.date}</td>
+                          <td className="text-slate-600">{formatDate(item.date)}</td>
                         </>
                       ) : activeAttendanceTab === 'logout' || activeAttendanceTab === 'early_out' ? (
                         <>

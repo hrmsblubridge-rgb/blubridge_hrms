@@ -6,6 +6,7 @@ import EmployeeAvatar from '../components/EmployeeAvatar';
 import { Download, Plus, Eye, ArrowLeft, Star, Users, Award, TrendingUp, Trophy, Sparkles, AlertTriangle } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Badge } from '../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../components/ui/dialog';
@@ -300,11 +301,11 @@ const StarReward = () => {
                     <div className="grid grid-cols-2 gap-3 mb-4">
                       <div>
                         <Label className="text-sm text-slate-600 font-medium">From</Label>
-                        <Input type="date" value={week.fromDate} onChange={(e) => updateWeekData(index, 'fromDate', e.target.value)} className="rounded-xl text-sm mt-1.5 bg-white border-slate-200" />
+                        <DatePicker value={week.fromDate} onChange={(val) => updateWeekData(index, 'fromDate', val)} className="rounded-xl text-sm mt-1.5 bg-white border-slate-200" />
                       </div>
                       <div>
                         <Label className="text-sm text-slate-600 font-medium">To</Label>
-                        <Input type="date" value={week.toDate} onChange={(e) => updateWeekData(index, 'toDate', e.target.value)} className="rounded-xl text-sm mt-1.5 bg-white border-slate-200" />
+                        <DatePicker value={week.toDate} onChange={(val) => updateWeekData(index, 'toDate', val)} className="rounded-xl text-sm mt-1.5 bg-white border-slate-200" />
                       </div>
                     </div>
                     <div className="mb-4">

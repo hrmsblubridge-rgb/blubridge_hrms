@@ -20,6 +20,7 @@ import {
   Filter
 } from 'lucide-react';
 import { Button } from './ui/button';
+import { formatDate } from '../lib/dateFormat';
 import { Badge } from './ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
@@ -710,9 +711,9 @@ const EmployeeLeaveDetail = ({ employee, onClose }) => {
                         data-testid={`leave-row-${index}`}
                       >
                         <td className="text-slate-900 font-medium">
-                          {leave.start_date}
+                          {formatDate(leave.start_date)}
                           {leave.end_date && leave.end_date !== leave.start_date && (
-                            <span className="text-slate-400"> - {leave.end_date}</span>
+                            <span className="text-slate-400"> - {formatDate(leave.end_date)}</span>
                           )}
                         </td>
                         <td>

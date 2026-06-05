@@ -6,15 +6,29 @@ import { Button } from "./button";
 import { Calendar } from "./calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "./popover";
 
+// Parse a value into a Date WITHOUT timezone off-by-one. A bare "yyyy-MM-dd"
+// string is parsed by JS as UTC midnight, which can render as the previous
+// day in negative-offset timezones. We parse those components as a LOCAL date
+// so the picker always shows the exact day the user picked / was stored.
+function parseLocalDate(v) {
+  if (!v) return undefined;
+  if (v instanceof Date) return isNaN(v.getTime()) ? undefined : v;
+  if (typeof v === "string") {
+    const m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) {
+      const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+      return isNaN(d.getTime()) ? undefined : d;
+    }
+  }
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? undefined : d;
+}
+
 function DatePicker({ value, onChange, className, placeholder = "Pick a date", disabled = false, min, max, "data-testid": dataTestId }) {
-  const [date, setDate] = React.useState(value ? new Date(value) : undefined);
+  const [date, setDate] = React.useState(parseLocalDate(value));
 
   React.useEffect(() => {
-    if (value) {
-      setDate(new Date(value));
-    } else {
-      setDate(undefined);
-    }
+    setDate(parseLocalDate(value));
   }, [value]);
 
   const handleSelect = (selectedDate) => {

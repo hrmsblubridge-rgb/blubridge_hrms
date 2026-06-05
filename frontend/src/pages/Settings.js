@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
+import { formatDate } from '../lib/dateFormat';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
 import { Badge } from '../components/ui/badge';
@@ -869,7 +871,7 @@ const HolidaysTab = ({ authHeaders }) => {
             {!loading && rows.map((r) => (
               <TableRow key={r.id} data-testid={`holiday-row-${r.id}`}>
                 <TableCell className="font-medium">{r.name}</TableCell>
-                <TableCell className="text-sm">{r.date}</TableCell>
+                <TableCell className="text-sm">{formatDate(r.date)}</TableCell>
                 <TableCell className="text-sm text-slate-600">{r.day}</TableCell>
                 <TableCell><Badge variant="secondary">{r.type || 'company'}</Badge></TableCell>
                 <TableCell className="text-center">{r.is_paid === false ? 'No' : 'Yes'}</TableCell>
@@ -899,7 +901,7 @@ const HolidaysTab = ({ authHeaders }) => {
             </div>
             <div>
               <Label>Date *</Label>
-              <Input type="date" value={form.holiday_date} onChange={(e) => setForm({ ...form, holiday_date: e.target.value })} data-testid="holiday-date-input" />
+              <DatePicker value={form.holiday_date} onChange={(val) => setForm({ ...form, holiday_date: val })} data-testid="holiday-date-input" />
             </div>
             <div>
               <Label>Type</Label>
@@ -1333,11 +1335,11 @@ const AssignShiftsTab = ({ authHeaders }) => {
             </div>
             <div>
               <Label>Effective From *</Label>
-              <Input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} data-testid="assign-effective-from" />
+              <DatePicker value={effectiveFrom} onChange={(val) => setEffectiveFrom(val)} data-testid="assign-effective-from" />
             </div>
             <div>
               <Label>Effective To (optional)</Label>
-              <Input type="date" value={effectiveTo} onChange={(e) => setEffectiveTo(e.target.value)} data-testid="assign-effective-to" />
+              <DatePicker value={effectiveTo} onChange={(val) => setEffectiveTo(val)} data-testid="assign-effective-to" />
             </div>
           </div>
 
@@ -1441,8 +1443,8 @@ const AssignShiftsTab = ({ authHeaders }) => {
               <TableRow key={a.id} data-testid={`active-assignment-${a.id}`}>
                 <TableCell className="font-medium">{a.employee_name} <span className="text-xs text-slate-500">({a.emp_id})</span></TableCell>
                 <TableCell>{a.shift_name} <span className="text-xs text-slate-500">({a.shift_start_time})</span></TableCell>
-                <TableCell>{a.effective_from}</TableCell>
-                <TableCell>{a.effective_to || '—'}</TableCell>
+                <TableCell>{formatDate(a.effective_from)}</TableCell>
+                <TableCell>{a.effective_to ? formatDate(a.effective_to) : '—'}</TableCell>
                 <TableCell className="text-right">
                   <Button variant="ghost" size="sm" onClick={() => removeAssignment(a.id)} className="text-red-600 hover:text-red-700" data-testid={`remove-assignment-${a.id}`}>
                     <Trash2 className="w-4 h-4" />

@@ -5,6 +5,8 @@ import { toast } from 'sonner';
 import { Clock, Check, X, Plus, Search, Filter, ChevronLeft, ChevronRight, Eye, Upload, Download, Pencil, Undo2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
+import { formatDate } from '../lib/dateFormat';
 import { Badge } from '../components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -286,7 +288,7 @@ const AdminMissedPunch = () => {
           ) : sortedRowsMP.map(r => (
             <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50/50">
               <td className="px-4 py-3 font-medium text-slate-900">{r.emp_name}</td>
-              <td className="px-4 py-3 text-slate-600">{r.date}</td>
+              <td className="px-4 py-3 text-slate-600">{formatDate(r.date)}</td>
               <td className="px-4 py-3"><Badge variant="outline" className="text-xs">{r.punch_type}</Badge></td>
               <td className="px-4 py-3 text-slate-600">{formatTime(r.check_in_time)}</td>
               <td className="px-4 py-3 text-slate-600">{formatTime(r.check_out_time)}</td>
@@ -347,11 +349,11 @@ const AdminMissedPunch = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
           <div>
             <label className="text-xs text-slate-500 mb-1 block">From Date</label>
-            <Input type="date" value={filterFromDate} onChange={e => setFilterFromDate(e.target.value)} className="h-9 bg-slate-50 rounded-xl text-sm" data-testid="filter-from-date" />
+            <DatePicker value={filterFromDate} onChange={(val) => setFilterFromDate(val)} className="h-9 bg-slate-50 rounded-xl text-sm" data-testid="filter-from-date" />
           </div>
           <div>
             <label className="text-xs text-slate-500 mb-1 block">To Date</label>
-            <Input type="date" value={filterToDate} onChange={e => setFilterToDate(e.target.value)} className="h-9 bg-slate-50 rounded-xl text-sm" data-testid="filter-to-date" />
+            <DatePicker value={filterToDate} onChange={(val) => setFilterToDate(val)} className="h-9 bg-slate-50 rounded-xl text-sm" data-testid="filter-to-date" />
           </div>
           <div>
             <label className="text-xs text-slate-500 mb-1 block">Status</label>
@@ -427,7 +429,7 @@ const AdminMissedPunch = () => {
               <div className="mt-6 space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div><p className="text-xs text-slate-500">Employee</p><p className="text-sm font-medium">{selected.emp_name}</p></div>
-                  <div><p className="text-xs text-slate-500">Date</p><p className="text-sm font-medium">{selected.date}</p></div>
+                  <div><p className="text-xs text-slate-500">Date</p><p className="text-sm font-medium">{formatDate(selected.date)}</p></div>
                   <div><p className="text-xs text-slate-500">Punch Type</p><p className="text-sm font-medium">{selected.punch_type}</p></div>
                   <div><p className="text-xs text-slate-500">Status</p><Badge className={`${statusColor[selected.status]} border text-xs`}>{selected.status}</Badge></div>
                   {selected.check_in_time && <div><p className="text-xs text-slate-500">Check-in</p><p className="text-sm font-medium">{formatTime(selected.check_in_time)}</p></div>}
@@ -473,7 +475,7 @@ const AdminMissedPunch = () => {
             </div>
             <div>
               <label className="text-xs font-medium text-slate-700 mb-1 block">Date</label>
-              <Input type="date" value={formData.date} onChange={e => setFormData(f => ({ ...f, date: e.target.value }))} required className="bg-slate-50 rounded-xl" data-testid="missed-date" />
+              <DatePicker value={formData.date} onChange={(val) => setFormData(f => ({ ...f, date: val }))} className="bg-slate-50 rounded-xl" data-testid="missed-date" />
             </div>
             <div>
               <label className="text-xs font-medium text-slate-700 mb-1 block">Punch Type</label>
@@ -687,7 +689,7 @@ const AdminMissedPunch = () => {
               <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — <Badge className={`${statusColor[selected.status]} border text-xs`}>{selected.status}</Badge></p>
               <div>
                 <label className="text-xs font-medium text-slate-700 mb-1 block">Date</label>
-                <Input type="date" value={editForm.date} onChange={e => setEditForm(f => ({ ...f, date: e.target.value }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-date" />
+                <DatePicker value={editForm.date} onChange={(val) => setEditForm(f => ({ ...f, date: val }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-date" />
               </div>
               <div>
                 <label className="text-xs font-medium text-slate-700 mb-1 block">Punch Type</label>

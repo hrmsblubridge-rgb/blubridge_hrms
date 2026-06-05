@@ -67,6 +67,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
 import { Textarea } from '../components/ui/textarea';
 import { Label } from '../components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -1267,7 +1268,7 @@ const Employees = () => {
                 </div>
                 <div>
                   <Label className="text-sm font-medium text-slate-700">Date of Birth</Label>
-                  <Input type="date" value={form.date_of_birth} onChange={(e) => setForm(prev => ({ ...prev, date_of_birth: e.target.value }))} className="mt-1.5 rounded-lg" data-testid="input-dob" />
+                  <DatePicker value={form.date_of_birth} onChange={(val) => setForm(prev => ({ ...prev, date_of_birth: val }))} className="mt-1.5 rounded-lg" data-testid="input-dob" />
                 </div>
               </TabsContent>
               <TabsContent value="employment" className="space-y-4">
@@ -1278,7 +1279,7 @@ const Employees = () => {
                   </div>
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Date of Joining</Label>
-                    <Input type="date" value={form.date_of_joining} onChange={(e) => setForm(prev => ({ ...prev, date_of_joining: e.target.value }))} className="mt-1.5 rounded-lg" data-testid="input-doj" />
+                    <DatePicker value={form.date_of_joining} onChange={(val) => setForm(prev => ({ ...prev, date_of_joining: val }))} className="mt-1.5 rounded-lg" data-testid="input-doj" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -1488,7 +1489,7 @@ const Employees = () => {
                 </div>
                 <div>
                   <Label className="text-sm font-medium text-slate-700">Date of Birth</Label>
-                  <Input type="date" value={form.date_of_birth} onChange={(e) => setForm(prev => ({ ...prev, date_of_birth: e.target.value }))} className="mt-1.5 rounded-lg" data-testid="input-dob" />
+                  <DatePicker value={form.date_of_birth} onChange={(val) => setForm(prev => ({ ...prev, date_of_birth: val }))} className="mt-1.5 rounded-lg" data-testid="input-dob" />
                 </div>
               </TabsContent>
               <TabsContent value="employment" className="space-y-4">
@@ -1499,7 +1500,7 @@ const Employees = () => {
                   </div>
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Date of Joining</Label>
-                    <Input type="date" value={form.date_of_joining} onChange={(e) => setForm(prev => ({ ...prev, date_of_joining: e.target.value }))} className="mt-1.5 rounded-lg" data-testid="input-doj" />
+                    <DatePicker value={form.date_of_joining} onChange={(val) => setForm(prev => ({ ...prev, date_of_joining: val }))} className="mt-1.5 rounded-lg" data-testid="input-doj" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -1723,7 +1724,7 @@ const Employees = () => {
                       <div className="space-y-3">
                         <div className="flex items-center gap-3"><Mail className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.official_email}</span></div>
                         <div className="flex items-center gap-3"><Phone className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.phone_number || '-'}</span></div>
-                        <div className="flex items-center gap-3"><Calendar className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">DOB: {selectedEmployee.date_of_birth || '-'}</span></div>
+                        <div className="flex items-center gap-3"><Calendar className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">DOB: {formatDate(selectedEmployee.date_of_birth)}</span></div>
                       </div>
                     </div>
                     <div className="space-y-4">
@@ -1753,7 +1754,7 @@ const Employees = () => {
                           )}
                         </div>
                         <div className="flex items-center gap-3"><Fingerprint className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Biometric ID: {selectedEmployee.biometric_id || '-'}</span></div>
-                        <div className="flex items-center gap-3"><Briefcase className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Joined: {selectedEmployee.date_of_joining}</span></div>
+                        <div className="flex items-center gap-3"><Briefcase className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Joined: {formatDate(selectedEmployee.date_of_joining)}</span></div>
                         <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.department} / {selectedEmployee.team}</span></div>
                         <div className="flex items-center gap-3"><MapPin className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.work_location}</span></div>
                         <div className="flex items-center gap-3" data-testid="employee-office-location">
@@ -1771,7 +1772,7 @@ const Employees = () => {
                       </h4>
                       <div className="grid grid-cols-2 gap-3 text-sm">
                         <div><span className="text-slate-500">Type:</span> <span className="font-medium text-slate-700">{selectedEmployee.inactive_type || '-'}</span></div>
-                        <div><span className="text-slate-500">Date:</span> <span className="font-medium text-slate-700">{selectedEmployee.inactive_date || '-'}</span></div>
+                        <div><span className="text-slate-500">Date:</span> <span className="font-medium text-slate-700">{formatDate(selectedEmployee.inactive_date)}</span></div>
                         <div><span className="text-slate-500">Reason:</span> <span className="font-medium text-slate-700">{selectedEmployee.inactive_reason || '-'}</span></div>
                         <div><span className="text-slate-500">Last Day Payable:</span> <span className="font-medium text-slate-700">{selectedEmployee.last_day_payable ? 'Yes' : 'No'}</span></div>
                       </div>
@@ -1876,7 +1877,7 @@ const Employees = () => {
                                     </div>
                                     <p className="text-sm text-slate-700">{exp.company_name}</p>
                                     <p className="text-xs text-slate-500">
-                                      {exp.start_date} - {exp.is_current ? 'Present' : exp.end_date}
+                                      {formatDate(exp.start_date)} - {exp.is_current ? 'Present' : formatDate(exp.end_date)}
                                     </p>
                                     {exp.responsibilities && (
                                       <p className="text-xs text-slate-600 mt-1">{exp.responsibilities}</p>
@@ -2225,7 +2226,7 @@ const Employees = () => {
             </div>
             <div>
               <Label className="text-sm text-slate-600">Date</Label>
-              <Input type="date" value={deactForm.inactive_date} onChange={(e) => setDeactForm({ ...deactForm, inactive_date: e.target.value })} className="mt-1 rounded-lg" data-testid="deact-date" />
+              <DatePicker value={deactForm.inactive_date} onChange={(val) => setDeactForm({ ...deactForm, inactive_date: val })} className="mt-1 rounded-lg" data-testid="deact-date" />
             </div>
             <div>
               <Label className="text-sm text-slate-600">Type</Label>

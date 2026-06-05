@@ -8,6 +8,7 @@ import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Badge } from '../components/ui/badge';
 import { DatePicker } from '../components/ui/date-picker';
+import { formatDate } from '../lib/dateFormat';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
 import { useTableSort, SortableTh } from '../components/useTableSort';
 
@@ -393,7 +394,7 @@ const Reports = () => {
                     <tr key={index}>
                       <td className="font-medium text-slate-900">{record.emp_name}</td>
                       <td className="text-slate-600">{record.team}</td>
-                      <td className="text-slate-600">{record.date}</td>
+                      <td className="text-slate-600">{formatDate(record.date)}</td>
                       <td className="text-slate-600">{record.check_in || '-'}</td>
                       <td className="text-slate-600">{record.check_out || '-'}</td>
                       <td><Badge className={getStatusBadge(record.status)}>{record.status}</Badge></td>
@@ -417,8 +418,8 @@ const Reports = () => {
                       <td className="font-medium text-slate-900">{record.emp_name}</td>
                       <td className="text-slate-600">{record.team}</td>
                       <td className="text-slate-600">{record.leave_type}</td>
-                      <td className="text-slate-600">{record.start_date}</td>
-                      <td className="text-slate-600">{record.end_date}</td>
+                      <td className="text-slate-600">{formatDate(record.start_date)}</td>
+                      <td className="text-slate-600">{formatDate(record.end_date)}</td>
                       <td className="text-slate-600">{record.duration}</td>
                       <td><Badge className={getStatusBadge(record.status)}>{record.status}</Badge></td>
                     </tr>
