@@ -15,7 +15,7 @@ import requests
 BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
 if not BASE_URL:
     # fallback for local pytest runs
-    BASE_URL = "https://leave-code-mapper.preview.emergentagent.com"
+    BASE_URL = "https://blank-tab-debug.preview.emergentagent.com"
 
 API = f"{BASE_URL}/api"
 

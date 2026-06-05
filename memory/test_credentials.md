@@ -41,5 +41,5 @@
 - Reset password (public): `POST /api/auth/reset-password` body: `{token,new_password,confirm_password}`
 - NOTE: Reset endpoint enforces min 8 chars + letter + digit. Legacy `pass123` (7 chars) is grandfathered but cannot be re-set via this endpoint.
 
-Base URL: https://leave-code-mapper.preview.emergentagent.com
+Base URL: https://blank-tab-debug.preview.emergentagent.com
 Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "..."}

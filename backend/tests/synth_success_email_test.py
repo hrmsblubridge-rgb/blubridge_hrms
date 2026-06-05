@@ -14,7 +14,7 @@ from datetime import datetime
 import requests
 from motor.motor_asyncio import AsyncIOMotorClient
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://leave-code-mapper.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://blank-tab-debug.preview.emergentagent.com").rstrip("/")
 API = f"{BASE_URL}/api"
 PILOT_EMAIL = "rishi.nayak@blubridge.com"
 RISHI_EMP_ID = "2ce742cb-f44b-4224-b19b-4dd44ca6ae51"

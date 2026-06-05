@@ -15,7 +15,7 @@ import pytest
 import requests
 from datetime import datetime, timedelta
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://leave-code-mapper.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://blank-tab-debug.preview.emergentagent.com").rstrip("/")
 
 KASPER_EMPLOYEE_ID = "278f8421-12dc-495d-b3fe-c657ebe17ee0"
 
