@@ -5,6 +5,25 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (P0 — Admin login "Invalid credentials" — pinned permanently)
+
+**User report (critical, repeated):** `admin` login fails with "Invalid credentials"; demanded the login be fixed AND never changed/reverted again. User's intended password: `HrAdmin786$`.
+
+**Investigation (root cause):**
+- Audit-log + DB forensics showed the admin `password_hash` was STABLE (it matched the value the previous agent set, `MyPermanent#2026A`, method `agent_test_resync`) and had NOT reverted across backend restarts. Recent `change_password` audit events all targeted the ephemeral `__regression_admin_pwd__` test user — NOT the real admin (so the 2026-05-17 test-fixture fix is holding).
+- Reviewed every admin-password write path: the startup `_seed_role_user` (server.py ~15910) only bootstraps a password when BOTH `password_hash` AND `password_updated_at` are absent — it NEVER overwrites an existing admin password. The `/api/seed` endpoint (~13040) short-circuits if admin exists. The `_safe_user_update` firewall + protected-username set + read-only tamper beacon are all intact.
+- **Conclusion:** there is NO active code path that reverts the admin password. The real cause of the user's recurring pain was that successive agents/sessions kept setting admin to DIFFERENT values (`pass123` → `MyPermanent#2026A` → …), so the password never matched what the user typed (`HrAdmin786$`).
+
+**Permanent fix:**
+- Pinned admin password to the user's chosen value **`HrAdmin786$`** (SHA256 via the app's `hash_password`), set `password_updated_method='user_fixed_credential'`, `is_active=True`, cleared any `failed_login_attempts`/`locked_until`.
+- **Verified persistence:** logged in OK → restarted backend → DB hash still matched `HrAdmin786$` → login still OK (curl local + external + full UI flow to Dashboard).
+- Pinned the credential at the TOP of `test_credentials.md` with a strict "DO NOT CHANGE — re-set to exactly `HrAdmin786$` if ever broken, never invent a new password" mandate so no future agent rotates it again.
+
+**No code changed** — this was a data-level credential fix; the (already-correct) seed/firewall/beacon protections were verified, not modified.
+
+---
+
+
 ## Latest Update — 2026-06-05 (Attendance module — Designation filter added)
 
 **User request:** Add a "Designation"-wise filter on the Attendance page filter row (it had Employee Name / Department / Team / Status + date range, but no Designation).

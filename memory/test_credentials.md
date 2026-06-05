@@ -1,7 +1,16 @@
 # HRMS Test Credentials
 
+> 🔒🔒🔒 **PINNED ADMIN CREDENTIAL — DO NOT CHANGE (user mandate 2026-06-05)** 🔒🔒🔒
+> The user has fixed the HR admin login to **`admin` / `HrAdmin786$`**.
+> AGENTS MUST NOT re-sync, reset, or "verify" this to any other value
+> (no `pass123`, no `MyPermanent#2026A`, nothing else). It is set in Mongo
+> with `password_updated_method='user_fixed_credential'` and verified to
+> PERSIST across a full backend restart (startup seed only sets a password
+> when none exists, so it never overwrites this). If admin login ever fails,
+> re-set it to EXACTLY `HrAdmin786$` — never invent a new password.
+
 ## Admin Accounts
-- **HR Admin**: `admin` / `MyPermanent#2026A` (role: hr) — VERIFIED WORKING 2026-06-05 (re-synced; password had drifted to an unknown value, see note below)
+- **HR Admin**: `admin` / `HrAdmin786$` (role: hr) — 🔒 PINNED, VERIFIED WORKING + PERSISTS ACROSS RESTART (2026-06-05). DO NOT CHANGE.
 - **System Admin**: `sysadmin` / `pass123` (role: system_admin)
 - **Office Admin**: `workforce` / `Pass@123#` (role: office_admin — renamed from `offadmin` on 2026-05-13)
 
