@@ -5,6 +5,21 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Vigilance — duration columns accept HH:MM **and** HH:MM:SS) ✅ TESTED
+
+**User requirement:** Vigilance duration/total columns must accept BOTH `HH:MM` and `HH:MM:SS` on upload (sheet + Add/Edit), normalize storage, render clean, export without truncation, reject invalid, no regressions. Applies ONLY to duration fields (Total Research Hours, Total Break Hours, every break Total incl. dynamic Extra-BreakN). Clock fields (Punch-In/Out, System Login/Logout, break From/To) untouched.
+
+**Fix (root-level, `backend/vigilance/service.py` + `router.py`):**
+- `DUR_RE` now `^(\d{1,3}):([0-5]\d)(?::([0-5]\d))?$`; `norm_duration()` accepts `HH:MM`/`HH:MM:SS`/Excel time-cells and stores canonically as **`HH:MM:SS`**; rejects `25:99, 12:70, 10::30, 10-30, AA:BB`.
+- New `display_duration()` renders clean for UI/export: `HH:MM` when seconds are `:00` (and for legacy `HH:MM` data → backward compatible), `HH:MM:SS` when seconds are non-zero. Applied at read boundaries (`list_own_rows`, `list_admin_merged`, `attendance_integration_map`); export reads through these so it inherits the clean form (no truncation).
+- All duration validation error messages now read: "invalid duration format. Accepted: HH:MM or HH:MM:SS." Clock validators/format unchanged.
+- **Frontend untouched** — API returns clean strings, existing display logic renders them as-is (zero frontend regression).
+
+**Verified:** new `TestDurationFormats` (HH:MM:SS accepted+rendered with seconds; HH:MM stays clean; invalid → 422; upload sheet accepts `08:15:30`); full suite **27/27 pass**; export confirmed `10:30:45` preserved + `00:45` clean; DB reset to 0 entries (clean slate for the real vigilance team). Backward compatible with legacy `HH:MM` data.
+
+---
+
+
 ## Latest Update — 2026-06-05 (Attendance ↔ Vigilance — per-member Research/Break columns always visible) ✅ TESTED
 
 **User report:** The Attendance module's "Total Research Hrs / Total Break Hrs" columns (per vigilance member, e.g. Dinesh T, Madhan S) disappeared. Cause: the prior cleanup deleted the only (test) vigilance entries, and the columns were derived from *uploaders-who-had-data*, so an empty DB hid them. **Requirement (confirmed):** columns must ALWAYS render — one Research + one Break column per **Vigilance-designation employee** — showing "-" when no data, live-connected to the vigilance module, matched by employee+date. Do not re-create data (team uploads real data).

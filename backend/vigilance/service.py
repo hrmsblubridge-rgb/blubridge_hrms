@@ -49,7 +49,7 @@ VIGILANCE_DESIGNATION = "vigilance"
 
 CLOCK_RE = re.compile(r"^(\d{1,2}):([0-5]\d)\s*(AM|PM)$", re.IGNORECASE)
 TWENTYFOUR_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
-DUR_RE = re.compile(r"^(\d{1,3}):([0-5]\d)$")
+DUR_RE = re.compile(r"^(\d{1,3}):([0-5]\d)(?::([0-5]\d))?$")
 
 
 # ----------------------------------------------------------------------------
@@ -151,14 +151,43 @@ def to_24h(value):
 
 
 def norm_duration(value):
-    """Validate/normalise a duration HH:MM (no AM/PM). Returns (ok, normalised|''). Blank allowed."""
+    """Validate/normalise a DURATION (no AM/PM) entered as EITHER 'HH:MM' OR
+    'HH:MM:SS' (and Excel time cells) and store canonically as 'HH:MM:SS'.
+    Blank allowed. Returns (ok, normalised|''). Rejects invalid values
+    (e.g. 25:99, AA:BB, 12:70, 10::30, 10-30).
+    """
     if value is None or str(value).strip() == "":
         return True, ""
+    if isinstance(value, dtime):
+        return True, f"{value.hour:02d}:{value.minute:02d}:{value.second:02d}"
     s = str(value).strip()
     m = DUR_RE.match(s)
     if not m:
         return False, None
-    return True, f"{int(m.group(1)):02d}:{m.group(2)}"
+    h, mm = int(m.group(1)), int(m.group(2))
+    ss = int(m.group(3)) if m.group(3) is not None else 0
+    return True, f"{h:02d}:{mm:02d}:{ss:02d}"
+
+
+def display_duration(value):
+    """Render a stored duration for UI / export: 'HH:MM' when the seconds part
+    is :00 (or absent for legacy 'HH:MM' data), 'HH:MM:SS' when seconds are
+    present and non-zero. No truncation; backward-compatible with legacy data.
+    """
+    if value is None or str(value).strip() == "":
+        return ""
+    s = str(value).strip()
+    m = DUR_RE.match(s)
+    if not m:
+        return s
+    h, mm = int(m.group(1)), int(m.group(2))
+    ss = int(m.group(3)) if m.group(3) is not None else 0
+    return f"{h:02d}:{mm:02d}:{ss:02d}" if ss else f"{h:02d}:{mm:02d}"
+
+
+def _display_breaks(breaks):
+    """Return breaks with their duration 'total' rendered for UI/export."""
+    return [{**b, "total": display_duration(b.get("total", ""))} for b in (breaks or [])]
 
 
 def att_total_hours_to_duration(att):
@@ -445,11 +474,11 @@ def parse_upload(file_bytes, employees_by_email, uploaded_by):
             continue
         ok, research = norm_duration(research_raw)
         if not ok:
-            errors.append({"row": excel_row, "message": f"Total Research Hours '{research_raw}' must be a duration HH:MM (e.g. 10:00)."})
+            errors.append({"row": excel_row, "message": f"Total Research Hours '{research_raw}' — invalid duration format. Accepted: HH:MM or HH:MM:SS (e.g. 10:00 or 10:00:30)."})
             continue
         ok, break_hours = norm_duration(break_hours_raw)
         if not ok:
-            errors.append({"row": excel_row, "message": f"Total Break Hours '{break_hours_raw}' must be a duration HH:MM."})
+            errors.append({"row": excel_row, "message": f"Total Break Hours '{break_hours_raw}' — invalid duration format. Accepted: HH:MM or HH:MM:SS."})
             continue
 
         breaks = []
@@ -465,7 +494,7 @@ def parse_upload(file_bytes, employees_by_email, uploaded_by):
                 errors.append({"row": excel_row, "message": f"'{label} To' = '{t}' must be HH:MM AM/PM."})
                 row_has_break_error = True
             if not okv:
-                errors.append({"row": excel_row, "message": f"'{label} Total' = '{tot}' must be a duration HH:MM."})
+                errors.append({"row": excel_row, "message": f"'{label} Total' = '{tot}' — invalid duration format. Accepted: HH:MM or HH:MM:SS."})
                 row_has_break_error = True
             if okf and okt and okv and (nf or nt or nv):
                 breaks.append({"label": label, "from": nf, "to": nt, "total": nv})
@@ -664,9 +693,9 @@ async def list_own_rows(db, uploaded_by_employee_id, filters):
         r["id"] = d["id"]
         r["system_login"] = d.get("system_login", "")
         r["system_logout"] = d.get("system_logout", "")
-        r["total_research_hours"] = d.get("total_research_hours", "")
-        r["total_break_hours"] = d.get("total_break_hours", "")
-        r["breaks"] = d.get("breaks", [])
+        r["total_research_hours"] = display_duration(d.get("total_research_hours", ""))
+        r["total_break_hours"] = display_duration(d.get("total_break_hours", ""))
+        r["breaks"] = _display_breaks(d.get("breaks", []))
         for b in d.get("breaks", []):
             if b["label"] not in break_labels:
                 break_labels.append(b["label"])
@@ -705,9 +734,9 @@ async def list_admin_merged(db, filters):
             "uploaded_by_name": d.get("uploaded_by_name"),
             "system_login": d.get("system_login", ""),
             "system_logout": d.get("system_logout", ""),
-            "total_research_hours": d.get("total_research_hours", ""),
-            "total_break_hours": d.get("total_break_hours", ""),
-            "breaks": d.get("breaks", []),
+            "total_research_hours": display_duration(d.get("total_research_hours", "")),
+            "total_break_hours": display_duration(d.get("total_break_hours", "")),
+            "breaks": _display_breaks(d.get("breaks", [])),
         })
         uploaders[d["uploaded_by_employee_id"]] = d.get("uploaded_by_name")
         for b in d.get("breaks", []):
@@ -746,8 +775,8 @@ async def attendance_integration_map(db, employee_ids, iso_from, iso_to):
         out.setdefault(k, []).append({
             "uploaded_by_employee_id": d.get("uploaded_by_employee_id"),
             "uploaded_by_name": d.get("uploaded_by_name"),
-            "total_research_hours": d.get("total_research_hours", ""),
-            "total_break_hours": d.get("total_break_hours", ""),
+            "total_research_hours": display_duration(d.get("total_research_hours", "")),
+            "total_break_hours": display_duration(d.get("total_break_hours", "")),
         })
     return out
 

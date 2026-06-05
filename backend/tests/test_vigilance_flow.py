@@ -333,6 +333,85 @@ class TestValidation:
         assert r.status_code == 400
 
 
+# ---------------- Duration format: HH:MM and HH:MM:SS ----------------
+class TestDurationFormats:
+    """Duration columns accept BOTH HH:MM and HH:MM:SS; stored canonically,
+    rendered clean (HH:MM when :00 seconds, else HH:MM:SS). Clock fields untouched."""
+
+    def _find_clean_target(self, tokens):
+        base = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["admin"]),
+                            params={"from_date": FROM_D, "to_date": TO_D}).json()
+        row = next(x for x in base["rows"] if not x["submissions"])
+        return row["target_employee_id"], row["date"]
+
+    def test_hhmmss_accepted_and_rendered_with_seconds(self, tokens):
+        emp_id, iso = self._find_clean_target(tokens)
+        c = requests.post(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                          json={"target_employee_id": emp_id, "date": iso,
+                                "total_research_hours": "10:30:45", "total_break_hours": "00:45",
+                                "breaks": [{"label": "Lunch Break", "from": "13:00", "to": "13:30", "total": "00:30:15"}]})
+        assert c.status_code == 200, c.text
+        try:
+            own = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                               params={"from_date": FROM_D, "to_date": TO_D}).json()
+            my = next(x for x in own["rows"] if x["target_employee_id"] == emp_id and x["date"] == iso)
+            assert my["total_research_hours"] == "10:30:45"   # seconds preserved
+            assert my["total_break_hours"] == "00:45"          # HH:MM -> clean HH:MM (no :00)
+            blunch = next(b for b in my["breaks"] if b["label"] == "Lunch Break")
+            assert blunch["total"] == "00:30:15"
+        finally:
+            _del = next((x["id"] for x in
+                         requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                                      params={"from_date": FROM_D, "to_date": TO_D}).json()["rows"]
+                         if x["target_employee_id"] == emp_id and x["date"] == iso and x.get("id")), None)
+            if _del:
+                requests.delete(f"{BASE_URL}/api/vigilance/entries/{_del}", headers=_hdr(tokens["vig1"]))
+
+    def test_invalid_duration_rejected(self, tokens):
+        emp_id, iso = self._find_clean_target(tokens)
+        for bad in ("25:99", "12:70", "10::30", "10-30", "AA:BB"):
+            c = requests.post(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                              json={"target_employee_id": emp_id, "date": iso,
+                                    "total_research_hours": bad, "breaks": []})
+            assert c.status_code == 422, f"{bad} should be rejected"
+
+    def test_upload_sheet_accepts_hhmmss(self, tokens):
+        # target a clean employee (no existing submissions) so we never touch fixture data
+        base = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["admin"]),
+                            params={"from_date": FROM_D, "to_date": TO_D}).json()
+        clean = next(x for x in base["rows"] if not x["submissions"])
+        emp_id, iso, email = clean["target_employee_id"], clean["date"], clean["target_email"]
+        tmpl = _get_template(tokens["vig1"])
+        wb = load_workbook(io.BytesIO(tmpl))
+        ws = wb.active
+        h1 = [c.value for c in ws[1]]
+        ecol = h1.index("Email-id") + 1
+        trow = next(r for r in range(3, ws.max_row + 1)
+                    if str(ws.cell(row=r, column=ecol).value or "").strip().lower() == email.lower())
+        ws.cell(row=trow, column=h1.index("Total Research Hours") + 1).value = "08:15:30"
+        ws.cell(row=trow, column=h1.index("Total Break Hours") + 1).value = "01:00"
+        buf = io.BytesIO()
+        wb.save(buf)
+        files = {"file": ("dur.xlsx", buf.getvalue(),
+                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+        r = requests.post(f"{BASE_URL}/api/vigilance/upload", files=files, headers=_hdr(tokens["vig1"]))
+        assert r.status_code == 200, r.text
+        try:
+            own = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                               params={"from_date": FROM_D, "to_date": TO_D}).json()
+            my = next(x for x in own["rows"] if x["target_employee_id"] == emp_id and x["date"] == iso)
+            assert my["total_research_hours"] == "08:15:30", "HH:MM:SS from upload sheet must be accepted"
+            assert my["total_break_hours"] == "01:00"
+        finally:
+            _del = next((x["id"] for x in
+                         requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                                      params={"from_date": FROM_D, "to_date": TO_D}).json()["rows"]
+                         if x["target_employee_id"] == emp_id and x["date"] == iso and x.get("id")), None)
+            if _del:
+                requests.delete(f"{BASE_URL}/api/vigilance/entries/{_del}", headers=_hdr(tokens["vig1"]))
+
+
+
 # ---------------- Export & integration ----------------
 class TestExportAndIntegration:
     def test_admin_export(self, tokens):

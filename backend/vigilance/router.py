@@ -233,12 +233,12 @@ def get_vigilance_router(db, get_current_user):
         if body.total_research_hours is not None:
             ok, v = svc.norm_duration(body.total_research_hours)
             if not ok:
-                raise HTTPException(status_code=422, detail="Total Research Hours must be a duration HH:MM.")
+                raise HTTPException(status_code=422, detail="Total Research Hours — invalid duration format. Accepted: HH:MM or HH:MM:SS.")
             update["total_research_hours"] = v
         if body.total_break_hours is not None:
             ok, v = svc.norm_duration(body.total_break_hours)
             if not ok:
-                raise HTTPException(status_code=422, detail="Total Break Hours must be a duration HH:MM.")
+                raise HTTPException(status_code=422, detail="Total Break Hours — invalid duration format. Accepted: HH:MM or HH:MM:SS.")
             update["total_break_hours"] = v
         if body.breaks is not None:
             breaks, err = _validate_breaks(body.breaks)
@@ -318,7 +318,7 @@ def _validate_breaks(raw_breaks):
         if not okt:
             return None, f"'{label} To' must be HH:MM AM/PM."
         if not okv:
-            return None, f"'{label} Total' must be a duration HH:MM."
+            return None, f"'{label} Total' — invalid duration format. Accepted: HH:MM or HH:MM:SS."
         if nf or nt or nv:
             breaks.append({"label": label, "from": nf, "to": nt, "total": nv})
     return breaks, None
@@ -334,9 +334,9 @@ def _validate_editable(body, emp, iso):
     if not ok2:
         return None, "System Logout must be HH:MM AM/PM."
     if not ok3:
-        return None, "Total Research Hours must be a duration HH:MM."
+        return None, "Total Research Hours — invalid duration format. Accepted: HH:MM or HH:MM:SS."
     if not ok4:
-        return None, "Total Break Hours must be a duration HH:MM."
+        return None, "Total Break Hours — invalid duration format. Accepted: HH:MM or HH:MM:SS."
     breaks, err = _validate_breaks(body.breaks)
     if err:
         return None, err
