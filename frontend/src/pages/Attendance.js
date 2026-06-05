@@ -34,6 +34,7 @@ const Attendance = () => {
   const [attendance, setAttendance] = useState([]);
   const [teams, setTeams] = useState([]);
   const [departments, setDepartments] = useState([]);
+  const [designations, setDesignations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showLeaveDetail, setShowLeaveDetail] = useState(false);
@@ -47,6 +48,7 @@ const Attendance = () => {
     empName: '',
     team: 'All',
     department: 'All',
+    designation: 'All',
     fromDate: new Date().toISOString().split('T')[0],
     toDate: new Date().toISOString().split('T')[0],
     status: 'All'
@@ -63,7 +65,7 @@ const Attendance = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [attendanceRes, teamsRes, deptsRes] = await Promise.all([
+      const [attendanceRes, teamsRes, deptsRes, desigRes] = await Promise.all([
         axios.get(`${API}/attendance`, {
           headers: getAuthHeaders(),
           params: { 
@@ -72,11 +74,13 @@ const Attendance = () => {
           }
         }),
         axios.get(`${API}/teams`, { headers: getAuthHeaders() }),
-        axios.get(`${API}/departments`, { headers: getAuthHeaders() })
+        axios.get(`${API}/departments`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/settings/designations`, { headers: getAuthHeaders() }).catch(() => ({ data: [] }))
       ]);
       setAttendance(attendanceRes.data);
       setTeams(teamsRes.data);
       setDepartments(deptsRes.data);
+      setDesignations(desigRes.data || []);
     } catch (error) {
       console.error('Attendance fetch error:', error);
       toast.error('Failed to load attendance data');
@@ -91,6 +95,7 @@ const Attendance = () => {
       empName: '', 
       team: 'All', 
       department: 'All', 
+      designation: 'All',
       fromDate: today, 
       toDate: today, 
       status: 'All' 
@@ -126,6 +131,7 @@ const Attendance = () => {
           employee_name: filters.empName || undefined,
           team: filters.team !== 'All' ? filters.team : undefined,
           department: filters.department !== 'All' ? filters.department : undefined,
+          designation: filters.designation !== 'All' ? filters.designation : undefined,
           from_date: formatDateForApi(filters.fromDate),
           to_date: formatDateForApi(filters.toDate),
           status: filters.status !== 'All' ? filters.status : undefined
@@ -267,6 +273,16 @@ const Attendance = () => {
               <SelectContent>
                 <SelectItem value="All">All Teams</SelectItem>
                 {teams.map((team) => <SelectItem key={team.id} value={team.name}>{team.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">Designation</label>
+            <Select value={filters.designation} onValueChange={(v) => setFilters({ ...filters, designation: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-designation"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All Designations</SelectItem>
+                {Array.from(new Set((designations || []).map(d => d.name).filter(Boolean))).sort().map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>

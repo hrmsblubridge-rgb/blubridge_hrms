@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Attendance module — Designation filter added)
+
+**User request:** Add a "Designation"-wise filter on the Attendance page filter row (it had Employee Name / Department / Team / Status + date range, but no Designation).
+
+**Implementation (additive only):**
+- **Backend `GET /api/attendance`** — added `designation: Optional[str]` query param. Attendance docs do NOT store `designation`, so the backend resolves it: finds employee ids whose `designation` exactly matches, then applies `query["employee_id"] = {"$in": [...]}`. Also added `emp_query["designation"]` to the "Absent" gap-fill block so filtered absentees still surface.
+- **Frontend `Attendance.js`** — fetch `/api/settings/designations`; added a **Designation** `<Select>` (data-testid `filter-designation`) between Team and Status ("All Designations" default, de-duped + sorted A→Z); added `designation:'All'` to filters state + reset; passed the param in `handleFilter`.
+
+**Verification:** Backend curl — today's attendance 51 rows → filtered to 19 for "AI Research - Intern"; cross-checked all 19 employee_ids against the employees collection → 0 mismatches (exact match correct). Top summary cards intentionally unaffected (per user choice 1a, consistent with Department/Team). ESLint clean.
+
+---
+
+
 ## Latest Update — 2026-06-05 (Employee module — Designation filter added)
 
 **User request:** Add a "Designation"-wise filter on the Employee Management page (it was missing from the filter row that already had Department/Team/Status/Inactive Type).

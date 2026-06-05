@@ -6130,6 +6130,7 @@ async def get_attendance(
     employee_name: Optional[str] = None,
     team: Optional[str] = None,
     department: Optional[str] = None,
+    designation: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
     status: Optional[str] = None,
@@ -6144,6 +6145,12 @@ async def get_attendance(
         query["department"] = department
     if status and status != "All":
         query["status"] = status
+
+    # Attendance records do NOT store `designation`, so resolve it to the set of
+    # matching employee ids and filter on those (exact match, like Department/Team).
+    if designation and designation != "All":
+        desig_emps = await db.employees.find({"designation": designation}, {"_id": 0, "id": 1}).to_list(5000)
+        query["employee_id"] = {"$in": [e["id"] for e in desig_emps]}
 
     # Build indexed date range query by enumerating valid DD-MM-YYYY values.
     # This replaces a previous full-collection scan + Python filter that
@@ -6199,6 +6206,8 @@ async def get_attendance(
                 emp_query["team"] = team
             if department and department != "All":
                 emp_query["department"] = department
+            if designation and designation != "All":
+                emp_query["designation"] = designation
 
             employees_for_fill = await db.employees.find(
                 emp_query,
