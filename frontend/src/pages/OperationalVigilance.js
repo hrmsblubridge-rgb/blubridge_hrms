@@ -10,7 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
 } from '../components/ui/dialog';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -79,7 +79,7 @@ export default function OperationalVigilance() {
       if (!el) return;
       setScrollW(el.scrollWidth);
       const h1 = el.querySelector('thead tr');
-      if (h1) setRow1H(h1.offsetHeight);
+      if (h1 && h1.offsetHeight) setRow1H(h1.offsetHeight);
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -375,7 +375,7 @@ export default function OperationalVigilance() {
         </div>
         {/* Body: synchronized vertical + horizontal scroll, sticky header */}
         <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-auto scroll-premium"
-             style={{ maxHeight: '68vh', '--vig-h1': `${row1H}px` }} data-testid="vig-table-scroll">
+             style={{ maxHeight: '68vh', '--vig-h1': `${row1H || 44}px` }} data-testid="vig-table-scroll">
           {isAdmin ? (
             <AdminMergedTable data={data} rows={pagedRows} loading={loading} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
           ) : (
@@ -661,6 +661,7 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="vig-entry-dialog">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{ro ? 'Read-only view of this vigilance entry.' : 'Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.'}</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           {!isEdit && (

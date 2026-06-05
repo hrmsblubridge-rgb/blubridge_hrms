@@ -5,6 +5,23 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Vigilance Report — 4 precision UX fixes) ✅ TESTED
+
+**User requirements (all root-level, 0 regressions):**
+1. **Dedicated Actions column** — action icons moved OUT of the 'Sys In' cell into a sticky-right "Actions" column (View / Edit / Delete), never overlapping vigilance timing columns. Admin: per-uploader action groups (labelled by uploader) inside the one Actions column; Vigilance user: View/Edit/Delete on own-entry rows, Edit-only ("Add observation") on base rows.
+2. **Premium TOP horizontal scrollbar** synchronized bidirectionally with the table's bottom scroll (`vig-top-scroll` ↔ `vig-table-scroll`, feedback-loop-guarded).
+3. **Excel merged grouped headers** — template + vigilance export + admin export rebuilt as a normal workbook with a premium 2-row header: scalar columns merged vertically (one clean block), break parents (Morning/Lunch/Evening/Extra-BreakN, dynamic) merged horizontally across From/To/Total. Parser remains compatible (merged anchors read identically).
+4. **Sticky 2-row table header** on vertical scroll via pure `position:sticky` (`.vig-sticky-h1` top:0, `.vig-sticky-h2` top:var(--vig-h1) measured from row-1 height via ResizeObserver) inside a `max-height:68vh` scroll container. Sticky left (Name/Date) + sticky right (Actions) corners with z-index layering.
+
+**Also:** added a read-only **View** dialog (disabled inputs, Close only) reused by both roles; added DialogDescription (a11y); guarded `--vig-h1` fallback (44px).
+
+**Files:** `frontend/src/pages/OperationalVigilance.js` (both tables, FragmentData/Cols, EntryDialog, scroll/sticky logic), `frontend/src/index.css` (`.vig-sticky-h1/h2`), `backend/vigilance/service.py` (`_write_grouped_header`, `_apply_widths`, `build_template_workbook`, `build_export_workbook`).
+
+**Verified:** Frontend testing agent (iteration_49) confirmed ALL 4 fixes for admin + vigilance-user roles (sticky Actions x=1097 sticky-right, bidirectional scroll sync, sticky header pinned on scrollTop=400, read-only View dialog, HH:MM:SS '08:15:30' preserved, Add/Edit/Delete CRUD, pagination) — retest_needed=false, test entry cleaned. Backend `test_vigilance_flow.py` **30/30 pass** (incl. new `test_template_has_merged_group_headers`). DB clean (0 vigilance entries).
+
+---
+
+
 ## Latest Update — 2026-06-05 (Vigilance — Sample Template Download respects ALL filters) ✅ TESTED
 
 **User requirement:** "Download Sample Template" must respect the ENTIRE filter state, not just From/To dates — i.e. Employee Name, Department, Designation, Team + active-in-range + date expansion. Default fallback Today→Today for all active employees when no filters. Validation message "Please select both From Date and To Date". Zero regressions.
