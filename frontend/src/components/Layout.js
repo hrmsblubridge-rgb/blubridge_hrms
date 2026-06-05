@@ -69,7 +69,7 @@ const allNavItems = [
   { path: '/team', label: 'Team', icon: Users, roles: ['hr'] },
   { path: '/payroll', label: 'Payroll', icon: Wallet, roles: ['hr'] },
   { path: '/issue-tickets', label: 'Issue Tickets', icon: MessageSquarePlus, roles: ['hr'] },
-  { path: '/reports', label: 'Reports', icon: FileText, roles: ['hr'] },
+  { path: '/reports', label: 'Reports', icon: FileText, roles: ['hr', 'office_admin'] },
   { path: '/role-management', label: 'Role Management', icon: Shield, roles: ['hr', 'system_admin'] },
   { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText, roles: ['hr', 'system_admin'] },
   { path: '/settings', label: 'Settings', icon: Settings, roles: ['hr', 'system_admin'] },
