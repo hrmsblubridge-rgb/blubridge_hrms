@@ -15769,6 +15769,14 @@ async def admin_set_cron_cc(
 
 app.include_router(api_router)
 
+# ---------------------------------------------------------------------------
+# Operational Vigilance Report — ADDITIVE module (mounted via factory to avoid
+# import cycles). Does not touch attendance/payroll/leave/employee engines.
+# ---------------------------------------------------------------------------
+from vigilance import get_vigilance_router, ensure_vigilance_indexes  # noqa: E402
+app.include_router(get_vigilance_router(db, get_current_user))
+
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
@@ -16044,6 +16052,12 @@ async def ensure_indexes():
         await _ensure_policy_ack_indexes()
     except Exception as e:
         print(f"Policy ack index setup failed: {e}")
+
+    # Vigilance module — unique (target_employee_id, date, uploaded_by) + id
+    try:
+        await ensure_vigilance_indexes(db)
+    except Exception as e:
+        print(f"Vigilance index setup failed: {e}")
 
 
 @app.on_event("shutdown")

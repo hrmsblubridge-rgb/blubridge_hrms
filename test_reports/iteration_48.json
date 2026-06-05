@@ -1,0 +1,35 @@
+{
+  "summary": "E2E tested Operational Vigilance Report module end-to-end via backend pytest (19/19 passed) + frontend Playwright on live external URL. All access-control, template, upload, isolation, admin-merge, CRUD ownership, validation, export, and Attendance-module-integration flows verified. Two vigilance uploads (Madhan & Dinesh) for the same employee on 05-Jun-2026 produce ONE admin merged row with both submissions and dynamic Extra-Break3 column rendered correctly. Normal employee 'user' is correctly blocked (no nav + vigilance-no-access shown). No regressions on Attendance/Employees endpoints.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Vigilance page (admin & employee)", "issues": ["React console warnings: 'Encountered two children with the same key' on initial dashboard render (pre-existing, not specific to vigilance). Also 'Each child in a list should have a unique key prop' inside a Fragment near the vigilance table — recommend stabilising row/column keys."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_vigilance_flow.py",
+    "/app/test_reports/pytest/vig_results.xml"
+  ],
+  "action_items": [
+    "Fix the React duplicate-key warning visible near the vigilance table render (impacts admin & employee variants). Likely sub-header (From/To/Total) cells inside a Fragment need unique keys like `${label}-${sub}` instead of bare `sub`.",
+    "[Optional] The date filter is implemented as a shadcn DatePicker button (data-testid vig-filter-from / vig-filter-to is on the trigger button). Tests that want to set dates programmatically must open the popover and click the day. This is correct UX; just documenting for future regression scripts."
+  ],
+  "critical_code_review_comments": [
+    "service.py:512-528: list_own_rows uses defaults '0000-01-01'/'9999-12-31' for get_attendance_map when from/to filters are missing — works, but a wide range can be slow on large datasets. Consider requiring a date range or capping the fetch.",
+    "router.py upload(): success path mixes upserted vs modified vs no-op; res.modified_count==0 (no field changed) is counted as 'updated' which is fine but the API contract could explicitly add 'unchanged' for clarity.",
+    "service.py parse_upload(): if a row has email but Date column blank AND any editable value, it skips with 'Invalid Date' (good). However a fully-empty editable row that still has an Extra-BreakN label-only is silently skipped — acceptable.",
+    "OperationalVigilance.js (frontend): React duplicate-key warning in the vigilance break sub-headers Fragment — non-functional but should be cleaned for prod."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_vigilance_flow.py (NEW — comprehensive pytest suite for vigilance flows)"
+  ],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "100% functional (1 minor React key warning)"},
+  "test_credentials": "Admin admin/HrAdmin786$, vig madhan.s/Vigil@123, vig dinesh.t/Vigil@123, normal user/pass123",
+  "seed_data_creation": "Test seeded 2 vigilance_entries for the first prefilled employee (Adhitya Charan / EMP for 05-Jun-2026): one by madhan.s (research originally 08:00, then admin-edited to 07:30 during CRUD test, with Morning Break 11:00 AM-11:15 AM/00:15 + dynamic Extra-Break3 03:00 PM-03:10 PM/00:10) and one by dinesh.t (research 10:50, break 00:30). These remain in vigilance_entries collection for next iteration.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend suite at /app/backend/tests/test_vigilance_flow.py monkey-patches requests session timeout to 120s (preview ingress is slow ~40s for /api/auth/login). All 19 tests passed. The vig-filter-from/to are shadcn DatePicker buttons (not text inputs) — date filtering in UI tests must open the popover; defaults are already today so for 05-Jun-2026 testing on/around 05-Jun-2026 the table auto-shows the seeded rows. Attendance module verified to render dynamic per-uploader 'Total Research Hrs (Madhan S)' & 'Total Break Hrs (Dinesh T)' columns after 'Total Hours' (data-testid vig-att-research-col confirmed, count=2). Normal employee 'user' is properly blocked with vigilance-no-access. Two minor React duplicate-key console warnings observed but do not affect functionality.",
+  "rca of the issue": "N/A — no failures found; the only test-script issue was attempting to .fill() a button (date-picker trigger). That isn't an app bug; it's a misuse of fill on a shadcn DatePicker."
+}

@@ -43,6 +43,10 @@ const Attendance = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(25);
 
+  // Vigilance integration (admin only) — dynamic Research/Break columns per uploader
+  const [vigMap, setVigMap] = useState({});
+  const [vigUploaders, setVigUploaders] = useState([]);
+
   // Default: today's date (original behavior)
   const [filters, setFilters] = useState({
     empName: '',
@@ -88,6 +92,31 @@ const Attendance = () => {
       setLoading(false);
     }
   };
+
+  const vigToIso = (d) => {
+    if (!d) return '';
+    const m = String(d).match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : String(d).slice(0, 10);
+  };
+
+  // Fetch vigilance Research/Break data for the currently loaded attendance range.
+  useEffect(() => {
+    if (!filters.fromDate || !filters.toDate) return;
+    axios.get(`${API}/vigilance/attendance-integration`, {
+      headers: getAuthHeaders(),
+      params: { from_date: formatDateForApi(filters.fromDate), to_date: formatDateForApi(filters.toDate) },
+    }).then(res => {
+      const map = res.data?.map || {};
+      setVigMap(map);
+      const names = [];
+      Object.values(map).forEach(list => list.forEach(x => {
+        if (x.uploaded_by_name && !names.includes(x.uploaded_by_name)) names.push(x.uploaded_by_name);
+      }));
+      names.sort();
+      setVigUploaders(names);
+    }).catch(() => { setVigMap({}); setVigUploaders([]); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendance]);
 
   const handleReset = async () => {
     const today = new Date().toISOString().split('T')[0];
@@ -343,13 +372,17 @@ const Attendance = () => {
                   <SortableTh field="check_in" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Check-In</SortableTh>
                   <SortableTh field="check_out" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Check-Out</SortableTh>
                   <SortableTh field="total_hours" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Total Hours</SortableTh>
+                  {vigUploaders.flatMap(name => ([
+                    <th key={name + '-r'} className="px-4 py-3 text-left text-xs font-semibold text-emerald-700 whitespace-nowrap bg-emerald-50/60" data-testid="vig-att-research-col">Total Research Hrs<br /><span className="font-normal text-emerald-600">({name})</span></th>,
+                    <th key={name + '-b'} className="px-4 py-3 text-left text-xs font-semibold text-emerald-700 whitespace-nowrap bg-emerald-50/60">Total Break Hrs<br /><span className="font-normal text-emerald-600">({name})</span></th>,
+                  ]))}
                   <SortableTh field="status" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Status</SortableTh>
                 </tr>
               </thead>
               <tbody>
                 {paginatedAttendance.length === 0 ? (
                   <tr>
-                    <td colSpan="8" className="text-center py-12 text-slate-500">
+                    <td colSpan={8 + vigUploaders.length * 2} className="text-center py-12 text-slate-500">
                       <CalendarCheck className="w-10 h-10 mx-auto mb-2 text-slate-300" />
                       <p>No attendance records found</p>
                     </td>
@@ -386,6 +419,14 @@ const Attendance = () => {
                         <div className="text-slate-900 font-medium">{record.check_out || '-'}</div>
                       </td>
                       <td className="text-slate-600 font-medium">{record.total_hours || '-'}</td>
+                      {vigUploaders.flatMap(name => {
+                        const list = vigMap[`${record.employee_id}__${vigToIso(record.date)}`] || [];
+                        const sub = list.find(x => x.uploaded_by_name === name);
+                        return [
+                          <td key={name + '-r'} className="text-emerald-700 font-medium whitespace-nowrap bg-emerald-50/30">{sub?.total_research_hours || '-'}</td>,
+                          <td key={name + '-b'} className="text-emerald-700 font-medium whitespace-nowrap bg-emerald-50/30">{sub?.total_break_hours || '-'}</td>,
+                        ];
+                      })}
                       <td>
                         <Badge className={`${getStatusBadge(record.status, record.is_lop)} flex items-center gap-1 w-fit`}>
                           {getStatusIcon(record.is_lop ? 'Loss of Pay' : record.status)}

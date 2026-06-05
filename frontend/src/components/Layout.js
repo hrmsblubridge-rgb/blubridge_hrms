@@ -34,6 +34,7 @@ import {
   Clock,
   LogOut as LogOutIcon,
   Fingerprint,
+  ShieldAlert,
   Shield,
   HelpCircle,
   FileSpreadsheet
@@ -62,6 +63,7 @@ const allNavItems = [
   { path: '/late-requests', label: 'Late Requests', icon: Clock, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/early-out-requests', label: 'Early Out', icon: LogOutIcon, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/missed-punches', label: 'Missed Punch', icon: Fingerprint, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/vigilance', label: 'Vigilance Report', icon: ShieldAlert, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/holidays', label: 'Holidays', icon: PartyPopper, roles: ['hr', 'office_admin'] },
   { path: '/policies', label: 'Policies', icon: BookOpen, roles: ['hr'] },
   { path: '/policies/acknowledgements', label: 'Policy Acks', icon: ShieldCheck, roles: ['hr', 'system_admin'] },

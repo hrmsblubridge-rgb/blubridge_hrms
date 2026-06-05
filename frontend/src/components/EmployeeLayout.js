@@ -24,7 +24,8 @@ import {
   LogOut as LogOutIcon,
   Fingerprint,
   HelpCircle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  ShieldAlert
 } from 'lucide-react';
 import { Button } from './ui/button';
 import EmployeeAvatar from './EmployeeAvatar';
@@ -57,12 +58,25 @@ const EmployeeLayout = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [hasVigilance, setHasVigilance] = useState(false);
+
+  // Dynamically reveal the Operational Vigilance Report link ONLY for employees
+  // whose designation == "Vigilance" (resolved server-side, no hardcoding).
+  useEffect(() => {
+    let active = true;
+    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/vigilance/access`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(res => { if (active) setHasVigilance(!!res.data?.is_vigilance); }).catch(() => {});
+    return () => { active = false; };
+  }, [token]);
 
   // "My Documents" is ALWAYS visible — it's the permanent destination for
   // onboarding document uploads + viewing official HR letters. (Earlier this
   // was hidden during the 14-day onboarding bypass; users now need access to
   // it from day one to upload onboarding documents at their pace.)
-  const visibleNavItems = navItems;
+  const visibleNavItems = hasVigilance
+    ? [...navItems, { path: '/employee/vigilance', label: 'Vigilance Report', icon: ShieldAlert }]
+    : navItems;
 
   const handleLogout = () => {
     logout();
@@ -96,7 +110,7 @@ const EmployeeLayout = ({ children }) => {
   };
 
   const getPageTitle = () => {
-    const current = navItems.find(item => location.pathname === item.path);
+    const current = visibleNavItems.find(item => location.pathname === item.path);
     return current?.label || 'Dashboard';
   };
 

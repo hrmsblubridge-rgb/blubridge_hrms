@@ -36,7 +36,9 @@
 > and it will now persist forever (across restarts, deploys, test runs).
 
 ## Employee Accounts
-- **Employee (WORKING 2026-06-05)**: `user` / `pass123` — Rishi S Nayak, active, has current-week attendance. Use this for employee-side testing.
+- **Vigilance Employee 1 (WORKING)**: `madhan.s` / `Vigil@123` — Madhan S, designation=Vigilance. Has Operational Vigilance Report access.
+- **Vigilance Employee 2 (WORKING)**: `dinesh.t` / `Vigil@123` — Dinesh T, designation=Vigilance. Has Operational Vigilance Report access.
+- **Employee (WORKING 2026-06-05)**: `user` / `pass123` — Rishi S Nayak, active, has current-week attendance. NON-vigilance → must NOT see Vigilance Report.
 - **Employee**: `spartasolace1` / `spar@1230`
 - **Employee** (Phase-2 dashboard widget tests): `user` / `pass123` — has attendance for current week, used by `tests/test_dashboard_widgets.py`
 - **Employee**: `vijayan.k` / `pass123` (created 2026-04-27, onboarding approved)

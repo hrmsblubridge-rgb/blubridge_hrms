@@ -46,6 +46,7 @@ import OperationalChecklist from "./pages/OperationalChecklist";
 import Settings from "./pages/Settings";
 import CronManagement from "./pages/CronManagement";
 import PolicyAcknowledgements from "./pages/PolicyAcknowledgements";
+import OperationalVigilance from "./pages/OperationalVigilance";
 import "./App.css";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -186,6 +187,7 @@ function App() {
           <Route path="/late-requests" element={<AdminRoute><AdminLateRequests /></AdminRoute>} />
           <Route path="/early-out-requests" element={<AdminRoute><AdminEarlyOut /></AdminRoute>} />
           <Route path="/missed-punches" element={<AdminRoute><AdminMissedPunch /></AdminRoute>} />
+          <Route path="/vigilance" element={<AdminRoute><OperationalVigilance /></AdminRoute>} />
           <Route path="/admin-profile" element={<AdminRoute><AdminProfile /></AdminRoute>} />
           <Route path="/change-password" element={<AdminRoute><ChangePassword /></AdminRoute>} />
           
@@ -204,6 +206,7 @@ function App() {
           <Route path="/employee/early-out" element={<EmployeeRoute><EmployeeEarlyOut /></EmployeeRoute>} />
           <Route path="/employee/missed-punch" element={<EmployeeRoute><EmployeeMissedPunch /></EmployeeRoute>} />
           <Route path="/employee/profile" element={<EmployeeRoute><EmployeeProfile /></EmployeeRoute>} />
+          <Route path="/employee/vigilance" element={<EmployeeRoute><OperationalVigilance /></EmployeeRoute>} />
           
           {/* Fallback */}
           <Route path="*" element={<RoleBasedRedirect />} />
