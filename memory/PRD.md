@@ -5,6 +5,20 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Vigilance — ALWAYS-ON system base grid + merge) ✅ TESTED
+
+**User requirement:** The Vigilance table must ALWAYS render the system-prefilled attendance grid (default range Today→Today) even when NO vigilance sheet has been uploaded. Vigilance data merges ON TOP by (employee+date). Remove the "No vigilance records uploaded yet" empty state. Mandatory columns always visible: Name, Email-id, Team, Date, Punch-In, Punch-Out, Total Hours. Role isolation preserved (admin = all uploaders merged; vigilance user = own data only, but system columns for everyone). No side effects to upload/export/filters/CRUD/attendance integration.
+
+**Implementation (root-level, surgical):**
+- **`backend/vigilance/service.py`** — `list_admin_merged` and `list_own_rows` now build a `_base_grid()` first: every active employee × every day in `[from,to]` (defaults to `today_iso()` Today→Today when unset), with attendance-derived system columns (`get_active_employees` + `get_attendance_map` + `daterange_iso`). Vigilance docs are then MERGED onto base rows by `(employee_id, date)`; previously-uploaded entries for employees outside the active grid get a `_fallback_row` (no data loss). Filters (name/dept/desig/team) applied to the base employee set + fallback docs. Removed the now-unused `_build_filter`. Each row carries a stable `key`; own rows carry `id=None` until the user's own entry merges in.
+- **`frontend/src/pages/OperationalVigilance.js`** — Admin & own tables: added **Email-id** column (own also added **Team**) so all 7 mandatory system columns always show; empty-state text changed to "No active employees for the selected date range." (only shows if the range yields zero active employees); rows keyed by `row.key`; on own base rows (no entry) the Pencil acts as "Add observation" and the Delete button is hidden until an entry exists.
+- Export reflects the same base+merge dataset (filter-aware).
+
+**Verified:** `backend/tests/test_vigilance_flow.py` **23/23 pass** (incl. new `TestBaseGrid`: admin/own always render base rows for today; multi-day range expands employee×day grid; create→merge→isolation→cleanup; 24h→12h storage). Smoke screenshots: admin (51 today rows, all cols, pagination, zero uploads) and vigilance-user (base grid + own data merged with edit/delete, base rows edit-only). Cleaned 2 stray test entries from `vigilance_entries`.
+
+---
+
+
 ## Latest Update — 2026-06-05 (Vigilance — Time-format engine + Premium table UX) ✅ TESTED
 
 **UPDATE 1 — Time format engine (root-level):**

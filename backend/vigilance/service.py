@@ -25,7 +25,7 @@ Storage model — collection `vigilance_entries`, one doc per
 import io
 import re
 import uuid
-from datetime import datetime, date, timezone, time as dtime
+from datetime import datetime, date, timezone, timedelta, time as dtime
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell import WriteOnlyCell
@@ -527,75 +527,179 @@ def _clean(doc):
 # ----------------------------------------------------------------------------
 # Aggregation
 # ----------------------------------------------------------------------------
-def _build_filter(filters):
-    q = {}
-    if filters.get("from_iso") and filters.get("to_iso"):
-        q["date"] = {"$gte": filters["from_iso"], "$lte": filters["to_iso"]}
-    elif filters.get("from_iso"):
-        q["date"] = {"$gte": filters["from_iso"]}
-    elif filters.get("to_iso"):
-        q["date"] = {"$lte": filters["to_iso"]}
-    if filters.get("employee_name"):
-        q["target_employee_name"] = {"$regex": re.escape(filters["employee_name"]), "$options": "i"}
-    if filters.get("department") and filters["department"] != "All":
-        q["target_department"] = filters["department"]
-    if filters.get("designation") and filters["designation"] != "All":
-        q["target_designation"] = filters["designation"]
-    if filters.get("team") and filters["team"] != "All":
-        q["target_team"] = filters["team"]
-    return q
+def today_iso():
+    """Today's date (IST) as ISO 'YYYY-MM-DD' — used as the default range."""
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
+
+
+def _resolve_range(filters):
+    """Return (iso_from, iso_to) defaulting to Today→Today when not supplied."""
+    iso_from = filters.get("from_iso") or today_iso()
+    iso_to = filters.get("to_iso") or iso_from
+    if iso_to < iso_from:
+        iso_to = iso_from
+    return iso_from, iso_to
+
+
+def _emp_passes(e, filters):
+    name = (filters.get("employee_name") or "").strip().lower()
+    if name and name not in (e.get("full_name") or "").lower():
+        return False
+    dept = filters.get("department")
+    if dept and dept != "All" and e.get("department") != dept:
+        return False
+    desig = filters.get("designation")
+    if desig and desig != "All" and e.get("designation") != desig:
+        return False
+    team = filters.get("team")
+    if team and team != "All" and e.get("team") != team:
+        return False
+    return True
+
+
+def _doc_passes(d, filters):
+    """Filter a vigilance doc by the same criteria (for fallback rows of
+    employees that fall outside the active-employee base grid)."""
+    name = (filters.get("employee_name") or "").strip().lower()
+    if name and name not in (d.get("target_employee_name") or "").lower():
+        return False
+    dept = filters.get("department")
+    if dept and dept != "All" and d.get("target_department") != dept:
+        return False
+    desig = filters.get("designation")
+    if desig and desig != "All" and d.get("target_designation") != desig:
+        return False
+    team = filters.get("team")
+    if team and team != "All" and d.get("target_team") != team:
+        return False
+    return True
+
+
+async def _base_grid(db, filters):
+    """Build the SYSTEM-prefilled base grid: every active employee × every day
+    in range, with attendance-derived system columns. Always non-empty when at
+    least one employee is active in the range. Returns (base, iso_from, iso_to).
+    """
+    iso_from, iso_to = _resolve_range(filters)
+    emps = [e for e in await get_active_employees(db, iso_from, iso_to) if _emp_passes(e, filters)]
+    emp_ids = [e["id"] for e in emps]
+    att = await get_attendance_map(db, emp_ids, iso_from, iso_to) if emp_ids else {}
+    days = daterange_iso(iso_from, iso_to)
+    base = {}
+    for day in days:
+        day_display = iso_to_display(day)
+        for e in emps:
+            if not is_active_on(e, day):
+                continue
+            gkey = (e["id"], day)
+            a = att.get(gkey, {})
+            base[gkey] = {
+                "key": f"{e['id']}__{day}",
+                "target_employee_id": e["id"],
+                "target_employee_name": e.get("full_name"),
+                "target_email": e.get("official_email"),
+                "target_team": e.get("team"),
+                "target_department": e.get("department"),
+                "target_designation": e.get("designation"),
+                "date": day,
+                "date_display": day_display,
+                "punch_in": a.get("punch_in", ""),
+                "punch_out": a.get("punch_out", ""),
+                "total_hours": a.get("total_hours", ""),
+            }
+    return base, iso_from, iso_to
+
+
+def _fallback_row(d, att):
+    """Build a base row from a vigilance doc (for an employee outside the
+    active grid) so previously-uploaded data is never lost."""
+    a = att.get((d["target_employee_id"], d["date"]), {})
+    return {
+        "key": f"{d['target_employee_id']}__{d['date']}",
+        "target_employee_id": d["target_employee_id"],
+        "target_employee_name": d.get("target_employee_name"),
+        "target_email": d.get("target_email"),
+        "target_team": d.get("target_team"),
+        "target_department": d.get("target_department"),
+        "target_designation": d.get("target_designation"),
+        "date": d["date"],
+        "date_display": iso_to_display(d["date"]),
+        "punch_in": a.get("punch_in", ""),
+        "punch_out": a.get("punch_out", ""),
+        "total_hours": a.get("total_hours", ""),
+    }
 
 
 async def list_own_rows(db, uploaded_by_employee_id, filters):
-    """Vigilance user view: only own entries, each enriched with live attendance."""
-    q = _build_filter(filters)
-    q["uploaded_by_employee_id"] = uploaded_by_employee_id
-    docs = [_clean(d) async for d in db.vigilance_entries.find(q).sort([("date", 1), ("target_employee_name", 1)])]
-    emp_ids = list({d["target_employee_id"] for d in docs})
-    att = await get_attendance_map(db, emp_ids, filters.get("from_iso") or "0000-01-01", filters.get("to_iso") or "9999-12-31") if emp_ids else {}
+    """Vigilance user view: ALWAYS the system base grid (active employees × days,
+    attendance-prefilled). The user's OWN vigilance entries are merged in by
+    (employee + date); other vigilance members' data stays hidden. System columns
+    render for every row even when no vigilance data has been entered yet.
+    """
+    base, iso_from, iso_to = await _base_grid(db, filters)
+    for r in base.values():
+        r["id"] = None
+        r["system_login"] = ""
+        r["system_logout"] = ""
+        r["total_research_hours"] = ""
+        r["total_break_hours"] = ""
+        r["breaks"] = []
+
+    q = {"date": {"$gte": iso_from, "$lte": iso_to}, "uploaded_by_employee_id": uploaded_by_employee_id}
+    docs = [_clean(d) async for d in db.vigilance_entries.find(q)]
+    fb_ids = list({d["target_employee_id"] for d in docs if (d["target_employee_id"], d["date"]) not in base})
+    fb_att = await get_attendance_map(db, fb_ids, iso_from, iso_to) if fb_ids else {}
+
     break_labels = []
     for d in docs:
-        a = att.get((d["target_employee_id"], d["date"]), {})
-        d["punch_in"] = a.get("punch_in", "")
-        d["punch_out"] = a.get("punch_out", "")
-        d["total_hours"] = a.get("total_hours", "")
-        d["date_display"] = iso_to_display(d["date"])
+        gkey = (d["target_employee_id"], d["date"])
+        if gkey not in base:
+            if not _doc_passes(d, filters):
+                continue
+            r = _fallback_row(d, fb_att)
+            r.update({"id": None, "system_login": "", "system_logout": "",
+                      "total_research_hours": "", "total_break_hours": "", "breaks": []})
+            base[gkey] = r
+        r = base[gkey]
+        r["id"] = d["id"]
+        r["system_login"] = d.get("system_login", "")
+        r["system_logout"] = d.get("system_logout", "")
+        r["total_research_hours"] = d.get("total_research_hours", "")
+        r["total_break_hours"] = d.get("total_break_hours", "")
+        r["breaks"] = d.get("breaks", [])
         for b in d.get("breaks", []):
             if b["label"] not in break_labels:
                 break_labels.append(b["label"])
-    return {"rows": docs, "break_labels": _ordered_break_labels(break_labels)}
+
+    rows = sorted(base.values(), key=lambda r: (r["date"], (r["target_employee_name"] or "").lower()))
+    return {"rows": rows, "break_labels": _ordered_break_labels(break_labels)}
 
 
 async def list_admin_merged(db, filters):
-    """Admin view: one row per (employee, date) merging all vigilance uploaders."""
-    q = _build_filter(filters)
-    docs = [_clean(d) async for d in db.vigilance_entries.find(q).sort([("date", 1), ("target_employee_name", 1)])]
-    emp_ids = list({d["target_employee_id"] for d in docs})
-    att = await get_attendance_map(db, emp_ids, filters.get("from_iso") or "0000-01-01", filters.get("to_iso") or "9999-12-31") if emp_ids else {}
+    """Admin view: ALWAYS the system base grid (active employees × days), with
+    ALL vigilance uploaders' submissions merged per (employee, date). One row per
+    employee/day; system columns always render even with zero vigilance uploads.
+    """
+    base, iso_from, iso_to = await _base_grid(db, filters)
+    for r in base.values():
+        r["submissions"] = []
 
-    merged = {}
+    q = {"date": {"$gte": iso_from, "$lte": iso_to}}
+    docs = [_clean(d) async for d in db.vigilance_entries.find(q)]
+    fb_ids = list({d["target_employee_id"] for d in docs if (d["target_employee_id"], d["date"]) not in base})
+    fb_att = await get_attendance_map(db, fb_ids, iso_from, iso_to) if fb_ids else {}
+
     uploaders = {}
     break_labels = []
     for d in docs:
         gkey = (d["target_employee_id"], d["date"])
-        if gkey not in merged:
-            a = att.get(gkey, {})
-            merged[gkey] = {
-                "key": f"{d['target_employee_id']}__{d['date']}",
-                "target_employee_id": d["target_employee_id"],
-                "target_employee_name": d.get("target_employee_name"),
-                "target_email": d.get("target_email"),
-                "target_team": d.get("target_team"),
-                "target_department": d.get("target_department"),
-                "target_designation": d.get("target_designation"),
-                "date": d["date"],
-                "date_display": iso_to_display(d["date"]),
-                "punch_in": a.get("punch_in", ""),
-                "punch_out": a.get("punch_out", ""),
-                "total_hours": a.get("total_hours", ""),
-                "submissions": [],
-            }
-        merged[gkey]["submissions"].append({
+        if gkey not in base:
+            if not _doc_passes(d, filters):
+                continue
+            r = _fallback_row(d, fb_att)
+            r["submissions"] = []
+            base[gkey] = r
+        base[gkey]["submissions"].append({
             "id": d["id"],
             "uploaded_by_employee_id": d["uploaded_by_employee_id"],
             "uploaded_by_name": d.get("uploaded_by_name"),
@@ -610,7 +714,7 @@ async def list_admin_merged(db, filters):
             if b["label"] not in break_labels:
                 break_labels.append(b["label"])
 
-    rows = sorted(merged.values(), key=lambda r: (r["date"], (r["target_employee_name"] or "").lower()))
+    rows = sorted(base.values(), key=lambda r: (r["date"], (r["target_employee_name"] or "").lower()))
     uploader_list = [{"employee_id": k, "name": v} for k, v in uploaders.items()]
     uploader_list.sort(key=lambda u: (u["name"] or "").lower())
     return {

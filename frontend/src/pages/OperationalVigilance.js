@@ -348,14 +348,14 @@ export default function OperationalVigilance() {
 // ===================== Vigilance own-view table =====================
 function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
   const labels = data.break_labels || [];
-  const colCount = 9 + labels.length * 3 + 1;
+  const colCount = 11 + labels.length * 3 + 1;
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-own-table">
       <thead>
         <tr className="bg-slate-100 text-slate-600">
           <th className="sticky left-0 bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[180px]">Name</th>
           <th className="sticky left-[180px] bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[120px]">Date</th>
-          {['Punch-In', 'Punch-Out', 'Total Hours', 'System Login', 'System Logout', 'Research Hrs', 'Break Hrs'].map(h => (
+          {['Email-id', 'Team', 'Punch-In', 'Punch-Out', 'Total Hours', 'System Login', 'System Logout', 'Research Hrs', 'Break Hrs'].map(h => (
             <th key={h} className="px-3 py-3 text-left font-semibold whitespace-nowrap">{h}</th>
           ))}
           {labels.map(l => (
@@ -365,7 +365,7 @@ function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
         </tr>
         <tr className="bg-slate-50 text-[11px] text-slate-500">
           <th className="sticky left-0 bg-slate-50 z-20" /><th className="sticky left-[180px] bg-slate-50 z-20" />
-          {Array(7).fill(0).map((_, i) => <th key={i} />)}
+          {Array(9).fill(0).map((_, i) => <th key={i} />)}
           {labels.map(l => ['From', 'To', 'Total'].map((s, i) => (
             <th key={l + s} className={`px-2 py-1.5 text-center ${i === 0 ? 'border-l border-slate-200' : ''}`}>{s}</th>
           )))}
@@ -376,13 +376,15 @@ function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
         {loading ? (
           <tr><td colSpan={colCount} className="text-center py-16"><Loader2 className="w-6 h-6 animate-spin text-slate-400 inline" /></td></tr>
         ) : rows.length === 0 ? (
-          <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No vigilance records uploaded yet.</td></tr>
+          <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No active employees for the selected date range.</td></tr>
         ) : rows.map(row => {
           const bmap = Object.fromEntries((row.breaks || []).map(b => [b.label, b]));
           return (
-            <tr key={row.id} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-own-row">
+            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-own-row">
               <td className="sticky left-0 bg-white z-10 px-3 py-2.5 font-medium text-slate-800 min-w-[180px]">{row.target_employee_name}</td>
               <td className="sticky left-[180px] bg-white z-10 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_email || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.total_hours || '—'}</td>
@@ -398,8 +400,10 @@ function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
               })}
               <td className="sticky right-0 bg-white z-10 px-3 py-2.5">
                 <div className="flex items-center justify-center gap-1">
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => onEdit({ ...row }, row)} data-testid="vig-edit-btn"><Pencil className="w-4 h-4" /></Button>
-                  <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" onClick={() => onDelete(row.id)} data-testid="vig-delete-btn"><Trash2 className="w-4 h-4" /></Button>
+                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => onEdit({ ...row }, row)} data-testid="vig-edit-btn" title={row.id ? 'Edit' : 'Add observation'}><Pencil className="w-4 h-4" /></Button>
+                  {row.id && (
+                    <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" onClick={() => onDelete(row.id)} data-testid="vig-delete-btn"><Trash2 className="w-4 h-4" /></Button>
+                  )}
                 </div>
               </td>
             </tr>
@@ -415,13 +419,14 @@ function AdminMergedTable({ data, rows, loading, onEdit, onDelete }) {
   const labels = data.break_labels || [];
   const uploaders = data.uploaders || [];
   const perUploaderCols = 4 + labels.length * 3; // sys login/out, research, break + breaks
-  const colCount = 6 + Math.max(uploaders.length, 0) * perUploaderCols;
+  const colCount = 7 + Math.max(uploaders.length, 0) * perUploaderCols;
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-admin-table">
       <thead>
         <tr className="bg-slate-100 text-slate-600">
           <th rowSpan={2} className="sticky left-0 bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[170px]">Name</th>
           <th rowSpan={2} className="sticky left-[170px] bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[115px]">Date</th>
+          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Email-id</th>
           <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Team</th>
           <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Punch-In</th>
           <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Punch-Out</th>
@@ -442,13 +447,14 @@ function AdminMergedTable({ data, rows, loading, onEdit, onDelete }) {
         {loading ? (
           <tr><td colSpan={colCount} className="text-center py-16"><Loader2 className="w-6 h-6 animate-spin text-slate-400 inline" /></td></tr>
         ) : rows.length === 0 ? (
-          <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No vigilance records uploaded yet.</td></tr>
+          <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No active employees for the selected date range.</td></tr>
         ) : rows.map(row => {
           const subByUp = Object.fromEntries((row.submissions || []).map(s => [s.uploaded_by_employee_id, s]));
           return (
             <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-admin-row">
               <td className="sticky left-0 bg-white z-10 px-3 py-2.5 font-medium text-slate-800 min-w-[170px]">{row.target_employee_name}</td>
               <td className="sticky left-[170px] bg-white z-10 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_email || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>

@@ -264,10 +264,11 @@ class TestIsolationAndMerge:
         rows = j["rows"]
         target_rows = [x for x in rows if x.get("target_email", "").lower() == upload_data["email"].lower()]
         assert target_rows
-        # MUST NOT show madhan's 08:00
+        # MUST show vig2's own 10:50, NOT madhan's 08:00 (isolation holds)
         assert target_rows[0]["total_research_hours"] == "10:50"
+        # vig2 must never see madhan's 08:00 on any base row
         for x in rows:
-            assert x["uploaded_by_employee_id"] != "" and x.get("uploaded_by_name")
+            assert x.get("total_research_hours") != "08:00"
 
     def test_admin_merged_single_row(self, tokens, upload_data):
         r = requests.get(f"{BASE_URL}/api/vigilance/entries",
@@ -379,3 +380,92 @@ class TestRegression:
             if r.status_code == 200:
                 return
         pytest.skip("No matching attendance endpoint - manual verify")
+
+
+
+# ---------------- Base grid (always-render system data) ----------------
+SYS_KEYS = ("target_employee_name", "target_email", "target_team", "date_display",
+            "punch_in", "punch_out", "total_hours")
+
+
+class TestBaseGrid:
+    """The table must ALWAYS render system-prefilled attendance rows, even with
+    zero vigilance uploads, and merge vigilance data on top by (employee+date)."""
+
+    def test_admin_default_today_renders_base_rows(self, tokens):
+        # No date params -> defaults to Today->Today, still returns rows.
+        r = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["admin"]))
+        assert r.status_code == 200
+        j = r.json()
+        assert j["mode"] == "admin"
+        assert len(j["rows"]) > 0, "admin base grid must render employee rows for today"
+        row = j["rows"][0]
+        for k in SYS_KEYS:
+            assert k in row, f"system column '{k}' missing from base row"
+        assert "submissions" in row
+        assert "key" in row
+
+    def test_vigilance_user_sees_base_grid(self, tokens):
+        r = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                         params={"from_date": FROM_D, "to_date": TO_D})
+        assert r.status_code == 200
+        j = r.json()
+        assert j["mode"] == "vigilance"
+        assert len(j["rows"]) > 0, "vigilance user must still see system base rows"
+        # Base rows (no own entry) carry id=None but full system columns.
+        row = j["rows"][0]
+        for k in SYS_KEYS:
+            assert k in row
+
+    def test_range_expands_employee_day_grid(self, tokens):
+        single = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["admin"]),
+                              params={"from_date": "01-Jun-2026", "to_date": "01-Jun-2026"}).json()
+        multi = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["admin"]),
+                             params={"from_date": "01-Jun-2026", "to_date": "05-Jun-2026"}).json()
+        assert len(multi["rows"]) >= len(single["rows"]) * 2, \
+            "multi-day range must render employee×day rows"
+
+    def test_create_merges_and_isolation_then_cleanup(self, tokens):
+        base = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["admin"]),
+                            params={"from_date": FROM_D, "to_date": TO_D}).json()
+        # pick a base row that has NO existing vigilance submissions (clean slate)
+        target = next(x for x in base["rows"] if not x["submissions"])
+        emp_id, iso_date = target["target_employee_id"], target["date"]
+
+        # vig1 creates an entry (24h input -> 12h stored)
+        c = requests.post(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                          json={"target_employee_id": emp_id, "date": iso_date,
+                                "system_login": "13:45", "system_logout": "18:30",
+                                "total_research_hours": "04:00", "total_break_hours": "01:00",
+                                "breaks": []})
+        assert c.status_code == 200, c.text
+        try:
+            # admin merged: the row now has a submission with 12h stored time
+            adm = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["admin"]),
+                               params={"from_date": FROM_D, "to_date": TO_D}).json()
+            merged = next(x for x in adm["rows"] if x["target_employee_id"] == emp_id and x["date"] == iso_date)
+            assert merged["submissions"], "vigilance submission must merge into admin base row"
+            assert any(s["system_login"] == "01:45 PM" for s in merged["submissions"])
+
+            # vig1 own: same row carries the entry id with 12h stored time
+            own = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                               params={"from_date": FROM_D, "to_date": TO_D}).json()
+            my = next(x for x in own["rows"] if x["target_employee_id"] == emp_id and x["date"] == iso_date)
+            assert my["id"] and my["system_login"] == "01:45 PM"
+
+            # vig2 isolation: sees base grid but NOT vig1's just-created entry
+            other = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig2"]),
+                                 params={"from_date": FROM_D, "to_date": TO_D}).json()
+            assert len(other["rows"]) > 0
+            other_row = next((x for x in other["rows"]
+                              if x["target_employee_id"] == emp_id and x["date"] == iso_date), None)
+            assert other_row is not None, "vig2 must still see the system base row"
+            assert other_row.get("system_login") != "01:45 PM", "vig2 must not see vig1's entry"
+        finally:
+            # remove only the entry this test created
+            own = requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),
+                               params={"from_date": FROM_D, "to_date": TO_D}).json()
+            mine = next((x for x in own["rows"]
+                         if x["target_employee_id"] == emp_id and x["date"] == iso_date and x.get("id")), None)
+            if mine:
+                requests.delete(f"{BASE_URL}/api/vigilance/entries/{mine['id']}", headers=_hdr(tokens["vig1"]))
