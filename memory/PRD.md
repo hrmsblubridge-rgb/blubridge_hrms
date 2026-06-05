@@ -5,6 +5,24 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Vigilance — Time-format engine + Premium table UX) ✅ TESTED
+
+**UPDATE 1 — Time format engine (root-level):**
+- Vigilance editable clock fields are now ENTERED in **24-hour** (13:45, 18:00, 00:15) in the upload sheet / Add-Edit dialog. `norm_clock()` now accepts BOTH 24h and 12h (and Excel time cells) and normalises to canonical **12-hour for DB storage + UI rendering** (13:45 → 01:45 PM, 00:15 → 12:15 AM). Durations unchanged (HH:MM, no AM/PM).
+- **Mixed download formats** via new `to_24h()` + `build_export_workbook(clock_24h=...)`:
+  - **Vigilance export/template/own-data:** editable clock columns (System Login/Logout, break From/To incl. dynamic) = **24-hour**; Punch-In/Out = 12-hour (attendance-consistent); durations = HH:MM.
+  - **Admin export:** ALL clock columns = **12-hour**; durations = HH:MM.
+- Verified by script: 24h upload → 12h UI/DB; vigilance export shows 13:45/18:00/00:15; admin export shows 01:45 PM/12:15 AM; punch 12h; durations HH:MM.
+
+**FIX 1 — Table always renders (zero-data):** the full table (headers, sticky columns, horizontal-scroll container, pagination bar, rows-per-page) now ALWAYS renders; empty state shows "No vigilance records uploaded yet." inside the table body — no blank screen.
+
+**FIX 2 — Premium table UX:** client-side pagination (rows-per-page 10/25/50/100), record count "Showing X–Y of N records", Prev/Next + numbered pages; sticky Name + Date columns (Payroll-style); premium thin scrollbar (existing global `.scroll-premium`/`.overflow-x-auto` rule, Firefox + webkit).
+
+**No regression** (re-tested): isolation, admin merged single-row (2 submissions), dynamic Extra-Break3, attendance integration map, CRUD ownership (403), export — all pass. Files touched: `backend/vigilance/service.py`, `backend/vigilance/router.py`, `frontend/src/pages/OperationalVigilance.js`. No changes to attendance/payroll/leave/employee engines.
+
+---
+
+
 ## Latest Update — 2026-06-05 (NEW MODULE: Operational Vigilance Report) ✅ TESTED
 
 **Additive module** — zero changes to attendance/payroll/leave/employee engines. Backend 19/19 pytest + frontend 100% (testing iteration_48).

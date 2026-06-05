@@ -25,7 +25,7 @@ Storage model — collection `vigilance_entries`, one doc per
 import io
 import re
 import uuid
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, time as dtime
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.cell import WriteOnlyCell
@@ -48,6 +48,7 @@ BREAK_SUBS = ["From", "To", "Total"]
 VIGILANCE_DESIGNATION = "vigilance"
 
 CLOCK_RE = re.compile(r"^(\d{1,2}):([0-5]\d)\s*(AM|PM)$", re.IGNORECASE)
+TWENTYFOUR_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 DUR_RE = re.compile(r"^(\d{1,3}):([0-5]\d)$")
 
 
@@ -98,18 +99,55 @@ def parse_display_date_strict(value):
         return None
 
 
+def _hm_to_12h(h, mm):
+    ampm = "AM" if h < 12 else "PM"
+    h12 = h % 12 or 12
+    return f"{h12:02d}:{mm} {ampm}"
+
+
 def norm_clock(value):
-    """Validate/normalise a clock time. Returns (ok, normalised|'' ). Blank allowed."""
-    if value is None or str(value).strip() == "":
+    """Validate a clock time entered as EITHER 24-hour (13:45) OR 12-hour
+    (01:45 PM) and normalise to canonical 12-hour 'HH:MM AM/PM' for storage.
+    Returns (ok, normalised|''). Blank allowed.
+    """
+    if value is None or (isinstance(value, str) and value.strip() == ""):
         return True, ""
+    if isinstance(value, dtime):
+        return True, _hm_to_12h(value.hour, f"{value.minute:02d}")
+    if isinstance(value, datetime):
+        return True, _hm_to_12h(value.hour, f"{value.minute:02d}")
+    s = re.sub(r"\s+", " ", str(value).strip())
+    m = CLOCK_RE.match(s)               # 12-hour with AM/PM
+    if m:
+        h = int(m.group(1))
+        if h < 1 or h > 12:
+            return False, None
+        return True, f"{h:02d}:{m.group(2)} {m.group(3).upper()}"
+    m = TWENTYFOUR_RE.match(s)          # 24-hour
+    if m:
+        return True, _hm_to_12h(int(m.group(1)), m.group(2))
+    return False, None
+
+
+def to_24h(value):
+    """Convert a stored 12-hour (or already-24h) clock string to 24-hour 'HH:MM'.
+    Blank stays blank. Used for the Vigilance-user download/export format.
+    """
+    if value is None or str(value).strip() == "":
+        return ""
+    if isinstance(value, dtime):
+        return f"{value.hour:02d}:{value.minute:02d}"
     s = re.sub(r"\s+", " ", str(value).strip())
     m = CLOCK_RE.match(s)
-    if not m:
-        return False, None
-    h = int(m.group(1))
-    if h < 1 or h > 12:
-        return False, None
-    return True, f"{h:02d}:{m.group(2)} {m.group(3).upper()}"
+    if m:
+        h = int(m.group(1)) % 12
+        if m.group(3).upper() == "PM":
+            h += 12
+        return f"{h:02d}:{m.group(2)}"
+    m = TWENTYFOUR_RE.match(s)
+    if m:
+        return f"{int(m.group(1)):02d}:{m.group(2)}"
+    return str(value).strip()
 
 
 def norm_duration(value):
@@ -611,8 +649,14 @@ async def attendance_integration_map(db, employee_ids, iso_from, iso_to):
 # ----------------------------------------------------------------------------
 # Export
 # ----------------------------------------------------------------------------
-def build_export_workbook(rows, break_labels, *, admin_mode):
-    """Build a filtered-results export. Admin mode flattens per-uploader columns."""
+def build_export_workbook(rows, break_labels, *, admin_mode, clock_24h=False):
+    """Build a filtered-results export. Admin mode flattens per-uploader columns.
+
+    clock_24h: when True (Vigilance-user download), editable clock fields
+    (System Login/Logout + break From/To) are rendered in 24-hour 'HH:MM'.
+    Punch-In/Out (attendance-derived) ALWAYS stay 12-hour; durations stay HH:MM.
+    """
+    fc = (lambda v: to_24h(v)) if clock_24h else (lambda v: v or "")
     wb = Workbook(write_only=True)
     ws = wb.create_sheet("Vigilance Report")
     from openpyxl.utils import get_column_letter
@@ -667,13 +711,13 @@ def build_export_workbook(rows, break_labels, *, admin_mode):
                 r.get("target_employee_name", ""), r.get("target_email", ""),
                 r.get("target_team", ""), r.get("date_display", ""),
                 r.get("punch_in", ""), r.get("punch_out", ""), r.get("total_hours", ""),
-                r.get("system_login", ""), r.get("system_logout", ""),
+                fc(r.get("system_login", "")), fc(r.get("system_logout", "")),
                 r.get("total_research_hours", ""), r.get("total_break_hours", ""),
             ]
             bmap = {b["label"]: b for b in r.get("breaks", [])}
             for bl in break_labels:
                 b = bmap.get(bl, {})
-                vals += [b.get("from", ""), b.get("to", ""), b.get("total", "")]
+                vals += [fc(b.get("from", "")), fc(b.get("to", "")), b.get("total", "")]
             ws.append(vals)
 
     buf = io.BytesIO()

@@ -277,7 +277,7 @@ def get_vigilance_router(db, get_current_user):
             buf = await run_in_threadpool(svc.build_export_workbook, data["rows"], data["break_labels"], admin_mode=True)
         else:
             data = await svc.list_own_rows(db, ctx["employee_id"], f)
-            buf = await run_in_threadpool(svc.build_export_workbook, data["rows"], data["break_labels"], admin_mode=False)
+            buf = await run_in_threadpool(svc.build_export_workbook, data["rows"], data["break_labels"], admin_mode=False, clock_24h=True)
         return StreamingResponse(
             buf, media_type=XLSX_MIME,
             headers={"Content-Disposition": 'attachment; filename="Vigilance-Report.xlsx"'},

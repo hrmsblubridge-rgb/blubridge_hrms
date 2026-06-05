@@ -18,6 +18,7 @@ import {
 } from '../components/ui/alert-dialog';
 import {
   ShieldAlert, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
+  ChevronLeft, ChevronRight,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -49,6 +50,8 @@ export default function OperationalVigilance() {
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deleteId, setDeleteId] = useState(null);
+  const [page, setPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
 
   const isAdmin = access?.is_admin;
 
@@ -64,6 +67,7 @@ export default function OperationalVigilance() {
       };
       const res = await axios.get(`${API}/vigilance/entries`, { headers: getAuthHeaders(), params });
       setData({ uploaders: [], ...res.data });
+      setPage(1);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed to load vigilance data');
     } finally {
@@ -88,6 +92,9 @@ export default function OperationalVigilance() {
   }, [getAuthHeaders, loadEntries]);
 
   const validRange = filters.fromDate && filters.toDate && filters.toDate >= filters.fromDate;
+
+  const totalRows = data.rows.length;
+  const pagedRows = data.rows.slice((page - 1) * rowsPerPage, page * rowsPerPage);
 
   const handleApplyFilter = () => {
     if (!validRange) { toast.error('Select a valid date range (To Date ≥ From Date).'); return; }
@@ -306,15 +313,14 @@ export default function OperationalVigilance() {
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        {loading ? (
-          <div className="flex items-center justify-center h-48"><Loader2 className="w-7 h-7 animate-spin text-slate-400" /></div>
-        ) : data.rows.length === 0 ? (
-          <div className="text-center py-16 text-slate-400" data-testid="vig-empty">No vigilance data for the selected filters. Download the template, fill it, and upload.</div>
-        ) : isAdmin ? (
-          <AdminMergedTable data={data} onEdit={openEdit} onDelete={setDeleteId} />
-        ) : (
-          <VigilanceOwnTable data={data} onEdit={openEdit} onDelete={setDeleteId} />
-        )}
+        <div className="overflow-x-auto scroll-premium">
+          {isAdmin ? (
+            <AdminMergedTable data={data} rows={pagedRows} loading={loading} onEdit={openEdit} onDelete={setDeleteId} />
+          ) : (
+            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} onEdit={openEdit} onDelete={setDeleteId} />
+          )}
+        </div>
+        <PaginationBar page={page} setPage={setPage} rowsPerPage={rowsPerPage} setRowsPerPage={(v) => { setRowsPerPage(v); setPage(1); }} total={totalRows} />
       </div>
 
       {/* Edit / Add dialog */}
@@ -340,120 +346,126 @@ export default function OperationalVigilance() {
 }
 
 // ===================== Vigilance own-view table =====================
-function VigilanceOwnTable({ data, onEdit, onDelete }) {
+function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
   const labels = data.break_labels || [];
+  const colCount = 9 + labels.length * 3 + 1;
   return (
-    <div className="overflow-x-auto" data-testid="vig-own-table">
-      <table className="text-sm border-collapse min-w-full">
-        <thead>
-          <tr className="bg-slate-100 text-slate-600">
-            <th className="sticky left-0 bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[180px]">Name</th>
-            <th className="sticky left-[180px] bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[120px]">Date</th>
-            {['Punch-In', 'Punch-Out', 'Total Hours', 'System Login', 'System Logout', 'Research Hrs', 'Break Hrs'].map(h => (
-              <th key={h} className="px-3 py-3 text-left font-semibold whitespace-nowrap">{h}</th>
-            ))}
-            {labels.map(l => (
-              <th key={l} colSpan={3} className="px-3 py-2 text-center font-semibold border-l border-slate-200 whitespace-nowrap bg-emerald-50">{l}</th>
-            ))}
-            <th className="px-3 py-3 text-center font-semibold sticky right-0 bg-slate-100 z-20">Actions</th>
-          </tr>
-          <tr className="bg-slate-50 text-[11px] text-slate-500">
-            <th className="sticky left-0 bg-slate-50 z-20" /><th className="sticky left-[180px] bg-slate-50 z-20" />
-            {Array(7).fill(0).map((_, i) => <th key={i} />)}
-            {labels.map(l => ['From', 'To', 'Total'].map((s, i) => (
-              <th key={l + s} className={`px-2 py-1.5 text-center ${i === 0 ? 'border-l border-slate-200' : ''}`}>{s}</th>
-            )))}
-            <th className="sticky right-0 bg-slate-50 z-20" />
-          </tr>
-        </thead>
-        <tbody>
-          {data.rows.map(row => {
-            const bmap = Object.fromEntries((row.breaks || []).map(b => [b.label, b]));
-            return (
-              <tr key={row.id} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-own-row">
-                <td className="sticky left-0 bg-white z-10 px-3 py-2.5 font-medium text-slate-800 min-w-[180px]">{row.target_employee_name}</td>
-                <td className="sticky left-[180px] bg-white z-10 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
-                <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.total_hours || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.system_login || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.system_logout || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.total_research_hours || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.total_break_hours || '—'}</td>
-                {labels.map(l => {
-                  const b = bmap[l] || {};
-                  return ['from', 'to', 'total'].map((k, i) => (
-                    <td key={l + k} className={`px-2 py-2.5 text-center text-slate-600 whitespace-nowrap ${i === 0 ? 'border-l border-slate-100' : ''}`}>{b[k] || '—'}</td>
-                  ));
-                })}
-                <td className="sticky right-0 bg-white z-10 px-3 py-2.5">
-                  <div className="flex items-center justify-center gap-1">
-                    <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => onEdit({ ...row }, row)} data-testid="vig-edit-btn"><Pencil className="w-4 h-4" /></Button>
-                    <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" onClick={() => onDelete(row.id)} data-testid="vig-delete-btn"><Trash2 className="w-4 h-4" /></Button>
-                  </div>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <table className="text-sm border-collapse min-w-full" data-testid="vig-own-table">
+      <thead>
+        <tr className="bg-slate-100 text-slate-600">
+          <th className="sticky left-0 bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[180px]">Name</th>
+          <th className="sticky left-[180px] bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[120px]">Date</th>
+          {['Punch-In', 'Punch-Out', 'Total Hours', 'System Login', 'System Logout', 'Research Hrs', 'Break Hrs'].map(h => (
+            <th key={h} className="px-3 py-3 text-left font-semibold whitespace-nowrap">{h}</th>
+          ))}
+          {labels.map(l => (
+            <th key={l} colSpan={3} className="px-3 py-2 text-center font-semibold border-l border-slate-200 whitespace-nowrap bg-emerald-50">{l}</th>
+          ))}
+          <th className="px-3 py-3 text-center font-semibold sticky right-0 bg-slate-100 z-20">Actions</th>
+        </tr>
+        <tr className="bg-slate-50 text-[11px] text-slate-500">
+          <th className="sticky left-0 bg-slate-50 z-20" /><th className="sticky left-[180px] bg-slate-50 z-20" />
+          {Array(7).fill(0).map((_, i) => <th key={i} />)}
+          {labels.map(l => ['From', 'To', 'Total'].map((s, i) => (
+            <th key={l + s} className={`px-2 py-1.5 text-center ${i === 0 ? 'border-l border-slate-200' : ''}`}>{s}</th>
+          )))}
+          <th className="sticky right-0 bg-slate-50 z-20" />
+        </tr>
+      </thead>
+      <tbody>
+        {loading ? (
+          <tr><td colSpan={colCount} className="text-center py-16"><Loader2 className="w-6 h-6 animate-spin text-slate-400 inline" /></td></tr>
+        ) : rows.length === 0 ? (
+          <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No vigilance records uploaded yet.</td></tr>
+        ) : rows.map(row => {
+          const bmap = Object.fromEntries((row.breaks || []).map(b => [b.label, b]));
+          return (
+            <tr key={row.id} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-own-row">
+              <td className="sticky left-0 bg-white z-10 px-3 py-2.5 font-medium text-slate-800 min-w-[180px]">{row.target_employee_name}</td>
+              <td className="sticky left-[180px] bg-white z-10 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.total_hours || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.system_login || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.system_logout || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.total_research_hours || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.total_break_hours || '—'}</td>
+              {labels.map(l => {
+                const b = bmap[l] || {};
+                return ['from', 'to', 'total'].map((k, i) => (
+                  <td key={l + k} className={`px-2 py-2.5 text-center text-slate-600 whitespace-nowrap ${i === 0 ? 'border-l border-slate-100' : ''}`}>{b[k] || '—'}</td>
+                ));
+              })}
+              <td className="sticky right-0 bg-white z-10 px-3 py-2.5">
+                <div className="flex items-center justify-center gap-1">
+                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => onEdit({ ...row }, row)} data-testid="vig-edit-btn"><Pencil className="w-4 h-4" /></Button>
+                  <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" onClick={() => onDelete(row.id)} data-testid="vig-delete-btn"><Trash2 className="w-4 h-4" /></Button>
+                </div>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
 // ===================== Admin merged table =====================
-function AdminMergedTable({ data, onEdit, onDelete }) {
+function AdminMergedTable({ data, rows, loading, onEdit, onDelete }) {
   const labels = data.break_labels || [];
   const uploaders = data.uploaders || [];
   const perUploaderCols = 4 + labels.length * 3; // sys login/out, research, break + breaks
+  const colCount = 6 + Math.max(uploaders.length, 0) * perUploaderCols;
   return (
-    <div className="overflow-x-auto" data-testid="vig-admin-table">
-      <table className="text-sm border-collapse min-w-full">
-        <thead>
-          <tr className="bg-slate-100 text-slate-600">
-            <th rowSpan={2} className="sticky left-0 bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[170px]">Name</th>
-            <th rowSpan={2} className="sticky left-[170px] bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[115px]">Date</th>
-            <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Team</th>
-            <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Punch-In</th>
-            <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Punch-Out</th>
-            <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Total Hours</th>
-            {uploaders.map((u, idx) => (
-              <th key={u.employee_id} colSpan={perUploaderCols} className={`px-3 py-2 text-center font-semibold border-l-2 border-slate-300 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50' : 'bg-amber-50'}`}>
-                {u.name}
-              </th>
-            ))}
-          </tr>
-          <tr className="bg-slate-50 text-[11px] text-slate-500">
-            {uploaders.map((u) => (
-              <FragmentCols key={u.employee_id} ukey={u.employee_id} labels={labels} firstClass="border-l-2 border-slate-300" />
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {data.rows.map(row => {
-            const subByUp = Object.fromEntries((row.submissions || []).map(s => [s.uploaded_by_employee_id, s]));
-            return (
-              <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-admin-row">
-                <td className="sticky left-0 bg-white z-10 px-3 py-2.5 font-medium text-slate-800 min-w-[170px]">{row.target_employee_name}</td>
-                <td className="sticky left-[170px] bg-white z-10 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
-                <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
-                <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.total_hours || '—'}</td>
-                {uploaders.map((u) => {
-                  const s = subByUp[u.employee_id];
-                  const bmap = s ? Object.fromEntries((s.breaks || []).map(b => [b.label, b])) : {};
-                  return (
-                    <FragmentData key={u.employee_id} ukey={u.employee_id} s={s} bmap={bmap} labels={labels} firstClass="border-l-2 border-slate-200"
-                      onEdit={() => s && onEdit(s, row)} onDelete={() => s && onDelete(s.id)} />
-                  );
-                })}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <table className="text-sm border-collapse min-w-full" data-testid="vig-admin-table">
+      <thead>
+        <tr className="bg-slate-100 text-slate-600">
+          <th rowSpan={2} className="sticky left-0 bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[170px]">Name</th>
+          <th rowSpan={2} className="sticky left-[170px] bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[115px]">Date</th>
+          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Team</th>
+          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Punch-In</th>
+          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Punch-Out</th>
+          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Total Hours</th>
+          {uploaders.map((u, idx) => (
+            <th key={u.employee_id} colSpan={perUploaderCols} className={`px-3 py-2 text-center font-semibold border-l-2 border-slate-300 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50' : 'bg-amber-50'}`}>
+              {u.name}
+            </th>
+          ))}
+        </tr>
+        <tr className="bg-slate-50 text-[11px] text-slate-500">
+          {uploaders.map((u) => (
+            <FragmentCols key={u.employee_id} ukey={u.employee_id} labels={labels} firstClass="border-l-2 border-slate-300" />
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {loading ? (
+          <tr><td colSpan={colCount} className="text-center py-16"><Loader2 className="w-6 h-6 animate-spin text-slate-400 inline" /></td></tr>
+        ) : rows.length === 0 ? (
+          <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No vigilance records uploaded yet.</td></tr>
+        ) : rows.map(row => {
+          const subByUp = Object.fromEntries((row.submissions || []).map(s => [s.uploaded_by_employee_id, s]));
+          return (
+            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-admin-row">
+              <td className="sticky left-0 bg-white z-10 px-3 py-2.5 font-medium text-slate-800 min-w-[170px]">{row.target_employee_name}</td>
+              <td className="sticky left-[170px] bg-white z-10 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
+              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.total_hours || '—'}</td>
+              {uploaders.map((u) => {
+                const s = subByUp[u.employee_id];
+                const bmap = s ? Object.fromEntries((s.breaks || []).map(b => [b.label, b])) : {};
+                return (
+                  <FragmentData key={u.employee_id} ukey={u.employee_id} s={s} bmap={bmap} labels={labels} firstClass="border-l-2 border-slate-200"
+                    onEdit={() => s && onEdit(s, row)} onDelete={() => s && onDelete(s.id)} />
+                );
+              })}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
   );
 }
 
@@ -505,6 +517,46 @@ function FragmentData({ s, bmap, labels, firstClass, onEdit, onDelete, ukey }) {
   );
 }
 
+// ===================== Pagination bar =====================
+function PaginationBar({ page, setPage, rowsPerPage, setRowsPerPage, total }) {
+  const totalPages = Math.max(1, Math.ceil(total / rowsPerPage));
+  const current = Math.min(page, totalPages);
+  const start = total === 0 ? 0 : (current - 1) * rowsPerPage + 1;
+  const end = Math.min(total, current * rowsPerPage);
+
+  const pageNumbers = [];
+  const win = 2;
+  for (let p = Math.max(1, current - win); p <= Math.min(totalPages, current + win); p++) pageNumbers.push(p);
+
+  return (
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 bg-slate-50/50" data-testid="vig-pagination">
+      <div className="flex items-center gap-2 text-sm text-slate-600">
+        <span>Rows per page</span>
+        <Select value={String(rowsPerPage)} onValueChange={(v) => setRowsPerPage(Number(v))}>
+          <SelectTrigger className="h-8 w-[78px] rounded-lg" data-testid="vig-rows-per-page"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {[10, 25, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="text-sm text-slate-500" data-testid="vig-record-count">
+        Showing <span className="font-medium text-slate-700">{start.toLocaleString()}–{end.toLocaleString()}</span> of <span className="font-medium text-slate-700">{total.toLocaleString()}</span> records
+      </div>
+      <div className="flex items-center gap-1">
+        <Button variant="outline" size="icon" className="h-8 w-8 rounded-lg" disabled={current <= 1} onClick={() => setPage(current - 1)} data-testid="vig-prev-page"><ChevronLeft className="w-4 h-4" /></Button>
+        {pageNumbers[0] > 1 && <span className="px-1 text-slate-400">…</span>}
+        {pageNumbers.map(p => (
+          <Button key={p} variant={p === current ? 'default' : 'outline'} size="icon"
+            className={`h-8 w-8 rounded-lg ${p === current ? 'bg-[#0b1f3b] hover:bg-[#0b1f3b]/90' : ''}`}
+            onClick={() => setPage(p)} data-testid={`vig-page-${p}`}>{p}</Button>
+        ))}
+        {pageNumbers[pageNumbers.length - 1] < totalPages && <span className="px-1 text-slate-400">…</span>}
+        <Button variant="outline" size="icon" className="h-8 w-8 rounded-lg" disabled={current >= totalPages} onClick={() => setPage(current + 1)} data-testid="vig-next-page"><ChevronRight className="w-4 h-4" /></Button>
+      </div>
+    </div>
+  );
+}
+
 // ===================== Add / Edit dialog =====================
 function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
   if (!draft) return null;
@@ -542,10 +594,10 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
-            <div><Label className="text-sm mb-1.5 block">System Login <span className="text-slate-400">(HH:MM AM/PM)</span></Label>
-              <Input value={draft.system_login} onChange={(e) => update({ system_login: e.target.value })} placeholder="09:45 AM" data-testid="vig-dialog-sys-login" /></div>
-            <div><Label className="text-sm mb-1.5 block">System Logout <span className="text-slate-400">(HH:MM AM/PM)</span></Label>
-              <Input value={draft.system_logout} onChange={(e) => update({ system_logout: e.target.value })} placeholder="06:30 PM" data-testid="vig-dialog-sys-logout" /></div>
+            <div><Label className="text-sm mb-1.5 block">System Login <span className="text-slate-400">(24h e.g. 13:45)</span></Label>
+              <Input value={draft.system_login} onChange={(e) => update({ system_login: e.target.value })} placeholder="13:45" data-testid="vig-dialog-sys-login" /></div>
+            <div><Label className="text-sm mb-1.5 block">System Logout <span className="text-slate-400">(24h e.g. 18:30)</span></Label>
+              <Input value={draft.system_logout} onChange={(e) => update({ system_logout: e.target.value })} placeholder="18:30" data-testid="vig-dialog-sys-logout" /></div>
             <div><Label className="text-sm mb-1.5 block">Total Research Hours <span className="text-slate-400">(HH:MM)</span></Label>
               <Input value={draft.total_research_hours} onChange={(e) => update({ total_research_hours: e.target.value })} placeholder="10:00" data-testid="vig-dialog-research" /></div>
             <div><Label className="text-sm mb-1.5 block">Total Break Hours <span className="text-slate-400">(HH:MM)</span></Label>
@@ -562,8 +614,8 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
               {draft.breaks.map((b, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2 items-center">
                   <Input className="col-span-4 h-9" value={b.label} onChange={(e) => updateBreak(i, { label: e.target.value })} placeholder="Break label" />
-                  <Input className="col-span-3 h-9" value={b.from || ''} onChange={(e) => updateBreak(i, { from: e.target.value })} placeholder="From 11:00 AM" />
-                  <Input className="col-span-2 h-9" value={b.to || ''} onChange={(e) => updateBreak(i, { to: e.target.value })} placeholder="To" />
+                  <Input className="col-span-3 h-9" value={b.from || ''} onChange={(e) => updateBreak(i, { from: e.target.value })} placeholder="From 13:00" />
+                  <Input className="col-span-2 h-9" value={b.to || ''} onChange={(e) => updateBreak(i, { to: e.target.value })} placeholder="To 13:15" />
                   <Input className="col-span-2 h-9" value={b.total || ''} onChange={(e) => updateBreak(i, { total: e.target.value })} placeholder="00:15" />
                   <button onClick={() => removeBreak(i)} className="col-span-1 text-slate-400 hover:text-red-600"><X className="w-4 h-4" /></button>
                 </div>
