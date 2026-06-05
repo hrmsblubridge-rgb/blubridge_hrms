@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
@@ -18,7 +18,7 @@ import {
 } from '../components/ui/alert-dialog';
 import {
   ShieldAlert, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, Eye,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -54,6 +54,39 @@ export default function OperationalVigilance() {
   const [rowsPerPage, setRowsPerPage] = useState(25);
 
   const isAdmin = access?.is_admin;
+
+  // ---- Premium scroll (synced top+bottom) + sticky-header measurement ----
+  const topScrollRef = useRef(null);
+  const bodyScrollRef = useRef(null);
+  const [scrollW, setScrollW] = useState(0);
+  const [row1H, setRow1H] = useState(44);
+  const syncingScroll = useRef(false);
+
+  const onTopScroll = () => {
+    if (syncingScroll.current) { syncingScroll.current = false; return; }
+    syncingScroll.current = true;
+    if (bodyScrollRef.current) bodyScrollRef.current.scrollLeft = topScrollRef.current.scrollLeft;
+  };
+  const onBodyScroll = () => {
+    if (syncingScroll.current) { syncingScroll.current = false; return; }
+    syncingScroll.current = true;
+    if (topScrollRef.current) topScrollRef.current.scrollLeft = bodyScrollRef.current.scrollLeft;
+  };
+
+  useEffect(() => {
+    const measure = () => {
+      const el = bodyScrollRef.current;
+      if (!el) return;
+      setScrollW(el.scrollWidth);
+      const h1 = el.querySelector('thead tr');
+      if (h1) setRow1H(h1.offsetHeight);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (bodyScrollRef.current) ro.observe(bodyScrollRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, [data, page, rowsPerPage, loading]);
 
   const loadEntries = useCallback(async (f) => {
     setLoading(true);
@@ -169,6 +202,20 @@ export default function OperationalVigilance() {
   const openEdit = (submission, row) => {
     setDraft({
       id: submission.id,
+      target_employee_id: row.target_employee_id,
+      target_employee_name: row.target_employee_name,
+      date: row.date,
+      system_login: submission.system_login || '',
+      system_logout: submission.system_logout || '',
+      total_research_hours: submission.total_research_hours || '',
+      total_break_hours: submission.total_break_hours || '',
+      breaks: (submission.breaks || []).map(b => ({ ...b })),
+    });
+  };
+
+  const openView = (submission, row) => {
+    setDraft({
+      id: submission.id, readOnly: true,
       target_employee_id: row.target_employee_id,
       target_employee_name: row.target_employee_name,
       date: row.date,
@@ -320,11 +367,19 @@ export default function OperationalVigilance() {
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="overflow-x-auto scroll-premium">
+        {/* Premium synchronized TOP horizontal scrollbar */}
+        <div ref={topScrollRef} onScroll={onTopScroll}
+             className="scroll-premium overflow-x-auto overflow-y-hidden border-b border-slate-100"
+             style={{ height: scrollW > 0 ? 12 : 0 }} data-testid="vig-top-scroll">
+          <div style={{ width: scrollW, height: 1 }} />
+        </div>
+        {/* Body: synchronized vertical + horizontal scroll, sticky header */}
+        <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-auto scroll-premium"
+             style={{ maxHeight: '68vh', '--vig-h1': `${row1H}px` }} data-testid="vig-table-scroll">
           {isAdmin ? (
-            <AdminMergedTable data={data} rows={pagedRows} loading={loading} onEdit={openEdit} onDelete={setDeleteId} />
+            <AdminMergedTable data={data} rows={pagedRows} loading={loading} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
           ) : (
-            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} onEdit={openEdit} onDelete={setDeleteId} />
+            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
           )}
         </div>
         <PaginationBar page={page} setPage={setPage} rowsPerPage={rowsPerPage} setRowsPerPage={(v) => { setRowsPerPage(v); setPage(1); }} total={totalRows} />
@@ -353,31 +408,35 @@ export default function OperationalVigilance() {
 }
 
 // ===================== Vigilance own-view table =====================
-function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
+function VigilanceOwnTable({ data, rows, loading, onView, onEdit, onDelete }) {
   const labels = data.break_labels || [];
   const colCount = 11 + labels.length * 3 + 1;
+  const scalars = ['Email-id', 'Team', 'Punch-In', 'Punch-Out', 'Total Hours', 'System Login', 'System Logout', 'Research Hrs', 'Break Hrs'];
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-own-table">
       <thead>
         <tr className="bg-slate-100 text-slate-600">
-          <th className="sticky left-0 bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[180px]">Name</th>
-          <th className="sticky left-[180px] bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[120px]">Date</th>
-          {['Email-id', 'Team', 'Punch-In', 'Punch-Out', 'Total Hours', 'System Login', 'System Logout', 'Research Hrs', 'Break Hrs'].map(h => (
-            <th key={h} className="px-3 py-3 text-left font-semibold whitespace-nowrap">{h}</th>
+          <th className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[180px]">Name</th>
+          <th className="vig-sticky-h1 left-[180px] z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[120px]">Date</th>
+          {scalars.map(h => (
+            <th key={h} className="vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left font-semibold whitespace-nowrap">{h}</th>
           ))}
           {labels.map(l => (
-            <th key={l} colSpan={3} className="px-3 py-2 text-center font-semibold border-l border-slate-200 whitespace-nowrap bg-emerald-50">{l}</th>
+            <th key={l} colSpan={3} className="vig-sticky-h1 z-30 px-3 py-2 text-center font-semibold border-l border-slate-200 whitespace-nowrap bg-emerald-50">{l}</th>
           ))}
-          <th className="px-3 py-3 text-center font-semibold sticky right-0 bg-slate-100 z-20">Actions</th>
+          <th className="vig-sticky-h1 right-0 z-40 bg-slate-100 px-3 py-3 text-center font-semibold min-w-[130px]">Actions</th>
         </tr>
+        {labels.length > 0 && (
         <tr className="bg-slate-50 text-[11px] text-slate-500">
-          <th className="sticky left-0 bg-slate-50 z-20" /><th className="sticky left-[180px] bg-slate-50 z-20" />
-          {Array(9).fill(0).map((_, i) => <th key={i} />)}
+          <th className="vig-sticky-h2 left-0 z-40 bg-slate-50" />
+          <th className="vig-sticky-h2 left-[180px] z-40 bg-slate-50" />
+          {scalars.map((_, i) => <th key={i} className="vig-sticky-h2 z-30 bg-slate-50" />)}
           {labels.map(l => ['From', 'To', 'Total'].map((s, i) => (
-            <th key={l + s} className={`px-2 py-1.5 text-center ${i === 0 ? 'border-l border-slate-200' : ''}`}>{s}</th>
+            <th key={l + s} className={`vig-sticky-h2 z-30 bg-slate-50 px-2 py-1.5 text-center ${i === 0 ? 'border-l border-slate-200' : ''}`}>{s}</th>
           )))}
-          <th className="sticky right-0 bg-slate-50 z-20" />
+          <th className="vig-sticky-h2 right-0 z-40 bg-slate-50" />
         </tr>
+        )}
       </thead>
       <tbody>
         {loading ? (
@@ -388,8 +447,8 @@ function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
           const bmap = Object.fromEntries((row.breaks || []).map(b => [b.label, b]));
           return (
             <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-own-row">
-              <td className="sticky left-0 bg-white z-10 px-3 py-2.5 font-medium text-slate-800 min-w-[180px]">{row.target_employee_name}</td>
-              <td className="sticky left-[180px] bg-white z-10 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="sticky left-0 bg-white z-20 px-3 py-2.5 font-medium text-slate-800 min-w-[180px]">{row.target_employee_name}</td>
+              <td className="sticky left-[180px] bg-white z-20 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_email || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
@@ -405,11 +464,14 @@ function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
                   <td key={l + k} className={`px-2 py-2.5 text-center text-slate-600 whitespace-nowrap ${i === 0 ? 'border-l border-slate-100' : ''}`}>{b[k] || '—'}</td>
                 ));
               })}
-              <td className="sticky right-0 bg-white z-10 px-3 py-2.5">
+              <td className="sticky right-0 bg-white z-20 px-3 py-2.5 border-l border-slate-100">
                 <div className="flex items-center justify-center gap-1">
-                  <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => onEdit({ ...row }, row)} data-testid="vig-edit-btn" title={row.id ? 'Edit' : 'Add observation'}><Pencil className="w-4 h-4" /></Button>
                   {row.id && (
-                    <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" onClick={() => onDelete(row.id)} data-testid="vig-delete-btn"><Trash2 className="w-4 h-4" /></Button>
+                    <Button size="icon" variant="ghost" className="h-8 w-8 text-slate-500 hover:text-slate-800" onClick={() => onView(row, row)} data-testid="vig-view-btn" title="View"><Eye className="w-4 h-4" /></Button>
+                  )}
+                  <Button size="icon" variant="ghost" className="h-8 w-8 text-blue-600" onClick={() => onEdit({ ...row }, row)} data-testid="vig-edit-btn" title={row.id ? 'Edit' : 'Add observation'}><Pencil className="w-4 h-4" /></Button>
+                  {row.id && (
+                    <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" onClick={() => onDelete(row.id)} data-testid="vig-delete-btn" title="Delete"><Trash2 className="w-4 h-4" /></Button>
                   )}
                 </div>
               </td>
@@ -422,27 +484,29 @@ function VigilanceOwnTable({ data, rows, loading, onEdit, onDelete }) {
 }
 
 // ===================== Admin merged table =====================
-function AdminMergedTable({ data, rows, loading, onEdit, onDelete }) {
+function AdminMergedTable({ data, rows, loading, onView, onEdit, onDelete }) {
   const labels = data.break_labels || [];
   const uploaders = data.uploaders || [];
   const perUploaderCols = 4 + labels.length * 3; // sys login/out, research, break + breaks
-  const colCount = 7 + Math.max(uploaders.length, 0) * perUploaderCols;
+  const colCount = 7 + Math.max(uploaders.length, 0) * perUploaderCols + 1;
+  const baseTh = 'vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left font-semibold whitespace-nowrap';
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-admin-table">
       <thead>
         <tr className="bg-slate-100 text-slate-600">
-          <th rowSpan={2} className="sticky left-0 bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[170px]">Name</th>
-          <th rowSpan={2} className="sticky left-[170px] bg-slate-100 z-20 px-3 py-3 text-left font-semibold min-w-[115px]">Date</th>
-          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Email-id</th>
-          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Team</th>
-          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Punch-In</th>
-          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Punch-Out</th>
-          <th rowSpan={2} className="px-3 py-3 text-left font-semibold whitespace-nowrap">Total Hours</th>
+          <th rowSpan={2} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[170px]">Name</th>
+          <th rowSpan={2} className="vig-sticky-h1 left-[170px] z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[115px]">Date</th>
+          <th rowSpan={2} className={baseTh}>Email-id</th>
+          <th rowSpan={2} className={baseTh}>Team</th>
+          <th rowSpan={2} className={baseTh}>Punch-In</th>
+          <th rowSpan={2} className={baseTh}>Punch-Out</th>
+          <th rowSpan={2} className={baseTh}>Total Hours</th>
           {uploaders.map((u, idx) => (
-            <th key={u.employee_id} colSpan={perUploaderCols} className={`px-3 py-2 text-center font-semibold border-l-2 border-slate-300 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50' : 'bg-amber-50'}`}>
+            <th key={u.employee_id} colSpan={perUploaderCols} className={`vig-sticky-h1 z-30 px-3 py-2 text-center font-semibold border-l-2 border-slate-300 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50' : 'bg-amber-50'}`}>
               {u.name}
             </th>
           ))}
+          <th rowSpan={2} className="vig-sticky-h1 right-0 z-40 bg-slate-100 px-3 py-3 text-center font-semibold min-w-[150px]">Actions</th>
         </tr>
         <tr className="bg-slate-50 text-[11px] text-slate-500">
           {uploaders.map((u) => (
@@ -459,8 +523,8 @@ function AdminMergedTable({ data, rows, loading, onEdit, onDelete }) {
           const subByUp = Object.fromEntries((row.submissions || []).map(s => [s.uploaded_by_employee_id, s]));
           return (
             <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-admin-row">
-              <td className="sticky left-0 bg-white z-10 px-3 py-2.5 font-medium text-slate-800 min-w-[170px]">{row.target_employee_name}</td>
-              <td className="sticky left-[170px] bg-white z-10 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="sticky left-0 bg-white z-20 px-3 py-2.5 font-medium text-slate-800 min-w-[170px]">{row.target_employee_name}</td>
+              <td className="sticky left-[170px] bg-white z-20 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_email || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
               <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
@@ -470,10 +534,25 @@ function AdminMergedTable({ data, rows, loading, onEdit, onDelete }) {
                 const s = subByUp[u.employee_id];
                 const bmap = s ? Object.fromEntries((s.breaks || []).map(b => [b.label, b])) : {};
                 return (
-                  <FragmentData key={u.employee_id} ukey={u.employee_id} s={s} bmap={bmap} labels={labels} firstClass="border-l-2 border-slate-200"
-                    onEdit={() => s && onEdit(s, row)} onDelete={() => s && onDelete(s.id)} />
+                  <FragmentData key={u.employee_id} ukey={u.employee_id} s={s} bmap={bmap} labels={labels} firstClass="border-l-2 border-slate-200" />
                 );
               })}
+              <td className="sticky right-0 bg-white z-20 px-2 py-2 border-l border-slate-100 min-w-[150px]" data-testid="vig-admin-actions">
+                {(row.submissions || []).length === 0 ? (
+                  <span className="block text-center text-slate-300">—</span>
+                ) : (
+                  <div className="flex flex-col gap-1.5">
+                    {(row.submissions || []).map(s => (
+                      <div key={s.id} className="flex items-center justify-end gap-1.5">
+                        <span className="text-[10px] text-slate-400 mr-0.5 truncate max-w-[64px]" title={s.uploaded_by_name}>{s.uploaded_by_name}</span>
+                        <button onClick={() => onView(s, row)} className="text-slate-400 hover:text-slate-800" title="View" data-testid="vig-admin-view-btn"><Eye className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => onEdit(s, row)} className="text-slate-400 hover:text-blue-600" title="Edit" data-testid="vig-admin-edit-btn"><Pencil className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => onDelete(s.id)} className="text-slate-400 hover:text-red-600" title="Delete" data-testid="vig-admin-delete-btn"><Trash2 className="w-3.5 h-3.5" /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </td>
             </tr>
           );
         })}
@@ -483,20 +562,21 @@ function AdminMergedTable({ data, rows, loading, onEdit, onDelete }) {
 }
 
 function FragmentCols({ labels, firstClass, ukey }) {
+  const th = 'vig-sticky-h2 z-30 bg-slate-50 px-2 py-1.5 text-center';
   return (
     <>
-      <th className={`px-2 py-1.5 text-center ${firstClass}`}>Sys In</th>
-      <th className="px-2 py-1.5 text-center">Sys Out</th>
-      <th className="px-2 py-1.5 text-center">Research</th>
-      <th className="px-2 py-1.5 text-center">Break</th>
+      <th className={`${th} ${firstClass}`}>Sys In</th>
+      <th className={th}>Sys Out</th>
+      <th className={th}>Research</th>
+      <th className={th}>Break</th>
       {labels.map(l => ['From', 'To', 'Total'].map(s => (
-        <th key={`${ukey}-${l}-${s}`} className="px-2 py-1.5 text-center whitespace-nowrap">{l.replace('Break', 'Brk')} {s}</th>
+        <th key={`${ukey}-${l}-${s}`} className={`${th} whitespace-nowrap`}>{l.replace('Break', 'Brk')} {s}</th>
       )))}
     </>
   );
 }
 
-function FragmentData({ s, bmap, labels, firstClass, onEdit, onDelete, ukey }) {
+function FragmentData({ s, bmap, labels, firstClass, ukey }) {
   const cell = (v, extra = '') => <td className={`px-2 py-2.5 text-center text-slate-700 whitespace-nowrap ${extra}`}>{v || '—'}</td>;
   if (!s) {
     return (
@@ -510,16 +590,7 @@ function FragmentData({ s, bmap, labels, firstClass, onEdit, onDelete, ukey }) {
   }
   return (
     <>
-      <td className={`px-2 py-2.5 text-center text-slate-700 whitespace-nowrap ${firstClass}`}>
-        <div className="flex items-center justify-center gap-1">
-          {s.system_login || '—'}
-          <span className="inline-flex gap-0.5 ml-1">
-            <button onClick={onEdit} className="text-slate-400 hover:text-blue-600" title="Edit" data-testid="vig-admin-edit-btn"><Pencil className="w-3.5 h-3.5" /></button>
-            <button onClick={onDelete} className="text-slate-400 hover:text-red-600" title="Delete" data-testid="vig-admin-delete-btn"><Trash2 className="w-3.5 h-3.5" /></button>
-          </span>
-        </div>
-      </td>
-      {cell(s.system_logout)}{cell(s.total_research_hours)}{cell(s.total_break_hours)}
+      {cell(s.system_login, firstClass)}{cell(s.system_logout)}{cell(s.total_research_hours)}{cell(s.total_break_hours)}
       {labels.map(l => {
         const b = bmap[l] || {};
         return ['from', 'to', 'total'].map(k => (
@@ -570,9 +641,10 @@ function PaginationBar({ page, setPage, rowsPerPage, setRowsPerPage, total }) {
   );
 }
 
-// ===================== Add / Edit dialog =====================
+// ===================== Add / Edit / View dialog =====================
 function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
   if (!draft) return null;
+  const ro = !!draft.readOnly;
   const isEdit = !!draft.id;
   const update = (patch) => setDraft({ ...draft, ...patch });
   const updateBreak = (i, patch) => {
@@ -581,12 +653,14 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
   };
   const addBreak = () => update({ breaks: [...draft.breaks, { label: `Extra-Break${draft.breaks.length + 1}`, from: '', to: '', total: '' }] });
   const removeBreak = (i) => update({ breaks: draft.breaks.filter((_, idx) => idx !== i) });
+  const title = ro ? `View Vigilance Entry — ${draft.target_employee_name || ''}`
+    : isEdit ? `Edit Vigilance Entry — ${draft.target_employee_name || ''}` : 'Add Vigilance Entry';
 
   return (
     <Dialog open onOpenChange={(o) => !o && setDraft(null)}>
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="vig-entry-dialog">
         <DialogHeader>
-          <DialogTitle>{isEdit ? `Edit Vigilance Entry — ${draft.target_employee_name || ''}` : 'Add Vigilance Entry'}</DialogTitle>
+          <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
           {!isEdit && (
@@ -606,41 +680,49 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
               </div>
             </div>
           )}
+          {ro && (
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              <div><Label className="text-xs text-slate-500 mb-0.5 block">Employee</Label><div className="font-medium text-slate-800">{draft.target_employee_name || '—'}</div></div>
+              <div><Label className="text-xs text-slate-500 mb-0.5 block">Date</Label><div className="font-medium text-slate-800">{draft.date || '—'}</div></div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div><Label className="text-sm mb-1.5 block">System Login <span className="text-slate-400">(24h e.g. 13:45)</span></Label>
-              <Input value={draft.system_login} onChange={(e) => update({ system_login: e.target.value })} placeholder="13:45" data-testid="vig-dialog-sys-login" /></div>
+              <Input value={draft.system_login} disabled={ro} onChange={(e) => update({ system_login: e.target.value })} placeholder="13:45" data-testid="vig-dialog-sys-login" /></div>
             <div><Label className="text-sm mb-1.5 block">System Logout <span className="text-slate-400">(24h e.g. 18:30)</span></Label>
-              <Input value={draft.system_logout} onChange={(e) => update({ system_logout: e.target.value })} placeholder="18:30" data-testid="vig-dialog-sys-logout" /></div>
-            <div><Label className="text-sm mb-1.5 block">Total Research Hours <span className="text-slate-400">(HH:MM)</span></Label>
-              <Input value={draft.total_research_hours} onChange={(e) => update({ total_research_hours: e.target.value })} placeholder="10:00" data-testid="vig-dialog-research" /></div>
-            <div><Label className="text-sm mb-1.5 block">Total Break Hours <span className="text-slate-400">(HH:MM)</span></Label>
-              <Input value={draft.total_break_hours} onChange={(e) => update({ total_break_hours: e.target.value })} placeholder="01:00" data-testid="vig-dialog-break" /></div>
+              <Input value={draft.system_logout} disabled={ro} onChange={(e) => update({ system_logout: e.target.value })} placeholder="18:30" data-testid="vig-dialog-sys-logout" /></div>
+            <div><Label className="text-sm mb-1.5 block">Total Research Hours <span className="text-slate-400">(HH:MM or HH:MM:SS)</span></Label>
+              <Input value={draft.total_research_hours} disabled={ro} onChange={(e) => update({ total_research_hours: e.target.value })} placeholder="10:00" data-testid="vig-dialog-research" /></div>
+            <div><Label className="text-sm mb-1.5 block">Total Break Hours <span className="text-slate-400">(HH:MM or HH:MM:SS)</span></Label>
+              <Input value={draft.total_break_hours} disabled={ro} onChange={(e) => update({ total_break_hours: e.target.value })} placeholder="01:00" data-testid="vig-dialog-break" /></div>
           </div>
 
           <div>
             <div className="flex items-center justify-between mb-2">
               <Label className="text-sm font-semibold">Breaks</Label>
-              <Button size="sm" variant="outline" onClick={addBreak} className="h-8" data-testid="vig-dialog-add-break"><Plus className="w-3.5 h-3.5 mr-1" /> Add Break</Button>
+              {!ro && <Button size="sm" variant="outline" onClick={addBreak} className="h-8" data-testid="vig-dialog-add-break"><Plus className="w-3.5 h-3.5 mr-1" /> Add Break</Button>}
             </div>
             <div className="space-y-2">
               {draft.breaks.length === 0 && <p className="text-xs text-slate-400">No breaks added.</p>}
               {draft.breaks.map((b, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2 items-center">
-                  <Input className="col-span-4 h-9" value={b.label} onChange={(e) => updateBreak(i, { label: e.target.value })} placeholder="Break label" />
-                  <Input className="col-span-3 h-9" value={b.from || ''} onChange={(e) => updateBreak(i, { from: e.target.value })} placeholder="From 13:00" />
-                  <Input className="col-span-2 h-9" value={b.to || ''} onChange={(e) => updateBreak(i, { to: e.target.value })} placeholder="To 13:15" />
-                  <Input className="col-span-2 h-9" value={b.total || ''} onChange={(e) => updateBreak(i, { total: e.target.value })} placeholder="00:15" />
-                  <button onClick={() => removeBreak(i)} className="col-span-1 text-slate-400 hover:text-red-600"><X className="w-4 h-4" /></button>
+                  <Input className="col-span-4 h-9" disabled={ro} value={b.label} onChange={(e) => updateBreak(i, { label: e.target.value })} placeholder="Break label" />
+                  <Input className="col-span-3 h-9" disabled={ro} value={b.from || ''} onChange={(e) => updateBreak(i, { from: e.target.value })} placeholder="From 13:00" />
+                  <Input className="col-span-2 h-9" disabled={ro} value={b.to || ''} onChange={(e) => updateBreak(i, { to: e.target.value })} placeholder="To 13:15" />
+                  <Input className="col-span-2 h-9" disabled={ro} value={b.total || ''} onChange={(e) => updateBreak(i, { total: e.target.value })} placeholder="00:15" />
+                  {!ro && <button onClick={() => removeBreak(i)} className="col-span-1 text-slate-400 hover:text-red-600"><X className="w-4 h-4" /></button>}
                 </div>
               ))}
             </div>
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setDraft(null)}>Cancel</Button>
-          <Button onClick={onSave} disabled={saving} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90" data-testid="vig-dialog-save">
-            {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null} Save
-          </Button>
+          <Button variant="outline" onClick={() => setDraft(null)}>{ro ? 'Close' : 'Cancel'}</Button>
+          {!ro && (
+            <Button onClick={onSave} disabled={saving} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90" data-testid="vig-dialog-save">
+              {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null} Save
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

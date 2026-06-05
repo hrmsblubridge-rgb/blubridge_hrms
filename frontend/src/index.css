@@ -299,6 +299,13 @@
     background: transparent;
 }
 
+/* Vigilance Report — 2-row sticky header.
+   Row 1 pins to the top of the scroll container; Row 2 pins just below it using
+   the measured height of row 1 (set as the --vig-h1 CSS var on the container).
+   No DOM duplication, no JS scroll patches — pure position:sticky. */
+.vig-sticky-h1 { position: sticky; top: 0; }
+.vig-sticky-h2 { position: sticky; top: var(--vig-h1, 44px); }
+
 /* Status Badges */
 .badge-success { @apply bg-emerald-50 text-emerald-700 border border-emerald-200/50; }
 .badge-warning { @apply bg-amber-50 text-amber-700 border border-amber-200/50; }

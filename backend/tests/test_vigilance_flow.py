@@ -113,6 +113,23 @@ class TestTemplate:
         data = [r for r in rows[2:] if r[ni]]
         return ({r[ni] for r in data}, {r[di] for r in data}, len(data))
 
+    def test_template_has_merged_group_headers(self, tokens):
+        r = requests.get(f"{BASE_URL}/api/vigilance/template",
+                         params={"from_date": FROM_D, "to_date": TO_D},
+                         headers=_hdr(tokens["admin"]))
+        assert r.status_code == 200
+        wb = load_workbook(io.BytesIO(r.content))
+        ws = wb.active
+        merged = {str(m) for m in ws.merged_cells.ranges}
+        # scalar columns merged vertically (row1:row2), e.g. Name A1:A2
+        assert any(rng.endswith("1:A2") or rng == "A1:A2" for rng in merged), merged
+        # at least one break parent merged horizontally across 3 sub-columns in row 1
+        horiz = [m for m in ws.merged_cells.ranges if m.min_row == 1 and m.max_row == 1 and (m.max_col - m.min_col) == 2]
+        assert horiz, "break group parent header must merge across its 3 sub-columns"
+        # row 2 under a group must carry From/To/Total
+        row2 = [c.value for c in ws[2]]
+        assert "From" in row2 and "To" in row2 and "Total" in row2
+
     def test_template_respects_team_filter(self, tokens):
         # full = all active employees for the day, with their teams
         full = requests.get(f"{BASE_URL}/api/vigilance/template",

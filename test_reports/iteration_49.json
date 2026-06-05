@@ -1,0 +1,34 @@
+{
+  "summary": "E2E tested the 4 new Vigilance Report UX requirements (sticky-right Actions column, synced top+bottom horizontal scrollbars, sticky 2-row vertical header, read-only View dialog) on the live preview URL for BOTH admin and vigilance-user (madhan.s) roles. All four hard requirements verified working. Admin /vigilance loads base grid (61 employees x today), shows Actions column with position:sticky;right:0 (x=1097 width=150 in 1280px viewport), Add Entry dialog has all expected fields (vig-dialog-employee/date/sys-login/sys-logout/research/break/add-break/save). Vigilance user view loads 51-row base grid, shows ONLY vig-edit-btn (pencil) on rows without own entry, and View+Edit+Delete after the user adds an entry. Add->Save (POST 200) with research='08:15:30' and break='01:00' saved and rendered EXACTLY as '08:15:30' / '01:00'. View dialog is fully read-only (all inputs disabled, only 'Close' buttons, title 'View Vigilance Entry — Adhitya Charan'). Delete with vig-confirm-delete confirmation -> DELETE 200 cleared the entry. Horizontal scroll sync confirmed bidirectional (Top→Body and Body→Top both reach target scrollLeft exactly when smooth-scroll is removed; under default smooth scroll they animate to the same final position). Vertical sticky header confirmed (Name th y stays at 387 after body scrollTop=400). Pagination + rows-per-page selector works (4 options visible, record count text 'Showing 1–25 of 51 records'). Cleanup performed: test entry deleted.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "OperationalVigilance table wrapper", "issue": "CSS var --vig-h1 evaluates to '0px' instead of the row1H height (~40-44px). useEffect calls setRow1H(h1.offsetHeight) where h1.offsetHeight is 0 on first measurement (likely before layout). Because vig-sticky-h2 uses top: var(--vig-h1, 44px), the explicit 0px wins over the 44px fallback, so the second header row sticks at top:0 (same as h1) instead of below h1. Visually the table still looks fine in current tests because admin uses rowSpan=2 on most h1 ths and the own-view’s second header row contains only empty cells, but it is a latent stacking bug that will misalign h2 sub-headers in the admin merged view when uploader columns exist.", "selector": "[data-testid='vig-table-scroll']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Entry / View dialog", "issues": ["Console warning: 'Missing Description or aria-describedby={undefined} for {DialogContent}' on every Vigilance dialog open. Add a DialogDescription (or aria-describedby) for a11y compliance."]},
+      {"screen": "Vigilance table headers", "issues": ["Pre-existing React 'Encountered two children with the same key' / 'Each child in a list should have a unique key prop' warning still present (carried over from iteration 48 — sub-header Fragment keys)."]}
+    ]
+  },
+  "test_report_links": ["/app/test_reports/iteration_48.json", "/app/backend/tests/test_vigilance_flow.py"],
+  "action_items": [
+    "Fix row1H measurement so --vig-h1 never becomes 0px. E.g. only update state when h1 && h1.offsetHeight > 0, or guard with `setRow1H(prev => h1.offsetHeight || prev)`, or fall back via inline style: `'--vig-h1': `${row1H || 44}px`` in OperationalVigilance.js around line 378.",
+    "Add DialogDescription / aria-describedby to EntryDialog (and AlertDialog if missing) to silence the a11y warning.",
+    "[Carry-over from iter 48] Stabilise the sub-header Fragment keys (e.g. `${label}-${sub}` instead of bare `sub`) to clear the duplicate-key React warning."
+  ],
+  "critical_code_review_comments": [
+    "OperationalVigilance.js:80-82 — h1.offsetHeight can be 0 on first measure (StrictMode double-render or before layout); guard against 0 to avoid overriding the CSS fallback 44px.",
+    "OperationalVigilance.js:371-374 — top scrollbar height is hard-coded to 12px which may not match the body’s actual native scrollbar height on macOS/Windows; visually acceptable but could be derived from `el.offsetHeight - el.clientHeight`.",
+    "OperationalVigilance.js:65-73 — onTopScroll/onBodyScroll mutual-exclusion uses a single `syncingScroll` ref toggled both ways; with `scroll-behavior: smooth` on .scroll-premium this works because final values match, but rapid alternating user input could still cause one missed sync frame. Consider using a small timeout-based debounce or a directional flag.",
+    "EntryDialog: title for View vs Add is correctly switched; consider also disabling the 'Add Break' button in read-only mode (currently inputs are disabled but Add-Break button visibility wasn’t explicitly verified)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (29/29 from prior iter)", "frontend": "100% functional on the 4 new requirements (1 MEDIUM CSS-var latent bug + 2 pre-existing console warnings)"},
+  "test_credentials": "admin/HrAdmin786$, madhan.s/Vigil@123, dinesh.t/Vigil@123",
+  "seed_data_creation": "Created and DELETED a single vigilance entry by madhan.s for Adhitya Charan on 05-Jun-2026 (research=08:15:30, break=01:00, login=10:00, logout=19:00). DB is clean — no residual test data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "The 4 new UX requirements all work. The only remaining frontend item worth fixing is --vig-h1 evaluating to 0px (latent sub-header stacking issue). When validating the fix, in DevTools run: getComputedStyle(document.querySelector('[data-testid=\"vig-table-scroll\"]')).getPropertyValue('--vig-h1') — should return e.g. '40px' or '44px', not '0px'. Also note: .scroll-premium has scroll-behavior:smooth, so playwright scrollTo assertions must either wait ~500ms or override with `scroll-behavior:auto !important` before reading scrollLeft. View dialog title is dynamic: 'View Vigilance Entry — {employee_name}'.",
+  "rca of the issue": "row1H state -> setRow1H(h1.offsetHeight) is called from a ResizeObserver and measure() in useEffect. On the very first measurement (or on certain re-renders) the thead’s first tr can have offsetHeight=0 because layout hasn’t completed yet, so row1H is locked at 0 and propagated to the inline CSS var. The CSS fallback `var(--vig-h1, 44px)` never fires because the variable is explicitly set to 0px. Fix is a 1-line guard around the setRow1H call."
+}

@@ -28,8 +28,8 @@ import uuid
 from datetime import datetime, date, timezone, timedelta, time as dtime
 
 from openpyxl import Workbook, load_workbook
-from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # ----------------------------------------------------------------------------
 # Constants
@@ -285,7 +285,7 @@ def daterange_iso(iso_from, iso_to):
 
 
 # ----------------------------------------------------------------------------
-# Template generation (streaming xlsx)
+# Template / export generation (premium merged 2-row headers)
 # ----------------------------------------------------------------------------
 _HDR_FONT = Font(bold=True, size=11, color="1F2937")
 _SYS_FILL = PatternFill("solid", fgColor="DCE6F1")        # attendance/system (do not edit)
@@ -293,68 +293,85 @@ _EDIT_FILL = PatternFill("solid", fgColor="FFF2CC")       # editable scalar fiel
 _BREAK_FILL = PatternFill("solid", fgColor="E2EFDA")      # break group columns
 _SUB_FILL = PatternFill("solid", fgColor="F2F2F2")
 _CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
-_THIN = Side(style="thin", color="D0D0D0")
+_THIN = Side(style="thin", color="B7C2D0")
 _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 
 
-def _hcell(ws, value, fill):
-    c = WriteOnlyCell(ws, value=value)
-    c.font = _HDR_FONT
-    c.fill = fill
-    c.alignment = _CENTER
-    c.border = _BORDER
-    return c
+def _style_hdr(cell, fill):
+    cell.font = _HDR_FONT
+    cell.fill = fill
+    cell.alignment = _CENTER
+    cell.border = _BORDER
+
+
+def _write_grouped_header(ws, specs):
+    """Write a premium 2-row header from an ordered list of column specs.
+
+    specs: list of (kind, label, fill) where kind is:
+      * 'scalar' -> ONE column whose label is merged VERTICALLY across both header
+                    rows (single clean block).
+      * 'group'  -> THREE columns (From/To/Total); the parent `label` is merged
+                    HORIZONTALLY across all three (one clean block), with the
+                    sub-labels in the 2nd header row.
+    Styles are applied BEFORE merging (MergedCell objects are read-only).
+    Returns the total column count.
+    """
+    col = 1
+    for kind, label, fill in specs:
+        if kind == "scalar":
+            c1 = ws.cell(row=1, column=col, value=label)
+            c2 = ws.cell(row=2, column=col)
+            _style_hdr(c1, fill)
+            _style_hdr(c2, fill)
+            ws.merge_cells(start_row=1, start_column=col, end_row=2, end_column=col)
+            col += 1
+        else:  # group
+            for j, sub in enumerate(BREAK_SUBS):
+                pc = ws.cell(row=1, column=col + j, value=label if j == 0 else None)
+                _style_hdr(pc, fill)
+                sc = ws.cell(row=2, column=col + j, value=sub)
+                _style_hdr(sc, _SUB_FILL)
+            ws.merge_cells(start_row=1, start_column=col, end_row=1, end_column=col + len(BREAK_SUBS) - 1)
+            col += len(BREAK_SUBS)
+    return col - 1
+
+
+def _apply_widths(ws, total_cols, n_scalar):
+    widths = ([22, 28, 16, 14, 13, 13, 13, 14, 14, 18, 16][:n_scalar]
+              + [13] * max(0, n_scalar - 11)
+              + [12] * (total_cols - n_scalar))
+    for i, w in enumerate(widths[:total_cols], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[1].height = 22
+    ws.row_dimensions[2].height = 18
 
 
 def build_template_workbook(prefill_rows, break_labels=None):
-    """Return BytesIO of a styled .xlsx (write_only/streaming) with 2-row header.
+    """Return BytesIO of a styled .xlsx with a premium merged 2-row header.
 
     `prefill_rows`: list of dicts with keys name,email,team,date_display,
     punch_in,punch_out,total_hours (system columns prefilled).
     """
     break_labels = break_labels or list(DEFAULT_BREAK_LABELS)
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Vigilance")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Vigilance"
 
-    total_cols = N_FIXED + len(break_labels) * len(BREAK_SUBS)
-    # Column widths (set before append in write_only)
-    from openpyxl.utils import get_column_letter
-    widths = [22, 28, 16, 14, 13, 13, 13, 14, 14, 18, 16] + [12] * (total_cols - N_FIXED)
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
+    specs = [("scalar", label, _SYS_FILL if label in ATT_SYSTEM_COLS else _EDIT_FILL)
+             for label in FIXED_COLS]
+    specs += [("group", bl, _BREAK_FILL) for bl in break_labels]
+    total_cols = _write_grouped_header(ws, specs)
+    _apply_widths(ws, total_cols, N_FIXED)
     ws.freeze_panes = "E3"   # lock 2 header rows + Name/Email/Team/Date columns
 
-    # Header row 1
-    row1 = []
-    for idx, label in enumerate(FIXED_COLS):
-        fill = _SYS_FILL if label in ATT_SYSTEM_COLS else _EDIT_FILL
-        row1.append(_hcell(ws, label, fill))
-    for label in break_labels:
-        row1.append(_hcell(ws, label, _BREAK_FILL))
-        row1.append(_hcell(ws, None, _BREAK_FILL))
-        row1.append(_hcell(ws, None, _BREAK_FILL))
-    ws.append(row1)
-
-    # Header row 2 (sub headers)
-    row2 = []
-    for label in FIXED_COLS:
-        fill = _SYS_FILL if label in ATT_SYSTEM_COLS else _EDIT_FILL
-        row2.append(_hcell(ws, None, fill))
-    for _ in break_labels:
-        for sub in BREAK_SUBS:
-            row2.append(_hcell(ws, sub, _SUB_FILL))
-    ws.append(row2)
-
-    # Data rows — system columns prefilled as plain strings (stored as text cells)
     n_break_cells = len(break_labels) * len(BREAK_SUBS)
     for r in prefill_rows:
-        values = [
+        ws.append([
             r.get("name", ""), r.get("email", ""), r.get("team", ""),
             r.get("date_display", ""), r.get("punch_in", ""), r.get("punch_out", ""),
             r.get("total_hours", ""),
-            "", "", "", "",                      # System Login/Logout, Research, Break Hours (blank, editable)
-        ] + [""] * n_break_cells
-        ws.append(values)
+            "", "", "", "",                      # System Login/Logout, Research, Break Hours (editable)
+        ] + [""] * n_break_cells)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -805,37 +822,32 @@ async def list_vigilance_members(db):
 # Export
 # ----------------------------------------------------------------------------
 def build_export_workbook(rows, break_labels, *, admin_mode, clock_24h=False):
-    """Build a filtered-results export. Admin mode flattens per-uploader columns.
+    """Build a filtered-results export with premium merged 2-row headers.
 
     clock_24h: when True (Vigilance-user download), editable clock fields
     (System Login/Logout + break From/To) are rendered in 24-hour 'HH:MM'.
-    Punch-In/Out (attendance-derived) ALWAYS stay 12-hour; durations stay HH:MM.
+    Punch-In/Out (attendance-derived) ALWAYS stay 12-hour; durations stay clean.
     """
     fc = (lambda v: to_24h(v)) if clock_24h else (lambda v: v or "")
-    wb = Workbook(write_only=True)
-    ws = wb.create_sheet("Vigilance Report")
-    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Vigilance Report"
 
     if admin_mode:
-        # Collect uploader names across rows for stable columns
         uploaders = []
         for r in rows:
             for s in r.get("submissions", []):
                 if s.get("uploaded_by_name") not in uploaders:
                     uploaders.append(s.get("uploaded_by_name"))
         base = ["Name", "Email-id", "Team", "Department", "Date", "Punch-In", "Punch-Out", "Total Hours"]
-        header1 = list(base)
-        header2 = [""] * len(base)
         per_uploader_fields = ["System Login", "System Logout", "Total Research Hours", "Total Break Hours"]
+        specs = [("scalar", b, _SYS_FILL) for b in base]
         for up in uploaders:
-            for f in per_uploader_fields:
-                header1.append(f"{f} ({up})")
-                header2.append("")
-            for bl in break_labels:
-                for sub in BREAK_SUBS:
-                    header1.append(f"{bl} {sub} ({up})")
-                    header2.append("")
-        ws.append([_hcell(ws, h, _SYS_FILL) for h in header1])
+            specs += [("scalar", f"{f} ({up})", _EDIT_FILL) for f in per_uploader_fields]
+            specs += [("group", f"{bl} ({up})", _BREAK_FILL) for bl in break_labels]
+        total_cols = _write_grouped_header(ws, specs)
+        _apply_widths(ws, total_cols, len(base))
+        ws.freeze_panes = "F3"
         for r in rows:
             sub_by_up = {s.get("uploaded_by_name"): s for s in r.get("submissions", [])}
             vals = [
@@ -856,11 +868,11 @@ def build_export_workbook(rows, break_labels, *, admin_mode, clock_24h=False):
     else:
         base = ["Name", "Email-id", "Team", "Date", "Punch-In", "Punch-Out", "Total Hours",
                 "System Login", "System Logout", "Total Research Hours", "Total Break Hours"]
-        header1 = list(base)
-        for bl in break_labels:
-            for sub in BREAK_SUBS:
-                header1.append(f"{bl} {sub}")
-        ws.append([_hcell(ws, h, _SYS_FILL) for h in header1])
+        specs = [("scalar", b, _SYS_FILL if b in ATT_SYSTEM_COLS else _EDIT_FILL) for b in base]
+        specs += [("group", bl, _BREAK_FILL) for bl in break_labels]
+        total_cols = _write_grouped_header(ws, specs)
+        _apply_widths(ws, total_cols, len(base))
+        ws.freeze_panes = "E3"
         for r in rows:
             vals = [
                 r.get("target_employee_name", ""), r.get("target_email", ""),
