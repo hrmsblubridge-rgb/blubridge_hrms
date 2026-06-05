@@ -5,6 +5,27 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (NEW MODULE: Operational Vigilance Report) ✅ TESTED
+
+**Additive module** — zero changes to attendance/payroll/leave/employee engines. Backend 19/19 pytest + frontend 100% (testing iteration_48).
+
+**Access (dynamic, no hardcoding):** Admin roles (hr/system_admin/office_admin) OR employees with `designation == "Vigilance"`. Resolved live via `GET /api/vigilance/access`. Nav appears in admin sidebar (always) and employee sidebar (only for Vigilance employees). Non-vigilance employees see an "Access Restricted" screen.
+
+**Architecture:**
+- Backend package `backend/vigilance/` (`service.py` + `router.py`), mounted via `get_vigilance_router(db, get_current_user)` in server.py right after `app.include_router(api_router)` (factory pattern → no import cycle). Unique index ensured at startup.
+- New Mongo collection `vigilance_entries`: one doc per **(target_employee_id + date + uploaded_by_employee_id)** (unique → upsert). Breaks stored as a **dynamic array** `[{label, from, to, total}]` → unlimited Extra-BreakN, no hardcoded columns.
+- System columns (Name/Email/Team/Punch-In/Punch-Out/Total Hours) resolved LIVE from existing attendance (SSOT, never mutated). System Login/Logout + Research/Break Hours + breaks are vigilance-entered/editable.
+- Date stored ISO; displayed DD-MMM-YYYY. Clock times HH:MM AM/PM; durations HH:MM. Strict upload validation (all-or-nothing, row-level errors, 422).
+
+**Endpoints (`/api/vigilance`):** access, filters-meta, template (streaming prefilled xlsx, date-aware active employees × days), upload (dynamic break parse + validate + upsert), entries (GET admin-merged / vigilance-own; POST create), entries/{id} (PUT/DELETE with ownership), export (xlsx, filter-aware), attendance-integration (admin).
+
+**Frontend:** `pages/OperationalVigilance.js` (one page, both modes), routes `/vigilance` (admin) + `/employee/vigilance` (employee). Admin merged view = ONE row per employee/day with per-uploader column groups, sticky Name/Date + horizontal scroll (Payroll-style). Vigilance own view shows only own rows (strict isolation). Filters apply only on Filter button. Admin **Attendance** page now shows dynamic "Total Research Hrs / Total Break Hrs (uploader)" columns after Total Hours.
+
+**Test accounts:** vigilance `madhan.s`/`Vigil@123`, `dinesh.t`/`Vigil@123` (passwords set for testing); admin `admin`/`HrAdmin786$`. Backend regression suite: `/app/backend/tests/test_vigilance_flow.py`.
+
+---
+
+
 ## Latest Update — 2026-06-05 (P0 — Admin login "Invalid credentials" — pinned permanently)
 
 **User report (critical, repeated):** `admin` login fails with "Invalid credentials"; demanded the login be fixed AND never changed/reverted again. User's intended password: `HrAdmin786$`.

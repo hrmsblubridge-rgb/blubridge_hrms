@@ -424,8 +424,8 @@ function AdminMergedTable({ data, onEdit, onDelete }) {
             ))}
           </tr>
           <tr className="bg-slate-50 text-[11px] text-slate-500">
-            {uploaders.map((u, idx) => (
-              <FragmentCols key={u.employee_id} labels={labels} firstClass="border-l-2 border-slate-300" />
+            {uploaders.map((u) => (
+              <FragmentCols key={u.employee_id} ukey={u.employee_id} labels={labels} firstClass="border-l-2 border-slate-300" />
             ))}
           </tr>
         </thead>
@@ -440,11 +440,11 @@ function AdminMergedTable({ data, onEdit, onDelete }) {
                 <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
                 <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
                 <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.total_hours || '—'}</td>
-                {uploaders.map((u, idx) => {
+                {uploaders.map((u) => {
                   const s = subByUp[u.employee_id];
                   const bmap = s ? Object.fromEntries((s.breaks || []).map(b => [b.label, b])) : {};
                   return (
-                    <FragmentData key={u.employee_id} s={s} bmap={bmap} labels={labels} firstClass="border-l-2 border-slate-200"
+                    <FragmentData key={u.employee_id} ukey={u.employee_id} s={s} bmap={bmap} labels={labels} firstClass="border-l-2 border-slate-200"
                       onEdit={() => s && onEdit(s, row)} onDelete={() => s && onDelete(s.id)} />
                   );
                 })}
@@ -457,7 +457,7 @@ function AdminMergedTable({ data, onEdit, onDelete }) {
   );
 }
 
-function FragmentCols({ labels, firstClass }) {
+function FragmentCols({ labels, firstClass, ukey }) {
   return (
     <>
       <th className={`px-2 py-1.5 text-center ${firstClass}`}>Sys In</th>
@@ -465,19 +465,21 @@ function FragmentCols({ labels, firstClass }) {
       <th className="px-2 py-1.5 text-center">Research</th>
       <th className="px-2 py-1.5 text-center">Break</th>
       {labels.map(l => ['From', 'To', 'Total'].map(s => (
-        <th key={l + s} className="px-2 py-1.5 text-center whitespace-nowrap">{l.replace('Break', 'Brk')} {s}</th>
+        <th key={`${ukey}-${l}-${s}`} className="px-2 py-1.5 text-center whitespace-nowrap">{l.replace('Break', 'Brk')} {s}</th>
       )))}
     </>
   );
 }
 
-function FragmentData({ s, bmap, labels, firstClass, onEdit, onDelete }) {
+function FragmentData({ s, bmap, labels, firstClass, onEdit, onDelete, ukey }) {
   const cell = (v, extra = '') => <td className={`px-2 py-2.5 text-center text-slate-700 whitespace-nowrap ${extra}`}>{v || '—'}</td>;
   if (!s) {
     return (
       <>
         {cell('', firstClass)}{cell('')}{cell('')}{cell('')}
-        {labels.map(l => ['from', 'to', 'total'].map(k => cell('', undefined && k)))}
+        {labels.map(l => ['from', 'to', 'total'].map(k => (
+          <td key={`${ukey}-${l}-${k}`} className="px-2 py-2.5 text-center text-slate-400 whitespace-nowrap">—</td>
+        )))}
       </>
     );
   }
@@ -495,7 +497,9 @@ function FragmentData({ s, bmap, labels, firstClass, onEdit, onDelete }) {
       {cell(s.system_logout)}{cell(s.total_research_hours)}{cell(s.total_break_hours)}
       {labels.map(l => {
         const b = bmap[l] || {};
-        return ['from', 'to', 'total'].map(k => cell(b[k]));
+        return ['from', 'to', 'total'].map(k => (
+          <td key={`${ukey}-${l}-${k}`} className="px-2 py-2.5 text-center text-slate-700 whitespace-nowrap">{b[k] || '—'}</td>
+        ));
       })}
     </>
   );
