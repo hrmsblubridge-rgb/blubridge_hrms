@@ -5,6 +5,52 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (P0 — Verification "View" STILL blank — ACTUAL ROOT CAUSE)
+
+### Why the 2026-06-04 fix only got us halfway
+The backend streaming proxy added on 2026-06-04 correctly serves the PDF inline — verified end-to-end **from inside a real browser context**:
+```
+secureUrlStatus     200
+streamFetchStatus   200
+Content-Type        application/pdf
+Content-Disposition inline; filename="Aadhaar.pdf"
+streamBytes         892,194
+magic bytes         %PDF
+```
+The bytes were arriving, the headers were perfect — but the user still saw a blank tab. The bug was therefore **not on the backend at all**; the fix on 2026-06-04 was necessary but not sufficient.
+
+### True Root Cause — frontend `window.open` returning `null`
+Direct in-browser probe of `documentAccess.js`'s view flow returned:
+```
+window.open('about:blank', '_blank', 'noopener,noreferrer')  →  NULL
+window.open('about:blank', '_blank')                          →  valid Window
+```
+The previous implementation opened the placeholder tab **with** `noopener,noreferrer`. Per the HTML spec, when those flags are set, `window.open()` returns `null` **even though it still opens a tab**. The guard `if (!newTab) { toast.error('Popup blocked'); return; }` therefore tripped on EVERY view click, aborting before `newTab.location.href = url` ever ran. The new tab was left stranded at `about:blank` — **that** was the blank page the user kept seeing.
+
+Download never hit this because it uses an anchor `<a>` with `download` attribute, not `window.open()`.
+
+### Permanent Fix
+`/app/frontend/src/lib/documentAccess.js`:
+- Open the placeholder tab without `noopener,noreferrer` so `window.open` returns a real `Window` reference: `window.open('about:blank', '_blank')`.
+- After the signed URL resolves, navigate via `newTab.location.replace(url)` (avoids leaving `about:blank` in back-history) and then explicitly `newTab.opener = null` as defence-in-depth (functionally equivalent to `noopener` minus the null-return footgun).
+- Write a tiny "Loading document…" placeholder into the new tab so the user sees feedback during the (~100ms) signed URL fetch instead of stark white.
+- Extensive code comment explains why `noopener,noreferrer` must NEVER be added back.
+
+### Backend / Download: untouched
+- The streaming proxy from 2026-06-04 is the right contract — kept as-is.
+- Download path (Cloudinary signed `attachment=1` URL) is byte-for-byte unchanged.
+- DB schema, Cloudinary upload flow, Verification approval/rejection, security model: untouched.
+
+### Validation
+- In-browser fetch of stream URL returns valid `%PDF` bytes with `Content-Type: application/pdf` + `Content-Disposition: inline` ✓
+- Post-fix `window.open` returns a valid `Window` reference (`openedOK: true`) ✓
+- `backend/tests/test_documents_secure_url.py` — **11/11 passing**
+
+### Files Changed
+- `/app/frontend/src/lib/documentAccess.js` — removed `noopener,noreferrer` from the placeholder `window.open`; navigate via `location.replace`; sever `opener` post-nav for defence-in-depth; added "Loading…" placeholder.
+
+---
+
 ## Latest Update — 2026-06-04 (P0 — Verification Document View renders BLANK in new tab)
 
 ### Issue

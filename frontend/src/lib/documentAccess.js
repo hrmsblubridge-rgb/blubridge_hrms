@@ -84,26 +84,60 @@ export async function fetchSignedDocumentUrl({
  * gesture, then redirects it once the signed URL resolves. We NEVER
  * navigate the current tab — that would yank the admin out of the
  * Verification / Employees screen they were working on, losing context.
+ *
+ * IMPORTANT — do NOT add `noopener,noreferrer` to the FIRST window.open()
+ * below. Per spec, when those flags are present `window.open()` returns
+ * `null` even though it DOES open a tab — Chrome/Edge/Firefox all behave
+ * this way. The `null` return then trips the `if (!newTab)` guard, so
+ * `newTab.location.href = url` never runs and the user is left staring at
+ * the placeholder `about:blank` tab forever — the exact "View renders
+ * blank" P0 we keep hitting. The tab is same-origin (we navigate it to a
+ * URL on our own backend) so we don't need `noopener` for security; we
+ * explicitly set `opener = null` after the navigation as a defence-in-depth
+ * measure (functionally equivalent to `noopener` minus the null-return
+ * footgun).
  */
 export async function viewSecureDocument({
   employeeId, documentType, source = 'onboarding',
 }) {
   // 1) Open the placeholder tab on the user gesture so popup blockers allow it.
-  const newTab = window.open('about:blank', '_blank', 'noopener,noreferrer');
+  //    DO NOT pass `noopener,noreferrer` here — see comment above.
+  const newTab = window.open('about:blank', '_blank');
   if (!newTab) {
-    // Popup was blocked BEFORE we could even fetch the signed URL.
-    // Tell the user how to fix it — do NOT hijack the current tab.
+    // A real popup blocker (no tab opened at all).
     toast.error('Popup blocked — please allow popups for this site to view documents');
     return;
   }
+  // Optional: show a tiny "Loading…" message so the user sees something
+  // instead of a stark white tab while the signed URL fetch is in flight.
+  try {
+    newTab.document.write(
+      '<!doctype html><html><head><title>Loading document…</title>' +
+      '<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;' +
+      'justify-content:center;height:100vh;margin:0;color:#475569;background:#f8fafc}' +
+      '</style></head><body>Loading document…</body></html>'
+    );
+    newTab.document.close();
+  } catch (_) { /* best-effort */ }
+
   const url = await fetchSignedDocumentUrl({ employeeId, documentType, disposition: 'inline', source });
   if (!url) {
     // No silent fallback to the raw URL (guaranteed 401 for PDFs). Close
     // the placeholder tab; fetchSignedDocumentUrl already toasted the error.
-    newTab.close();
+    try { newTab.close(); } catch (_) { /* ignore */ }
     return;
   }
-  newTab.location.href = url;
+  // Navigate the tab to the inline-stream URL. Using `location.replace` so
+  // the about:blank entry does not pollute the back-button history.
+  try {
+    newTab.location.replace(url);
+  } catch (_) {
+    // Fallback — assigning location is sometimes blocked when the tab is
+    // marked cross-origin by an extension. Last-resort: navigate via href.
+    newTab.location.href = url;
+  }
+  // Defence in depth: sever opener so the loaded document can't navigate us.
+  try { newTab.opener = null; } catch (_) { /* ignore */ }
 }
 
 /**
