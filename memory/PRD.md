@@ -5,6 +5,20 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Attendance ↔ Vigilance — per-member Research/Break columns always visible) ✅ TESTED
+
+**User report:** The Attendance module's "Total Research Hrs / Total Break Hrs" columns (per vigilance member, e.g. Dinesh T, Madhan S) disappeared. Cause: the prior cleanup deleted the only (test) vigilance entries, and the columns were derived from *uploaders-who-had-data*, so an empty DB hid them. **Requirement (confirmed):** columns must ALWAYS render — one Research + one Break column per **Vigilance-designation employee** — showing "-" when no data, live-connected to the vigilance module, matched by employee+date. Do not re-create data (team uploads real data).
+
+**Fix:**
+- **`backend/vigilance/service.py`** — `attendance_integration_map` now includes `uploaded_by_employee_id` per entry; new `list_vigilance_members(db)` returns ALL `designation == "Vigilance"` employees (sorted).
+- **`backend/vigilance/router.py`** — `/api/vigilance/attendance-integration` now returns `{map, vigilance_members}`.
+- **`frontend/src/pages/Attendance.js`** — columns built from `vigilance_members` (always visible), values matched by `uploaded_by_employee_id` + employee + date; `-` when absent.
+
+**Verified:** members list returned even for an empty date range; ephemeral upload reflected live in the map then cleaned (DB back to 0); UI screenshot shows 4 columns (Dinesh T + Madhan S × Research/Break) all "-". `test_vigilance_flow.py` integration tests pass (added `uploaded_by_employee_id` assertion + `members_always_listed`).
+
+---
+
+
 ## Latest Update — 2026-06-05 (Vigilance — ALWAYS-ON system base grid + merge) ✅ TESTED
 
 **User requirement:** The Vigilance table must ALWAYS render the system-prefilled attendance grid (default range Today→Today) even when NO vigilance sheet has been uploaded. Vigilance data merges ON TOP by (employee+date). Remove the "No vigilance records uploaded yet" empty state. Mandatory columns always visible: Name, Email-id, Team, Date, Punch-In, Punch-Out, Total Hours. Role isolation preserved (admin = all uploaders merged; vigilance user = own data only, but system columns for everyone). No side effects to upload/export/filters/CRUD/attendance integration.

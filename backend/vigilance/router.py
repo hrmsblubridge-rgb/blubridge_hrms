@@ -296,7 +296,8 @@ def get_vigilance_router(db, get_current_user):
         if not iso_from or not iso_to:
             raise HTTPException(status_code=400, detail="from_date and to_date required.")
         data = await svc.attendance_integration_map(db, [], iso_from, iso_to)
-        return {"map": data}
+        members = await svc.list_vigilance_members(db)
+        return {"map": data, "vigilance_members": members}
 
     return router
 

@@ -358,6 +358,24 @@ class TestExportAndIntegration:
         # At least one key with 2 uploaders
         any_two = any(len(v) >= 2 for v in j["map"].values())
         assert any_two
+        # map entries carry uploaded_by_employee_id (for stable column matching)
+        for v in j["map"].values():
+            for sub in v:
+                assert sub.get("uploaded_by_employee_id")
+
+    def test_attendance_integration_members_always_listed(self, tokens):
+        """vigilance_members must be returned even with NO vigilance data in range
+        so the per-member Research/Break columns are always visible in Attendance."""
+        r = requests.get(f"{BASE_URL}/api/vigilance/attendance-integration",
+                         params={"from_date": "01-Jan-2020", "to_date": "02-Jan-2020"},
+                         headers=_hdr(tokens["admin"]))
+        assert r.status_code == 200
+        j = r.json()
+        assert "vigilance_members" in j
+        names = {m["name"] for m in j["vigilance_members"]}
+        assert {"Madhan S", "Dinesh T"} <= names, "all Vigilance-designation employees must be listed"
+        for m in j["vigilance_members"]:
+            assert m.get("employee_id") and m.get("name")
 
     def test_attendance_integration_blocks_vig(self, tokens):
         r = requests.get(f"{BASE_URL}/api/vigilance/attendance-integration",

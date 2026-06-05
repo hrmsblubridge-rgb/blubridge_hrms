@@ -732,7 +732,8 @@ def _ordered_break_labels(labels):
 
 
 async def attendance_integration_map(db, employee_ids, iso_from, iso_to):
-    """For admin Attendance module: (emp_id,iso_date) -> [{uploaded_by_name, research, break}].
+    """For admin Attendance module: (emp_id,iso_date) -> [{uploaded_by_employee_id,
+    uploaded_by_name, research, break}].
 
     Real-time read of vigilance_entries (no cache). Frontend-only consumer.
     """
@@ -743,11 +744,28 @@ async def attendance_integration_map(db, employee_ids, iso_from, iso_to):
     async for d in db.vigilance_entries.find(q, {"_id": 0}):
         k = f"{d['target_employee_id']}__{d['date']}"
         out.setdefault(k, []).append({
+            "uploaded_by_employee_id": d.get("uploaded_by_employee_id"),
             "uploaded_by_name": d.get("uploaded_by_name"),
             "total_research_hours": d.get("total_research_hours", ""),
             "total_break_hours": d.get("total_break_hours", ""),
         })
     return out
+
+
+async def list_vigilance_members(db):
+    """All employees whose designation is 'Vigilance' — the stable column set for
+    the Attendance integration (columns always render, even with no data yet)."""
+    emps = await db.employees.find(
+        {}, {"_id": 0, "id": 1, "full_name": 1, "designation": 1,
+             "inactive_date": 1, "employee_status": 1}
+    ).to_list(100000)
+    members = [
+        {"employee_id": e["id"], "name": e.get("full_name")}
+        for e in emps
+        if (e.get("designation") or "").strip().lower() == VIGILANCE_DESIGNATION
+    ]
+    members.sort(key=lambda m: (m["name"] or "").lower())
+    return members
 
 
 # ----------------------------------------------------------------------------
