@@ -369,8 +369,8 @@ const Attendance = () => {
                   <SortableTh field="emp_name" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Employee</SortableTh>
                   <SortableTh field="team" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Team</SortableTh>
                   <SortableTh field="date" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Date</SortableTh>
-                  <SortableTh field="check_in" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Check-In</SortableTh>
-                  <SortableTh field="check_out" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Check-Out</SortableTh>
+                  <SortableTh field="check_in" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>In</SortableTh>
+                  <SortableTh field="check_out" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Out</SortableTh>
                   <SortableTh field="total_hours" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Total Hours</SortableTh>
                   {vigUploaders.flatMap(name => ([
                     <th key={name + '-r'} className="px-4 py-3 text-left text-xs font-semibold text-emerald-700 whitespace-nowrap bg-emerald-50/60" data-testid="vig-att-research-col">Total Research Hrs<br /><span className="font-normal text-emerald-600">({name})</span></th>,
