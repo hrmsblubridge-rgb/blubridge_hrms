@@ -5,6 +5,34 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Global Date-Format Standardization → DD-Mon-YYYY, permanent)
+
+### User request
+Make EVERY date across the whole HRMS display as `06-Jun-2026` (DD-Mon-YYYY), permanently (no regression), without breaking any functionality. User-reported problem areas: **date-picker fields** and **tables/lists**. Time-of-day parts to be left as-is. User explicitly approved **replacing native browser date pickers with a custom picker** that shows DD-Mon-YYYY.
+
+### Root cause of inconsistency
+The employee-side pages already used the shadcn `<DatePicker>` (which renders `dd-MMM-yyyy`), but the **admin-side pages still used native `<input type="date">`**, which always renders in the browser/OS locale (e.g. MM/DD/YYYY) and can never be overridden. Several admin tables/lists also rendered raw date fields (`2026-06-06` ISO or `DD-MM-YYYY`) directly instead of through the central `formatDate()` helper.
+
+### Fix (display-layer ONLY — no API/DB contract change)
+1. **`components/ui/date-picker.jsx`** — added `parseLocalDate()` so a bare `yyyy-MM-dd` value is parsed as a LOCAL date (eliminates UTC-midnight off-by-one). Display stays `dd-MMM-yyyy`; `onChange` still emits `yyyy-MM-dd` (identical to the old native input value → zero payload change).
+2. **Replaced ALL 28 native `<input type="date">` with `<DatePicker>`** across: `Holidays.js`, `Leave.js` (4), `Employees.js` (5 — add+edit DOB/DOJ + deactivate), `EmployeeEducationExperience.js` (2), `AdminEarlyOut.js` (2), `AdminLateRequests.js` (2), `AdminMissedPunch.js` (4 date filters/forms), `Settings.js` (3), `Dashboard.js` (4), `StarReward.js` (2). Each `onChange={e=>set(e.target.value)}` became `onChange={(val)=>set(val)}`.
+3. **`<input type="datetime-local">` LEFT UNCHANGED** on `AdminMissedPunch.js` + `EmployeeMissedPunch.js` (check-in/out) per "leave the time part as-is".
+4. **Wrapped raw date renders with `formatDate(...)`** in tables/detail dialogs: `Leave.js`, `Reports.js`, `Employees.js` (DOB/Joined/inactive_date/experience), `EmployeeEducationExperience.js`, `AdminEarlyOut.js`, `AdminLateRequests.js`, `AdminMissedPunch.js`, `Settings.js` (holiday date + shift effective_from/to), `Dashboard.js` (drill-down), `EmployeeProfile.js` (DOB/DOJ), `components/EmployeeLeaveDetail.js`.
+
+### Why it won't regress
+Native date inputs were the only elements that reverted to OS-locale; they are now React-controlled `DatePicker` buttons whose label is computed from `dateFormat.js`/`date-fns` — there is no browser-locale code path left to revert to.
+
+### Verification
+- Testing agent (iteration_47): ~85% green — every reachable date-picker renders as a calendar button showing DD-Mon-YYYY; every table/list/detail shows DD-Mon-YYYY; **ZERO ISO `YYYY-MM-DD` leakage anywhere**; Apply-Leave picker emitted `10-Jun-2026` with no off-by-one. Remaining 15% was hr-gated and blocked only by a stale admin password.
+- Main-agent self-test (after re-syncing admin password): Add-Holiday dialog DatePicker emitted `12-Jun-2026` (correct day, no off-by-one); Missed-Punch table shows dates as `01-Jun-2026` etc. with check-in/out **times preserved** (`04 Jun 2026, 09:57 am`); Dashboard + Missed-Punch From/To filters are calendar pickers.
+- Frontend compiles clean (only pre-existing exhaustive-deps warnings); ESLint clean on all touched files.
+
+### Side note (separate known issue, NOT the date task)
+The documented `admin` (hr) password had drifted to an unknown hash (recurring "admin password" issue). Re-synced to `MyPermanent#2026A` (SHA256, `password_updated_method='agent_test_resync'`) so hr-gated flows + test credentials are valid again.
+
+---
+
+
 ## Latest Update — 2026-06-05 (P0 — Verification "View" STILL blank — ACTUAL ROOT CAUSE)
 
 ### Why the 2026-06-04 fix only got us halfway

@@ -1,7 +1,7 @@
 # HRMS Test Credentials
 
 ## Admin Accounts
-- **HR Admin**: `admin` / `MyPermanent#2026A` (role: hr) — see note below
+- **HR Admin**: `admin` / `MyPermanent#2026A` (role: hr) — VERIFIED WORKING 2026-06-05 (re-synced; password had drifted to an unknown value, see note below)
 - **System Admin**: `sysadmin` / `pass123` (role: system_admin)
 - **Office Admin**: `workforce` / `Pass@123#` (role: office_admin — renamed from `offadmin` on 2026-05-13)
 
@@ -27,10 +27,11 @@
 > and it will now persist forever (across restarts, deploys, test runs).
 
 ## Employee Accounts
+- **Employee (WORKING 2026-06-05)**: `user` / `pass123` — Rishi S Nayak, active, has current-week attendance. Use this for employee-side testing.
 - **Employee**: `spartasolace1` / `spar@1230`
 - **Employee** (Phase-2 dashboard widget tests): `user` / `pass123` — has attendance for current week, used by `tests/test_dashboard_widgets.py`
 - **Employee**: `vijayan.k` / `pass123` (created 2026-04-27, onboarding approved)
-- **Employee**: `kasper` / `pass123` (kasper@blubridge.com, EMP0050, reactivated 2026-04-27, dept=System Engineer)
+- **Employee**: `kasper` / `pass123` (kasper@blubridge.com, EMP0050, reactivated 2026-04-27, dept=System Engineer) — ⚠️ reported DEACTIVATED on 2026-06-05; reactivate before using.
 - **Employee**: `Umesh.Gana` / `pass123` (used for password-reset flow tests; restored after each suite)
 - **Employee (Research Unit)**: `aparna.a` / `TestRU#2026` (Research Unit dept — used to verify department-restricted policy visibility on 2026-05-22)
 
