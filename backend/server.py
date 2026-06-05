@@ -3823,6 +3823,7 @@ async def reset_password(payload: ResetPasswordRequest):
 async def get_employees(
     department: Optional[str] = None,
     team: Optional[str] = None,
+    designation: Optional[str] = None,
     status: Optional[str] = None,
     employment_type: Optional[str] = None,
     tier_level: Optional[str] = None,
@@ -3847,6 +3848,8 @@ async def get_employees(
         query["department"] = department
     if team and team != "All":
         query["team"] = team
+    if designation and designation != "All":
+        query["designation"] = designation
     if status and status != "All":
         query["employee_status"] = status
     if employment_type and employment_type != "All":

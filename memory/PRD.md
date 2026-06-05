@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-05 (Employee module — Designation filter added)
+
+**User request:** Add a "Designation"-wise filter on the Employee Management page (it was missing from the filter row that already had Department/Team/Status/Inactive Type).
+
+**Implementation (additive only):**
+- **Backend `GET /api/employees`** — added `designation: Optional[str]` query param; when provided and != "All", applies exact match `query["designation"] = designation` (same pattern as Department/Team).
+- **Frontend `Employees.js`** — added `designation: 'All'` to filters state; added a **Designation** `<Select>` (data-testid `filter-designation`) between Team and Status, populated from the live `designationOptions` (`/api/settings/designations`, sorted A→Z, "All" default); passed the param in BOTH the list fetch and the Export params (so export honours the filter); added `filters.designation` to the fetch `useEffect` deps; added to the Reset handler.
+
+**Verification:** Backend curl — filtering on "AI Research - Intern" returned 28 of 108 employees, ALL exact-matching ✓. Frontend — dropdown renders (18 options), selection persists and triggers the server-side reload ✓. ESLint clean.
+
+---
+
+
 ## Latest Update — 2026-06-05 (Global Date-Format Standardization → DD-Mon-YYYY, permanent)
 
 ### User request

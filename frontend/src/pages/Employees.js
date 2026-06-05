@@ -145,6 +145,7 @@ const Employees = () => {
     search: initialSearch,
     department: 'All',
     team: 'All',
+    designation: 'All',
     status: 'All',
     employment_type: 'All',
     tier_level: 'All',
@@ -296,6 +297,7 @@ const Employees = () => {
         ...(filters.search && { search: filters.search }),
         ...(filters.department !== 'All' && { department: filters.department }),
         ...(filters.team !== 'All' && { team: filters.team }),
+        ...(filters.designation !== 'All' && { designation: filters.designation }),
         ...(filters.status !== 'All' && { status: filters.status }),
         ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
         ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
@@ -331,11 +333,11 @@ const Employees = () => {
 
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
   useEffect(() => { fetchSettingsShifts(); }, [fetchSettingsShifts]);
-  useEffect(() => { fetchData(); }, [pagination.page, pagination.limit, filters.department, filters.team, filters.status, inactiveTypeFilter]);
+  useEffect(() => { fetchData(); }, [pagination.page, pagination.limit, filters.department, filters.team, filters.designation, filters.status, inactiveTypeFilter]);
 
   const handleSearch = () => { setPagination(prev => ({ ...prev, page: 1 })); fetchData(); };
   const handleReset = () => {
-    setFilters({ search: '', department: 'All', team: 'All', status: 'All', employment_type: 'All', tier_level: 'All', work_location: 'All' });
+    setFilters({ search: '', department: 'All', team: 'All', designation: 'All', status: 'All', employment_type: 'All', tier_level: 'All', work_location: 'All' });
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
@@ -840,6 +842,7 @@ const Employees = () => {
         ...(filters.search && { search: filters.search }),
         ...(filters.department !== 'All' && { department: filters.department }),
         ...(filters.team !== 'All' && { team: filters.team }),
+        ...(filters.designation !== 'All' && { designation: filters.designation }),
         ...(filters.status !== 'All' && { status: filters.status }),
         ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
         ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
@@ -1046,6 +1049,16 @@ const Employees = () => {
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
                 {teamOptions.map(team => <SelectItem key={team} value={team}>{team}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Designation</Label>
+            <Select value={filters.designation} onValueChange={(v) => setFilters({ ...filters, designation: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-designation"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {designationOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
