@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "sonner";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import Login from "./pages/Login";
@@ -87,9 +87,18 @@ const AdminRoute = ({ children }) => {
 
 const EmployeeRoute = ({ children }) => {
   const { user, needsOnboarding } = useAuth();
-  
-  // If employee needs onboarding, redirect there
-  if (user && user.role === 'employee' && needsOnboarding()) {
+  const location = useLocation();
+
+  // Vigilance-designation employees operate the Operational Vigilance module as
+  // part of their job — they must reach /employee/vigilance even when their
+  // onboarding is not yet approved. The page has its own access guard
+  // (GET /api/vigilance/access) so authorization is still enforced.
+  const isVigilanceEmployee = (user?.designation || '').toLowerCase() === 'vigilance';
+  const onVigilancePath = location.pathname.startsWith('/employee/vigilance');
+  const allowVigilanceBypass = isVigilanceEmployee && onVigilancePath;
+
+  // If employee needs onboarding, redirect there (except the vigilance bypass).
+  if (user && user.role === 'employee' && needsOnboarding() && !allowVigilanceBypass) {
     return <Navigate to="/employee/onboarding" replace />;
   }
   

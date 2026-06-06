@@ -304,7 +304,26 @@ def upload_data(tokens):
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
     r2 = requests.post(f"{BASE_URL}/api/vigilance/upload", files=files2, headers=_hdr(tokens["vig2"]))
     assert r2.status_code == 200, r2.text
-    return {"email": email, "name": name}
+
+    yield {"email": email, "name": name}
+
+    # Teardown: delete the entries this fixture created so the SHARED preview DB
+    # stays clean (the real vigilance team starts from 0 entries). Each uploader
+    # deletes its own submission for the target employee. Query the SAME date
+    # range the template/upload used (FROM_D..TO_D) — the default /entries range
+    # is Today→Today and would miss historical test dates.
+    for tok in (tokens["vig1"], tokens["vig2"]):
+        try:
+            rr = requests.get(
+                f"{BASE_URL}/api/vigilance/entries",
+                params={"from_date": FROM_D, "to_date": TO_D},
+                headers=_hdr(tok),
+            )
+            for row in rr.json().get("rows", []):
+                if str(row.get("target_email", "")).lower() == email.lower() and row.get("id"):
+                    requests.delete(f"{BASE_URL}/api/vigilance/entries/{row['id']}", headers=_hdr(tok))
+        except Exception:
+            pass
 
 
 class TestIsolationAndMerge:

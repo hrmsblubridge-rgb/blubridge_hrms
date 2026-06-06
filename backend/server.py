@@ -3376,23 +3376,39 @@ async def login(request: LoginRequest):
     # Add onboarding info + avatar for employees
     if user.get("role") == UserRole.EMPLOYEE and user.get("employee_id"):
         onboarding = await db.onboarding.find_one({"employee_id": user["employee_id"]}, {"_id": 0})
-        user_response["onboarding_status"] = onboarding.get("status") if onboarding else user.get("onboarding_status", OnboardingStatus.PENDING)
+        # ACCESS gating uses the USER record's onboarding_status (the granted-access
+        # truth, set on HR approval / bypass). The `onboarding` RECORD status is now
+        # document-DERIVED (for the HR Verification module) and must NOT gate login —
+        # otherwise correcting a stale "approved" record would lock the employee out.
+        user_response["onboarding_status"] = (
+            user.get("onboarding_status")
+            or (onboarding.get("status") if onboarding else None)
+            or OnboardingStatus.PENDING
+        )
         user_response["is_first_login"] = user.get("is_first_login", True)
         user_response["onboarding_completed"] = user_response["onboarding_status"] == OnboardingStatus.APPROVED
-        emp = await db.employees.find_one({"id": user["employee_id"]}, {"_id": 0, "avatar": 1})
-        if emp and emp.get("avatar"):
-            user_response["avatar"] = emp["avatar"]
+        emp = await db.employees.find_one({"id": user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1})
+        if emp:
+            if emp.get("avatar"):
+                user_response["avatar"] = emp["avatar"]
+            user_response["designation"] = emp.get("designation")
     
     return {"token": token, "user": user_response}
 
 @api_router.get("/auth/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
     out = {k: v for k, v in current_user.items() if k != "password_hash"}
-    # Enrich with employee avatar so sidebar/header can display the photo.
+    # Enrich with employee avatar + designation so sidebar/header + route guards
+    # (e.g. the Vigilance module access exception) work after a page refresh.
     if current_user.get("role") == UserRole.EMPLOYEE and current_user.get("employee_id"):
-        emp = await db.employees.find_one({"id": current_user["employee_id"]}, {"_id": 0, "avatar": 1})
-        if emp and emp.get("avatar"):
-            out["avatar"] = emp["avatar"]
+        emp = await db.employees.find_one({"id": current_user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1})
+        if emp:
+            if emp.get("avatar"):
+                out["avatar"] = emp["avatar"]
+            out["designation"] = emp.get("designation")
+        # ACCESS gating uses the USER record's onboarding_status (not the
+        # document-derived Verification record). Keep onboarding_completed in sync.
+        out["onboarding_completed"] = out.get("onboarding_status") == OnboardingStatus.APPROVED
     return out
 
 @api_router.put("/auth/update-profile")
