@@ -5,6 +5,21 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-06 (Vigilance Reports — full stabilization, both roles) ✅ TESTED
+
+**User request:** Urgent end-to-end test of the Vigilance Reports module from BOTH HR/Admin and Vigilance-User sides; fix all findings.
+
+**CRITICAL bug found & fixed (regression from the same-day Verification fix):** Vigilance-designation employees (and 38 other employees) were redirected to /employee/onboarding and could NOT reach /employee/vigilance. ROOT CAUSE: login (`server.py` ~3379) + needsOnboarding gated ACCESS on the document-DERIVED `onboarding` record status (which the Verification self-heal had just corrected) instead of the USER record's `onboarding_status` (the granted-access truth). Two-part fix:
+- **Backend** — `/api/auth/login` + `/api/auth/me` now gate access on the USER record's `onboarding_status` (never the derived Verification record) and expose `employee.designation`. This restored dashboard access for 38 healed employees + the vigilance users.
+- **Frontend** — `App.js` `EmployeeRoute` adds a scoped bypass: vigilance-designation employees reach `/employee/vigilance` even when onboarding isn't approved (the page's own `GET /api/vigilance/access` guard still enforces authorization).
+
+**Also fixed:** `test_vigilance_flow.py::upload_data` fixture now has a teardown (queries the FROM_D..TO_D range and deletes its own uploads) → the shared preview DB stays at **0 stray vigilance entries** after every run (was leaking 2).
+
+**Verified (testing agent iteration_51, both roles, 100%):** madhan.s (onboarding=rejected) & dinesh.t (approved) both mount the base grid (50 rows); CRUD persists `08:15:30` exactly; conditional delete (trash only after an entry exists); **data isolation** — dinesh cannot see/edit madhan's entries, cross-user PUT/DELETE → 403; admin merged per-uploader view; template download 200 (filter-aware), From>To → 400, missing dates → 422; export 200; non-vigilance `user` still blocked (vigilance-no-access). Backend `test_vigilance_flow.py` **30/30 pass**, DB clean. DialogDescription a11y warning resolved. Vigilance test users `madhan.s`/`dinesh.t` re-synced to `Vigil@123` (passwords had drifted again).
+
+---
+
+
 ## Latest Update — 2026-06-06 (P0 — Verification status logic bug — derive from documents) ✅ TESTED
 
 **Bug:** Employees with ZERO uploaded onboarding documents were shown/stored as **"Approved"** in the Verification module (27 such records found). ROOT CAUSE: the now-expired skip-onboarding bypass window (`should_skip_onboarding_now`, 08–22 May 2026, server.py ~4867) bulk-set `onboarding.status="approved"` with no docs. The `/onboarding/list` + `/onboarding/stats` endpoints returned this stored status verbatim.
