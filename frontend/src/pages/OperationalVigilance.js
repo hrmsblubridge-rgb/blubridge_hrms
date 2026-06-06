@@ -20,8 +20,11 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
 import {
+  Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
+} from '../components/ui/tooltip';
+import {
   ShieldAlert, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
-  ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText,
+  ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText, BookOpen,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -295,6 +298,16 @@ export default function OperationalVigilance() {
     }
   };
 
+  const handleUserGuide = async () => {
+    try {
+      await blobDownload(`${API}/vigilance/user-guide`, { format: 'pdf' },
+        'Vigilance_Module_User_Guide.pdf');
+      toast.success('User guide downloaded');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not download user guide');
+    }
+  };
+
   const openEdit = (submission, row) => {
     setDraft({
       id: submission.id,
@@ -458,6 +471,22 @@ export default function OperationalVigilance() {
           <Button onClick={handleExport} variant="outline" className="rounded-lg ml-auto" data-testid="vig-export-btn">
             <FileSpreadsheet className="w-4 h-4 mr-2" /> Export
           </Button>
+          {!isAdmin && (
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button onClick={handleUserGuide} variant="outline"
+                  className="rounded-lg border-[#0b1f3b]/30 text-[#0b1f3b] hover:bg-[#0b1f3b]/5"
+                  data-testid="vig-user-guide-btn">
+                  <BookOpen className="w-4 h-4 mr-2" /> Download User Guide
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Download complete Vigilance Module user guide
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          )}
           {isAdmin && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>

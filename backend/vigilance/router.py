@@ -294,7 +294,7 @@ def get_vigilance_router(db, get_current_user):
     # ------------------------------------------------------ help guide files
     @router.get("/help")
     async def help_guide(format: str = Query("docx"), current_user: dict = Depends(get_current_user)):
-        """Stream the pre-generated Vigilance Report help guide (Word or Excel)."""
+        """Stream the pre-generated Vigilance Report help guide (Word or Excel) — admin Help Guide."""
         await context(current_user)  # any admin or vigilance employee
         fmt = (format or "docx").lower()
         if fmt not in ("docx", "xlsx"):
@@ -306,10 +306,26 @@ def get_vigilance_router(db, get_current_user):
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             if fmt == "docx" else XLSX_MIME
         )
-        return FileResponse(
-            path, media_type=media,
-            filename=f"Vigilance-Report-Help-Guide.{fmt}",
+        return FileResponse(path, media_type=media, filename=f"Vigilance-Report-Help-Guide.{fmt}")
+
+    # ------------------------------------ vigilance-employee USER GUIDE (PDF/DOCX)
+    @router.get("/user-guide")
+    async def user_guide(format: str = Query("pdf"), current_user: dict = Depends(get_current_user)):
+        """Stream the step-by-step Vigilance Module USER GUIDE for vigilance employees.
+        Available to any user with vigilance access (the button is shown only to
+        non-admin Vigilance-designation users in the UI)."""
+        await context(current_user)
+        fmt = (format or "pdf").lower()
+        if fmt not in ("pdf", "docx"):
+            raise HTTPException(status_code=400, detail="format must be 'pdf' or 'docx'")
+        path = os.path.join(_DOCS_DIR, f"Vigilance_Module_User_Guide.{fmt}")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="User guide not available.")
+        media = (
+            "application/pdf" if fmt == "pdf"
+            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
+        return FileResponse(path, media_type=media, filename=f"Vigilance_Module_User_Guide.{fmt}")
 
     # ----------------------------------------- attendance module integration
     @router.get("/attendance-integration")

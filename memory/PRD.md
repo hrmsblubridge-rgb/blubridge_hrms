@@ -5,6 +5,20 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-06 (Vigilance Module — employee User Guide, vigilance-only) ✅ TESTED
+
+**Request:** A professional, beginner-friendly step-by-step "Download User Guide" for Vigilance-designation employees ONLY (not admins), covering ONLY the vigilance-employee workflow.
+
+**Delivered:**
+- **Documents** (`/app/docs/`): `Vigilance_Module_User_Guide.pdf` (primary, **10 pages**, reportlab — cover, Table of Contents with resolved page numbers, branded header/footer + page numbers, 13 sections) and `Vigilance_Module_User_Guide.docx` (fallback). Content = 13 sections (Introduction → Best Practices): access, filters, template download, every column, time-format rules (24h in → 12h shown; HH:MM/HH:MM:SS durations), filling do's/don'ts, upload, viewing, editing, export, FAQ. NO admin workflows/views/permissions. Generator: `/app/backend/scripts/generate_vigilance_user_guide.py`.
+- **Backend:** `GET /api/vigilance/user-guide?format=pdf|docx` streams the file via `FileResponse` (no runtime reportlab/docx dependency — files are committed static). Access-gated (vigilance/admin); bad format → 400, non-vigilance → 403.
+- **Frontend (`OperationalVigilance.js`):** "Download User Guide" button (BookOpen icon, navy outline styling, shadcn Tooltip "Download complete Vigilance Module user guide") next to Export, rendered ONLY for non-admin vigilance users (`{!isAdmin && ...}`). Downloads the PDF.
+
+**Verified:** vig pdf 200 (31 KB) / docx 200 (43 KB), admin 200 (endpoint), bad format 400, non-vigilance 403; UI — vigilance user sees User-Guide btn (Help Guide hidden), admin sees Help Guide (User-Guide hidden). Lint clean, 0 regression. (Note: admin "Help Guide" from the earlier task remains admin-only; the two are distinct.)
+
+---
+
+
 ## Latest Update — 2026-06-06 (Vigilance Reports — full stabilization, both roles) ✅ TESTED
 
 **User request:** Urgent end-to-end test of the Vigilance Reports module from BOTH HR/Admin and Vigilance-User sides; fix all findings.
