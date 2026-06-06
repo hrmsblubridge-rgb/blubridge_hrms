@@ -458,6 +458,7 @@ export default function OperationalVigilance() {
           <Button onClick={handleExport} variant="outline" className="rounded-lg ml-auto" data-testid="vig-export-btn">
             <FileSpreadsheet className="w-4 h-4 mr-2" /> Export
           </Button>
+          {isAdmin && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="outline" className="rounded-lg" data-testid="vig-help-btn">
@@ -473,6 +474,7 @@ export default function OperationalVigilance() {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          )}
         </div>
       </div>
 
