@@ -53,9 +53,10 @@ import {
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const STATUS_CONFIG = {
-  pending: { color: 'bg-slate-100 text-slate-600', label: 'Pending' },
-  in_progress: { color: 'bg-amber-100 text-amber-700', label: 'In Progress' },
-  under_review: { color: 'bg-blue-100 text-blue-700', label: 'Under Review' },
+  not_started: { color: 'bg-slate-100 text-slate-500', label: 'Not Started' },
+  pending: { color: 'bg-slate-100 text-slate-600', label: 'Not Started' },
+  in_progress: { color: 'bg-amber-100 text-amber-700', label: 'Pending' },
+  under_review: { color: 'bg-blue-100 text-blue-700', label: 'Pending' },
   approved: { color: 'bg-emerald-100 text-emerald-700', label: 'Approved' },
   rejected: { color: 'bg-red-100 text-red-700', label: 'Rejected' }
 };
@@ -340,9 +341,8 @@ const Verification = () => {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All Status</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="under_review">Under Review</SelectItem>
+                <SelectItem value="not_started">Not Started</SelectItem>
+                <SelectItem value="under_review">Pending</SelectItem>
                 <SelectItem value="approved">Approved</SelectItem>
                 <SelectItem value="rejected">Rejected</SelectItem>
               </SelectContent>

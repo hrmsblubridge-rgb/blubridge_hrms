@@ -5,6 +5,23 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-06 (P0 — Verification status logic bug — derive from documents) ✅ TESTED
+
+**Bug:** Employees with ZERO uploaded onboarding documents were shown/stored as **"Approved"** in the Verification module (27 such records found). ROOT CAUSE: the now-expired skip-onboarding bypass window (`should_skip_onboarding_now`, 08–22 May 2026, server.py ~4867) bulk-set `onboarding.status="approved"` with no docs. The `/onboarding/list` + `/onboarding/stats` endpoints returned this stored status verbatim.
+
+**Fix (backend, root-level — `backend/server.py`):**
+- New pure helper `derive_onboarding_status(documents)` — single source of truth deriving status PURELY from `onboarding_documents`: no activity → `not_started`; any REQUIRED doc rejected → `rejected`; all REQUIRED (Aadhaar/PAN/Education) verified → `approved`; else (uploaded/mixed) → `under_review` ("Pending").
+- New `recompute_onboarding_status(employee_id)` persists the derived value; wired into every doc-write path (self upload, admin upload, HR verify/reject, request-reupload, submit). `OnboardingRecord.status` default changed `pending` → `not_started`. Added `OnboardingStatus.NOT_STARTED`.
+- **Startup self-heal** (idempotent): re-derives & persists every onboarding record's status on boot. CRITICALLY does NOT touch `users/employees.onboarding_status` (HRMS access flags) → no employee is ever locked out; only the Verification view/stats are corrected.
+- `/onboarding/stats` + `/verification/pending-count` now report the healed buckets (`not_started`, `under_review`, `approved`, `rejected`; legacy `pending`/`in_progress` → 0).
+
+**Frontend (`pages/Verification.js`):** `STATUS_CONFIG` + status-filter dropdown updated to the 4 derived states (Not Started / Pending / Approved / Rejected).
+
+**Verified:** Data healed → **0 employees "Approved" without verified docs** (was 27). Live API: not_started=36, under_review=13, approved=20, rejected=7; completion_rate corrected 75%→26.3%. New `backend/tests/test_verification_status_logic.py` **10/10 pass** (8 pure-logic + 2 live integrity). Screenshot confirms correct badges. NOTE: pre-existing monolith lint debt in server.py (65 errors) untouched & unrelated.
+
+---
+
+
 ## Latest Update — 2026-06-06 (Global date-picker legacy nav + Vigilance header sorting) ✅ TESTED
 
 **FIX 1 — Global date picker (fast legacy date selection):** Upgraded the shared `frontend/src/components/ui/calendar.jsx` (react-day-picker v8) to `captionLayout="dropdown-buttons"` with month + year dropdowns (`fromYear=1925`, `toYear=currentYear+10`) plus the existing nav arrows. ROOT-LEVEL: every `DatePicker` / Calendar across the HRMS (DOB, DOJ, attendance/leave/report/vigilance filters, modals) inherits it automatically. Format **DD-MMM-YYYY unchanged**; existing min/max `disabled` logic, payloads, storage untouched. Verified: month select (12) + year dropdown render; '06-Jun-2026' display preserved.

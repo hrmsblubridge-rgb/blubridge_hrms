@@ -277,11 +277,12 @@ class AttendanceStatus:
 # ============== ONBOARDING ENUMS ==============
 
 class OnboardingStatus:
-    PENDING = "pending"  # Employee created, not started onboarding
-    IN_PROGRESS = "in_progress"  # Employee has started uploading docs
-    UNDER_REVIEW = "under_review"  # All docs submitted, awaiting HR review
-    APPROVED = "approved"  # HR approved, full HRMS access granted
-    REJECTED = "rejected"  # HR rejected, needs re-upload
+    NOT_STARTED = "not_started"  # No documents uploaded yet (derived)
+    PENDING = "pending"  # Employee created, not started onboarding (legacy)
+    IN_PROGRESS = "in_progress"  # Employee has started uploading docs (legacy)
+    UNDER_REVIEW = "under_review"  # Docs uploaded, awaiting HR review ("Pending")
+    APPROVED = "approved"  # All required docs verified by HR
+    REJECTED = "rejected"  # A required doc rejected, needs re-upload
 
 class DocumentStatus:
     NOT_UPLOADED = "not_uploaded"
@@ -314,6 +315,57 @@ REQUIRED_DOCUMENTS = [
     # is managed from the Employee Profile page. Old `photo` rows in
     # `onboarding_documents` are pruned on startup (see _prune_onboarding_photo_docs).
 ]
+
+
+def derive_onboarding_status(documents: list) -> str:
+    """Single source of truth for an employee's onboarding/verification status,
+    derived PURELY from their actual `onboarding_documents`. This eliminates the
+    long-standing data-integrity bug where employees with ZERO uploaded documents
+    were stored/shown as "Approved" (e.g. via the now-expired skip-onboarding
+    bypass window).
+
+    Mapping (per HR spec):
+      • No document activity at all          -> NOT_STARTED
+      • Any REQUIRED document rejected        -> REJECTED
+      • All REQUIRED documents verified       -> APPROVED
+      • Otherwise (uploaded / mixed / pending)-> UNDER_REVIEW ("Pending")
+    """
+    required_types = [d["type"] for d in REQUIRED_DOCUMENTS if d.get("required")]
+    by_type = {}
+    for d in (documents or []):
+        by_type[d.get("document_type")] = (d.get("status") or DocumentStatus.NOT_UPLOADED)
+
+    req_statuses = [by_type.get(t, DocumentStatus.NOT_UPLOADED) for t in required_types]
+    any_activity = any(
+        (d.get("status") in (DocumentStatus.UPLOADED, DocumentStatus.VERIFIED, DocumentStatus.REJECTED))
+        for d in (documents or [])
+    )
+
+    if any(s == DocumentStatus.REJECTED for s in req_statuses):
+        return OnboardingStatus.REJECTED
+    if req_statuses and all(s == DocumentStatus.VERIFIED for s in req_statuses):
+        return OnboardingStatus.APPROVED
+    if not any_activity:
+        return OnboardingStatus.NOT_STARTED
+    return OnboardingStatus.UNDER_REVIEW
+
+
+async def recompute_onboarding_status(employee_id: str) -> str:
+    """Recompute the derived onboarding status from live documents and PERSIST it
+    on the `onboarding` record so list/stat/filter queries (which read the stored
+    `status`) stay consistent. NOTE: deliberately does NOT touch
+    `users.onboarding_status` / `employees.onboarding_status` (which gate HRMS
+    access) — this only corrects the Verification view, never revokes access."""
+    if not employee_id:
+        return OnboardingStatus.NOT_STARTED
+    docs = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(50)
+    derived = derive_onboarding_status(docs)
+    await db.onboarding.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"status": derived, "updated_at": get_ist_now().isoformat()}},
+    )
+    return derived
+
 
 # ============== HOLIDAYS DATA ==============
 
@@ -1344,7 +1396,7 @@ class OnboardingRecord(BaseModel):
     department: str
     team: str
     designation: str
-    status: str = OnboardingStatus.PENDING
+    status: str = OnboardingStatus.NOT_STARTED
     documents: List[dict] = []  # List of document statuses
     submitted_at: Optional[datetime] = None
     reviewed_at: Optional[datetime] = None
@@ -10338,6 +10390,7 @@ async def get_onboarding_stats(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Permission denied")
     
     total = await db.onboarding.count_documents({})
+    not_started = await db.onboarding.count_documents({"status": OnboardingStatus.NOT_STARTED})
     pending = await db.onboarding.count_documents({"status": OnboardingStatus.PENDING})
     in_progress = await db.onboarding.count_documents({"status": OnboardingStatus.IN_PROGRESS})
     under_review = await db.onboarding.count_documents({"status": OnboardingStatus.UNDER_REVIEW})
@@ -10350,6 +10403,7 @@ async def get_onboarding_stats(current_user: dict = Depends(get_current_user)):
     
     return {
         "total_employees": total,
+        "not_started": not_started,
         "pending": pending,
         "in_progress": in_progress,
         "under_review": under_review,
@@ -10369,7 +10423,6 @@ async def get_verification_pending_count(current_user: dict = Depends(get_curren
     pending = await db.onboarding.count_documents({"status": OnboardingStatus.PENDING})
     in_progress = await db.onboarding.count_documents({"status": OnboardingStatus.IN_PROGRESS})
     return {"count": under_review + pending + in_progress}
-
 @api_router.get("/onboarding/list")
 async def get_onboarding_list(
     status: Optional[str] = None,
@@ -10528,6 +10581,8 @@ async def upload_onboarding_document(data: DocumentUpload, current_user: dict = 
             {"employee_id": employee_id},
             {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": get_ist_now().isoformat()}}
         )
+    # Re-derive the canonical onboarding status from live documents.
+    await recompute_onboarding_status(employee_id)
     
     await log_audit(current_user["id"], "upload_document", "onboarding", employee_id, f"Uploaded {data.document_type}")
 
@@ -10657,6 +10712,9 @@ async def admin_upload_onboarding_document_on_behalf(
             "updated_at": now_iso,
         })
 
+    # Re-derive the canonical onboarding status from live documents.
+    await recompute_onboarding_status(employee_id)
+
     await log_audit(
         current_user.get("id"),
         action="admin_upload_onboarding_document",
@@ -10697,6 +10755,8 @@ async def submit_onboarding(current_user: dict = Depends(get_current_user)):
             "updated_at": get_ist_now().isoformat()
         }}
     )
+    # Reconcile with live document states (keeps "Pending"/"Approved" honest).
+    await recompute_onboarding_status(employee_id)
     
     await log_audit(current_user["id"], "submit_onboarding", "onboarding", employee_id)
     
@@ -10728,7 +10788,10 @@ async def verify_onboarding_document(data: DocumentVerification, current_user: d
         {"id": data.document_id},
         {"$set": update_data}
     )
-    
+
+    # Re-derive the onboarding status from live documents (single source of truth).
+    await recompute_onboarding_status(doc["employee_id"])
+
     await log_audit(current_user["id"], f"verify_document_{data.status}", "onboarding", doc["employee_id"], data.document_type if hasattr(data, 'document_type') else None)
     
     return {"message": f"Document {data.status}"}
@@ -10815,6 +10878,8 @@ async def request_document_reupload(employee_id: str, document_type: str, reason
         {"employee_id": employee_id},
         {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": get_ist_now().isoformat()}}
     )
+    # Re-derive (a rejected required doc surfaces as REJECTED).
+    await recompute_onboarding_status(employee_id)
     
     return {"message": "Re-upload requested"}
 
@@ -16046,6 +16111,32 @@ async def ensure_indexes():
         await _ensure_password_reset_token_indexes()
     except Exception as e:
         print(f"Password reset index setup failed: {e}")
+
+    # 2026-06-06 — Auto-heal Verification status integrity. Historically some
+    # employees were stored as "approved" with ZERO uploaded documents (the
+    # now-expired skip-onboarding bypass window did this). Re-derive every
+    # onboarding record's status PURELY from its live documents so the
+    # Verification module + stats never show a false "Approved". Idempotent,
+    # lightweight (one pass), and it NEVER touches user/employee access flags.
+    try:
+        records = await db.onboarding.find({}, {"_id": 0, "employee_id": 1, "status": 1}).to_list(5000)
+        healed = 0
+        for rec in records:
+            eid = rec.get("employee_id")
+            if not eid:
+                continue
+            docs = await db.onboarding_documents.find({"employee_id": eid}, {"_id": 0, "document_type": 1, "status": 1}).to_list(50)
+            derived = derive_onboarding_status(docs)
+            if derived != rec.get("status"):
+                await db.onboarding.update_one(
+                    {"employee_id": eid},
+                    {"$set": {"status": derived, "updated_at": get_ist_now().isoformat()}},
+                )
+                healed += 1
+        if healed:
+            print(f"Verification self-heal: corrected {healed} onboarding status record(s)")
+    except Exception as e:
+        print(f"Verification status self-heal failed: {e}")
 
     # Policy acknowledgements — unique (policy_id, employee_id)
     try:
