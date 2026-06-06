@@ -5,21 +5,40 @@ import { DayPicker } from "react-day-picker"
 import { cn } from "@/lib/utils"
 import { buttonVariants } from "@/components/ui/button"
 
+const NavIconLeft = ({ className, ...props }) => (
+  <ChevronLeft className={cn("h-4 w-4", className)} {...props} />
+);
+const NavIconRight = ({ className, ...props }) => (
+  <ChevronRight className={cn("h-4 w-4", className)} {...props} />
+);
+
 function Calendar({
   className,
   classNames,
   showOutsideDays = true,
+  captionLayout = "dropdown-buttons",
+  fromYear = 1925,
+  toYear = new Date().getFullYear() + 10,
   ...props
 }) {
   return (
     <DayPicker
       showOutsideDays={showOutsideDays}
+      captionLayout={captionLayout}
+      fromYear={fromYear}
+      toYear={toYear}
       className={cn("p-3", className)}
       classNames={{
         months: "flex flex-col sm:flex-row space-y-4 sm:space-x-4 sm:space-y-0",
         month: "space-y-4",
         caption: "flex justify-center pt-1 relative items-center",
-        caption_label: "text-sm font-medium",
+        caption_label: "sr-only",
+        caption_dropdowns: "flex justify-center items-center gap-1.5",
+        dropdown_month: "relative inline-flex items-center",
+        dropdown_year: "relative inline-flex items-center",
+        dropdown:
+          "appearance-none rounded-md border border-slate-200 bg-white pl-2 pr-2 py-1 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-300 cursor-pointer transition-colors",
+        vhidden: "sr-only",
         nav: "space-x-1 flex items-center",
         nav_button: cn(
           buttonVariants({ variant: "outline" }),
@@ -56,12 +75,8 @@ function Calendar({
         ...classNames,
       }}
       components={{
-        IconLeft: ({ className, ...props }) => (
-          <ChevronLeft className={cn("h-4 w-4", className)} {...props} />
-        ),
-        IconRight: ({ className, ...props }) => (
-          <ChevronRight className={cn("h-4 w-4", className)} {...props} />
-        ),
+        IconLeft: NavIconLeft,
+        IconRight: NavIconRight,
       }}
       {...props} />
   );

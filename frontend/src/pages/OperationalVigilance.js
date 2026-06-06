@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
@@ -18,7 +18,7 @@ import {
 } from '../components/ui/alert-dialog';
 import {
   ShieldAlert, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
-  ChevronLeft, ChevronRight, Eye,
+  ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -34,6 +34,79 @@ const emptyDraft = () => ({
   total_break_hours: '',
   breaks: [],
 });
+
+// ---------------------------------------------------------------------------
+// Reusable, type-aware header sorting (text / date / time-of-day / duration).
+// Keys: base -> 'name'|'email'|'team'|'date'|'punch_in'|'punch_out'|'total_hours'
+//       own vigilance -> 'system_login'|'system_logout'|'total_research_hours'|
+//                         'total_break_hours'|'break:<label>:from|to|total'
+//       admin per-uploader -> 'up:<uid>:<field>' | 'up:<uid>:break:<label>:from|to|total'
+// ---------------------------------------------------------------------------
+const TIME_FIELDS = ['punch_in', 'punch_out', 'system_login', 'system_logout', 'from', 'to'];
+const DUR_FIELDS = ['total_hours', 'total_research_hours', 'total_break_hours', 'total'];
+const BASE_MAP = { name: 'target_employee_name', email: 'target_email', team: 'target_team' };
+
+const fieldOf = (key) => key.split(':').pop();
+const typeOf = (key) => {
+  const f = fieldOf(key);
+  if (f === 'date') return 'date';
+  if (TIME_FIELDS.includes(f)) return 'time';
+  if (DUR_FIELDS.includes(f)) return 'duration';
+  return 'text';
+};
+
+const rawValue = (row, key) => {
+  if (!key) return '';
+  if (key.startsWith('up:')) {
+    const p = key.split(':');
+    const s = (row.submissions || []).find(x => x.uploaded_by_employee_id === p[1]);
+    if (!s) return '';
+    if (p[2] === 'break') { const b = (s.breaks || []).find(x => x.label === p[3]); return b ? (b[p[4]] || '') : ''; }
+    return s[p[2]] || '';
+  }
+  if (key.startsWith('break:')) {
+    const p = key.split(':'); const b = (row.breaks || []).find(x => x.label === p[1]); return b ? (b[p[2]] || '') : '';
+  }
+  return row[BASE_MAP[key] || key] || '';
+};
+
+const timeToMin = (v) => {
+  const m = String(v).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!m) return null;
+  let h = +m[1]; const mm = +m[2]; const ap = m[3] && m[3].toUpperCase();
+  if (ap) { if (ap === 'PM' && h !== 12) h += 12; if (ap === 'AM' && h === 12) h = 0; }
+  return h * 60 + mm;
+};
+const durToSec = (v) => {
+  const m = String(v).trim().match(/^(\d{1,3}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  return (+m[1]) * 3600 + (+m[2]) * 60 + (m[3] ? +m[3] : 0);
+};
+
+const sortVal = (row, key) => {
+  const raw = rawValue(row, key);
+  const blankRaw = raw == null || String(raw).trim() === '' || raw === '—';
+  const t = typeOf(key);
+  if (t === 'time') { const n = timeToMin(raw); return { blank: n == null, v: n }; }
+  if (t === 'duration') { const n = durToSec(raw); return { blank: n == null, v: n }; }
+  if (t === 'date') return { blank: blankRaw, v: String(raw) };
+  return { blank: blankRaw, v: String(raw).toLowerCase() };
+};
+
+// Stable, blanks-last sort. Returns the original array reference when inactive.
+const sortRows = (rows, sort) => {
+  if (!sort.key || !sort.dir) return rows;
+  const mul = sort.dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const A = sortVal(a, sort.key), B = sortVal(b, sort.key);
+    if (A.blank && B.blank) return 0;
+    if (A.blank) return 1;
+    if (B.blank) return -1;
+    if (A.v < B.v) return -1 * mul;
+    if (A.v > B.v) return 1 * mul;
+    return 0;
+  });
+};
 
 export default function OperationalVigilance() {
   const { getAuthHeaders } = useAuth();
@@ -52,6 +125,7 @@ export default function OperationalVigilance() {
   const [deleteId, setDeleteId] = useState(null);
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(25);
+  const [sort, setSort] = useState({ key: null, dir: null });
 
   const isAdmin = access?.is_admin;
 
@@ -126,8 +200,17 @@ export default function OperationalVigilance() {
 
   const validRange = filters.fromDate && filters.toDate && filters.toDate >= filters.fromDate;
 
-  const totalRows = data.rows.length;
-  const pagedRows = data.rows.slice((page - 1) * rowsPerPage, page * rowsPerPage);
+  // 3-state header sort toggle: asc -> desc -> reset (default backend order).
+  const toggleSort = (key) => {
+    setSort(prev => prev.key !== key ? { key, dir: 'asc' }
+      : prev.dir === 'asc' ? { key, dir: 'desc' }
+      : prev.dir === 'desc' ? { key: null, dir: null }
+      : { key, dir: 'asc' });
+    setPage(1);
+  };
+  const sortedRows = useMemo(() => sortRows(data.rows, sort), [data.rows, sort]);
+  const totalRows = sortedRows.length;
+  const pagedRows = sortedRows.slice((page - 1) * rowsPerPage, page * rowsPerPage);
 
   const handleApplyFilter = () => {
     if (!validRange) { toast.error('Select a valid date range (To Date ≥ From Date).'); return; }
@@ -377,9 +460,9 @@ export default function OperationalVigilance() {
         <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-auto scroll-premium"
              style={{ maxHeight: '68vh', '--vig-h1': `${row1H || 44}px` }} data-testid="vig-table-scroll">
           {isAdmin ? (
-            <AdminMergedTable data={data} rows={pagedRows} loading={loading} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
+            <AdminMergedTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
           ) : (
-            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
+            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
           )}
         </div>
         <PaginationBar page={page} setPage={setPage} rowsPerPage={rowsPerPage} setRowsPerPage={(v) => { setRowsPerPage(v); setPage(1); }} total={totalRows} />
@@ -407,19 +490,33 @@ export default function OperationalVigilance() {
   );
 }
 
+// ===================== Sortable header cell =====================
+function SortHeader({ label, sortKey, sort, onSort, className, align = 'left', rowSpan, colSpan }) {
+  const active = sort.key === sortKey;
+  const Icon = active && sort.dir === 'asc' ? ArrowUp : active && sort.dir === 'desc' ? ArrowDown : ChevronsUpDown;
+  return (
+    <th rowSpan={rowSpan} colSpan={colSpan} className={`${className} cursor-pointer select-none`} onClick={() => onSort(sortKey)} data-testid={`vig-sort-${sortKey}`} title="Click to sort">
+      <div className={`flex items-center gap-1 ${align === 'center' ? 'justify-center' : ''}`}>
+        <span>{label}</span>
+        <Icon className={`w-3 h-3 shrink-0 ${active ? 'text-slate-700' : 'text-slate-300'}`} />
+      </div>
+    </th>
+  );
+}
+
 // ===================== Vigilance own-view table =====================
-function VigilanceOwnTable({ data, rows, loading, onView, onEdit, onDelete }) {
+function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete }) {
   const labels = data.break_labels || [];
   const colCount = 11 + labels.length * 3 + 1;
-  const scalars = ['Email-id', 'Team', 'Punch-In', 'Punch-Out', 'Total Hours', 'System Login', 'System Logout', 'Research Hrs', 'Break Hrs'];
+  const scalars = [['Email-id', 'email'], ['Team', 'team'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours'], ['System Login', 'system_login'], ['System Logout', 'system_logout'], ['Research Hrs', 'total_research_hours'], ['Break Hrs', 'total_break_hours']];
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-own-table">
       <thead>
         <tr className="bg-slate-100 text-slate-600">
-          <th className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[180px]">Name</th>
-          <th className="vig-sticky-h1 left-[180px] z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[120px]">Date</th>
-          {scalars.map(h => (
-            <th key={h} className="vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left font-semibold whitespace-nowrap">{h}</th>
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[180px]" />
+          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} className="vig-sticky-h1 left-[180px] z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[120px]" />
+          {scalars.map(([h, k]) => (
+            <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className="vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left font-semibold whitespace-nowrap" />
           ))}
           {labels.map(l => (
             <th key={l} colSpan={3} className="vig-sticky-h1 z-30 px-3 py-2 text-center font-semibold border-l border-slate-200 whitespace-nowrap bg-emerald-50">{l}</th>
@@ -430,9 +527,10 @@ function VigilanceOwnTable({ data, rows, loading, onView, onEdit, onDelete }) {
         <tr className="bg-slate-50 text-[11px] text-slate-500">
           <th className="vig-sticky-h2 left-0 z-40 bg-slate-50" />
           <th className="vig-sticky-h2 left-[180px] z-40 bg-slate-50" />
-          {scalars.map((_, i) => <th key={i} className="vig-sticky-h2 z-30 bg-slate-50" />)}
+          {scalars.map(([, k]) => <th key={k} className="vig-sticky-h2 z-30 bg-slate-50" />)}
           {labels.map(l => ['From', 'To', 'Total'].map((s, i) => (
-            <th key={l + s} className={`vig-sticky-h2 z-30 bg-slate-50 px-2 py-1.5 text-center ${i === 0 ? 'border-l border-slate-200' : ''}`}>{s}</th>
+            <SortHeader key={l + s} label={s} sortKey={`break:${l}:${s.toLowerCase()}`} sort={sort} onSort={onSort} align="center"
+              className={`vig-sticky-h2 z-30 bg-slate-50 px-2 py-1.5 text-center ${i === 0 ? 'border-l border-slate-200' : ''}`} />
           )))}
           <th className="vig-sticky-h2 right-0 z-40 bg-slate-50" />
         </tr>
@@ -484,23 +582,22 @@ function VigilanceOwnTable({ data, rows, loading, onView, onEdit, onDelete }) {
 }
 
 // ===================== Admin merged table =====================
-function AdminMergedTable({ data, rows, loading, onView, onEdit, onDelete }) {
+function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete }) {
   const labels = data.break_labels || [];
   const uploaders = data.uploaders || [];
   const perUploaderCols = 4 + labels.length * 3; // sys login/out, research, break + breaks
   const colCount = 7 + Math.max(uploaders.length, 0) * perUploaderCols + 1;
   const baseTh = 'vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left font-semibold whitespace-nowrap';
+  const baseScalars = [['Email-id', 'email'], ['Team', 'team'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-admin-table">
       <thead>
         <tr className="bg-slate-100 text-slate-600">
-          <th rowSpan={2} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[170px]">Name</th>
-          <th rowSpan={2} className="vig-sticky-h1 left-[170px] z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[115px]">Date</th>
-          <th rowSpan={2} className={baseTh}>Email-id</th>
-          <th rowSpan={2} className={baseTh}>Team</th>
-          <th rowSpan={2} className={baseTh}>Punch-In</th>
-          <th rowSpan={2} className={baseTh}>Punch-Out</th>
-          <th rowSpan={2} className={baseTh}>Total Hours</th>
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[170px]" />
+          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-[170px] z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[115px]" />
+          {baseScalars.map(([h, k]) => (
+            <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} rowSpan={2} className={baseTh} />
+          ))}
           {uploaders.map((u, idx) => (
             <th key={u.employee_id} colSpan={perUploaderCols} className={`vig-sticky-h1 z-30 px-3 py-2 text-center font-semibold border-l-2 border-slate-300 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50' : 'bg-amber-50'}`}>
               {u.name}
@@ -510,7 +607,7 @@ function AdminMergedTable({ data, rows, loading, onView, onEdit, onDelete }) {
         </tr>
         <tr className="bg-slate-50 text-[11px] text-slate-500">
           {uploaders.map((u) => (
-            <FragmentCols key={u.employee_id} ukey={u.employee_id} labels={labels} firstClass="border-l-2 border-slate-300" />
+            <FragmentCols key={u.employee_id} ukey={u.employee_id} labels={labels} sort={sort} onSort={onSort} firstClass="border-l-2 border-slate-300" />
           ))}
         </tr>
       </thead>
@@ -561,16 +658,16 @@ function AdminMergedTable({ data, rows, loading, onView, onEdit, onDelete }) {
   );
 }
 
-function FragmentCols({ labels, firstClass, ukey }) {
+function FragmentCols({ labels, firstClass, ukey, sort, onSort }) {
   const th = 'vig-sticky-h2 z-30 bg-slate-50 px-2 py-1.5 text-center';
+  const subs = [['Sys In', `up:${ukey}:system_login`], ['Sys Out', `up:${ukey}:system_logout`], ['Research', `up:${ukey}:total_research_hours`], ['Break', `up:${ukey}:total_break_hours`]];
   return (
     <>
-      <th className={`${th} ${firstClass}`}>Sys In</th>
-      <th className={th}>Sys Out</th>
-      <th className={th}>Research</th>
-      <th className={th}>Break</th>
+      {subs.map(([label, key], i) => (
+        <SortHeader key={key} label={label} sortKey={key} sort={sort} onSort={onSort} align="center" className={`${th} ${i === 0 ? firstClass : ''}`} />
+      ))}
       {labels.map(l => ['From', 'To', 'Total'].map(s => (
-        <th key={`${ukey}-${l}-${s}`} className={`${th} whitespace-nowrap`}>{l.replace('Break', 'Brk')} {s}</th>
+        <SortHeader key={`${ukey}-${l}-${s}`} label={`${l.replace('Break', 'Brk')} ${s}`} sortKey={`up:${ukey}:break:${l}:${s.toLowerCase()}`} sort={sort} onSort={onSort} align="center" className={`${th} whitespace-nowrap`} />
       )))}
     </>
   );

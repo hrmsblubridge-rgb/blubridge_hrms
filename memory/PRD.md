@@ -5,6 +5,17 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-06 (Global date-picker legacy nav + Vigilance header sorting) ✅ TESTED
+
+**FIX 1 — Global date picker (fast legacy date selection):** Upgraded the shared `frontend/src/components/ui/calendar.jsx` (react-day-picker v8) to `captionLayout="dropdown-buttons"` with month + year dropdowns (`fromYear=1925`, `toYear=currentYear+10`) plus the existing nav arrows. ROOT-LEVEL: every `DatePicker` / Calendar across the HRMS (DOB, DOJ, attendance/leave/report/vigilance filters, modals) inherits it automatically. Format **DD-MMM-YYYY unchanged**; existing min/max `disabled` logic, payloads, storage untouched. Verified: month select (12) + year dropdown render; '06-Jun-2026' display preserved.
+
+**FIX 2 — Vigilance Report header sorting (3-state toggle):** Added reusable, type-aware sorting in `OperationalVigilance.js` — `SortHeader` + `sortRows`/`sortVal` with comparators for text, date (ISO), time-of-day (12h AM/PM → minutes) and duration (HH:MM / HH:MM:SS → seconds). Click cycle asc → desc → reset; blanks always sort last; icons ChevronsUpDown/ArrowUp/ArrowDown. Applied to ALL fixed headers (Name, Email-id, Team, Date, Punch-In, Punch-Out, Total Hours) AND dynamic per-uploader sub-headers (Sys In/Out, Research, Break, every break From/To/Total via keys `up:<uid>:…` / `break:<label>:…`) for both Admin and Vigilance-user views. Sorting runs before pagination (works with rows-per-page + filters); upload/export/CRUD/sticky-header/scrollbars/dynamic columns untouched. Verified: descending Name reorders rows; comparators unit-checked (time/duration/date chronological/numeric). DB clean (0 entries).
+
+Also fixed a pre-existing blocking lint in calendar.jsx (hoisted IconLeft/IconRight out of render).
+
+---
+
+
 ## Latest Update — 2026-06-05 (Vigilance Report — 4 precision UX fixes) ✅ TESTED
 
 **User requirements (all root-level, 0 regressions):**
