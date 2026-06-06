@@ -36,8 +36,16 @@
 > and it will now persist forever (across restarts, deploys, test runs).
 
 ## Employee Accounts
-- **Vigilance Employee 1 (WORKING)**: `madhan.s` / `Vigil@123` — Madhan S, designation=Vigilance. Re-synced to `Vigil@123` on 2026-06-06 (drifted AGAIN; data-level reset via app SHA256 hash_password, method=agent_test_resync).
+- **Vigilance Employee 1 (WORKING)**: `madhan.s` / `Vigil@123` — Madhan S, designation=Vigilance. Re-synced to `Vigil@123` on 2026-06-06 (drifts frequently; data-level reset via SHA256 hash_password, method=agent_test_resync).
 - **Vigilance Employee 2 (WORKING)**: `dinesh.t` / `Vigil@123` — Dinesh T, designation=Vigilance. Re-synced to `Vigil@123` on 2026-06-06 (same note).
+
+> ⚙️ **ONBOARDING GATE DISABLED (2026-06-06):** The mandatory onboarding flow is
+> turned OFF app-wide via `ONBOARDING_ENABLED = false` in
+> `frontend/src/contexts/AuthContext.js`. Every user (incl. employees with
+> pending/rejected/under-review onboarding) now gets DIRECT full HRMS access —
+> no redirect to `/employee/onboarding`. To re-enable, set the flag back to
+> `true`. (`needsOnboarding()` short-circuits to false; Login.js + EmployeeRoute
+> + RoleBasedRedirect all honour it.)
 - **Employee (WORKING 2026-06-05)**: `user` / `pass123` — Rishi S Nayak, active, has current-week attendance. NON-vigilance → must NOT see Vigilance Report.
 - **Employee**: `spartasolace1` / `spar@1230`
 - **Employee** (Phase-2 dashboard widget tests): `user` / `pass123` — has attendance for current week, used by `tests/test_dashboard_widgets.py`

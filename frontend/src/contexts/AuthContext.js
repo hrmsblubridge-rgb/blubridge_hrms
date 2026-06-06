@@ -5,6 +5,19 @@ const AuthContext = createContext(null);
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
+// ============================================================================
+// FEATURE FLAG — Onboarding gate
+// ----------------------------------------------------------------------------
+// When FALSE, the document-onboarding step is DISABLED app-wide: no employee is
+// ever redirected to /employee/onboarding and everyone gets direct, full HRMS
+// access immediately after login (regardless of their document-verification
+// state). The Onboarding/Verification pages still exist and work — they are
+// just no longer a mandatory gate.
+//
+// To RE-ENABLE the mandatory onboarding flow later, set this back to `true`.
+// ============================================================================
+const ONBOARDING_ENABLED = false;
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -105,6 +118,8 @@ export const AuthProvider = ({ children }) => {
 
   // Check if user needs onboarding
   const needsOnboarding = () => {
+    // Onboarding gate globally disabled — open HRMS access for all users.
+    if (!ONBOARDING_ENABLED) return false;
     if (!user) return false;
     if (user.role !== 'employee') return false;
     return user.onboarding_status !== 'approved' && !user.onboarding_completed;

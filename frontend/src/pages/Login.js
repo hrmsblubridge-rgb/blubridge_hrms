@@ -99,7 +99,7 @@ const Login = () => {
       const next = getNextPath(userData?.role);
       if (next) {
         navigate(next);
-      } else if (userData?.role === 'employee' && userData?.onboarding_status !== 'approved' && !userData?.onboarding_completed) {
+      } else if (userData?.role === 'employee' && needsOnboarding()) {
         navigate('/employee/onboarding');
       } else if (userData?.role === 'employee') {
         navigate('/employee/dashboard');
