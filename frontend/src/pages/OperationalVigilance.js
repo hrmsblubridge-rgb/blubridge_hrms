@@ -17,8 +17,11 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '../components/ui/alert-dialog';
 import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
+import {
   ShieldAlert, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
-  ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown,
+  ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -282,6 +285,16 @@ export default function OperationalVigilance() {
     }
   };
 
+  const handleHelp = async (format) => {
+    try {
+      await blobDownload(`${API}/vigilance/help`, { format },
+        `Vigilance-Report-Help-Guide.${format}`);
+      toast.success('Help guide downloaded');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not download help guide');
+    }
+  };
+
   const openEdit = (submission, row) => {
     setDraft({
       id: submission.id,
@@ -445,6 +458,21 @@ export default function OperationalVigilance() {
           <Button onClick={handleExport} variant="outline" className="rounded-lg ml-auto" data-testid="vig-export-btn">
             <FileSpreadsheet className="w-4 h-4 mr-2" /> Export
           </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="rounded-lg" data-testid="vig-help-btn">
+                <HelpCircle className="w-4 h-4 mr-2" /> Help Guide
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleHelp('docx')} data-testid="vig-help-docx">
+                <FileText className="w-4 h-4 mr-2 text-blue-600" /> Download as Word (.docx)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleHelp('xlsx')} data-testid="vig-help-xlsx">
+                <FileSpreadsheet className="w-4 h-4 mr-2 text-emerald-600" /> Download as Excel (.xlsx)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </div>
 

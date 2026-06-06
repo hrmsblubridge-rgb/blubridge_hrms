@@ -1,8 +1,9 @@
 """Vigilance router factory — mounted by server.py without import cycles."""
+import os
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -10,6 +11,8 @@ from . import service as svc
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 ADMIN_ROLES = ("hr", "system_admin", "office_admin")
+_DOCS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "..", "docs")
+_DOCS_DIR = os.path.abspath(_DOCS_DIR)
 
 
 class BreakItem(BaseModel):
@@ -286,6 +289,26 @@ def get_vigilance_router(db, get_current_user):
         return StreamingResponse(
             buf, media_type=XLSX_MIME,
             headers={"Content-Disposition": 'attachment; filename="Vigilance-Report.xlsx"'},
+        )
+
+    # ------------------------------------------------------ help guide files
+    @router.get("/help")
+    async def help_guide(format: str = Query("docx"), current_user: dict = Depends(get_current_user)):
+        """Stream the pre-generated Vigilance Report help guide (Word or Excel)."""
+        await context(current_user)  # any admin or vigilance employee
+        fmt = (format or "docx").lower()
+        if fmt not in ("docx", "xlsx"):
+            raise HTTPException(status_code=400, detail="format must be 'docx' or 'xlsx'")
+        path = os.path.join(_DOCS_DIR, f"Vigilance_Report_Help.{fmt}")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="Help guide not available.")
+        media = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            if fmt == "docx" else XLSX_MIME
+        )
+        return FileResponse(
+            path, media_type=media,
+            filename=f"Vigilance-Report-Help-Guide.{fmt}",
         )
 
     # ----------------------------------------- attendance module integration
