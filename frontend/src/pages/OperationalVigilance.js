@@ -25,6 +25,7 @@ import {
 import {
   ShieldAlert, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText, BookOpen,
+  UploadCloud, CheckCircle2, AlertCircle,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -50,6 +51,16 @@ const computeBreakTotal = (from, to) => {
   const d = (((t - f) % 1440) + 1440) % 1440;
   return `${String(Math.floor(d / 60)).padStart(2, '0')}:${String(d % 60).padStart(2, '0')}`;
 };
+
+// Staged status text for the upload progress overlay (derived from %, so it stays consistent).
+const UPLOAD_STATUS = (p) =>
+  p < 35 ? 'Uploading sheet…'
+  : p < 50 ? 'Reading template…'
+  : p < 68 ? 'Validating sheet…'
+  : p < 82 ? 'Processing employee records…'
+  : p < 95 ? 'Saving vigilance data…'
+  : p < 100 ? 'Finalizing upload…'
+  : 'Upload complete';
 
 const emptyDraft = () => ({
   id: null,
@@ -146,6 +157,9 @@ export default function OperationalVigilance() {
   const [data, setData] = useState({ mode: null, rows: [], break_labels: [], uploaders: [] });
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [upload, setUpload] = useState(null);   // null | {phase,percent,status,result,message,errors}
+  const procTimer = useRef(null);
+  const pctRef = useRef(0);
   const [downloading, setDownloading] = useState(false);
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -242,6 +256,16 @@ export default function OperationalVigilance() {
     })();
   }, [getAuthHeaders, loadEntries]);
 
+  // Auto-close the upload overlay a few seconds after success; clean up the
+  // processing timer on unmount so it never leaks.
+  useEffect(() => {
+    if (upload?.phase === 'success') {
+      const t = setTimeout(() => setUpload(null), 4500);
+      return () => clearTimeout(t);
+    }
+  }, [upload?.phase]);
+  useEffect(() => () => { if (procTimer.current) clearInterval(procTimer.current); }, []);
+
   const validRange = filters.fromDate && filters.toDate && filters.toDate >= filters.fromDate;
 
   // 3-state header sort toggle: asc -> desc -> reset (default backend order).
@@ -289,25 +313,51 @@ export default function OperationalVigilance() {
   };
 
   const handleUpload = async (file) => {
-    if (!file) return;
+    if (!file || uploading) return;   // guard against duplicate / double submission
     if (!file.name.toLowerCase().endsWith('.xlsx')) { toast.error('Only .xlsx files are accepted.'); return; }
     setUploading(true);
+    pctRef.current = 0;
+    setUpload({ phase: 'uploading', percent: 0, status: 'Preparing upload…' });
+
+    const tick = (p) => { pctRef.current = p; setUpload((u) => (u ? { ...u, percent: p, status: UPLOAD_STATUS(p) } : u)); };
+    const startProcessing = () => {
+      if (procTimer.current) return;
+      setUpload((u) => (u ? { ...u, phase: 'processing' } : u));
+      procTimer.current = setInterval(() => {
+        const cur = pctRef.current;
+        if (cur >= 92) return;                                  // never get stuck, never fake-jump
+        const next = Math.min(92, cur + Math.max(0.6, (92 - cur) * 0.06));
+        tick(Math.round(next * 10) / 10);
+      }, 320);
+    };
+    const stopProcessing = () => { if (procTimer.current) { clearInterval(procTimer.current); procTimer.current = null; } };
+
     try {
       const fd = new FormData();
       fd.append('file', file);
-      const res = await axios.post(`${API}/vigilance/upload`, fd, { headers: { ...getAuthHeaders() } });
-      toast.success(`Upload complete — ${res.data.created} new, ${res.data.updated} updated`);
+      const res = await axios.post(`${API}/vigilance/upload`, fd, {
+        headers: { ...getAuthHeaders() },
+        onUploadProgress: (evt) => {
+          if (!evt.total) { startProcessing(); return; }       // transfer maps to first 35%
+          const frac = evt.loaded / evt.total;
+          tick(Math.round(frac * 35));
+          if (frac >= 1) startProcessing();
+        },
+      });
+      stopProcessing();
+      tick(100);
+      setUpload((u) => ({ ...(u || {}), phase: 'success', percent: 100, status: 'Upload complete', result: res.data }));
       loadEntries(filters);
     } catch (e) {
+      stopProcessing();
       const detail = e.response?.data?.detail;
-      if (detail?.errors) {
-        toast.error(`${detail.message} (${detail.errors.length} issue${detail.errors.length > 1 ? 's' : ''})`, {
-          description: detail.errors.slice(0, 4).map(x => `Row ${x.row}: ${x.message}`).join('\n'),
-          duration: 9000,
-        });
-      } else {
-        toast.error(typeof detail === 'string' ? detail : 'Upload failed');
-      }
+      let message = 'Upload failed — please try again.';
+      let errors = [];
+      if (detail?.errors) { message = detail.message || 'Upload rejected — please fix the highlighted rows.'; errors = detail.errors; }
+      else if (typeof detail === 'string') message = detail;
+      else if (e.code === 'ERR_NETWORK') message = 'Network error — please check your connection and try again.';
+      else if (e.response?.status === 413) message = 'File too large. Please split the date range and upload again.';
+      setUpload({ phase: 'error', percent: pctRef.current, status: 'Upload failed', message, errors });
     } finally { setUploading(false); }
   };
 
@@ -570,6 +620,8 @@ export default function OperationalVigilance() {
         draft={draft} setDraft={setDraft} onSave={saveDraft} saving={saving}
         employees={meta.employees}
       />
+
+      {upload && <UploadProgressOverlay upload={upload} onClose={() => setUpload(null)} />}
 
       <AlertDialog open={!!deleteId} onOpenChange={(o) => !o && setDeleteId(null)}>
         <AlertDialogContent>
@@ -836,6 +888,95 @@ function PaginationBar({ page, setPage, rowsPerPage, setRowsPerPage, total }) {
 }
 
 // ===================== Add / Edit / View dialog =====================
+function UploadProgressOverlay({ upload, onClose }) {
+  const { phase, percent = 0, status, result, message, errors } = upload;
+  const inProgress = phase === 'uploading' || phase === 'processing';
+  const pct = Math.min(100, Math.round(percent));
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/45 backdrop-blur-sm p-4"
+      onMouseDown={(e) => { if (!inProgress && e.target === e.currentTarget) onClose(); }}
+      data-testid="vig-upload-overlay">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200 overflow-hidden">
+        <div className="px-7 pt-7 pb-6">
+          <div className="flex items-center gap-3 mb-5">
+            <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${
+              phase === 'success' ? 'bg-emerald-50 text-emerald-600'
+              : phase === 'error' ? 'bg-red-50 text-red-600'
+              : 'bg-[#0b1f3b]/5 text-[#0b1f3b]'}`}>
+              {phase === 'success' ? <CheckCircle2 className="h-6 w-6" data-testid="vig-upload-success-icon" />
+                : phase === 'error' ? <AlertCircle className="h-6 w-6" data-testid="vig-upload-error-icon" />
+                : <UploadCloud className="h-6 w-6" />}
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-base font-semibold text-slate-900">
+                {phase === 'success' ? 'Upload completed successfully'
+                  : phase === 'error' ? 'Upload failed'
+                  : 'Uploading vigilance sheet'}
+              </h3>
+              <p className="text-sm text-slate-500 truncate" data-testid="vig-upload-status">
+                {phase === 'error' ? 'Please review the details below.' : status}
+              </p>
+            </div>
+            {inProgress && <Loader2 className="ml-auto h-5 w-5 animate-spin text-[#0b1f3b]/60" />}
+          </div>
+
+          {phase !== 'error' && (
+            <>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-medium text-slate-500">{phase === 'success' ? 'Done' : 'Progress'}</span>
+                <span className="text-sm font-semibold text-[#0b1f3b] tabular-nums" data-testid="vig-upload-percent">{pct}%</span>
+              </div>
+              <div className="h-2.5 w-full rounded-full bg-slate-100 overflow-hidden">
+                <div
+                  className={`h-full rounded-full bg-gradient-to-r from-[#0b1f3b] to-[#2563a8] transition-[width] duration-300 ease-out ${inProgress ? 'vig-progress-sheen' : ''}`}
+                  style={{ width: `${pct}%` }}
+                  data-testid="vig-upload-bar"
+                />
+              </div>
+            </>
+          )}
+
+          {phase === 'success' && result && (
+            <div className="mt-5 grid grid-cols-3 gap-3" data-testid="vig-upload-result">
+              {[['New records', result.created], ['Rows updated', result.updated], ['Total processed', result.total]].map(([l, v]) => (
+                <div key={l} className="rounded-xl bg-slate-50 px-3 py-3 text-center">
+                  <div className="text-xl font-bold text-[#0b1f3b] tabular-nums">{v ?? 0}</div>
+                  <div className="text-[11px] font-medium text-slate-500 mt-0.5">{l}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {phase === 'error' && (
+            <div className="mt-1">
+              <p className="text-sm font-medium text-red-700">{message}</p>
+              {errors?.length > 0 && (
+                <div className="mt-3 max-h-44 overflow-y-auto rounded-lg border border-red-100 bg-red-50/60 divide-y divide-red-100" data-testid="vig-upload-errors">
+                  {errors.slice(0, 50).map((x, i) => (
+                    <div key={i} className="px-3 py-2 text-xs text-red-800">
+                      <span className="font-semibold">Row {x.row}:</span> {x.message}
+                    </div>
+                  ))}
+                  {errors.length > 50 && <div className="px-3 py-2 text-xs text-red-500">+ {errors.length - 50} more…</div>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {!inProgress && (
+          <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50/60 px-7 py-4">
+            <Button onClick={onClose} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg" data-testid="vig-upload-close">
+              {phase === 'success' ? 'Done' : 'Close'}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
   if (!draft) return null;
   const ro = !!draft.readOnly;

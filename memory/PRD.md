@@ -5,6 +5,21 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-08 (Vigilance — premium upload progress UX + non-destructive tests) ✅ TESTED
+
+**Premium sheet-upload progress experience (`OperationalVigilance.js` + `index.css`):** Clicking "Upload Filled Sheet" now opens a centered, backdrop-blurred overlay that stays until success/fail:
+- Real upload-byte progress (axios `onUploadProgress` → first 35%) then an eased staged "processing" animation capped at 92% (never sticks at 99%, no fake jumps), with dynamic status text (Preparing → Uploading → Reading template → Validating → Processing employee records → Saving → Finalizing → complete).
+- Premium animated bar (navy gradient + jitter-free moving sheen, `transition-[width]`), live % readout.
+- Upload LOCK: button disabled + handler guards double-submit while in progress.
+- SUCCESS: green state with `New records / Rows updated / Total processed` counts, auto-closes after 4.5s (or manual Done), then auto-refreshes the table (no page reload).
+- FAILURE: red state with the real backend reason + scrollable per-row error list (invalid file, missing/invalid time, etc.). New icons: UploadCloud/CheckCircle2/AlertCircle.
+- Verified via Playwright: progress (42% "Reading template…", button locked), success (1 new / 0 updated / 1 total, table refreshing), and error ("File is not a valid .xlsx workbook") states all render. 0 regression to upload logic/validation/dynamic breaks/CRUD/export/filters/pagination/sticky/scroll.
+
+**Data-loss root cause #2 fixed (test fixture):** `tests/test_vigilance_flow.py` uploaded-then-DELETED entries for the first real employee on **05-Jun**, destroying the vigilance team's real data every run (observed: 94→92). Moved `FROM_D/TO_D` to an isolated far-future date (20-Dec-2026) so the suite never collides with real data — now **30/30 pass, non-destructive** (real 92 entries verified intact after a full run).
+
+---
+
+
 ## Latest Update — 2026-06-08 (Vigilance — Break Total auto-calc + "data vanishing" fix) ✅ TESTED
 
 **Task A — Break Total Auto-Calculation (P0):** Every break's `Total` is now ALWAYS derived as `To − From` (overnight allowed — a To earlier than From wraps past midnight, e.g. 23:50→00:10 = 00:20). Any user-typed/uploaded Total is IGNORED. Blank when either endpoint is missing. Stored canonical `HH:MM:SS` (ss=00 → renders `HH:MM`).

@@ -306,6 +306,17 @@
 .vig-sticky-h1 { position: sticky; top: 0; }
 .vig-sticky-h2 { position: sticky; top: var(--vig-h1, 44px); }
 
+/* Vigilance upload progress bar — moving sheen while in progress (premium, jitter-free) */
+.vig-progress-sheen { position: relative; overflow: hidden; }
+.vig-progress-sheen::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  transform: translateX(-100%);
+  animation: vig-sheen 1.3s ease-in-out infinite;
+}
+@keyframes vig-sheen { to { transform: translateX(100%); } }
+
+
 /* Status Badges */
 .badge-success { @apply bg-emerald-50 text-emerald-700 border border-emerald-200/50; }
 .badge-warning { @apply bg-amber-50 text-amber-700 border border-amber-200/50; }

@@ -19,8 +19,13 @@ VIG1 = ("madhan.s", "Vigil@123")    # Madhan S
 VIG2 = ("dinesh.t", "Vigil@123")    # Dinesh T
 NORMAL = ("user", "pass123")
 
-FROM_D = "05-Jun-2026"
-TO_D = "05-Jun-2026"
+# NOTE: This is intentionally an ISOLATED far-future date. The fixtures here
+# UPLOAD then DELETE entries for the target employee on this date. Using a real
+# working date (e.g. today / recent days) would upsert-over and then DELETE the
+# vigilance team's REAL data on the shared preview DB — a genuine data-loss bug.
+# Keep this date far enough out that the team never has real uploads for it.
+FROM_D = "20-Dec-2026"
+TO_D = "20-Dec-2026"
 
 
 def _login(username, password):
