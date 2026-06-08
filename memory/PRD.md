@@ -5,6 +5,18 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-08 (Vigilance — Break Total auto-calc + "data vanishing" fix) ✅ TESTED
+
+**Task A — Break Total Auto-Calculation (P0):** Every break's `Total` is now ALWAYS derived as `To − From` (overnight allowed — a To earlier than From wraps past midnight, e.g. 23:50→00:10 = 00:20). Any user-typed/uploaded Total is IGNORED. Blank when either endpoint is missing. Stored canonical `HH:MM:SS` (ss=00 → renders `HH:MM`).
+- Backend (`vigilance/service.py`): new `compute_break_total()` + `_clock_to_minutes()`; `parse_upload` no longer validates/stores the uploaded break Total — it computes it. (`vigilance/router.py`): `_validate_breaks` (manual create + edit) computes Total too.
+- Frontend (`OperationalVigilance.js`): break **Total** input is now read-only/auto (`computeBreakTotal`, mirrors backend); `updateBreak` recomputes Total on From/To change. **Total Break Hours** and **Total Research Hours** summary fields remain MANUAL (per user choice).
+- Tests: new `tests/test_vigilance_break_autocalc.py` (12 tests) pass. Updated 2 legacy assertions in `test_vigilance_flow.py` + `test_vigilance_upload_validation.py` to the new contract — 40/40 pure tests pass.
+
+**Task B — "Data Vanishing" root cause (NOT data loss):** Investigated — **no TTL index, no cron/sync touches `vigilance_entries`** (server.py has zero refs). DB held 94 live entries all for 2026-06-05. ROOT CAUSE: the table defaulted its date filter to **Today→Today**, so uploads for earlier dates looked "gone" until the range was widened. FIX: default range now **first-of-month → today** (`monthStart()`), in filter state + initial load. Verified via curl (month range surfaces all 50 of Madhan's 05-Jun entries) + screenshot (01-Jun→08-Jun default, grid populated).
+
+---
+
+
 ## Latest Update — 2026-06-06 (Vigilance table — horizontal scroll oscillation/jitter fix) ✅ TESTED
 
 **Issue:** The synced top+bottom horizontal scrollbars oscillated / bounced to-and-fro (esp. SHIFT+wheel, trackpad) before moving.

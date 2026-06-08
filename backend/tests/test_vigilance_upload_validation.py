@@ -94,14 +94,14 @@ def test_norm_clock_accepts_numeric_zero():
 def test_zero_durations_upload_succeeds():
     h1, h2 = _std_headers()
     row = _std_row(research="00:00", break_hours="00:00:00",
-                   breaks={3: ("", "", "00:00")})  # Extra-Break1 Total = 00:00
+                   breaks={3: ("09:00", "09:00", "05:00")})  # Extra-Break1 equal endpoints → auto Total 00:00:00 (user total ignored)
     entries, errors = svc.parse_upload(_make_xlsx(h1, h2, [row]), BY_EMAIL, BY_NAME, UP)
     assert errors == [], errors
     assert len(entries) == 1
     e = entries[0]
     assert e["total_research_hours"] == "00:00:00"
     assert e["total_break_hours"] == "00:00:00"
-    # zero-duration extra break is preserved
+    # zero-duration extra break (equal From/To) is preserved; user-typed Total ignored
     assert any(b["total"] == "00:00:00" for b in e["breaks"])
 
 

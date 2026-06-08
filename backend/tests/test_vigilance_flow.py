@@ -443,7 +443,7 @@ class TestDurationFormats:
             assert my["total_research_hours"] == "10:30:45"   # seconds preserved
             assert my["total_break_hours"] == "00:45"          # HH:MM -> clean HH:MM (no :00)
             blunch = next(b for b in my["breaks"] if b["label"] == "Lunch Break")
-            assert blunch["total"] == "00:30:15"
+            assert blunch["total"] == "00:30"   # AUTO-CALC: 13:30 − 13:00 = 00:30 (user-typed "00:30:15" ignored)
         finally:
             _del = next((x["id"] for x in
                          requests.get(f"{BASE_URL}/api/vigilance/entries", headers=_hdr(tokens["vig1"]),

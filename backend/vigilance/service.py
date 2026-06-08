@@ -157,6 +157,31 @@ def to_24h(value):
     return str(value).strip()
 
 
+def _clock_to_minutes(value):
+    """Normalised clock ('HH:MM AM/PM' or 24h 'HH:MM') -> minutes of day, or None."""
+    h24 = to_24h(value)
+    m = TWENTYFOUR_RE.match(h24) if h24 else None
+    if not m:
+        return None
+    return int(m.group(1)) * 60 + int(m.group(2))
+
+
+def compute_break_total(from_clock, to_clock):
+    """Auto-calculate a break Total = (To − From). Overnight spans are allowed
+    (a To earlier than From wraps past midnight, e.g. 23:50 → 00:10 = 00:20).
+    Returns canonical 'HH:MM:SS' (seconds always 00 → renders as 'HH:MM'), or ''
+    when either endpoint is missing/blank. Any user-supplied Total is IGNORED by
+    callers — the Total column is always derived from From & To.
+    """
+    fm = _clock_to_minutes(from_clock)
+    tm = _clock_to_minutes(to_clock)
+    if fm is None or tm is None:
+        return ""
+    diff = (tm - fm) % (24 * 60)
+    h, mm = divmod(diff, 60)
+    return f"{h:02d}:{mm:02d}:00"
+
+
 def norm_duration(value):
     """Validate/normalise a DURATION (no AM/PM) entered as EITHER 'HH:MM' OR
     'HH:MM:SS' (and Excel time/number cells) and store canonically as 'HH:MM:SS'.
@@ -567,17 +592,16 @@ def parse_upload(file_bytes, employees_by_email, employees_by_name, uploaded_by)
         for (label, f, t, tot) in break_vals:
             okf, nf = norm_clock(f)
             okt, nt = norm_clock(t)
-            okv, nv = norm_duration(tot)
             if not okf:
                 errors.append({"row": excel_row, "message": f"'{label} From' = '{f}' must be a time like 09:30."})
                 row_has_break_error = True
             if not okt:
                 errors.append({"row": excel_row, "message": f"'{label} To' = '{t}' must be a time like 10:00."})
                 row_has_break_error = True
-            if not okv:
-                errors.append({"row": excel_row, "message": f"'{label} Total' = '{tot}' — use HH:MM or HH:MM:SS (00:00 is allowed)."})
-                row_has_break_error = True
-            if okf and okt and okv and (nf or nt or nv):
+            # Total is AUTO-CALCULATED (To − From, overnight allowed); the uploaded
+            # Total cell is ignored entirely so manual totals can never be wrong.
+            nv = compute_break_total(nf, nt) if (okf and okt) else ""
+            if okf and okt and (nf or nt or nv):
                 breaks.append({"label": label, "from": nf, "to": nt, "total": nv})
         if row_has_break_error:
             continue

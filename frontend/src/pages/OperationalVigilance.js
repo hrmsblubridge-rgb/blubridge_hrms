@@ -29,6 +29,27 @@ import {
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const today = () => new Date().toISOString().split('T')[0];
+// Default the date range to the start of the current month so freshly uploaded
+// data is visible on load (a Today→Today default hid earlier-in-month uploads).
+const monthStart = () => `${today().slice(0, 8)}01`;
+
+// Auto-calculate a break Total = (To − From). Overnight allowed (wraps midnight).
+// Mirrors the backend `compute_break_total`; the Total field is read-only in the UI.
+const clockToMin = (s) => {
+  if (!s) return null;
+  const v = String(s).trim();
+  let m = v.match(/^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i);
+  if (m) { let h = parseInt(m[1], 10) % 12; if (m[3].toUpperCase() === 'PM') h += 12; return h * 60 + parseInt(m[2], 10); }
+  m = v.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  return null;
+};
+const computeBreakTotal = (from, to) => {
+  const f = clockToMin(from), t = clockToMin(to);
+  if (f === null || t === null) return '';
+  const d = (((t - f) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(d / 60)).padStart(2, '0')}:${String(d % 60).padStart(2, '0')}`;
+};
 
 const emptyDraft = () => ({
   id: null,
@@ -119,7 +140,7 @@ export default function OperationalVigilance() {
   const [access, setAccess] = useState(null);
   const [meta, setMeta] = useState({ departments: [], teams: [], designations: [], employees: [] });
   const [filters, setFilters] = useState({
-    fromDate: today(), toDate: today(), employeeName: '',
+    fromDate: monthStart(), toDate: today(), employeeName: '',
     department: 'All', designation: 'All', team: 'All',
   });
   const [data, setData] = useState({ mode: null, rows: [], break_labels: [], uploaders: [] });
@@ -213,7 +234,7 @@ export default function OperationalVigilance() {
         if (a.data.has_access) {
           const m = await axios.get(`${API}/vigilance/filters-meta`, { headers: getAuthHeaders() });
           setMeta(m.data);
-          loadEntries({ fromDate: today(), toDate: today(), employeeName: '', department: 'All', designation: 'All', team: 'All' });
+          loadEntries({ fromDate: monthStart(), toDate: today(), employeeName: '', department: 'All', designation: 'All', team: 'All' });
         }
       } catch {
         setAccess({ has_access: false });
@@ -821,7 +842,13 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
   const isEdit = !!draft.id;
   const update = (patch) => setDraft({ ...draft, ...patch });
   const updateBreak = (i, patch) => {
-    const breaks = draft.breaks.map((b, idx) => idx === i ? { ...b, ...patch } : b);
+    const breaks = draft.breaks.map((b, idx) => {
+      if (idx !== i) return b;
+      const nb = { ...b, ...patch };
+      // Total is always auto-derived from From & To (overnight allowed).
+      nb.total = computeBreakTotal(nb.from, nb.to);
+      return nb;
+    });
     update({ breaks });
   };
   const addBreak = () => update({ breaks: [...draft.breaks, { label: `Extra-Break${draft.breaks.length + 1}`, from: '', to: '', total: '' }] });
@@ -883,7 +910,7 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
                   <Input className="col-span-4 h-9" disabled={ro} value={b.label} onChange={(e) => updateBreak(i, { label: e.target.value })} placeholder="Break label" />
                   <Input className="col-span-3 h-9" disabled={ro} value={b.from || ''} onChange={(e) => updateBreak(i, { from: e.target.value })} placeholder="From 13:00" />
                   <Input className="col-span-2 h-9" disabled={ro} value={b.to || ''} onChange={(e) => updateBreak(i, { to: e.target.value })} placeholder="To 13:15" />
-                  <Input className="col-span-2 h-9" disabled={ro} value={b.total || ''} onChange={(e) => updateBreak(i, { total: e.target.value })} placeholder="00:15" />
+                  <Input className="col-span-2 h-9 bg-slate-50 text-slate-600" disabled value={computeBreakTotal(b.from, b.to)} placeholder="auto" title="Auto-calculated: To − From" data-testid={`vig-dialog-break-total-${i}`} />
                   {!ro && <button onClick={() => removeBreak(i)} className="col-span-1 text-slate-400 hover:text-red-600"><X className="w-4 h-4" /></button>}
                 </div>
               ))}

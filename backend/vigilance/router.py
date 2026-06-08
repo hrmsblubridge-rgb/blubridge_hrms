@@ -361,13 +361,13 @@ def _validate_breaks(raw_breaks):
         fr = b.get("from", b.get("from_", ""))
         okf, nf = svc.norm_clock(fr)
         okt, nt = svc.norm_clock(b.get("to", ""))
-        okv, nv = svc.norm_duration(b.get("total", ""))
         if not okf:
             return None, f"'{label} From' must be HH:MM AM/PM."
         if not okt:
             return None, f"'{label} To' must be HH:MM AM/PM."
-        if not okv:
-            return None, f"'{label} Total' — invalid duration format. Accepted: HH:MM or HH:MM:SS."
+        # Total is AUTO-CALCULATED (To − From, overnight allowed); any
+        # user-supplied Total is ignored so it can never be inconsistent.
+        nv = svc.compute_break_total(nf, nt)
         if nf or nt or nv:
             breaks.append({"label": label, "from": nf, "to": nt, "total": nv})
     return breaks, None
