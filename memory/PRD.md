@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-06 (Vigilance upload — system-column blocking + 00:00 rejection fixes) ✅ TESTED
+
+**Two upload bugs fixed at root level in `backend/vigilance/service.py` + `router.py`:**
+
+**FIX 1 — System/reference columns must never block import.** `parse_upload` was rewritten from strict positional/exact-header validation to a **resilient, name-based parser**: it locates identity + editable columns by fuzzy header name (aliases), so the 7 immutable HRMS columns (Name, Email-id, Team, Date, Punch-In, Punch-Out, Total Hours) can be renamed, reordered, blanked, hidden or tampered **without failing the upload**. Their uploaded values are never written — target identity/attendance is **reconstructed from the Employee Master + Attendance DB** (single source of truth). Row→employee mapping now uses **Email-id, then Name fallback** (+ Date as the day key). Break groups are detected by name too (handles dynamic Extra-Break(N) after reordering). Router now passes a `by_name` map.
+
+**FIX 2 — Zero durations are valid.** Root cause: a zero duration `00:00` read by openpyxl as the number `0` made `norm_duration(0)` return invalid → upload failed. `norm_duration`/`norm_clock` now handle **Excel numeric time serials and datetime cells**, and **00:00 / 00:00:00 / numeric 0 are accepted** as legitimate zero values (no break / no research) for all duration fields incl. dynamic extra breaks. Malformed values (25:99, 12:70, 10-30, AA:BB) still correctly rejected.
+
+**Verified:** New `tests/test_vigilance_upload_validation.py` (**28 tests**: zero durations, numeric zero, tampered/missing/reordered/renamed columns, Name-fallback, malformed rejection) all pass. Live e2e: downloaded real template, tampered Name + entered 00:00/00:00:00 → upload **200** (created 1), zero durations stored, Name reconstructed from DB (not the tampered value). Full `test_vigilance_flow.py` **30/30 pass**, DB clean (0 residual), lint clean. No regression to template gen, dynamic breaks, CRUD, isolation, admin merge, export, sorting, pagination.
+
+---
+
+
 ## Latest Update — 2026-06-06 (Vigilance Module — employee User Guide, vigilance-only) ✅ TESTED
 
 **Request:** A professional, beginner-friendly step-by-step "Download User Guide" for Vigilance-designation employees ONLY (not admins), covering ONLY the vigilance-employee workflow.

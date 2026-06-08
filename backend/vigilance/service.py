@@ -116,6 +116,13 @@ def norm_clock(value):
         return True, _hm_to_12h(value.hour, f"{value.minute:02d}")
     if isinstance(value, datetime):
         return True, _hm_to_12h(value.hour, f"{value.minute:02d}")
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Excel stores a clock time as a fraction of a day (0.0 == midnight).
+        # 00:00 read as the number 0 must be accepted, not rejected.
+        total = round((float(value) % 1) * 24 * 3600)
+        h = (total // 3600) % 24
+        mm = (total % 3600) // 60
+        return True, _hm_to_12h(h, f"{mm:02d}")
     s = re.sub(r"\s+", " ", str(value).strip())
     m = CLOCK_RE.match(s)               # 12-hour with AM/PM
     if m:
@@ -152,14 +159,25 @@ def to_24h(value):
 
 def norm_duration(value):
     """Validate/normalise a DURATION (no AM/PM) entered as EITHER 'HH:MM' OR
-    'HH:MM:SS' (and Excel time cells) and store canonically as 'HH:MM:SS'.
-    Blank allowed. Returns (ok, normalised|''). Rejects invalid values
-    (e.g. 25:99, AA:BB, 12:70, 10::30, 10-30).
+    'HH:MM:SS' (and Excel time/number cells) and store canonically as 'HH:MM:SS'.
+    Blank allowed. ZERO durations ('00:00' / '00:00:00' / numeric 0) are VALID
+    business values (no break / no research) and are NEVER rejected. Only a
+    genuinely malformed value (e.g. 25:99, AA:BB, 12:70, 10::30, 10-30) fails.
     """
-    if value is None or str(value).strip() == "":
+    if value is None or (isinstance(value, str) and value.strip() == ""):
         return True, ""
     if isinstance(value, dtime):
         return True, f"{value.hour:02d}:{value.minute:02d}:{value.second:02d}"
+    if isinstance(value, datetime):
+        return True, f"{value.hour:02d}:{value.minute:02d}:{value.second:02d}"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Excel time/duration serial (1.0 == 24h). 0 -> 00:00:00 (a VALID value).
+        total = round(float(value) * 24 * 3600)
+        if total < 0:
+            return False, None
+        h, rem = divmod(total, 3600)
+        mm, ss = divmod(rem, 60)
+        return True, f"{h:02d}:{mm:02d}:{ss:02d}"
     s = str(value).strip()
     m = DUR_RE.match(s)
     if not m:
@@ -386,12 +404,43 @@ def _norm_header(v):
     return re.sub(r"\s+", " ", str(v).strip()).lower() if v is not None else ""
 
 
-def parse_upload(file_bytes, employees_by_email, uploaded_by):
-    """Parse an uploaded .xlsx. Returns (entries, errors).
+def _nkey(v):
+    """Aggressive normalisation for fuzzy header matching: lowercase alphanumerics only.
+    'Email-id' / 'Email id' / 'E-mail' all collapse to comparable keys."""
+    return re.sub(r"[^a-z0-9]", "", str(v).strip().lower()) if v is not None else ""
+
+
+# Header aliases for locating editable scalar + identity columns by NAME (not by
+# position) so the upload survives reordering / slight renaming of columns.
+_EMAIL_KEYS = {"emailid", "email", "emailaddress", "officialemail", "mail", "employeeemail", "empemail"}
+_DATE_KEYS = {"date", "day", "workdate", "attendancedate"}
+_NAME_KEYS = {"name", "employeename", "empname", "fullname", "employee"}
+_SYS_LOGIN_KEYS = {"systemlogin", "syslogin", "login"}
+_SYS_LOGOUT_KEYS = {"systemlogout", "syslogout", "logout"}
+_RESEARCH_KEYS = {"totalresearchhours", "researchhours", "research", "totalresearch", "researchhrs"}
+_BREAKHRS_KEYS = {"totalbreakhours", "breakhours", "totalbreak", "breakhrs"}
+# Reserved scalar/system header keys — excluded from break-group detection.
+_RESERVED_KEYS = (_EMAIL_KEYS | _DATE_KEYS | _NAME_KEYS | _SYS_LOGIN_KEYS | _SYS_LOGOUT_KEYS
+                  | _RESEARCH_KEYS | _BREAKHRS_KEYS
+                  | {"team", "punchin", "punchout", "totalhours"})
+_SUB_KEYS = {"from": "From", "to": "To", "total": "Total"}
+
+
+def parse_upload(file_bytes, employees_by_email, employees_by_name, uploaded_by):
+    """Parse an uploaded .xlsx (resilient, name-based). Returns (entries, errors).
 
     `employees_by_email`: {lower_email: employee_dict}
-    `uploaded_by`: {'employee_id','name'}
-    All-or-nothing: caller must reject the whole upload if errors is non-empty.
+    `employees_by_name` : {lower_full_name: employee_dict}
+    `uploaded_by`       : {'employee_id','name'}
+    All-or-nothing: caller rejects the whole upload if errors is non-empty.
+
+    IMMUTABLE HRMS REFERENCE COLUMNS (Name, Email-id, Team, Date, Punch-In,
+    Punch-Out, Total Hours) are NEVER validated for format and their uploaded
+    values are NEVER written to the DB — they are reconstructed from the Employee
+    Master + Attendance (the single source of truth). Renaming, reordering,
+    blanking, hiding or tampering with these columns must NOT fail the upload.
+    Email-id (or, as a fallback, Name) + Date are used ONLY to MAP each row to an
+    employee/day. Only vigilance-EDITABLE fields are validated and imported.
     """
     errors = []
     try:
@@ -405,74 +454,89 @@ def parse_upload(file_bytes, employees_by_email, uploaded_by):
         return [], [{"row": 0, "message": "Template is empty or missing header rows."}]
     header1 = list(rows[0])
     header2 = list(rows[1])
+    ncols = max(len(header1), len(header2))
 
-    # Validate fixed/system columns (exact order, names)
-    for i, expected in enumerate(FIXED_COLS):
-        actual = _norm_header(header1[i]) if i < len(header1) else ""
-        if actual != expected.lower():
-            return [], [{"row": 1, "message": f"Mandatory column #{i + 1} must be '{expected}' (found '{header1[i] if i < len(header1) else ''}'). Do not rename/reorder system columns."}]
+    # Locate identity + editable scalar columns by fuzzy NAME (first match wins).
+    def find_col(keyset):
+        for idx in range(len(header1)):
+            if _nkey(header1[idx]) in keyset:
+                return idx
+        return None
 
-    # Detect break groups dynamically (columns after the 11 fixed)
-    groups = []   # [{label, from_idx, to_idx, total_idx}]
-    i = N_FIXED
+    email_idx = find_col(_EMAIL_KEYS)
+    name_idx = find_col(_NAME_KEYS)
+    date_idx = find_col(_DATE_KEYS)
+    login_idx = find_col(_SYS_LOGIN_KEYS)
+    logout_idx = find_col(_SYS_LOGOUT_KEYS)
+    research_idx = find_col(_RESEARCH_KEYS)
+    breakhrs_idx = find_col(_BREAKHRS_KEYS)
+
+    # Detect break groups by NAME: a header-1 label that is NOT a reserved
+    # scalar/system column and whose columns carry From/To/Total sub-headers.
+    groups = []
     current = None
-    while i < len(header1):
-        label = header1[i]
-        sub = _norm_header(header2[i]) if i < len(header2) else ""
-        if label not in (None, ""):
-            current = {"label": str(label).strip(), "From": None, "To": None, "Total": None}
-            groups.append(current)
-        if current is not None and sub in ("from", "to", "total"):
-            current[sub.capitalize()] = i
-        i += 1
-    # Keep only well-formed groups (must have at least From/To/Total mapping)
+    for i in range(ncols):
+        label = header1[i] if i < len(header1) else None
+        sub = _nkey(header2[i]) if i < len(header2) else ""
+        lkey = _nkey(label)
+        if label not in (None, "") and lkey not in _RESERVED_KEYS and sub in _SUB_KEYS:
+            lbl = str(label).strip()
+            if current is None or current["label"] != lbl or current[_SUB_KEYS[sub]] is not None:
+                current = {"label": lbl, "From": None, "To": None, "Total": None}
+                groups.append(current)
+            current[_SUB_KEYS[sub]] = i
+        elif current is not None and lkey == "" and sub in _SUB_KEYS:
+            current[_SUB_KEYS[sub]] = i
+        elif label not in (None, "") and (lkey in _RESERVED_KEYS or sub not in _SUB_KEYS):
+            current = None
     groups = [g for g in groups if g["From"] is not None or g["To"] is not None or g["Total"] is not None]
 
-    IDX = {name: idx for idx, name in enumerate(FIXED_COLS)}
+    def gv(row, idx):
+        return row[idx] if (idx is not None and idx < len(row)) else None
+
+    def nonempty(x):
+        return x is not None and str(x).strip() != ""
+
     entries = []
     seen = set()
-    for rnum in range(2, len(rows)):          # data rows (0-based row index 2 == excel row 3)
+    for rnum in range(2, len(rows)):          # data rows (excel row == rnum + 1)
         excel_row = rnum + 1
         row = list(rows[rnum])
 
-        def cell(name):
-            idx = IDX[name]
-            return row[idx] if idx < len(row) else None
+        sys_login_raw = gv(row, login_idx)
+        sys_logout_raw = gv(row, logout_idx)
+        research_raw = gv(row, research_idx)
+        break_hours_raw = gv(row, breakhrs_idx)
 
-        email_raw = cell("Email-id")
-        date_raw = cell("Date")
-        # Editable scalars
-        sys_login_raw = cell("System Login")
-        sys_logout_raw = cell("System Logout")
-        research_raw = cell("Total Research Hours")
-        break_hours_raw = cell("Total Break Hours")
+        break_vals = [(g["label"], gv(row, g["From"]), gv(row, g["To"]), gv(row, g["Total"])) for g in groups]
 
-        # Gather break cell values
-        break_vals = []
-        for g in groups:
-            f = row[g["From"]] if g["From"] is not None and g["From"] < len(row) else None
-            t = row[g["To"]] if g["To"] is not None and g["To"] < len(row) else None
-            tot = row[g["Total"]] if g["Total"] is not None and g["Total"] < len(row) else None
-            break_vals.append((g["label"], f, t, tot))
-
-        # Skip fully-empty rows (employee row left blank by vigilance user)
-        has_any_editable = any(str(x).strip() for x in [sys_login_raw, sys_logout_raw, research_raw, break_hours_raw] if x is not None)
-        has_any_break = any(str(v).strip() for (_, f, t, tot) in break_vals for v in (f, t, tot) if v is not None)
+        # Skip a fully-empty row (vigilance user entered nothing at all). A value
+        # of 0 / 00:00 counts as entered (zero is a legitimate logged value).
+        has_any_editable = any(nonempty(x) for x in (sys_login_raw, sys_logout_raw, research_raw, break_hours_raw))
+        has_any_break = any(nonempty(v) for (_, f, t, tot) in break_vals for v in (f, t, tot))
         if not has_any_editable and not has_any_break:
             continue
 
-        # Resolve employee (mandatory)
-        if email_raw is None or str(email_raw).strip() == "":
-            errors.append({"row": excel_row, "message": "Email-id is required to identify the employee."})
-            continue
-        emp = employees_by_email.get(str(email_raw).strip().lower())
-        if not emp:
-            errors.append({"row": excel_row, "message": f"No employee found for Email-id '{email_raw}'."})
+        # Map to employee — Email-id first, then Name fallback. System reference
+        # columns never block: if both are tampered/blank we simply cannot map.
+        emp = None
+        email_raw = gv(row, email_idx)
+        if nonempty(email_raw):
+            emp = employees_by_email.get(str(email_raw).strip().lower())
+        if emp is None:
+            name_raw = gv(row, name_idx)
+            if nonempty(name_raw):
+                emp = employees_by_name.get(str(name_raw).strip().lower())
+        if emp is None:
+            ident = email_raw if nonempty(email_raw) else gv(row, name_idx)
+            errors.append({"row": excel_row, "message": f"Could not match this row to an employee — check Email-id or Name (got '{ident}')."})
             continue
 
-        iso = parse_display_date_strict(date_raw)
+        # Map to the day (record key). Lenient: Excel date / DD-MMM-YYYY / ISO / DD-MM-YYYY.
+        date_raw = gv(row, date_idx)
+        iso = to_iso(date_raw)
         if not iso:
-            errors.append({"row": excel_row, "message": f"Invalid Date '{date_raw}'. Use DD-MMM-YYYY (e.g. 06-Jun-2026)."})
+            errors.append({"row": excel_row, "message": f"Could not read the Date for {emp.get('full_name')} (got '{date_raw}'). Keep the Date column from the template."})
             continue
 
         key = (emp["id"], iso, uploaded_by["employee_id"])
@@ -480,22 +544,22 @@ def parse_upload(file_bytes, employees_by_email, uploaded_by):
             errors.append({"row": excel_row, "message": f"Duplicate row for {emp.get('full_name')} on {iso_to_display(iso)} within the file."})
             continue
 
-        # Validate editable clock/duration fields
+        # Validate ONLY the vigilance-editable fields.
         ok, sys_login = norm_clock(sys_login_raw)
         if not ok:
-            errors.append({"row": excel_row, "message": f"System Login '{sys_login_raw}' must be HH:MM AM/PM (e.g. 09:45 AM)."})
+            errors.append({"row": excel_row, "message": f"System Login '{sys_login_raw}' must be a time like 09:30 (24h) or 09:30 AM."})
             continue
         ok, sys_logout = norm_clock(sys_logout_raw)
         if not ok:
-            errors.append({"row": excel_row, "message": f"System Logout '{sys_logout_raw}' must be HH:MM AM/PM."})
+            errors.append({"row": excel_row, "message": f"System Logout '{sys_logout_raw}' must be a time like 18:00 (24h) or 06:00 PM."})
             continue
         ok, research = norm_duration(research_raw)
         if not ok:
-            errors.append({"row": excel_row, "message": f"Total Research Hours '{research_raw}' — invalid duration format. Accepted: HH:MM or HH:MM:SS (e.g. 10:00 or 10:00:30)."})
+            errors.append({"row": excel_row, "message": f"Total Research Hours '{research_raw}' — use HH:MM or HH:MM:SS (00:00 is allowed)."})
             continue
         ok, break_hours = norm_duration(break_hours_raw)
         if not ok:
-            errors.append({"row": excel_row, "message": f"Total Break Hours '{break_hours_raw}' — invalid duration format. Accepted: HH:MM or HH:MM:SS."})
+            errors.append({"row": excel_row, "message": f"Total Break Hours '{break_hours_raw}' — use HH:MM or HH:MM:SS (00:00 is allowed)."})
             continue
 
         breaks = []
@@ -505,13 +569,13 @@ def parse_upload(file_bytes, employees_by_email, uploaded_by):
             okt, nt = norm_clock(t)
             okv, nv = norm_duration(tot)
             if not okf:
-                errors.append({"row": excel_row, "message": f"'{label} From' = '{f}' must be HH:MM AM/PM."})
+                errors.append({"row": excel_row, "message": f"'{label} From' = '{f}' must be a time like 09:30."})
                 row_has_break_error = True
             if not okt:
-                errors.append({"row": excel_row, "message": f"'{label} To' = '{t}' must be HH:MM AM/PM."})
+                errors.append({"row": excel_row, "message": f"'{label} To' = '{t}' must be a time like 10:00."})
                 row_has_break_error = True
             if not okv:
-                errors.append({"row": excel_row, "message": f"'{label} Total' = '{tot}' — invalid duration format. Accepted: HH:MM or HH:MM:SS."})
+                errors.append({"row": excel_row, "message": f"'{label} Total' = '{tot}' — use HH:MM or HH:MM:SS (00:00 is allowed)."})
                 row_has_break_error = True
             if okf and okt and okv and (nf or nt or nv):
                 breaks.append({"label": label, "from": nf, "to": nt, "total": nv})

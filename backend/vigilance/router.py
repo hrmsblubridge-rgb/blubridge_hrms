@@ -157,9 +157,14 @@ def get_vigilance_router(db, get_current_user):
                  "department": 1, "designation": 1}
         ).to_list(100000)
         by_email = {(e.get("official_email") or "").strip().lower(): e for e in emps if e.get("official_email")}
+        by_name = {}
+        for e in emps:
+            nk = (e.get("full_name") or "").strip().lower()
+            if nk:
+                by_name.setdefault(nk, e)  # first wins; ambiguous names rely on Email-id
 
         uploaded_by = {"employee_id": ctx["employee_id"], "name": ctx["name"]}
-        entries, errors = await run_in_threadpool(svc.parse_upload, data, by_email, uploaded_by)
+        entries, errors = await run_in_threadpool(svc.parse_upload, data, by_email, by_name, uploaded_by)
         if errors:
             raise HTTPException(status_code=422, detail={"message": "Upload rejected — fix the rows below.", "errors": errors[:200]})
         if not entries:
