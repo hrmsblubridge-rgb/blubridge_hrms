@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-06 (Vigilance table — horizontal scroll oscillation/jitter fix) ✅ TESTED
+
+**Issue:** The synced top+bottom horizontal scrollbars oscillated / bounced to-and-fro (esp. SHIFT+wheel, trackpad) before moving.
+
+**Root cause (found, not patched):** `OperationalVigilance.js` synced the two scroll containers by cross-writing `scrollLeft` BOTH ways, guarded by a boolean toggle flag. Under coalesced/momentum scroll events the follower's *echoed* scroll event arrived a frame late and was mistaken for a real user scroll, writing the driver's `scrollLeft` **backward** → the bounce. (An intermediate rAF-lock attempt also failed because the lock released before the late echo arrived.)
+
+**Permanent fix — single ACTIVE-DRIVER arbitration:** The first element the user scrolls becomes the **sole driver**; the other is a **pure follower** whose echo scroll events are fully ignored (never written back). The driver is released after a 140ms scroll-idle, so the user can switch which bar they drive. Handlers are stable (`useCallback`), no extra re-renders, silent one-way `scrollLeft` follow with a `≥1px` write threshold.
+
+**Verified (Playwright, wide 2091px table, scroll events instrumented):** forward, reverse, and top-bar-driven scrolling all show **0 sync-induced backward jumps in the follower across 39–44 samples** (old code bounced 4–5px on *every* step); only an occasional imperceptible 1–2px **native Chromium momentum settle** remains. Final positions always aligned. Sticky header, sticky Name/Date + Actions columns, dynamic break columns, and admin merged view all intact — 0 regression. Lint clean. Seed test data cleaned (0 residual entries).
+
+---
+
+
 ## Latest Update — 2026-06-06 (Vigilance upload — system-column blocking + 00:00 rejection fixes) ✅ TESTED
 
 **Two upload bugs fixed at root level in `backend/vigilance/service.py` + `router.py`:**

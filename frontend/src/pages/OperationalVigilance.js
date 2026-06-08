@@ -140,18 +140,35 @@ export default function OperationalVigilance() {
   const bodyScrollRef = useRef(null);
   const [scrollW, setScrollW] = useState(0);
   const [row1H, setRow1H] = useState(44);
-  const syncingScroll = useRef(false);
 
-  const onTopScroll = () => {
-    if (syncingScroll.current) { syncingScroll.current = false; return; }
-    syncingScroll.current = true;
-    if (bodyScrollRef.current) bodyScrollRef.current.scrollLeft = topScrollRef.current.scrollLeft;
-  };
-  const onBodyScroll = () => {
-    if (syncingScroll.current) { syncingScroll.current = false; return; }
-    syncingScroll.current = true;
-    if (topScrollRef.current) topScrollRef.current.scrollLeft = bodyScrollRef.current.scrollLeft;
-  };
+  // Non-recursive horizontal scroll sync via single ACTIVE-DRIVER arbitration.
+  // Root cause of the old jitter: cross-writing scrollLeft both ways. During
+  // momentum the follower's echoed scroll event arrived a frame late and got
+  // mistaken for a real user scroll, writing the driver's scrollLeft BACKWARD
+  // (the to-and-fro bounce). Fix: the first element the user scrolls becomes the
+  // sole driver; the other is a pure follower whose echo events are ignored and
+  // never written back. The driver is released after a short scroll-idle.
+  const scrollDriver = useRef(null);
+  const scrollIdle = useRef(0);
+
+  const handleScrollSync = useCallback((self, other) => {
+    if (!self || !other) return;
+    if (scrollDriver.current && scrollDriver.current !== self) return; // ignore follower echo
+    scrollDriver.current = self;
+    clearTimeout(scrollIdle.current);
+    scrollIdle.current = setTimeout(() => { scrollDriver.current = null; }, 140);
+    const left = self.scrollLeft;
+    if (Math.abs(other.scrollLeft - left) >= 1) other.scrollLeft = left; // silent one-way follow
+  }, []);
+
+  const onTopScroll = useCallback(() => {
+    handleScrollSync(topScrollRef.current, bodyScrollRef.current);
+  }, [handleScrollSync]);
+  const onBodyScroll = useCallback(() => {
+    handleScrollSync(bodyScrollRef.current, topScrollRef.current);
+  }, [handleScrollSync]);
+
+  useEffect(() => () => clearTimeout(scrollIdle.current), []);
 
   useEffect(() => {
     const measure = () => {
