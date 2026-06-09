@@ -102,7 +102,7 @@ const EmployeeDashboard = () => {
           { label: 'Present Days', value: dashboardData?.attendance_summary?.present || 0, icon: CalendarCheck, color: 'blue' },
           { label: 'Leave Taken', value: dashboardData?.attendance_summary?.leaves || 0, icon: CalendarX, color: 'amber' },
           { label: 'Absent', value: dashboardData?.attendance_summary?.absent || 0, icon: AlertTriangle, color: 'red' },
-          { label: 'This Month', value: `${Math.round((dashboardData?.attendance_summary?.present || 0) / 22 * 100)}%`, icon: TrendingUp, color: 'blue' },
+          { label: 'This Month', value: `${dashboardData?.attendance_summary?.percent ?? Math.round((dashboardData?.attendance_summary?.present || 0) / 22 * 100)}%`, icon: TrendingUp, color: 'blue' },
         ].map((stat, i) => (
           <div key={i} className="stat-card">
             <div className="flex items-center gap-4">

@@ -9848,7 +9848,47 @@ async def get_employee_dashboard(current_user: dict = Depends(get_current_user))
         login_time = today_attendance.get("check_in")
         logout_time = today_attendance.get("check_out")
         hours_today = today_attendance.get("total_hours")
-    
+
+    # ---- Leave Taken: approved leave days within the current month (half-day aware) ----
+    # ROOT-CAUSE FIX: the employee dashboard cards read `attendance_summary`
+    # ({present, leaves, absent, percent}), which this endpoint never produced —
+    # hence all four cards showed 0. We now compute it from real attendance +
+    # approved-leave data (no hard-coded values), and reconcile absents against
+    # approved leave so an excused day is never double-counted as absent.
+    month_first_iso = first_day.strftime("%Y-%m-%d")
+    month_last_iso = last_day.strftime("%Y-%m-%d")
+    leave_days = 0.0
+    leave_date_set = set()                       # DD-MM-YYYY keys (attendance date format)
+    approved_leaves = await db.leaves.find({
+        "employee_id": employee_id,
+        "status": "approved",
+        "start_date": {"$lte": month_last_iso},
+        "end_date": {"$gte": month_first_iso},
+    }, {"_id": 0, "start_date": 1, "end_date": 1, "leave_split": 1}).to_list(500)
+    for lv in approved_leaves:
+        try:
+            sd = datetime.strptime(lv["start_date"], "%Y-%m-%d").date()
+            ed = datetime.strptime(lv["end_date"], "%Y-%m-%d").date()
+        except (ValueError, TypeError, KeyError):
+            continue
+        is_half = (lv.get("leave_split") or "Full Day").strip() in ("First Half", "Second Half", "Half Day", "Half")
+        cur = max(sd, first_day.date())
+        end_clamp = min(ed, last_day.date())
+        while cur <= end_clamp:
+            leave_date_set.add(cur.strftime("%d-%m-%Y"))
+            leave_days += 0.5 if is_half else 1.0
+            cur = cur + timedelta(days=1)
+
+    # Absent = explicit non-attendance records, excluding days covered by approved leave.
+    absent_days = sum(
+        1 for r in attendance_records
+        if r.get("status", "") in ["Absent", "NA", "Not Logged"] and r.get("date") not in leave_date_set
+    )
+    present_days = active_days                   # worked days (excludes absent / leave / invalid)
+    denom = present_days + absent_days           # required attendance days (leave is excused)
+    this_month_percent = round(present_days / denom * 100) if denom > 0 else 0
+    leaves_taken = int(leave_days) if leave_days == int(leave_days) else leave_days
+
     return {
         "employee_name": employee.get("full_name"),
         "employee_id": employee.get("emp_id"),
@@ -9860,6 +9900,13 @@ async def get_employee_dashboard(current_user: dict = Depends(get_current_user))
             "late_arrivals": late_arrivals,
             "early_outs": early_outs
         },
+        "attendance_summary": {
+            "present": present_days,
+            "leaves": leaves_taken,
+            "absent": absent_days,
+            "percent": this_month_percent,
+        },
+        "this_month_percent": this_month_percent,
         "today": {
             "date": today_str,
             "login_time": login_time,

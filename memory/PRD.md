@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-09 (P0 — Employee Dashboard count cards all showing 0 — ROOT CAUSE FIX) ✅ TESTED
+
+**Bug:** Employee Dashboard cards (Present Days / Leave Taken / Absent / This Month %) all showed **0** despite real data.
+
+**Root cause (definitive — frontend↔backend contract mismatch):** `EmployeeDashboard.js` reads `dashboardData.attendance_summary.{present, leaves, absent, percent}`, but `GET /api/employee/dashboard` only ever returned a `summary` block (`active_days/inactive_days/late_arrivals/early_outs`) and computed **no leave data at all**. `attendance_summary` has NEVER existed in `server.py` history (`git log -S` confirms), so the cards always resolved to `undefined → 0`. Not caused by Vigilance changes.
+
+**Fix (surgical, backend `server.py` `get_employee_dashboard`):** Added an `attendance_summary` block (+ top-level `this_month_percent`) computed from REAL data — `present = active_days` (worked days), `leaves` = approved leave days in the current month (half-day aware via clamped per-day count), `absent` = explicit Absent/NA/Not-Logged records **reconciled against approved-leave dates** (excused days never double-count), `percent = round(present/(present+absent)*100)` (leave excused; no hard-coded 22). Legacy `summary` block KEPT untouched for backward-compat. Frontend "This Month" card now uses `attendance_summary.percent` (falls back to old formula only if absent).
+
+**Verified:** `user` (Rishi) live API → `{present:7, leaves:0, absent:0, percent:100}`; controlled test (temp June approved full+half leave + absent on leave-day vs non-leave-day) → `leaves:2.5`, absent reconciliation correct, `percent:88` (7/8); all temp data cleaned. Screenshot confirms cards render 7 / 0 / 0 / 100%. No change to attendance/leave/charts/time-tracker/admin/vigilance modules or DB schema.
+
+---
+
+
 ## Latest Update — 2026-06-08 (Vigilance — premium upload progress UX + non-destructive tests) ✅ TESTED
 
 **Premium sheet-upload progress experience (`OperationalVigilance.js` + `index.css`):** Clicking "Upload Filled Sheet" now opens a centered, backdrop-blurred overlay that stays until success/fail:
