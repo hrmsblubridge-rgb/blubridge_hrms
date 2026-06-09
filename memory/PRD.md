@@ -5,6 +5,18 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-09 (Admin Attendance — single-line IN/OUT times + synced top scrollbar) ✅ TESTED
+
+**Scope:** `frontend/src/pages/Attendance.js` only. Surgical UI fix, no logic/data/sorting/pagination/filter changes.
+
+- **FIX 1 & 3 — time wrapping:** IN/OUT `<td>` cells now `whitespace-nowrap min-w-[96px]`, so values like `07:12 AM` / `05:33 PM` always render on ONE line (were wrapping `07:12` / `AM`). Date/time format unchanged.
+- **FIX 2 — synced TOP horizontal scrollbar:** Added a premium top scrollbar above the table, mirrored to the existing bottom scroll via the SAME proven single-ACTIVE-DRIVER arbitration used in the Vigilance module (first-scrolled element drives, follower echo ignored, 140ms idle release → zero jitter/oscillation). Top spacer width tracked by a `ResizeObserver` on the body scroll container. Both `data-testid`: `attendance-top-scroll`, `attendance-table-scroll`.
+
+**Verified (Playwright, real mouse-wheel input, table forced to overflow):** wheel over body → top 500 / body 498; wheel over top → top 898 / body 900 — synced within 2px both directions, no backward jumps. Times render single-line (screenshot). 0 regression to summary cards, vigilance research/break columns, sorting, pagination, filters, bottom scroll, responsive behavior.
+
+---
+
+
 ## Latest Update — 2026-06-09 (P0 — Employee Dashboard count cards all showing 0 — ROOT CAUSE FIX) ✅ TESTED
 
 **Bug:** Employee Dashboard cards (Present Days / Leave Taken / Absent / This Month %) all showed **0** despite real data.

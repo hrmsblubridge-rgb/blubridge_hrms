@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -59,6 +59,37 @@ const Attendance = () => {
   });
 
   useEffect(() => { fetchData(); }, []);
+
+  // ---- Premium synced top+bottom horizontal scrollbars (single ACTIVE-DRIVER
+  // arbitration — prevents the echo-bounce/jitter of cross-writing scrollLeft) ----
+  const topScrollRef = useRef(null);
+  const bodyScrollRef = useRef(null);
+  const [scrollW, setScrollW] = useState(0);
+  const scrollDriver = useRef(null);
+  const scrollIdle = useRef(0);
+
+  const handleScrollSync = useCallback((self, other) => {
+    if (!self || !other) return;
+    if (scrollDriver.current && scrollDriver.current !== self) return; // ignore follower echo
+    scrollDriver.current = self;
+    clearTimeout(scrollIdle.current);
+    scrollIdle.current = setTimeout(() => { scrollDriver.current = null; }, 140);
+    const left = self.scrollLeft;
+    if (Math.abs(other.scrollLeft - left) >= 1) other.scrollLeft = left; // silent one-way follow
+  }, []);
+  const onTopScroll = useCallback(() => handleScrollSync(topScrollRef.current, bodyScrollRef.current), [handleScrollSync]);
+  const onBodyScroll = useCallback(() => handleScrollSync(bodyScrollRef.current, topScrollRef.current), [handleScrollSync]);
+  useEffect(() => () => clearTimeout(scrollIdle.current), []);
+
+  // Keep the top spacer width equal to the table's scrollable width.
+  useEffect(() => {
+    const measure = () => { const el = bodyScrollRef.current; if (el) setScrollW(el.scrollWidth); };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (bodyScrollRef.current) ro.observe(bodyScrollRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, [attendance, currentPage, rowsPerPage, loading, vigMembers]);
 
   const formatDateForApi = (date) => {
     if (!date) return '';
@@ -357,7 +388,13 @@ const Attendance = () => {
           </div>
         ) : (
           <>
-          <div className="overflow-x-auto">
+          {/* Synced TOP horizontal scrollbar (mirrors the table's bottom scroll) */}
+          <div ref={topScrollRef} onScroll={onTopScroll}
+               className="overflow-x-auto overflow-y-hidden scroll-premium"
+               style={{ height: scrollW > 0 ? 12 : 0 }} data-testid="attendance-top-scroll">
+            <div style={{ width: scrollW, height: 1 }} />
+          </div>
+          <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-x-auto scroll-premium" data-testid="attendance-table-scroll">
             <table className="table-premium">
               <thead>
                 <tr>
@@ -408,10 +445,10 @@ const Attendance = () => {
                       </td>
                       <td className="text-slate-600">{record.team}</td>
                       <td className="text-slate-600 whitespace-nowrap">{formatDate(record.date)}</td>
-                      <td>
+                      <td className="whitespace-nowrap min-w-[96px]">
                         <div className="text-slate-900 font-medium">{record.check_in || '-'}</div>
                       </td>
-                      <td>
+                      <td className="whitespace-nowrap min-w-[96px]">
                         <div className="text-slate-900 font-medium">{record.check_out || '-'}</div>
                       </td>
                       <td className="text-slate-600 font-medium">{record.total_hours || '-'}</td>
