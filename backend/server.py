@@ -10540,6 +10540,37 @@ async def get_employee_onboarding(employee_id: str, current_user: dict = Depends
         "required_documents": REQUIRED_DOCUMENTS
     }
 
+@api_router.delete("/onboarding/employee/{employee_id}")
+async def remove_employee_from_verification(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """ADMIN ONLY: remove an employee from the verification/onboarding queue.
+    Deletes their onboarding record + ALL uploaded onboarding documents so they
+    no longer appear in the queue. The employee account itself is preserved.
+    Irreversible."""
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not onboarding:
+        raise HTTPException(status_code=404, detail="Onboarding record not found")
+
+    docs_res = await db.onboarding_documents.delete_many({"employee_id": employee_id})
+    await db.onboarding.delete_one({"employee_id": employee_id})
+
+    # Reset derived onboarding status on the employee + user so no stale state lingers.
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {"onboarding_status": OnboardingStatus.NOT_STARTED, "updated_at": get_ist_now().isoformat()},
+         "$unset": {"onboarding_completed_at": ""}}
+    )
+    await db.users.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"onboarding_status": OnboardingStatus.NOT_STARTED}}
+    )
+
+    await log_audit(current_user["id"], "remove_from_verification", "onboarding", employee_id,
+                    f"deleted onboarding + {docs_res.deleted_count} documents")
+    return {"message": "Employee removed from verification queue", "documents_deleted": docs_res.deleted_count}
+
 @api_router.get("/onboarding/my-status")
 async def get_my_onboarding_status(current_user: dict = Depends(get_current_user)):
     """Get current user's onboarding status"""

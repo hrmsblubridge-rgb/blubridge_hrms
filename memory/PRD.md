@@ -5,6 +5,16 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-10 (Verification — Remove-from-queue with confirmation) ✅ TESTED
+
+**Feature:** Admin can remove an employee from the Verification/Onboarding queue, with a mandatory confirmation step.
+- Backend: `DELETE /api/onboarding/employee/{employee_id}` (ADMIN_ROLES/HR only) — deletes the employee's `onboarding` record + ALL `onboarding_documents`, resets derived `onboarding_status` to `not_started` on employee + user (employee account itself preserved). Audit-logged. Irreversible.
+- Frontend (`Verification.js`): "Remove" button (red, Trash2 icon) in the Action column next to "Review" on every queue row, shown only when `user.role === 'hr'`. Clicking opens a confirmation dialog (`data-testid="remove-confirm-dialog"`): "...permanently remove {name} ({emp_id}) ... delete their onboarding record and all uploaded documents. The employee account is kept. This action cannot be undone." → Cancel / Remove. On confirm, calls the API and refreshes the queue.
+- Verified: non-admin DELETE → 403; admin DELETE → 200 (`documents_deleted` correct, onboarding + docs fully removed, no real data touched — disposable record used); UI Remove button + confirmation dialog render correctly (screenshot).
+
+---
+
+
 ## Latest Update — 2026-06-10 (Multi-module: Attendance nowrap, Intern Paid-Leave block, Verification Rollback, Education merge notice) ✅ TESTED
 
 **FIX 1 — Attendance no word-wrap (all columns):** Added a scoped `.table-nowrap` modifier (`index.css`) applied to the admin Attendance `<table className="table-premium table-nowrap">`. Every header/cell (Employee Name, Team, Date, IN/OUT, Total Hours, dynamic vigilance Research/Break columns, any future column) now renders single-line; horizontal scroll handles overflow. Scoped so other `.table-premium` tables are unaffected. Verified via screenshot ("Compiler-Auto Differentiation", "Pulaganti Vivek Chaitanya" single-line).

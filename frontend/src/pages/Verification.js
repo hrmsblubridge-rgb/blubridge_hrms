@@ -48,7 +48,8 @@ import {
   ChevronRight,
   X,
   Download,
-  RotateCcw
+  RotateCcw,
+  Trash2
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -92,6 +93,10 @@ const Verification = () => {
   // Document rejection
   const [rejectDocModal, setRejectDocModal] = useState(null);
   const [rejectionReason, setRejectionReason] = useState('');
+
+  // Remove-from-queue confirmation
+  const [removeTarget, setRemoveTarget] = useState(null);
+  const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -170,6 +175,23 @@ const Verification = () => {
   };
 
   const isAdmin = user?.role === 'hr';
+
+  const handleRemoveEmployee = async () => {
+    if (!removeTarget) return;
+    setRemoving(true);
+    try {
+      await axios.delete(`${API}/onboarding/employee/${removeTarget.employee_id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success(`${removeTarget.emp_name} removed from verification queue`);
+      setRemoveTarget(null);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to remove employee');
+    } finally {
+      setRemoving(false);
+    }
+  };
 
   const handleRollbackDocument = async (docId) => {
     setProcessingAction(docId);
@@ -442,14 +464,27 @@ const Verification = () => {
                         </p>
                       </TableCell>
                       <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => openEmployeeReview(record)}
-                          data-testid={`review-btn-${record.employee_id}`}
-                        >
-                          Review <ChevronRight className="w-4 h-4 ml-1" />
-                        </Button>
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => openEmployeeReview(record)}
+                            data-testid={`review-btn-${record.employee_id}`}
+                          >
+                            Review <ChevronRight className="w-4 h-4 ml-1" />
+                          </Button>
+                          {isAdmin && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                              onClick={() => setRemoveTarget(record)}
+                              data-testid={`remove-btn-${record.employee_id}`}
+                            >
+                              <Trash2 className="w-4 h-4 mr-1" /> Remove
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
@@ -459,6 +494,37 @@ const Verification = () => {
           )}
         </CardContent>
       </Card>
+
+      {/* Remove-from-queue confirmation */}
+      <Dialog open={!!removeTarget} onOpenChange={(o) => { if (!o) setRemoveTarget(null); }}>
+        <DialogContent className="max-w-md" data-testid="remove-confirm-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertCircle className="w-5 h-5" /> Remove from verification?
+            </DialogTitle>
+            <DialogDescription className="pt-1 text-slate-600">
+              This will permanently remove <strong>{removeTarget?.emp_name}</strong>
+              {removeTarget?.emp_id ? ` (${removeTarget.emp_id})` : ''} from the verification queue
+              and delete their onboarding record and all uploaded documents. The employee account
+              is kept. <strong>This action cannot be undone.</strong>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setRemoveTarget(null)} disabled={removing}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRemoveEmployee}
+              disabled={removing}
+              data-testid="remove-confirm-btn"
+            >
+              {removing ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Trash2 className="w-4 h-4 mr-1" />}
+              Remove
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Review Modal */}
       <Dialog open={!!selectedEmployee} onOpenChange={() => setSelectedEmployee(null)}>
