@@ -230,6 +230,16 @@
     @apply px-3 py-3 text-sm;
 }
 
+/* Force single-line rendering for every column in opted-in tables (e.g. the
+   admin Attendance table). Horizontal scroll handles overflow — readability
+   over compression. Scoped via the `.table-nowrap` modifier so other
+   `.table-premium` tables are unaffected. */
+.table-nowrap thead th,
+.table-nowrap tbody td {
+    white-space: nowrap;
+}
+
+
 /* Premium scrollbar — applies to all overflow containers globally.
    Subtle, modern, theme-friendly. Webkit + Firefox supported. */
 .overflow-x-auto,

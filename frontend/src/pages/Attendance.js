@@ -395,7 +395,7 @@ const Attendance = () => {
             <div style={{ width: scrollW, height: 1 }} />
           </div>
           <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-x-auto scroll-premium" data-testid="attendance-table-scroll">
-            <table className="table-premium">
+            <table className="table-premium table-nowrap">
               <thead>
                 <tr>
                   <th className="w-12"></th>

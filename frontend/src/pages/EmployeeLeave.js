@@ -18,7 +18,7 @@ import { formatDate } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const EmployeeLeave = () => {
-  const { getAuthHeaders } = useAuth();
+  const { getAuthHeaders, user } = useAuth();
   const [leaves, setLeaves] = useState([]);
   const [leaveBalance, setLeaveBalance] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -82,6 +82,10 @@ const EmployeeLeave = () => {
   };
 
   const handleApplyLeave = async () => {
+    if (form.leave_type === 'Paid' && user?.employment_type === 'Intern') {
+      toast.error('Paid Leave is not available for Intern employees.');
+      return;
+    }
     if (!form.leave_type || !form.start_date || !form.reason) {
       toast.error('Please fill all fields');
       return;
@@ -284,7 +288,9 @@ const EmployeeLeave = () => {
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
                     <SelectItem value="Optional">Optional</SelectItem>
-                    <SelectItem value="Paid">Paid Leave</SelectItem>
+                    {user?.employment_type !== 'Intern' && (
+                      <SelectItem value="Paid">Paid Leave</SelectItem>
+                    )}
                   </SelectContent>
                 </Select>
                 {/* Leave rule hints */}

@@ -3401,11 +3401,12 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     # Enrich with employee avatar + designation so sidebar/header + route guards
     # (e.g. the Vigilance module access exception) work after a page refresh.
     if current_user.get("role") == UserRole.EMPLOYEE and current_user.get("employee_id"):
-        emp = await db.employees.find_one({"id": current_user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1})
+        emp = await db.employees.find_one({"id": current_user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1, "employment_type": 1})
         if emp:
             if emp.get("avatar"):
                 out["avatar"] = emp["avatar"]
             out["designation"] = emp.get("designation")
+            out["employment_type"] = emp.get("employment_type")
         # ACCESS gating uses the USER record's onboarding_status (not the
         # document-derived Verification record). Keep onboarding_completed in sync.
         out["onboarding_completed"] = out.get("onboarding_status") == OnboardingStatus.APPROVED
@@ -7232,6 +7233,13 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
+    # Business rule: Paid Leave is NOT available to Interns. Enforced at the API
+    # layer (dynamic on employment_type) so no UI bypass or direct request can
+    # create an intern Paid Leave. Becomes available automatically when the
+    # employment type is anything other than Intern.
+    if _is_paid_leave_type(data.leave_type) and employee.get("employment_type") == EmploymentType.INTERN:
+        raise HTTPException(status_code=403, detail="Paid Leave is not available for Intern employees.")
+
     # Paid Leave: balance must cover the requested range. By definition, Paid
     # Leave is non-LOP — force is_lop=False below.
     await _validate_paid_leave_balance(
@@ -10840,6 +10848,7 @@ async def verify_onboarding_document(data: DocumentVerification, current_user: d
     
     update_data = {
         "status": data.status,
+        "previous_status": doc.get("status"),   # state history → enables admin Rollback
         "verified_at": get_ist_now().isoformat(),
         "verified_by": current_user["id"]
     }
@@ -10858,6 +10867,41 @@ async def verify_onboarding_document(data: DocumentVerification, current_user: d
     await log_audit(current_user["id"], f"verify_document_{data.status}", "onboarding", doc["employee_id"], data.document_type if hasattr(data, 'document_type') else None)
     
     return {"message": f"Document {data.status}"}
+
+@api_router.post("/onboarding/rollback-document/{document_id}")
+async def rollback_document_verification(document_id: str, current_user: dict = Depends(get_current_user)):
+    """ADMIN ONLY: revert a document's verification decision to its PREVIOUS state
+    (Approved/Rejected → the prior status, typically Pending). The swap is itself
+    reversible, so a subsequent rollback toggles back to the earlier decision."""
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    doc = await db.onboarding_documents.find_one({"id": document_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.get("status") not in [DocumentStatus.VERIFIED, DocumentStatus.REJECTED]:
+        raise HTTPException(status_code=400, detail="Only approved or rejected documents can be rolled back.")
+
+    # Restore the exact previous status (fallback to pending/'uploaded' when no history).
+    target = doc.get("previous_status") or DocumentStatus.UPLOADED
+    update_data = {
+        "status": target,
+        "previous_status": doc.get("status"),    # keep rollback reversible
+        "verified_at": None,
+        "verified_by": None,
+    }
+    # Clear the rejection reason unless we're rolling back INTO a rejected state.
+    if target != DocumentStatus.REJECTED:
+        update_data["rejection_reason"] = None
+
+    await db.onboarding_documents.update_one({"id": document_id}, {"$set": update_data})
+
+    # Re-derive onboarding status from live documents (single source of truth).
+    await recompute_onboarding_status(doc["employee_id"])
+
+    await log_audit(current_user["id"], "rollback_document", "onboarding", doc["employee_id"], f"{doc.get('status')} -> {target}")
+    return {"message": f"Verification rolled back to {target}", "status": target}
 
 @api_router.post("/onboarding/approve/{employee_id}")
 async def approve_onboarding(employee_id: str, data: OnboardingApproval, current_user: dict = Depends(get_current_user)):

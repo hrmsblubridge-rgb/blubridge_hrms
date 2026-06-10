@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-10 (Multi-module: Attendance nowrap, Intern Paid-Leave block, Verification Rollback, Education merge notice) ✅ TESTED
+
+**FIX 1 — Attendance no word-wrap (all columns):** Added a scoped `.table-nowrap` modifier (`index.css`) applied to the admin Attendance `<table className="table-premium table-nowrap">`. Every header/cell (Employee Name, Team, Date, IN/OUT, Total Hours, dynamic vigilance Research/Break columns, any future column) now renders single-line; horizontal scroll handles overflow. Scoped so other `.table-premium` tables are unaffected. Verified via screenshot ("Compiler-Auto Differentiation", "Pulaganti Vivek Chaitanya" single-line).
+
+**FIX 2 — Interns cannot access Paid Leave (dynamic on employment_type):** Backend `create_leave` now returns 403 ("Paid Leave is not available for Intern employees.") when `_is_paid_leave_type` AND `employee.employment_type == Intern` — blocks ALL paths (employee/admin/API). `/auth/me` now returns `employment_type`; `EmployeeLeave.js` hides the "Paid Leave" option and guards submit when `user.employment_type === 'Intern'`. Becomes available automatically for non-Intern types. Verified: intern Paid → 403, intern Sick → 200.
+
+**FIX 3 — Verification Rollback (ADMIN/HR only):** `verify_onboarding_document` now stores `previous_status` on each decision. New `POST /onboarding/rollback-document/{id}` (ADMIN_ROLES only) restores the exact previous status (Approved/Rejected → prior, fallback Pending), swaps `previous_status` so it's reversible, clears verified_by/at (+ rejection_reason unless rolling back into rejected), and recomputes onboarding status. `Verification.js` shows a "Rollback" button on verified/rejected docs only when `user.role === 'hr'`. Verified: backend verified→uploaded with history; UI button renders on all verified docs in review modal (real doc restored after test).
+
+**FIX 4 — Education merge attention message:** Premium amber "IMPORTANT" box (`EmployeeDocuments.js`, `data-testid="education-merge-notice"`) under Education Certificates instructing employees to merge & upload ALL certs as a SINGLE FILE in order (10th, 12th, UG, PG if applicable). Verified via screenshot. No change to upload/storage/preview/validation.
+
+---
+
+
 ## Latest Update — 2026-06-09 (Admin Attendance — single-line IN/OUT times + synced top scrollbar) ✅ TESTED
 
 **Scope:** `frontend/src/pages/Attendance.js` only. Surgical UI fix, no logic/data/sorting/pagination/filter changes.

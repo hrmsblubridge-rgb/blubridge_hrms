@@ -47,7 +47,8 @@ import {
   AlertCircle,
   ChevronRight,
   X,
-  Download
+  Download,
+  RotateCcw
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -69,7 +70,7 @@ const DOC_STATUS_CONFIG = {
 };
 
 const Verification = () => {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   
   const [onboardingList, setOnboardingList] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -163,6 +164,26 @@ const Verification = () => {
       setEmployeeDocuments(response.data.documents || []);
     } catch (error) {
       toast.error('Failed to verify document');
+    } finally {
+      setProcessingAction(null);
+    }
+  };
+
+  const isAdmin = user?.role === 'hr';
+
+  const handleRollbackDocument = async (docId) => {
+    setProcessingAction(docId);
+    try {
+      const res = await axios.post(`${API}/onboarding/rollback-document/${docId}`, {}, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      toast.success(res.data?.message || 'Verification rolled back');
+      const response = await axios.get(`${API}/onboarding/employee/${selectedEmployee.employee_id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setEmployeeDocuments(response.data.documents || []);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to rollback verification');
     } finally {
       setProcessingAction(null);
     }
@@ -563,6 +584,25 @@ const Verification = () => {
                                 <XCircle className="w-4 h-4" />
                               </Button>
                             </>
+                          )}
+
+                          {isAdmin && (doc.status === 'verified' || doc.status === 'rejected') && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="text-slate-600 hover:text-slate-900 border-slate-300 rounded-lg gap-1.5"
+                              onClick={() => handleRollbackDocument(doc.id)}
+                              disabled={processingAction === doc.id}
+                              title="Revert this verification decision to its previous state"
+                              data-testid={`verify-rollback-${doc.document_type}`}
+                            >
+                              {processingAction === doc.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <RotateCcw className="w-4 h-4" />
+                              )}
+                              Rollback
+                            </Button>
                           )}
                         </div>
                       </div>

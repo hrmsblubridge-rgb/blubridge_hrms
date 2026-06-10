@@ -390,6 +390,34 @@ const EmployeeDocuments = () => {
                         )}
                       </div>
                     </div>
+
+                    {row.type === 'education' && (
+                      <div
+                        className="mt-4 rounded-xl border border-amber-200 bg-amber-50/70 p-4"
+                        data-testid="education-merge-notice"
+                      >
+                        <div className="flex items-start gap-3">
+                          <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                          <div className="text-sm text-amber-900">
+                            <p className="font-semibold tracking-wide">IMPORTANT</p>
+                            <p className="mt-1 text-amber-800">
+                              Please merge and upload <strong>all</strong> educational certificates as a
+                              {' '}<strong>SINGLE FILE</strong>, in the following order:
+                            </p>
+                            <ul className="mt-2 space-y-0.5 text-amber-800">
+                              <li>• 10th Certificate</li>
+                              <li>• 12th Certificate</li>
+                              <li>• UG Certificate</li>
+                              <li>• PG Certificate (if applicable)</li>
+                            </ul>
+                            <p className="mt-2 text-amber-700 text-[13px]">
+                              Do not upload only one certificate. All available educational certificates
+                              must be merged into a single document and uploaded together.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
