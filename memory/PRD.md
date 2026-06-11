@@ -5,6 +5,24 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-11 (Employee↔Verification CRUD sync + filters + default Active) ✅ TESTED
+
+**BIG FIX 1 — Verification is now a TRUE REFLECTION of the Employee Module (root-cause architecture fix):**
+- ROOT CAUSE: the Verification queue read from a separate `db.onboarding` collection that drifted from `db.employees`. Employee permanent/force-delete never removed `onboarding`/`onboarding_documents` (not in `EMPLOYEE_LINKED_COLLECTIONS`) → 18 orphan onboarding + 152 orphan documents lingered ("deleted employee still shows"); 49 live employees had no onboarding record so were missing from the queue.
+- FIX: rewrote `GET /onboarding/list` and `GET /onboarding/stats` to be **driven by the `employees` collection** (source of truth), left-joined with onboarding records. Deleted employees vanish, new employees appear, and status/department/designation/employment_type always reflect live values. `GET /onboarding/employee/{id}` now lazily creates a record so any employee is reviewable. Added cascade delete of `onboarding`+`onboarding_documents` to both permanent & force employee-delete. One-time purge of the 18+152 existing orphans.
+- Verified: list All=113 (matches live employees), Active=55, Inactive=58, Resigned=0; create→appears, deactivate→syncs Active→Inactive, force-delete→gone + full cascade (0 residual).
+
+**FIX 2 — Verification status filter + column + apply-on-click + default Active (`Verification.js`):**
+- New **Employee Status** filter (Active/Inactive/Resigned/All) using Employee Module values + new **Employee Status** table column (live badge).
+- Filters are now DRAFT state; nothing refetches until the new **Filter** button (or Enter in search) is clicked (`applied` state drives fetch). First load defaults to **Active** only (55 rows). Existing verification-status filter retained.
+
+**FIX 3 — Employee Module default filter = Active (`Employees.js`):** initial `status` default `All`→`Active`. Verified: page loads Active employees only (55), stats 113/55/58/0 identical to Verification.
+
+All 13 checklist items satisfied; existing verify/reject/rollback/remove flows + employee CRUD unaffected.
+
+---
+
+
 ## Latest Update — 2026-06-10 (Verification — Remove-from-queue with confirmation) ✅ TESTED
 
 **Feature:** Admin can remove an employee from the Verification/Onboarding queue, with a mandatory confirmation step.

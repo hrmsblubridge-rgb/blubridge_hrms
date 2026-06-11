@@ -146,7 +146,7 @@ const Employees = () => {
     department: 'All',
     team: 'All',
     designation: 'All',
-    status: 'All',
+    status: 'Active',
     employment_type: 'All',
     tier_level: 'All',
     work_location: 'All'

@@ -5165,6 +5165,11 @@ async def employee_permanent_delete(employee_id: str, current_user: dict = Depen
     # possible because we just verified counts are zero).
     await db.employees.delete_one({"id": employee_id})
     await db.users.delete_many({"employee_id": employee_id})
+    # Cascade: remove verification/onboarding artifacts so no ghost rows remain
+    # in the Verification Module (these are not in EMPLOYEE_LINKED_COLLECTIONS by
+    # design — they must never block the zero-records safe-delete check).
+    await db.onboarding.delete_many({"employee_id": employee_id})
+    await db.onboarding_documents.delete_many({"employee_id": employee_id})
 
     await db.employee_deletion_audit.insert_one({
         "employee_id": employee_id,
@@ -5214,6 +5219,12 @@ async def employee_force_delete(
 
     await db.employees.delete_one({"id": employee_id})
     await db.users.delete_many({"employee_id": employee_id})
+    # Cascade: remove verification/onboarding artifacts (kept out of
+    # EMPLOYEE_LINKED_COLLECTIONS by design) so no ghost rows survive.
+    onb_del = (await db.onboarding.delete_many({"employee_id": employee_id})).deleted_count
+    onbdoc_del = (await db.onboarding_documents.delete_many({"employee_id": employee_id})).deleted_count
+    deleted_per_collection["onboarding"] = onb_del
+    deleted_per_collection["onboarding_documents"] = onbdoc_del
 
     await db.employee_deletion_audit.insert_one({
         "employee_id": employee_id,
@@ -10456,30 +10467,47 @@ async def update_employee_leave(leave_id: str, data: EmployeeLeaveCreate, curren
 
 @api_router.get("/onboarding/stats")
 async def get_onboarding_stats(current_user: dict = Depends(get_current_user)):
-    """Get onboarding statistics for dashboard"""
+    """Get onboarding statistics for dashboard.
+
+    TRUE REFLECTION of the Employee Module: stats are computed over live (non
+    -deleted) employees only, joined with their onboarding record. Orphan
+    onboarding rows (employee deleted) can never inflate these counts."""
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
-    
-    total = await db.onboarding.count_documents({})
-    not_started = await db.onboarding.count_documents({"status": OnboardingStatus.NOT_STARTED})
-    pending = await db.onboarding.count_documents({"status": OnboardingStatus.PENDING})
-    in_progress = await db.onboarding.count_documents({"status": OnboardingStatus.IN_PROGRESS})
-    under_review = await db.onboarding.count_documents({"status": OnboardingStatus.UNDER_REVIEW})
-    approved = await db.onboarding.count_documents({"status": OnboardingStatus.APPROVED})
-    rejected = await db.onboarding.count_documents({"status": OnboardingStatus.REJECTED})
-    
-    # Get pending document verifications
-    pending_verifications = await db.onboarding_documents.count_documents({"status": DocumentStatus.UPLOADED})
-    rejected_documents = await db.onboarding_documents.count_documents({"status": DocumentStatus.REJECTED})
-    
+
+    employees = await db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1}).to_list(5000)
+    emp_ids = [e["id"] for e in employees]
+    total = len(emp_ids)
+
+    onb_map = {}
+    if emp_ids:
+        async for o in db.onboarding.find({"employee_id": {"$in": emp_ids}}, {"_id": 0, "employee_id": 1, "status": 1}):
+            onb_map[o["employee_id"]] = o.get("status", OnboardingStatus.NOT_STARTED)
+
+    counts = {
+        OnboardingStatus.NOT_STARTED: 0, OnboardingStatus.PENDING: 0,
+        OnboardingStatus.IN_PROGRESS: 0, OnboardingStatus.UNDER_REVIEW: 0,
+        OnboardingStatus.APPROVED: 0, OnboardingStatus.REJECTED: 0,
+    }
+    for eid in emp_ids:
+        st = onb_map.get(eid, OnboardingStatus.NOT_STARTED)
+        counts[st] = counts.get(st, 0) + 1
+
+    # Pending document verifications (only for live employees).
+    pending_verifications = await db.onboarding_documents.count_documents(
+        {"employee_id": {"$in": emp_ids}, "status": DocumentStatus.UPLOADED}) if emp_ids else 0
+    rejected_documents = await db.onboarding_documents.count_documents(
+        {"employee_id": {"$in": emp_ids}, "status": DocumentStatus.REJECTED}) if emp_ids else 0
+
+    approved = counts[OnboardingStatus.APPROVED]
     return {
         "total_employees": total,
-        "not_started": not_started,
-        "pending": pending,
-        "in_progress": in_progress,
-        "under_review": under_review,
+        "not_started": counts[OnboardingStatus.NOT_STARTED],
+        "pending": counts[OnboardingStatus.PENDING],
+        "in_progress": counts[OnboardingStatus.IN_PROGRESS],
+        "under_review": counts[OnboardingStatus.UNDER_REVIEW],
         "approved": approved,
-        "rejected": rejected,
+        "rejected": counts[OnboardingStatus.REJECTED],
         "pending_verifications": pending_verifications,
         "rejected_documents": rejected_documents,
         "completion_rate": round((approved / total * 100) if total > 0 else 0, 1)
@@ -10496,28 +10524,67 @@ async def get_verification_pending_count(current_user: dict = Depends(get_curren
     return {"count": under_review + pending + in_progress}
 @api_router.get("/onboarding/list")
 async def get_onboarding_list(
-    status: Optional[str] = None,
+    status: Optional[str] = None,            # verification status filter (existing)
     department: Optional[str] = None,
     search: Optional[str] = None,
+    employee_status: Optional[str] = None,   # NEW: Employee Module status (Active/Inactive/Resigned)
     current_user: dict = Depends(get_current_user)
 ):
-    """Get all onboarding records for HR review"""
+    """Verification queue — a TRUE REFLECTION of the Employee Module.
+
+    Driven by the `employees` collection (the single source of truth) and
+    left-joined with each employee's onboarding record. This guarantees:
+      • deleted employees never linger (no orphan/ghost rows),
+      • newly created employees always appear,
+      • status / department / designation / employment_type always reflect the
+        latest Employee Module values (no stale snapshot).
+    """
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
-    
-    query = {}
-    if status and status != "All":
-        query["status"] = status
+
+    emp_query = {"is_deleted": {"$ne": True}}
     if department and department != "All":
-        query["department"] = department
+        emp_query["department"] = department
+    if employee_status and employee_status != "All":
+        emp_query["employee_status"] = employee_status
     if search:
-        query["$or"] = [
-            {"emp_name": {"$regex": search, "$options": "i"}},
-            {"emp_id": {"$regex": search, "$options": "i"}}
+        emp_query["$or"] = [
+            {"full_name": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}},
         ]
-    
-    records = await db.onboarding.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
-    return [serialize_doc(r) for r in records]
+
+    employees = await db.employees.find(emp_query, {
+        "_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1,
+        "team": 1, "designation": 1, "employment_type": 1, "employee_status": 1, "created_at": 1,
+    }).sort("created_at", -1).to_list(2000)
+
+    emp_ids = [e["id"] for e in employees]
+    onb_map = {}
+    if emp_ids:
+        async for o in db.onboarding.find({"employee_id": {"$in": emp_ids}}, {"_id": 0}):
+            onb_map[o["employee_id"]] = o
+
+    results = []
+    for e in employees:
+        onb = onb_map.get(e["id"]) or {}
+        verification_status = onb.get("status", OnboardingStatus.NOT_STARTED)
+        if status and status != "All" and verification_status != status:
+            continue
+        results.append({
+            "id": onb.get("id", e["id"]),
+            "employee_id": e["id"],
+            "emp_id": e.get("emp_id"),
+            "emp_name": e.get("full_name"),
+            "department": e.get("department"),
+            "team": e.get("team"),
+            "designation": e.get("designation"),
+            "employment_type": e.get("employment_type"),
+            "employee_status": e.get("employee_status"),   # LIVE from Employee Module
+            "status": verification_status,                 # verification status
+            "submitted_at": onb.get("submitted_at"),
+            "created_at": onb.get("created_at") or e.get("created_at"),
+        })
+    return results
 
 @api_router.get("/onboarding/employee/{employee_id}")
 async def get_employee_onboarding(employee_id: str, current_user: dict = Depends(get_current_user)):
@@ -10529,7 +10596,33 @@ async def get_employee_onboarding(employee_id: str, current_user: dict = Depends
     
     onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
     if not onboarding:
-        raise HTTPException(status_code=404, detail="Onboarding record not found")
+        # Lazily create the onboarding record so any live employee (even those
+        # who never had one) is reviewable — keeps the queue a true reflection.
+        employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        onboarding = OnboardingRecord(
+            employee_id=employee_id,
+            emp_id=employee.get("emp_id"),
+            emp_name=employee.get("full_name"),
+            department=employee.get("department"),
+            team=employee.get("team"),
+            designation=employee.get("designation")
+        )
+        doc = onboarding.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        doc['updated_at'] = doc['updated_at'].isoformat()
+        await db.onboarding.insert_one(doc.copy())
+        for req_doc in REQUIRED_DOCUMENTS:
+            doc_record = OnboardingDocument(
+                employee_id=employee_id,
+                document_type=req_doc["type"],
+                document_label=req_doc["label"]
+            )
+            doc_data = doc_record.model_dump()
+            doc_data['created_at'] = doc_data['created_at'].isoformat()
+            await db.onboarding_documents.insert_one(doc_data.copy())
+        onboarding = doc
     
     # Get all documents
     documents = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(20)

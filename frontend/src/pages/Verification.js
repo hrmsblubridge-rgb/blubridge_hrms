@@ -70,6 +70,12 @@ const DOC_STATUS_CONFIG = {
   rejected: { color: 'bg-red-100 text-red-700', label: 'Rejected' }
 };
 
+const EMP_STATUS_CONFIG = {
+  Active: { color: 'bg-emerald-100 text-emerald-700' },
+  Inactive: { color: 'bg-slate-200 text-slate-700' },
+  Resigned: { color: 'bg-red-100 text-red-700' }
+};
+
 const Verification = () => {
   const { token, user } = useAuth();
   
@@ -78,10 +84,14 @@ const Verification = () => {
   const [stats, setStats] = useState(null);
   const [departments, setDepartments] = useState([]);
   
-  // Filters
-  const [statusFilter, setStatusFilter] = useState('All');
+  // Filters — DRAFT values the user edits (do NOT auto-apply)
+  const [statusFilter, setStatusFilter] = useState('All');             // verification status
+  const [employeeStatusFilter, setEmployeeStatusFilter] = useState('Active'); // Employee Module status
   const [departmentFilter, setDepartmentFilter] = useState('All');
   const [searchTerm, setSearchTerm] = useState('');
+  // APPLIED filters — only updated when the Filter button is clicked.
+  // First load defaults to Active employees only.
+  const [applied, setApplied] = useState({ status: 'All', employeeStatus: 'Active', department: 'All', search: '' });
   
   // Review Modal
   const [selectedEmployee, setSelectedEmployee] = useState(null);
@@ -100,7 +110,16 @@ const Verification = () => {
 
   useEffect(() => {
     fetchData();
-  }, [statusFilter, departmentFilter, searchTerm]);
+  }, [applied]);
+
+  const applyFilters = () => {
+    setApplied({
+      status: statusFilter,
+      employeeStatus: employeeStatusFilter,
+      department: departmentFilter,
+      search: searchTerm.trim(),
+    });
+  };
 
   const fetchData = async () => {
     try {
@@ -108,9 +127,10 @@ const Verification = () => {
       const [listRes, statsRes, deptRes] = await Promise.all([
         axios.get(`${API}/onboarding/list`, {
           params: { 
-            status: statusFilter !== 'All' ? statusFilter : undefined,
-            department: departmentFilter !== 'All' ? departmentFilter : undefined,
-            search: searchTerm || undefined
+            status: applied.status !== 'All' ? applied.status : undefined,
+            employee_status: applied.employeeStatus !== 'All' ? applied.employeeStatus : undefined,
+            department: applied.department !== 'All' ? applied.department : undefined,
+            search: applied.search || undefined
           },
           headers: { Authorization: `Bearer ${token}` }
         }),
@@ -316,7 +336,7 @@ const Verification = () => {
                 <p className="text-xs text-slate-500">Pending Verifications</p>
                 <p className="text-2xl font-bold text-amber-600">{stats?.under_review || 0}</p>
                 <button 
-                  onClick={() => setStatusFilter('under_review')}
+                  onClick={() => { setStatusFilter('under_review'); setApplied((p) => ({ ...p, status: 'under_review' })); }}
                   className="text-xs text-blue-600 hover:underline mt-1"
                 >
                   Review now →
@@ -374,16 +394,28 @@ const Verification = () => {
                 placeholder="Search by name or ID..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') applyFilters(); }}
                 className="pl-10"
                 data-testid="verification-search"
               />
             </div>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-[180px]" data-testid="status-filter">
-                <SelectValue placeholder="Status" />
+            <Select value={employeeStatusFilter} onValueChange={setEmployeeStatusFilter}>
+              <SelectTrigger className="w-[170px]" data-testid="emp-status-filter">
+                <SelectValue placeholder="Employee Status" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="All">All Status</SelectItem>
+                <SelectItem value="All">All Employees</SelectItem>
+                <SelectItem value="Active">Active</SelectItem>
+                <SelectItem value="Inactive">Inactive</SelectItem>
+                <SelectItem value="Resigned">Resigned</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className="w-[170px]" data-testid="status-filter">
+                <SelectValue placeholder="Verification Status" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All Verification</SelectItem>
                 <SelectItem value="not_started">Not Started</SelectItem>
                 <SelectItem value="under_review">Pending</SelectItem>
                 <SelectItem value="approved">Approved</SelectItem>
@@ -391,7 +423,7 @@ const Verification = () => {
               </SelectContent>
             </Select>
             <Select value={departmentFilter} onValueChange={setDepartmentFilter}>
-              <SelectTrigger className="w-[180px]" data-testid="dept-filter">
+              <SelectTrigger className="w-[170px]" data-testid="dept-filter">
                 <SelectValue placeholder="Department" />
               </SelectTrigger>
               <SelectContent>
@@ -401,6 +433,13 @@ const Verification = () => {
                 ))}
               </SelectContent>
             </Select>
+            <Button
+              onClick={applyFilters}
+              className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg gap-2"
+              data-testid="verification-filter-btn"
+            >
+              <Filter className="w-4 h-4" /> Filter
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -429,7 +468,8 @@ const Verification = () => {
                 <TableRow>
                   <TableHead>Employee</TableHead>
                   <TableHead>Department</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>Employee Status</TableHead>
+                  <TableHead>Verification</TableHead>
                   <TableHead>Submitted</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
@@ -452,6 +492,11 @@ const Verification = () => {
                       <TableCell>
                         <p className="text-sm text-slate-700">{record.department}</p>
                         <p className="text-xs text-slate-500">{record.designation}</p>
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={(EMP_STATUS_CONFIG[record.employee_status] || EMP_STATUS_CONFIG.Active).color} data-testid={`emp-status-${record.employee_id}`}>
+                          {record.employee_status || '-'}
+                        </Badge>
                       </TableCell>
                       <TableCell>
                         <Badge className={statusConfig.color}>
