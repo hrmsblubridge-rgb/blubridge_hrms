@@ -69,6 +69,7 @@ const EmployeeLeaveDetail = ({ employee, onClose }) => {
   const [attendanceData, setAttendanceData] = useState([]);
   const [leaveData, setLeaveData] = useState([]);
   const [employeeDetails, setEmployeeDetails] = useState(null);
+  const [paidLeaveBalance, setPaidLeaveBalance] = useState(null);
 
   // Month names for display
   const months = ['January', 'February', 'March', 'April', 'May', 'June', 
@@ -114,6 +115,23 @@ const EmployeeLeaveDetail = ({ employee, onClose }) => {
       setAttendanceData(attendanceRes.data);
       setLeaveData(leavesRes.data);
       setEmployeeDetails(employeeRes.data);
+
+      // Remaining Paid Leave is the single source of truth from the backend
+      // (accrues from Confirmation Date for Full-time, always 0 for Interns,
+      // never deducts leaves taken before eligibility). Never hardcoded here.
+      if (employee.employee_id) {
+        try {
+          const balRes = await axios.get(
+            `${API}/admin/employees/${employee.employee_id}/paid-leave-balance`,
+            { headers: getAuthHeaders() }
+          );
+          setPaidLeaveBalance(balRes.data);
+        } catch (balErr) {
+          setPaidLeaveBalance(null);
+        }
+      } else {
+        setPaidLeaveBalance(null);
+      }
     } catch (error) {
       console.error('Error fetching data:', error);
       toast.error('Failed to load employee data');
@@ -154,10 +172,14 @@ const EmployeeLeaveDetail = ({ employee, onClose }) => {
     const lateDays = attendanceData.filter(a => a.status === 'Late Login').length;
     const earlyOutDays = attendanceData.filter(a => a.status === 'Early Out').length;
 
-    // Calculate remaining leaves (assuming 12 annual leaves as standard)
-    const totalAnnualLeaves = 12;
+    // Remaining Paid Leave: use the backend-computed balance (single source of
+    // truth — accrues from Confirmation Date for Full-time, 0 for Interns,
+    // excludes pre-eligibility leaves). Fall back to 0 if unavailable; never
+    // hardcode an annual allotment.
     const totalApprovedLeaves = leaveData.filter(l => l.status === 'approved').length;
-    const remainingLeaves = Math.max(0, totalAnnualLeaves - totalApprovedLeaves);
+    const remainingLeaves = paidLeaveBalance
+      ? Math.max(0, paidLeaveBalance.balance)
+      : 0;
 
     return {
       totalLeaves: monthLeaves.length,
@@ -171,7 +193,7 @@ const EmployeeLeaveDetail = ({ employee, onClose }) => {
       remainingLeaves,
       totalApprovedLeaves
     };
-  }, [attendanceData, leaveData, currentDate]);
+  }, [attendanceData, leaveData, currentDate, paidLeaveBalance]);
 
   // Generate calendar data for monthly view
   const calendarData = useMemo(() => {

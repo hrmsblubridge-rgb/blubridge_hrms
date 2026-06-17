@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-17 (BUG FIX — Attendance "Remaining Leaves" ignored Confirmation Date ✅ TESTED)
+
+**Bug:** Attendance → Employee Attendance Overview "Remaining Leaves" card showed wrong values (Dinesh G EMP0009, Full-time, CD 08-Jun-2026 → showed **11**). ROOT CAUSE: `frontend/src/components/EmployeeLeaveDetail.js` computed remaining as a HARDCODED `12 - approvedLeaves` (any leave type), completely ignoring Confirmation Date, employment type, and the real Paid-Leave accrual.
+
+**Fix (backend SSOT + frontend consume):**
+- `EmployeeLeaveDetail.js` now fetches `GET /api/admin/employees/{id}/paid-leave-balance` and uses its `balance` for "Remaining Leaves" (no hardcoded number). Re-fetched on every open / month-nav → dynamic sync when HR edits the Confirmation Date (no refresh/relogin needed).
+- Hardened `calculate_paid_leave_balance` (server.py ~2260): (a) `employment_type == Intern` → returns `{0,0,0}` always; (b) Paid Leave taken BEFORE the accrual/confirmation start is NEVER deducted (a straddling leave only counts its on/after-eligibility days). Full-time still accrues 1/month from Confirmation Date (or DOJ fallback for legacy records).
+
+**Verified:** Dinesh G now shows Remaining Leaves = **1** (earned from June CD; his leaves are Preplanned/General, not Paid → used 0). New `tests/test_paid_leave_balance_confirmation.py` (6 tests: accrual-from-CD, Case1 future-CD=0, Case2 approved-after-CD deducted, Case3 intern=0, Case5 pre-CD not deducted, straddling-leave) + existing `test_paid_leave_balance.py` (12) all pass (18/18). Case4 dynamic-sync verified via curl (CD 03-01→earned4, restored to 06-08→earned1). Zero regression to attendance/punch/leave-workflow/payroll; leave history untouched.
+
+---
+
+
 ## Latest Update — 2026-06-17 (Employee Confirmation Date — Paid Leave backdated accrual ✅ VERIFIED & CLOSED)
 
 **Feature (closed out, user-verification pending item from previous session):** HR can set a "Confirmation Date" on leave-eligible (non-Intern) employees. Paid Leave accrues 1/month from this date (backdated, independent of when the profile is updated).

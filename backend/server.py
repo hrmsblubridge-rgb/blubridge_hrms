@@ -2259,9 +2259,14 @@ async def calculate_paid_leave_balance(
 
     emp = await db.employees.find_one(
         {"id": employee_id, "is_deleted": {"$ne": True}},
-        {"_id": 0, "date_of_joining": 1, "confirmation_date": 1},
+        {"_id": 0, "date_of_joining": 1, "confirmation_date": 1, "employment_type": 1},
     )
     if not emp:
+        return {"earned": 0.0, "used": 0.0, "balance": 0.0}
+
+    # Interns are NOT eligible for Paid Leave — balance is always zero
+    # (consistent with the create-leave block that 403s Intern Paid Leave).
+    if (emp.get("employment_type") or "").strip().lower() == "intern":
         return {"earned": 0.0, "used": 0.0, "balance": 0.0}
 
     doj = _parse_date_flex(emp.get("date_of_joining")) or reference_date
@@ -2320,6 +2325,14 @@ async def calculate_paid_leave_balance(
         # that overlaps the reference only counts its consumed-by-then days.
         if not display_mode:
             ed = min(ed, reference_date)
+        # Paid Leave taken BEFORE eligibility (the accrual/confirmation start
+        # date) is NEVER deducted — credits only begin accruing (and being
+        # consumed) on/after that date. A leave entirely before it is ignored;
+        # a leave that straddles the boundary only counts its on/after portion.
+        if ed < accrual_start:
+            continue
+        if sd < accrual_start:
+            sd = accrual_start
         split = (lv.get("leave_split") or "Full Day").strip()
         if split in ("First Half", "Second Half", "Half Day", "Half"):
             used += 0.5
