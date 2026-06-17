@@ -240,7 +240,7 @@ const Employees = () => {
   
   const [form, setForm] = useState({
     full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
-    date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
+    date_of_joining: '', confirmation_date: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
     reporting_manager_id: '', department: '', team: '', work_location: 'Office',
     office_location: '',
     leave_policy: 'Standard', shift_type: 'General', custom_login_time: '', custom_logout_time: '',
@@ -344,7 +344,7 @@ const Employees = () => {
   const resetForm = () => {
     setForm({
       full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
-      date_of_joining: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
+      date_of_joining: '', confirmation_date: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
       reporting_manager_id: '', department: '', team: '', work_location: 'Office',
       office_location: '',
       leave_policy: 'Standard', shift_type: 'General', custom_login_time: '', custom_logout_time: '',
@@ -413,6 +413,7 @@ const Employees = () => {
       full_name: employee.full_name || '', official_email: employee.official_email || '',
       phone_number: employee.phone_number || '', gender: employee.gender || '',
       date_of_birth: employee.date_of_birth || '', date_of_joining: employee.date_of_joining || '',
+      confirmation_date: employee.confirmation_date || '',
       employment_type: employee.employment_type || 'Full-time', designation: employee.designation || '',
       tier_level: employee.tier_level || 'Mid', reporting_manager_id: employee.reporting_manager_id || '',
       department: employee.department || '', team: employee.team || '',
@@ -778,6 +779,16 @@ const Employees = () => {
     if (!form.designation.trim()) { toast.error('Designation is required'); return false; }
     if (!form.custom_employee_id.trim()) { toast.error('Employee ID is required'); return false; }
     if (!form.biometric_id.trim()) { toast.error('Biometric ID is required'); return false; }
+    // Paid-Leave Confirmation Date: required + valid for leave-eligible types.
+    if (form.employment_type !== 'Intern') {
+      if (!form.confirmation_date) { toast.error('Confirmation Date is required for leave-eligible employment types'); return false; }
+      const cd = new Date(form.confirmation_date);
+      const today = new Date(); today.setHours(23, 59, 59, 999);
+      if (cd > today) { toast.error('Confirmation Date cannot be a future date'); return false; }
+      if (form.date_of_joining && cd < new Date(form.date_of_joining)) {
+        toast.error('Confirmation Date cannot be earlier than the Date of Joining'); return false;
+      }
+    }
     return true;
   };
 
@@ -1305,6 +1316,13 @@ const Employees = () => {
                       </SelectContent>
                     </Select>
                   </div>
+                  {form.employment_type !== 'Intern' && (
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Confirmation Date <span className="text-red-500">*</span></Label>
+                      <DatePicker value={form.confirmation_date} onChange={(val) => setForm(prev => ({ ...prev, confirmation_date: val }))} className="mt-1.5 rounded-lg" data-testid="input-confirmation-date" />
+                      <p className="text-xs text-slate-400 mt-1">Paid Leave eligibility starts from this date.</p>
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>
@@ -1526,6 +1544,13 @@ const Employees = () => {
                       </SelectContent>
                     </Select>
                   </div>
+                  {form.employment_type !== 'Intern' && (
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Confirmation Date <span className="text-red-500">*</span></Label>
+                      <DatePicker value={form.confirmation_date} onChange={(val) => setForm(prev => ({ ...prev, confirmation_date: val }))} className="mt-1.5 rounded-lg" data-testid="input-confirmation-date" />
+                      <p className="text-xs text-slate-400 mt-1">Paid Leave eligibility starts from this date.</p>
+                    </div>
+                  )}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div>

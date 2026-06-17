@@ -970,6 +970,9 @@ class Employee(BaseModel):
     # Employment Information
     custom_employee_id: Optional[str] = None  # Admin-defined Employee ID
     date_of_joining: str
+    # Paid-Leave eligibility start (set when an Intern is confirmed to a
+    # leave-eligible type). Stored ISO YYYY-MM-DD, same as date_of_joining.
+    confirmation_date: Optional[str] = None
     employment_type: str = EmploymentType.FULL_TIME
     employee_status: str = EmployeeStatus.ACTIVE
     designation: str
@@ -1030,6 +1033,7 @@ class EmployeeCreate(BaseModel):
     # Employment Information
     custom_employee_id: Optional[str] = None  # Admin-defined Employee ID
     date_of_joining: str
+    confirmation_date: Optional[str] = None
     employment_type: str = EmploymentType.FULL_TIME
     designation: str
     tier_level: str = TierLevel.MID
@@ -1070,6 +1074,7 @@ class EmployeeUpdate(BaseModel):
     # Employment Information
     custom_employee_id: Optional[str] = None
     date_of_joining: Optional[str] = None
+    confirmation_date: Optional[str] = None
     employment_type: Optional[str] = None
     employee_status: Optional[str] = None
     designation: Optional[str] = None
@@ -2187,6 +2192,35 @@ def _leave_days_count(start_date: str, end_date: str, leave_split: str) -> float
     return float(max(1, (ed - sd).days + 1))
 
 
+def _normalize_and_validate_confirmation_date(confirmation_date, date_of_joining):
+    """Validate + normalise the Paid-Leave Confirmation Date.
+
+    Returns ``(normalized_iso_or_None, error_msg)``. Rules:
+      • cannot be a future date,
+      • cannot be earlier than the Date of Joining.
+    Stored ISO ``YYYY-MM-DD`` (same standard as date_of_joining). Mandatory-when
+    -leave-eligible is enforced in the Edit UI; the backend stays
+    backward-compatible (skips when absent) so partial updates / legacy records
+    are never blocked.
+    """
+    if confirmation_date in (None, ""):
+        return None, None
+    cd = _parse_date_flex(confirmation_date)
+    if not cd:
+        return None, "Confirmation Date is invalid. Use a valid date."
+    if isinstance(cd, datetime):
+        cd = cd.date()
+    if cd > get_ist_now().date():
+        return None, "Confirmation Date cannot be a future date."
+    doj = _parse_date_flex(date_of_joining)
+    if doj:
+        if isinstance(doj, datetime):
+            doj = doj.date()
+        if cd < doj:
+            return None, "Confirmation Date cannot be earlier than the Date of Joining."
+    return cd.strftime("%Y-%m-%d"), None
+
+
 async def calculate_paid_leave_balance(
     employee_id: str,
     reference_date=None,
@@ -2225,7 +2259,7 @@ async def calculate_paid_leave_balance(
 
     emp = await db.employees.find_one(
         {"id": employee_id, "is_deleted": {"$ne": True}},
-        {"_id": 0, "date_of_joining": 1},
+        {"_id": 0, "date_of_joining": 1, "confirmation_date": 1},
     )
     if not emp:
         return {"earned": 0.0, "used": 0.0, "balance": 0.0}
@@ -2234,12 +2268,24 @@ async def calculate_paid_leave_balance(
     if isinstance(doj, datetime):
         doj = doj.date()
 
-    if doj > reference_date:
+    # Paid-Leave accrual starts from the Confirmation Date when set (the official
+    # date the employee became eligible — e.g. converted from Intern to a
+    # leave-eligible type), otherwise from the Date of Joining (direct
+    # leave-eligible hires — unchanged legacy behaviour). The Confirmation Date
+    # is therefore the single source of truth for when eligibility starts, and
+    # backdated credits are produced AUTOMATICALLY: because the balance is
+    # COMPUTED (never stored as credit rows), the result is inherently
+    # idempotent / duplicate-proof and all leave usage history is preserved.
+    accrual_start = _parse_date_flex(emp.get("confirmation_date")) or doj
+    if isinstance(accrual_start, datetime):
+        accrual_start = accrual_start.date()
+
+    if accrual_start > reference_date:
         earned = 0.0
     else:
         earned = float(
-            (reference_date.year - doj.year) * 12
-            + (reference_date.month - doj.month)
+            (reference_date.year - accrual_start.year) * 12
+            + (reference_date.month - accrual_start.month)
             + 1
         )
 
@@ -4698,6 +4744,13 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         "is_deleted": True,
     }) if email_norm else None
     
+    # Validate / normalise the Paid-Leave Confirmation Date when provided.
+    if data.confirmation_date:
+        norm_cd, cd_err = _normalize_and_validate_confirmation_date(data.confirmation_date, data.date_of_joining)
+        if cd_err:
+            raise HTTPException(status_code=400, detail=cd_err)
+        data.confirmation_date = norm_cd
+
     username = data.official_email.split('@')[0]
     name_part = data.full_name.replace(' ', '').lower()[:4]
     if data.phone_number and len(data.phone_number) >= 4:
@@ -5016,6 +5069,18 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
         if dup_bio:
             raise HTTPException(status_code=400, detail="Employee with this Biometric ID already exists")
     
+    # Validate / normalise the Paid-Leave Confirmation Date when provided.
+    if data.confirmation_date is not None:
+        cd_raw = (data.confirmation_date or "").strip()
+        if cd_raw == "":
+            data.confirmation_date = None
+        else:
+            eff_doj = data.date_of_joining or existing.get("date_of_joining")
+            norm_cd, cd_err = _normalize_and_validate_confirmation_date(cd_raw, eff_doj)
+            if cd_err:
+                raise HTTPException(status_code=400, detail=cd_err)
+            data.confirmation_date = norm_cd
+
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
     if not update_data:
         raise HTTPException(status_code=400, detail="No data to update")
