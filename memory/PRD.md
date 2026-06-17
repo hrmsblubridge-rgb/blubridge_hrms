@@ -5,6 +5,20 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-17 (Employee Confirmation Date — Paid Leave backdated accrual ✅ VERIFIED & CLOSED)
+
+**Feature (closed out, user-verification pending item from previous session):** HR can set a "Confirmation Date" on leave-eligible (non-Intern) employees. Paid Leave accrues 1/month from this date (backdated, independent of when the profile is updated).
+
+**Verification done this session:**
+- VISUAL (was the only step the prior agent skipped): Confirmation Date picker renders on the Employment tab, aligned next to Employment Type in a 2-col grid, with required `*`, helper text "Paid Leave eligibility starts from this date.", identical styling to Date of Joining. Hidden for Interns. Screenshot confirmed.
+- FUNCTIONAL (live API as admin): CD=2026-06-01 on an emp with DOJ 2026-05-25 → earned=1 (accrual from CD, not DOJ which would be 2). Future CD → 400. CD < DOJ → 400. CD persists. Balance is computed (not stored) → idempotent, backward-compatible, existing balances/history preserved. Restored test employee to original state afterward.
+- Backend: `calculate_paid_leave_balance` uses `accrual_start = confirmation_date or date_of_joining` (server.py ~2279); `_normalize_and_validate_confirmation_date` (~2195) enforces not-future + not-before-DOJ. Edit/Add endpoints normalize CD.
+
+**Known minor (non-user-facing) edge case:** Clearing CD to empty via API hits "No data to update" because `None` is stripped from the PUT update dict (server.py ~5084). Not reachable from UI (non-Intern requires CD; no clear control). Left as-is per scope.
+
+---
+
+
 ## Latest Update — 2026-06-17 (Attendance team live-sync + Policies scrollspy/independent-scroll + break-text) ✅ TESTED
 
 **FIX 1 — Attendance Team showed "Unknown"/stale (root cause):** Attendance rows store a `team`/`department` SNAPSHOT taken at creation; after an employee's team changed (e.g. → "Trainee") the stored snapshot went stale while the API returned it verbatim. FIX (`get_attendance`): (a) Team/Department/Designation FILTERS now resolve against the Employee Master (live source of truth) via matched employee-ids, and (b) each returned row's `team`/`department` is live-enriched from the master (defensive: only overrides when the employee exists and has a value, so deleted/legacy rows keep their stored value — never crashes). Verified: Trainee now shows 648 attendance rows (was 0); `team=Trainee` filter returns 648 all-Trainee rows; remaining "Unknown" rows are employees whose master team is literally "Unknown" (true reflection). Calculations/status filter/exports untouched.
