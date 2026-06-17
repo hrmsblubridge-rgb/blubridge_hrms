@@ -571,8 +571,8 @@ COMPANY_POLICIES = [
                         "headers": ["Break", "Window"],
                         "rows": [
                             ["Morning Break", "11:00 AM"],
-                            ["Lunch", "Available from 1:00 PM in the cafeteria"],
-                            ["Evening Snack", "Available from 5:00 PM in the cafeteria"],
+                            ["Lunch Break", "01:00 PM"],
+                            ["Evening Break", "05:00 PM"],
                             ["Dinner Break", "09:00 PM"]
                         ]
                     }
@@ -702,8 +702,8 @@ COMPANY_POLICIES = [
                     "title": "2. Lunch & Snack Timings",
                     "items": [
                         "Beverages (Coffee, Tea, etc.): Available from 11:00 AM in the cafeteria.",
-                        "Lunch: 1:00 PM – 2:30 PM",
-                        "Evening Snacks: 5:00 PM – 6:00 PM"
+                        "Lunch: Available from 1:00 PM in the cafeteria.",
+                        "Evening Snack: Available from 5:00 PM in the cafeteria."
                     ]
                 },
                 {
