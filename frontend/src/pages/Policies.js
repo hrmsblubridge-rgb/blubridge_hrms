@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -311,6 +311,9 @@ const Policies = () => {
   const [policies, setPolicies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeId, setActiveId] = useState(null);
+  // True while a click-triggered smooth scroll is in flight, so the scrollspy
+  // observer doesn't fight the click and cause flicker.
+  const isProgrammaticScroll = useRef(false);
 
   const isEmployee = !!user?.employee_id;
 
@@ -377,9 +380,36 @@ const Policies = () => {
 
   const scrollTo = (id) => {
     setActiveId(id);
+    isProgrammaticScroll.current = true;
     const el = document.getElementById(`policy-${id}`);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Release the lock after the smooth scroll settles.
+    window.setTimeout(() => { isProgrammaticScroll.current = false; }, 700);
   };
+
+  // RIGHT → LEFT scrollspy: highlight the TOC item for the section nearest the
+  // top of the viewport as the user scrolls the content. Uses IntersectionObserver
+  // (no scroll-handler thrash) for smooth, performant sync.
+  useEffect(() => {
+    if (!policies.length) return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (isProgrammaticScroll.current) return;
+        const visible = entries
+          .filter((e) => e.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length) {
+          setActiveId(visible[0].target.id.replace('policy-', ''));
+        }
+      },
+      { rootMargin: '-12% 0px -70% 0px', threshold: 0 }
+    );
+    policies.forEach((p) => {
+      const el = document.getElementById(`policy-${p.id}`);
+      if (el) observer.observe(el);
+    });
+    return () => observer.disconnect();
+  }, [policies]);
 
   if (loading) {
     return (
@@ -427,7 +457,7 @@ const Policies = () => {
       <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6">
         {/* Sticky TOC sidebar */}
         <aside className="lg:sticky lg:top-4 lg:self-start" data-testid="policies-toc">
-          <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_1px_4px_rgba(15,23,42,0.04)] p-3">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-[0_1px_4px_rgba(15,23,42,0.04)] p-3 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto overscroll-contain scroll-premium">
             <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-3 py-2">On this page</p>
             <nav className="flex flex-col">
               {tocItems.map((it) => {

@@ -5,6 +5,17 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-17 (Attendance team live-sync + Policies scrollspy/independent-scroll + break-text) ✅ TESTED
+
+**FIX 1 — Attendance Team showed "Unknown"/stale (root cause):** Attendance rows store a `team`/`department` SNAPSHOT taken at creation; after an employee's team changed (e.g. → "Trainee") the stored snapshot went stale while the API returned it verbatim. FIX (`get_attendance`): (a) Team/Department/Designation FILTERS now resolve against the Employee Master (live source of truth) via matched employee-ids, and (b) each returned row's `team`/`department` is live-enriched from the master (defensive: only overrides when the employee exists and has a value, so deleted/legacy rows keep their stored value — never crashes). Verified: Trainee now shows 648 attendance rows (was 0); `team=Trainee` filter returns 648 all-Trainee rows; remaining "Unknown" rows are employees whose master team is literally "Unknown" (true reflection). Calculations/status filter/exports untouched.
+
+**FIX 2 — Policies tab sync + independent left scroll (`Policies.js`):** Added IntersectionObserver scrollspy (RIGHT→LEFT: highlights the TOC item for the section nearest the viewport top; `rootMargin -12%/-70%`), with a `isProgrammaticScroll` ref so click-scroll (LEFT→RIGHT, existing `scrollTo`) doesn't fight the observer (no flicker). Left TOC panel now has its own scroll (`lg:max-h-[calc(100vh-2rem)] overflow-y-auto overscroll-contain`) so the wheel scrolls the nav independently and never chains to the content. No visual/style regression. Verified via screenshot (TOC highlight follows scroll).
+
+**FIX 3 — Policy break-text (display only):** Working-hours break table rows updated — `["Lunch Break","01:00 PM"]` → `["Lunch","Available from 1:00 PM in the cafeteria"]`, `["Evening Break","05:00 PM"]` → `["Evening Snack","Available from 5:00 PM in the cafeteria"]`. Updated both the seed (`server.py`) and the existing DB policy record. No timing/calculation/versioning/acknowledgement impact.
+
+---
+
+
 ## Latest Update — 2026-06-11 (Employee↔Verification CRUD sync + filters + default Active) ✅ TESTED
 
 **BIG FIX 1 — Verification is now a TRUE REFLECTION of the Employee Module (root-cause architecture fix):**

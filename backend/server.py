@@ -571,8 +571,8 @@ COMPANY_POLICIES = [
                         "headers": ["Break", "Window"],
                         "rows": [
                             ["Morning Break", "11:00 AM"],
-                            ["Lunch Break", "01:00 PM"],
-                            ["Evening Break", "05:00 PM"],
+                            ["Lunch", "Available from 1:00 PM in the cafeteria"],
+                            ["Evening Snack", "Available from 5:00 PM in the cafeteria"],
                             ["Dinner Break", "09:00 PM"]
                         ]
                     }
@@ -6219,18 +6219,23 @@ async def get_attendance(
     query = {}
     if employee_name:
         query["emp_name"] = {"$regex": employee_name, "$options": "i"}
-    if team and team != "All":
-        query["team"] = team
-    if department and department != "All":
-        query["department"] = department
     if status and status != "All":
         query["status"] = status
 
-    # Attendance records do NOT store `designation`, so resolve it to the set of
-    # matching employee ids and filter on those (exact match, like Department/Team).
+    # Team / Department / Designation are resolved against the EMPLOYEE MASTER
+    # (the live source of truth) — never against the snapshot stored on each
+    # attendance row — so a later team/department change is honoured by both the
+    # filter and the displayed value (see live-enrichment before the return).
+    emp_master_filter = {}
+    if team and team != "All":
+        emp_master_filter["team"] = team
+    if department and department != "All":
+        emp_master_filter["department"] = department
     if designation and designation != "All":
-        desig_emps = await db.employees.find({"designation": designation}, {"_id": 0, "id": 1}).to_list(5000)
-        query["employee_id"] = {"$in": [e["id"] for e in desig_emps]}
+        emp_master_filter["designation"] = designation
+    if emp_master_filter:
+        matched = await db.employees.find(emp_master_filter, {"_id": 0, "id": 1}).to_list(5000)
+        query["employee_id"] = {"$in": [e["id"] for e in matched]}
 
     # Build indexed date range query by enumerating valid DD-MM-YYYY values.
     # This replaces a previous full-collection scan + Python filter that
@@ -6377,7 +6382,26 @@ async def get_attendance(
             return 0
     
     attendance.sort(key=date_sort_key, reverse=True)
-    
+
+    # Live-resolve Team & Department from the Employee Master so the Attendance
+    # module always reflects the CURRENT assignment. Attendance rows store a
+    # snapshot taken at creation time which goes stale after a team change
+    # (e.g. employee re-assigned to "Trainee"). Defensive: only override when
+    # the employee still exists and has a value — deleted/legacy rows keep their
+    # stored value, never crash.
+    emp_ids = {a.get("employee_id") for a in attendance if a.get("employee_id")}
+    if emp_ids:
+        master = {}
+        async for e in db.employees.find({"id": {"$in": list(emp_ids)}}, {"_id": 0, "id": 1, "team": 1, "department": 1}):
+            master[e["id"]] = e
+        for a in attendance:
+            m = master.get(a.get("employee_id"))
+            if m:
+                if m.get("team"):
+                    a["team"] = m["team"]
+                if m.get("department"):
+                    a["department"] = m["department"]
+
     return [serialize_doc(a) for a in attendance]
 
 @api_router.post("/attendance/check-in")
