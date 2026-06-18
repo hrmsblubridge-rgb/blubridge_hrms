@@ -4086,6 +4086,43 @@ async def get_employee_stats(current_user: dict = Depends(get_current_user)):
     offset += len(emp_types)
     by_location = {l: results[offset + i] for i, l in enumerate(locations)}
 
+    # ADDITIVE — Workforce distribution (active employees), Full-Time vs Intern,
+    # overall + per target department. Single aggregation (no N+1) over the same
+    # active, non-deleted population the existing cards use. Existing keys above
+    # are untouched (backward compatible).
+    def _is_intern_type(t: str) -> bool:
+        s = (t or "").strip().lower()
+        return any(k in s for k in ("intern", "trainee", "internship"))
+
+    def _is_full_time_type(t: str) -> bool:
+        return (t or "").strip().lower() in ("full-time", "full time", "fulltime", "permanent")
+
+    workforce_dept_targets = ["Research Unit", "Business & Product", "Support Staff"]
+    workforce = {
+        "full_time": 0,
+        "intern": 0,
+        "by_department": {d: {"full_time": 0, "intern": 0} for d in workforce_dept_targets},
+    }
+    agg_cursor = db.employees.aggregate([
+        {"$match": {**base_query, "employee_status": EmployeeStatus.ACTIVE}},
+        {"$group": {"_id": {"dept": "$department", "etype": "$employment_type"}, "count": {"$sum": 1}}},
+    ])
+    async for grp in agg_cursor:
+        etype = (grp["_id"] or {}).get("etype")
+        dept = (grp["_id"] or {}).get("dept")
+        cnt = grp.get("count", 0)
+        is_intern = _is_intern_type(etype)
+        is_ft = _is_full_time_type(etype)
+        if is_ft:
+            workforce["full_time"] += cnt
+        if is_intern:
+            workforce["intern"] += cnt
+        if dept in workforce["by_department"]:
+            if is_ft:
+                workforce["by_department"][dept]["full_time"] += cnt
+            if is_intern:
+                workforce["by_department"][dept]["intern"] += cnt
+
     return {
         "total": total,
         "active": active,
@@ -4093,7 +4130,8 @@ async def get_employee_stats(current_user: dict = Depends(get_current_user)):
         "resigned": resigned,
         "by_department": by_department,
         "by_employment_type": by_type,
-        "by_work_location": by_location
+        "by_work_location": by_location,
+        "workforce": workforce,
     }
 
 # ============== BULK IMPORT ENDPOINTS ==============

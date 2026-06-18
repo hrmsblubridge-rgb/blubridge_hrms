@@ -1030,6 +1030,42 @@ const Employees = () => {
         </div>
       )}
 
+      {/* Workforce Distribution (additive) — Full-Time vs Intern, overall + by department */}
+      {stats?.workforce && (
+        <div className="space-y-4" data-testid="workforce-distribution">
+          {/* Group 1 — Overall employment type */}
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <StatCard title="Full-Time Employees" value={stats.workforce.full_time} icon={Briefcase} color="#063c88" bgColor="bg-blue-100" />
+            <StatCard title="Intern Employees" value={stats.workforce.intern} icon={GraduationCap} color="#7c3aed" bgColor="bg-violet-100" />
+            {/* Group 2 — Department-wise breakdown */}
+            {['Research Unit', 'Business & Product', 'Support Staff'].map((dept) => {
+              const d = stats.workforce.by_department?.[dept] || { full_time: 0, intern: 0 };
+              return (
+                <div key={dept} className="stat-card" data-testid={`workforce-dept-${dept.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`}>
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-slate-100">
+                      <Building2 className="w-5 h-5" style={{ color: '#063c88' }} strokeWidth={1.5} />
+                    </div>
+                    <p className="text-sm font-semibold text-slate-900 leading-tight">{dept}</p>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xl font-bold text-slate-900 number-display" data-testid={`workforce-dept-ft-${dept.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`}>{d.full_time}</p>
+                      <p className="text-xs text-slate-500">Full-Time</p>
+                    </div>
+                    <div className="h-8 w-px bg-slate-200" />
+                    <div>
+                      <p className="text-xl font-bold text-violet-700 number-display" data-testid={`workforce-dept-intern-${dept.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`}>{d.intern}</p>
+                      <p className="text-xs text-slate-500">Interns</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Filters */}
       <div className="card-flat p-6">
         <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4">

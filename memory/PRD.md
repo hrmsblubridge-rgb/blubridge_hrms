@@ -5,6 +5,21 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-18 (Employee workforce cards + Team hide-empty ✅ TESTED, backward-compatible)
+
+**Update 1 — Employee Module workforce analytics (additive):**
+- Backend `/employees/stats` now returns an extra `workforce` block: `{full_time, intern, by_department:{Research Unit, Business & Product, Support Staff: {full_time, intern}}}`. Computed via ONE aggregation pipeline (no N+1) over the same active/non-deleted population. ALL existing keys (total/active/inactive/resigned/by_department/by_employment_type/by_work_location) untouched → fully backward compatible.
+- Intern classification = employment_type contains intern/trainee/internship; Full-Time = full-time/permanent.
+- Frontend `Employees.js`: new section directly below the existing 4 cards — 2 overall cards (Full-Time Employees, Intern Employees) + 3 department cards each showing Full-Time / Interns. Matches BluBridge design (StatCard style, spacing, radius, colors, responsive grid). Verified vs DB: FT=37, Intern=19; RU 34/15, B&P 1/2, Support 2/2 (reconciles to 56 active).
+
+**Update 2 — Team Module hide empty teams (UI-only):**
+- `Team.js`: added `visibleTeams = filteredTeams.filter(member_count>0)`. Grid, empty-state, "Teams" counter, and dept-tab badge now reflect non-empty teams only. Grid reflows; team reappears when member_count>0 on next load. NO record/definition deletion, no backend/API/schema change. Verified: 13 empty teams (incl. "Framework - Quantz") now hidden, 14 visible.
+
+**Tests:** `tests/test_workforce_stats.py` (2, backward-compat keys + reconciliation) pass. Stats endpoint ~2.2s. No regression.
+
+---
+
+
 ## Latest Update — 2026-06-18 (Leave Import — new template mapping + Intern Paid block ✅ TESTED)
 
 **Scope:** Reworked Admin → Leave → Import Leaves to ingest the new source template `Email, Leave_Type, Status, Action_Type, Remark, Applied_on, Approved_by, Start_Date, Leave_Split, Reason` so imported rows are indistinguishable from natively-applied leaves.

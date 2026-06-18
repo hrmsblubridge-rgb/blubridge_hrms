@@ -65,6 +65,10 @@ const Team = () => {
   };
 
   const filteredTeams = teams.filter(t => t.department === activeDept);
+  // UI visibility rule: hide team cards with zero members (records are NOT deleted;
+  // this only affects display). Grid reflows automatically; a team reappears as soon
+  // as member_count > 0 on the next data load.
+  const visibleTeams = filteredTeams.filter(t => (t.member_count || 0) > 0);
   const totalMembers = filteredTeams.reduce((sum, t) => sum + (t.member_count || 0), 0);
 
   return (
@@ -86,7 +90,7 @@ const Team = () => {
         <div className="flex border-b border-slate-100 bg-slate-50/50 overflow-x-auto">
           {departments.map((dept) => {
             const isActive = activeDept === dept.name;
-            const deptTeamCount = teams.filter(t => t.department === dept.name).length;
+            const deptTeamCount = teams.filter(t => t.department === dept.name && (t.member_count || 0) > 0).length;
             return (
               <button
                 key={dept.id}
@@ -123,7 +127,7 @@ const Team = () => {
             <div className="text-right">
               <div className="flex items-center gap-8">
                 <div>
-                  <p className="text-3xl font-bold text-slate-900 number-display">{filteredTeams.length}</p>
+                  <p className="text-3xl font-bold text-slate-900 number-display">{visibleTeams.length}</p>
                   <p className="text-xs text-slate-500 font-medium">Teams</p>
                 </div>
                 <div>
@@ -139,14 +143,14 @@ const Team = () => {
             <div className="flex items-center justify-center h-64">
               <div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : filteredTeams.length === 0 ? (
+          ) : visibleTeams.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 text-slate-500">
               <Users className="w-12 h-12 mb-3 text-slate-300" />
-              <p>No teams found in this department</p>
+              <p>No teams with members in this department</p>
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {filteredTeams.map((team, index) => (
+              {visibleTeams.map((team, index) => (
                 <div 
                   key={team.id} 
                   className="group p-5 rounded-xl bg-white border border-slate-100 hover:border-[#063c88]/20 hover:shadow-lg transition-all duration-300 animate-slide-up"
