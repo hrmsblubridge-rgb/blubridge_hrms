@@ -49,6 +49,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
+import { FEATURE_FLAGS } from '../config/featureFlags';
 
 // Define nav items with role-based access
 const allNavItems = [
@@ -99,6 +100,7 @@ const Layout = ({ children }) => {
   }, [token, user?.role]);
 
   const fetchOpChecklistCount = useCallback(async () => {
+    if (!FEATURE_FLAGS.OPERATIONAL_SETUP_ENABLED) return;  // module disabled — skip
     if (!['hr', 'office_admin'].includes(user?.role)) return;
     try {
       const res = await axios.get(
@@ -119,8 +121,13 @@ const Layout = ({ children }) => {
     return () => clearInterval(interval);
   }, [fetchVerificationCount, fetchOpChecklistCount]);
 
-  // Filter nav items based on user role
-  const navItems = allNavItems.filter(item => item.roles.includes(user?.role));
+  // Filter nav items based on user role + module feature flags.
+  // Operational Setup is hidden from the sidebar when its flag is disabled
+  // (route, component, APIs and data are all preserved for future re-enable).
+  const navItems = allNavItems.filter(item => {
+    if (item.path === '/operational-checklist' && !FEATURE_FLAGS.OPERATIONAL_SETUP_ENABLED) return false;
+    return item.roles.includes(user?.role);
+  });
 
   const roleLabels = {
     hr: 'HR Team',

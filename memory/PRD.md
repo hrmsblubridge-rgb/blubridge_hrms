@@ -5,6 +5,19 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-18 (Operational Setup module disabled — reversible feature flag ✅ TESTED)
+
+**Approach:** Added `frontend/src/config/featureFlags.js` with `OPERATIONAL_SETUP_ENABLED = false`. Flip to `true` to fully restore the module — no redevelopment needed.
+- **Sidebar:** `Layout.js` filters out the `/operational-checklist` nav item when the flag is off; the pending-count poll is also short-circuited.
+- **Direct URL:** `App.js` route `/operational-checklist` renders `<Navigate to="/dashboard" replace />` when disabled (component still imported/preserved).
+- **Global search:** Header search is keyword-based with no operational/checklist/setup branch (e.g. "checklist" matches the attendance "check" keyword), so it already can't reach the module — no change required.
+- **Preserved:** route definition, `OperationalChecklist.js` component, all `/api/operational-checklists/*` APIs, DB collections, checklist/progress/template data. NO backend/DB changes, no other module touched.
+
+**Verified:** Sidebar no longer lists "Operational Setup"; visiting `/operational-checklist` redirects to `/dashboard`; no console errors. Re-enable = single flag flip.
+
+---
+
+
 ## Latest Update — 2026-06-18 (Employee workforce cards + Team hide-empty ✅ TESTED, backward-compatible)
 
 **Update 1 — Employee Module workforce analytics (additive):**

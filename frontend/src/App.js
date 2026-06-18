@@ -47,6 +47,7 @@ import Settings from "./pages/Settings";
 import CronManagement from "./pages/CronManagement";
 import PolicyAcknowledgements from "./pages/PolicyAcknowledgements";
 import OperationalVigilance from "./pages/OperationalVigilance";
+import { FEATURE_FLAGS } from "./config/featureFlags";
 import "./App.css";
 
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -190,7 +191,7 @@ function App() {
           <Route path="/issue-tickets" element={<AdminRoute><IssueTickets /></AdminRoute>} />
           <Route path="/audit-logs" element={<AdminRoute><AuditLogs /></AdminRoute>} />
           <Route path="/role-management" element={<AdminRoute><RoleManagement /></AdminRoute>} />
-          <Route path="/operational-checklist" element={<AdminRoute><OperationalChecklist /></AdminRoute>} />
+          <Route path="/operational-checklist" element={<AdminRoute>{FEATURE_FLAGS.OPERATIONAL_SETUP_ENABLED ? <OperationalChecklist /> : <Navigate to="/dashboard" replace />}</AdminRoute>} />
           <Route path="/settings" element={<AdminRoute><Settings /></AdminRoute>} />
           <Route path="/settings/cron-management" element={<AdminRoute><CronManagement /></AdminRoute>} />
           <Route path="/late-requests" element={<AdminRoute><AdminLateRequests /></AdminRoute>} />
