@@ -2179,6 +2179,32 @@ def _is_paid_leave_type(leave_type: Optional[str]) -> bool:
     return leave_type.strip().lower().startswith("paid")
 
 
+def _is_intern_category(employment_type: Optional[str]) -> bool:
+    """True for ANY Intern-category employment type (Intern / Internship /
+    Trainee / Probationary Intern / etc.). Interns are never Paid-Leave eligible."""
+    s = (employment_type or "").strip().lower()
+    return any(k in s for k in ("intern", "internship", "trainee", "probation"))
+
+
+def _paid_leave_eligibility(employee: dict) -> tuple[bool, str]:
+    """SINGLE SOURCE OF TRUTH for Paid-Leave eligibility (FINAL business rule).
+
+    Eligible only when BOTH hold:
+      1. Employment type is NOT an Intern-category type, AND
+      2. a valid Confirmation Date exists on the (current) employee master record.
+
+    Returns ``(eligible, reason)``. ``reason`` is a user-facing message when not
+    eligible. This is intentionally computed from the live employee document so
+    UI/API/approval layers can never drift or rely on stale/cached data.
+    """
+    etype = employee.get("employment_type") if employee else None
+    if _is_intern_category(etype):
+        return False, "Paid Leave is not available for Intern/Trainee employees."
+    if not _parse_date_flex(employee.get("confirmation_date") if employee else None):
+        return False, "Paid Leave is available only for confirmed employees (a valid Confirmation Date must be set by HR)."
+    return True, ""
+
+
 def _leave_days_count(start_date: str, end_date: str, leave_split: str) -> float:
     """Number of leave-days consumed by a single leave record."""
     split = (leave_split or "Full Day").strip()
@@ -2264,9 +2290,9 @@ async def calculate_paid_leave_balance(
     if not emp:
         return {"earned": 0.0, "used": 0.0, "balance": 0.0}
 
-    # Interns are NOT eligible for Paid Leave — balance is always zero
-    # (consistent with the create-leave block that 403s Intern Paid Leave).
-    if (emp.get("employment_type") or "").strip().lower() == "intern":
+    # Interns (any Intern-category type) are NOT eligible for Paid Leave — balance
+    # is always zero (consistent with the eligibility rule enforced on apply/approve).
+    if _is_intern_category(emp.get("employment_type")):
         return {"earned": 0.0, "used": 0.0, "balance": 0.0}
 
     doj = _parse_date_flex(emp.get("date_of_joining")) or reference_date
@@ -7384,12 +7410,15 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
 
-    # Business rule: Paid Leave is NOT available to Interns. Enforced at the API
-    # layer (dynamic on employment_type) so no UI bypass or direct request can
-    # create an intern Paid Leave. Becomes available automatically when the
-    # employment type is anything other than Intern.
-    if _is_paid_leave_type(data.leave_type) and employee.get("employment_type") == EmploymentType.INTERN:
-        raise HTTPException(status_code=403, detail="Paid Leave is not available for Intern employees.")
+    # Business rule (FINAL): Paid Leave is available ONLY to non-Intern employees
+    # who have a valid Confirmation Date. Enforced at the API layer (computed from
+    # the LIVE employee record) so no UI bypass, direct request, or stale cache can
+    # create a Paid Leave for an ineligible employee. Eligibility flips
+    # automatically when employment type / confirmation date changes.
+    if _is_paid_leave_type(data.leave_type):
+        eligible, reason = _paid_leave_eligibility(employee)
+        if not eligible:
+            raise HTTPException(status_code=403, detail=reason)
 
     # Paid Leave: balance must cover the requested range. By definition, Paid
     # Leave is non-LOP — force is_lop=False below.
@@ -7992,7 +8021,7 @@ async def bulk_import_leaves(
 
         # Intern restriction: Paid Leave can never be created for an Intern, via
         # ANY path including import (mirrors the create_leave / UI rule).
-        if _is_paid_leave_type(leave_type) and emp.get("employment_type") == EmploymentType.INTERN:
+        if _is_paid_leave_type(leave_type) and _is_intern_category(emp.get("employment_type")):
             failed += 1
             errors.append({"row": idx, "email": email, "reason": "Paid Leave is not available for Intern employees."})
             continue
@@ -8159,9 +8188,16 @@ async def admin_edit_leave(leave_id: str, data: LeaveAdminEdit, current_user: di
     new_end = update.get("end_date", leave.get("end_date"))
     new_type = update.get("leave_type", leave.get("leave_type"))
 
-    # Paid Leave: revalidate balance for the (possibly new) range.
-    # `ignore_leave_id` avoids double-counting the record being edited.
+    # Paid Leave: enforce eligibility + revalidate balance for the (possibly new)
+    # range. `ignore_leave_id` avoids double-counting the record being edited.
     if _is_paid_leave_type(new_type):
+        emp = await db.employees.find_one(
+            {"id": leave["employee_id"], "is_deleted": {"$ne": True}},
+            {"_id": 0, "employment_type": 1, "confirmation_date": 1},
+        )
+        eligible, reason = _paid_leave_eligibility(emp or {})
+        if not eligible:
+            raise HTTPException(status_code=403, detail=reason)
         await _validate_paid_leave_balance(
             leave["employee_id"], new_type, new_start, new_end, new_split,
             ignore_leave_id=leave_id,
@@ -8198,9 +8234,19 @@ async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = Non
     if not leave:
         raise HTTPException(status_code=404, detail="Leave request not found")
 
-    # Paid Leave: re-validate balance at approval time (between submission and
-    # now, other Paid Leaves may have been approved and consumed credits).
+    # Layer 3 — Approval protection. A Paid Leave can only be APPROVED if the
+    # employee is currently Paid-Leave eligible (non-Intern + valid Confirmation
+    # Date) AND has sufficient balance (re-validated at approval time, since other
+    # Paid Leaves may have been approved since submission). Blocks approval of any
+    # Paid Leave that slipped in for an ineligible employee (e.g. type changed).
     if _is_paid_leave_type(leave.get("leave_type")):
+        emp = await db.employees.find_one(
+            {"id": leave["employee_id"], "is_deleted": {"$ne": True}},
+            {"_id": 0, "employment_type": 1, "confirmation_date": 1},
+        )
+        eligible, reason = _paid_leave_eligibility(emp or {})
+        if not eligible:
+            raise HTTPException(status_code=403, detail=f"Cannot approve Paid Leave: {reason}")
         await _validate_paid_leave_balance(
             leave["employee_id"], leave["leave_type"], leave["start_date"],
             leave["end_date"], leave.get("leave_split", "Full Day"),
@@ -10479,6 +10525,22 @@ async def get_employee_leaves(current_user: dict = Depends(get_current_user)):
         "history_count": len(history)
     }
 
+@api_router.get("/employee/paid-leave-eligibility")
+async def get_paid_leave_eligibility(current_user: dict = Depends(get_current_user)):
+    """Whether the CURRENT employee may use Paid Leave (live employee master data,
+    never cached). Used by the Apply-Leave form to decide whether to render the
+    Paid Leave option — flips automatically when employment type / confirmation
+    date changes, with no logout/login required."""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    emp = await db.employees.find_one(
+        {"id": current_user["employee_id"], "is_deleted": {"$ne": True}},
+        {"_id": 0, "employment_type": 1, "confirmation_date": 1},
+    )
+    eligible, reason = _paid_leave_eligibility(emp or {})
+    return {"eligible": eligible, "reason": reason}
+
+
 @api_router.get("/employee/paid-leave-balance")
 async def get_paid_leave_balance(
     reference_date: Optional[str] = None,
@@ -10529,6 +10591,14 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Business rule (FINAL): Paid Leave only for non-Intern employees with a valid
+    # Confirmation Date — enforced here on the LIVE record so a manipulated payload
+    # (DevTools / direct API) cannot submit Paid Leave for an ineligible employee.
+    if _is_paid_leave_type(data.leave_type):
+        eligible, reason = _paid_leave_eligibility(employee)
+        if not eligible:
+            raise HTTPException(status_code=403, detail=reason)
     
     # Validate reason length
     if not data.reason or len(data.reason.strip()) < 10:

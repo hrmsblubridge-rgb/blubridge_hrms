@@ -5,6 +5,21 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-18 (ROOT-CAUSE FIX: Intern Paid-Leave eligibility, all layers ✅ TESTED)
+
+**Root causes found (why the prior "fix" leaked):** (a) Frontend gated on cached `user.employment_type !== 'Intern'` — missed Trainee/Internship/Probationary, ignored Confirmation Date, used stale cache. (b) `/employee/leaves/apply` (the endpoint the UI actually calls) had NO explicit Paid block. (c) `create_leave` + `calculate_paid_leave_balance` used exact `== "Intern"` (Trainee/Internship accrued from DOJ → non-zero balance, applyable). (d) `approve_leave` never re-checked employee eligibility.
+
+**Fix — single source of truth `_paid_leave_eligibility(employee)`** (server.py ~2182): eligible ⇔ NOT intern-category (`_is_intern_category` matches intern/internship/trainee/probation) AND valid Confirmation Date. Wired into ALL layers, all computed from the LIVE employee record (never cached):
+- Layer 1 (UI): new `GET /api/employee/paid-leave-eligibility` fetched every time the Apply dialog opens; Paid option only rendered when `eligible`; submit guarded. Removed stale `user` reliance. Auto-flips on employment-type/CD change without logout.
+- Layer 2 (API): `create_leave` (POST /leaves), `/employee/leaves/apply`, and edit-leave all 403 when ineligible. Import guard broadened to `_is_intern_category`.
+- Layer 3 (Approval): `approve_leave` rejects approving Paid for a now-ineligible employee.
+- Balance: `calculate_paid_leave_balance` returns 0 for ALL intern-category types.
+
+**Verified (live + pytest):** Intern (`user`) — UI shows only Sick/Emergency/Preplanned/Optional (no Paid); eligibility=false; direct API apply → 403. FT no-CD → ineligible (S4). FT+CD → can apply (S5). Flip FT→Intern → balance 0, pending Paid approval → 403, new create → 403 (auto-transition, Layer 3). New `tests/test_paid_leave_eligibility.py` (15) + import intern test + paid-leave suites all pass. Test employee (madhan.s) & temp leaves fully restored. Existing balance logic / approved records untouched. NOTE: per business rule (Scenario 4), Full-Time employees WITHOUT a Confirmation Date can no longer apply NEW Paid Leave until HR sets one (balance display unchanged).
+
+---
+
+
 ## Latest Update — 2026-06-18 (Operational Setup module disabled — reversible feature flag ✅ TESTED)
 
 **Approach:** Added `frontend/src/config/featureFlags.js` with `OPERATIONAL_SETUP_ENABLED = false`. Flip to `true` to fully restore the module — no redevelopment needed.

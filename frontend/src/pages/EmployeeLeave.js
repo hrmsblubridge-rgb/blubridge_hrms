@@ -18,7 +18,7 @@ import { formatDate } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const EmployeeLeave = () => {
-  const { getAuthHeaders, user } = useAuth();
+  const { getAuthHeaders } = useAuth();
   const [leaves, setLeaves] = useState([]);
   const [leaveBalance, setLeaveBalance] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -30,6 +30,8 @@ const EmployeeLeave = () => {
   const [form, setForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' });
   const [viewReason, setViewReason] = useState(null); // { reason, leave_type, start_date, end_date }
   const [paidBalance, setPaidBalance] = useState(null);
+  const [paidEligible, setPaidEligible] = useState(false);
+  const [paidIneligibleReason, setPaidIneligibleReason] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const { sortedRows: sortedLeaves, sortField, sortDir, toggleSort } = useTableSort(leaves);
@@ -57,6 +59,30 @@ const EmployeeLeave = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Fetch the LATEST Paid-Leave eligibility from the live employee record every
+  // time the Apply dialog opens (never trust cached profile/session). Paid Leave
+  // is only offered when the backend confirms eligibility (non-Intern + valid
+  // Confirmation Date). Reflects employment-type / confirmation-date changes with
+  // no logout/login or cache clearing.
+  useEffect(() => {
+    if (!showApplyDialog) return;
+    let active = true;
+    axios.get(`${API}/employee/paid-leave-eligibility`, { headers: getAuthHeaders() })
+      .then(r => {
+        if (!active) return;
+        setPaidEligible(!!r.data?.eligible);
+        setPaidIneligibleReason(r.data?.reason || '');
+        // If Paid was selected but is no longer eligible, reset the selection.
+        if (!r.data?.eligible) {
+          setForm(prev => prev.leave_type === 'Paid'
+            ? { ...prev, leave_type: 'Sick', start_date: '', end_date: '' }
+            : prev);
+        }
+      })
+      .catch(() => { if (active) { setPaidEligible(false); setPaidIneligibleReason(''); } });
+    return () => { active = false; };
+  }, [showApplyDialog, getAuthHeaders]);
+
   // Refresh Paid Leave balance hint when employee opens the apply dialog or
   // changes the selected start date (so past-date apply shows historical
   // balance, future-date apply shows current balance).
@@ -82,8 +108,8 @@ const EmployeeLeave = () => {
   };
 
   const handleApplyLeave = async () => {
-    if (form.leave_type === 'Paid' && user?.employment_type === 'Intern') {
-      toast.error('Paid Leave is not available for Intern employees.');
+    if (form.leave_type === 'Paid' && !paidEligible) {
+      toast.error(paidIneligibleReason || 'Paid Leave is not available for your profile.');
       return;
     }
     if (!form.leave_type || !form.start_date || !form.reason) {
@@ -288,7 +314,7 @@ const EmployeeLeave = () => {
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
                     <SelectItem value="Optional">Optional</SelectItem>
-                    {user?.employment_type !== 'Intern' && (
+                    {paidEligible && (
                       <SelectItem value="Paid">Paid Leave</SelectItem>
                     )}
                   </SelectContent>

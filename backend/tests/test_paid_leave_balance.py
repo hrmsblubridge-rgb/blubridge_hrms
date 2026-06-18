@@ -54,6 +54,10 @@ def test_employee():
         "employment_type": "Full-time",
         "employee_status": "Active",
         "date_of_joining": "2026-01-01",
+        # Confirmation Date set = DOJ so the employee is Paid-Leave ELIGIBLE
+        # (business rule: Full-Time + valid Confirmation Date). Using DOJ keeps
+        # accrual_start unchanged, so every balance assertion below is unaffected.
+        "confirmation_date": "2026-01-01",
         "is_deleted": False,
     })
     yield eid
