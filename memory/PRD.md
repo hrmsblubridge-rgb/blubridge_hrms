@@ -5,6 +5,26 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-18 (Leave Import — new template mapping + Intern Paid block ✅ TESTED)
+
+**Scope:** Reworked Admin → Leave → Import Leaves to ingest the new source template `Email, Leave_Type, Status, Action_Type, Remark, Applied_on, Approved_by, Start_Date, Leave_Split, Reason` so imported rows are indistinguishable from natively-applied leaves.
+
+**Backend (`server.py` bulk_import_leaves + helpers):**
+- `_normalize_header` now treats `_` as space → all new underscore columns auto-map (Start_Date↔Start Date, etc.); added `Action Type → action_type` alias.
+- New `_clean_null` (literal "NULL"/"N/A"/"-" → None applied to every field), `_normalize_action_type` (No_LOP→is_lop False, LOP→True, NULL/blank/stray→None).
+- Leave_Type mapping via existing `_normalize_leave_type`: Emergency→Emergency, Sick→Sick (displays "Sick Leave"), Preplanned→Preplanned, Optional Holiday→Optional. Explicit "Paid"→canonical "Paid".
+- End_Date now optional → single-day leave (end=start). Leave_Split supports Full Day/First Half/Second Half (halves = "0.5 day(s)").
+- Applied_on (DD-MM-YYYY HH:MM / D/M/YYYY H:MM) → `created_at` (so Applied-On shows the real date, DD-Mon-YYYY display). Remark → `lop_remark` (admin remark) + `rejection_reason` for rejected. Approved_by resolved; unknown/numeric IDs fall back to importing admin for approved/rejected.
+- Intern Paid-Leave block on import (mirrors create_leave/UI). Two duplicate guards: exact-match (idempotent re-import) + non-rejected overlap (single-leave-per-day). **Perf:** pre-fetch existing leaves once (was 2 queries/row → 736 queries causing ingress 502; now 368 rows in ~2.8s vs 1m46s).
+- Template download + preview dialog updated to the 10 new columns.
+
+**Frontend:** `EmployeeLeave.js` already hides Paid for Interns + guards submit (verified). `Leave.js` import dialog description updated.
+
+**Verified:** Real 368-row CSV → preview maps all 10 cols (0 ignored, ready); import success (10 new, 358 correctly skipped as overlapping existing leaves), re-import idempotent (0/368 dups). Imported records surface in admin leaves API with correct type/status/is_lop/lop_remark/leave_split/created_at + approved_by_name. New `tests/test_leave_import_mapping.py` (8 tests incl. Intern Paid block, idempotency) pass; paid-leave suites (18) still green. Test data fully cleaned (0 leftover).
+
+---
+
+
 ## Latest Update — 2026-06-17 (BUG FIX — Attendance "Remaining Leaves" ignored Confirmation Date ✅ TESTED)
 
 **Bug:** Attendance → Employee Attendance Overview "Remaining Leaves" card showed wrong values (Dinesh G EMP0009, Full-time, CD 08-Jun-2026 → showed **11**). ROOT CAUSE: `frontend/src/components/EmployeeLeaveDetail.js` computed remaining as a HARDCODED `12 - approvedLeaves` (any leave type), completely ignoring Confirmation Date, employment type, and the real Paid-Leave accrual.

@@ -819,7 +819,7 @@ const Leave = () => {
             <DialogTitle className="flex items-center gap-2" style={{ fontFamily: 'Outfit' }}>
               <Upload className="w-5 h-5 text-[#063c88]" /> Import Leaves
             </DialogTitle>
-            <DialogDescription>You can upload custom sheets with additional columns. Extra data will also be stored. Required core columns: Employee Email, Leave Type, From Date, To Date.</DialogDescription>
+            <DialogDescription>You can upload custom sheets with additional columns. Extra data will also be stored. Required core columns: Email, Leave_Type, Start_Date. (Status, Action_Type, Remark, Applied_on, Approved_by, Leave_Split &amp; Reason are mapped automatically.)</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 py-2">

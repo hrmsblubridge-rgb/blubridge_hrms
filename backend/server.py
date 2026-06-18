@@ -7424,9 +7424,8 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
 # ============== LEAVE BULK IMPORT ==============
 
 LEAVE_IMPORT_COLUMNS = [
-    "Emp Mail ID", "Leave Type", "From Date", "To Date",
-    "Leave Split", "Reason", "Status", "Applied Date", "Approved By",
-    "Approval Date", "Comments", "Auto Approve & Set LOP Status"
+    "Email", "Leave_Type", "Status", "Action_Type", "Remark",
+    "Applied_on", "Approved_by", "Start_Date", "Leave_Split", "Reason"
 ]
 
 # Sheet-column aliases → canonical internal field name. Matching is case-insensitive
@@ -7481,14 +7480,53 @@ LEAVE_COLUMN_ALIASES: dict[str, str] = {
     "Auto Approve & Set LOP Status": "auto_approve_lop",
     "Auto Approve": "auto_approve_lop",
     "Auto Approve LOP": "auto_approve_lop",
+    # action type → LOP selection (No_LOP / LOP). Maps to is_lop.
+    "Action Type": "action_type",
+    "Action": "action_type",
+    "LOP Action": "action_type",
 }
 
 
 def _normalize_header(s) -> str:
-    """Lowercase + collapse internal whitespace + strip for tolerant matching."""
+    """Lowercase + collapse internal whitespace + strip for tolerant matching.
+    Underscores are treated as spaces so 'Start_Date' == 'Start Date',
+    'Leave_Type' == 'Leave Type', 'Action_Type' == 'Action Type', etc."""
     if s is None:
         return ""
-    return " ".join(str(s).strip().split()).lower()
+    return " ".join(str(s).replace("_", " ").strip().split()).lower()
+
+
+# Cell values that mean "empty" in source exports (literal text, not blanks).
+_NULL_TOKENS = {"null", "none", "n/a", "na", "-", "--", "nil"}
+
+
+def _clean_null(value):
+    """Return None for blank / literal-NULL-like cells, else the trimmed string.
+    Source exports often write the literal text 'NULL' for empty fields."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.lower() in _NULL_TOKENS:
+        return None
+    return s
+
+
+def _normalize_action_type(value):
+    """Map the Action_Type / LOP-selection column to is_lop.
+      No_LOP / No LOP / NoLOP  -> False (No LOP selected)
+      LOP / Loss of Pay        -> True  (LOP selected)
+      NULL / blank / anything else (e.g. stray 'Half Day') -> None (unset)
+    Returns False, True, or None — never raises (import must not break)."""
+    s = _clean_null(value)
+    if s is None:
+        return None
+    norm = s.replace("_", " ").replace("-", " ").lower().strip()
+    norm = " ".join(norm.split())
+    if norm in ("no lop", "nolop", "no loss of pay"):
+        return False
+    if norm in ("lop", "loss of pay", "lop loss of pay"):
+        return True
+    return None
 
 
 def _build_alias_index() -> dict[str, str]:
@@ -7665,33 +7703,32 @@ async def download_leave_import_template(current_user: dict = Depends(get_curren
     ws.row_dimensions[1].height = 22
 
     sample = [
-        ["employee@blubridge.com", "Sick", "2026-04-10", "2026-04-12", "Full Day", "Fever", "Approved", "2026-04-09", "Admin", "2026-04-09", "Auto-approved by HR", "No"],
-        ["another@blubridge.com", "Casual Leave (CL)", "10/04/2026", "10/04/2026", "Half Day", "Personal", "Pending", "2026-04-09", "", "", "", "Yes"],
+        ["sairupesh@blubridge.com", "Optional Holiday", "Pending", "NULL", "NULL", "30-04-2026 18:59", "NULL", "2/5/2026", "Full Day", "Going to hometown to visit temple"],
+        ["sanjay.krishna@blubridge.com", "Sick", "Approved", "LOP", "Approved by HR", "29-04-2026 21:52", "Admin", "6/4/2026", "Full Day", "Sick Leave"],
+        ["gowtham@blubridge.com", "Emergency", "Approved", "No_LOP", "Approved", "29-04-2026 18:32", "Admin", "28-04-2026", "Second Half", "Emergency"],
     ]
     for r_idx, row_vals in enumerate(sample, start=2):
         for c_idx, v in enumerate(row_vals, start=1):
             ws.cell(row=r_idx, column=c_idx, value=v)
-    widths = [30, 18, 14, 14, 14, 30, 12, 14, 18, 14, 30, 28]
+    widths = [30, 16, 12, 12, 28, 20, 14, 14, 14, 40]
     for c_idx, w in enumerate(widths, 1):
         ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
 
     # Instructions sheet
     ws2 = wb.create_sheet("Instructions")
     ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
-    ws2.append(["Emp Mail ID", "Yes", "email", "Aliases: Employee Email, Email, Email ID, Mail"])
-    ws2.append(["Leave Type", "Yes", "leave_type", "Aliases: Type, Leave Category. Sick/Casual/Earned/Maternity/Annual/Emergency/Preplanned. Anything else → 'General Leave'."])
-    ws2.append(["From Date", "Yes", "start_date", "Aliases: Start Date, Leave From. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY"])
-    ws2.append(["To Date", "Yes", "end_date", "Aliases: End Date, Leave To. Must be >= From Date"])
-    ws2.append(["Leave Split", "No", "leave_split", "Aliases: Split, Day Type. Accepted: 'Full Day' or 'Half Day' (default Full Day). System auto-calculates total days."])
-    ws2.append(["Reason", "No", "reason", "Aliases: Purpose. Free text"])
-    ws2.append(["Status", "No", "status", "Aliases: Leave Status. Approved / Pending / Rejected (default: Pending)"])
-    ws2.append(["Applied Date", "No", "applied_at", "Aliases: Applied On, Date Applied. Stored in extra_data"])
-    ws2.append(["Approved By", "No", "approved_by", "Aliases: Approver, Approving Authority. 'Admin' or admin's username/email/full name → resolved to user ID"])
-    ws2.append(["Approval Date", "No", "approved_at", "Aliases: Approved On, Date Approved. Stored in extra_data"])
-    ws2.append(["Comments", "No", "comments", "Aliases: Remark, Remarks, Notes. Stored as the leave's lop_remark"])
-    ws2.append(["Auto Approve & Set LOP Status", "No", "auto_approve_lop", "Aliases: Auto Approve, Auto Approve LOP. Yes/No, TRUE/FALSE, 1/0. If TRUE → force-approve + set LOP flag."])
+    ws2.append(["Email", "Yes", "email", "Employee official email. Aliases: Emp Mail ID, Employee Email, Email ID, Mail"])
+    ws2.append(["Leave_Type", "Yes", "leave_type", "Emergency → Emergency, Sick → Sick Leave, Preplanned → Preplanned, Optional Holiday → Optional. Anything else → 'General Leave'."])
+    ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending)"])
+    ws2.append(["Action_Type", "No", "is_lop", "LOP selection in approval. No_LOP → No LOP, LOP → LOP (Loss Of Pay), NULL/blank → not set."])
+    ws2.append(["Remark", "No", "lop_remark", "Admin approval/rejection remark. NULL/blank → none."])
+    ws2.append(["Applied_on", "No", "created_at", "Leave application date/time. Accepts DD-MM-YYYY HH:MM, D/M/YYYY H:MM, YYYY-MM-DD. Displayed as DD-Mon-YYYY."])
+    ws2.append(["Approved_by", "No", "approved_by", "Approver username/email/full name → resolved to user. Unknown/numeric IDs fall back to the importing admin for Approved/Rejected rows."])
+    ws2.append(["Start_Date", "Yes", "start_date", "The leave date. Accepts YYYY-MM-DD, DD-MM-YYYY, D/M/YYYY. End date = Start date (single-day)."])
+    ws2.append(["Leave_Split", "No", "leave_split", "Full Day / First Half / Second Half (default Full Day). Halves count as 0.5 day."])
+    ws2.append(["Reason", "No", "reason", "Free text reason entered by the employee."])
     for col_idx in range(1, 5):
-        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 40
     for c in range(1, 5):
         ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
 
@@ -7730,7 +7767,7 @@ async def preview_leave_import(
     mapped = {h: c for h, c in column_mapping.items() if c}
     ignored = [h for h, c in column_mapping.items() if not c]
 
-    required_fields = ["email", "leave_type", "start_date", "end_date"]
+    required_fields = ["email", "leave_type", "start_date"]
     detected_canonical = set(mapped.values())
     missing_required = [f for f in required_fields if f not in detected_canonical]
 
@@ -7781,16 +7818,16 @@ async def bulk_import_leaves(
     detected_canonical = {c for c in sheet_to_canon.values() if c}
     ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
 
-    # Validate mandatory canonical fields
-    required_fields = ["email", "leave_type", "start_date", "end_date"]
+    # Validate mandatory canonical fields. End date is optional — when absent
+    # the leave is treated as single-day (end = start), matching the new template.
+    required_fields = ["email", "leave_type", "start_date"]
     missing_fields = [f for f in required_fields if f not in detected_canonical]
     if missing_fields:
         # Reverse-map for friendly error message (show common alias names)
         canon_to_friendly = {
-            "email": "Employee Email / Emp Mail ID",
-            "leave_type": "Leave Type",
-            "start_date": "From Date",
-            "end_date": "To Date",
+            "email": "Email / Emp Mail ID",
+            "leave_type": "Leave_Type",
+            "start_date": "Start_Date",
         }
         raise HTTPException(
             status_code=400,
@@ -7800,7 +7837,7 @@ async def bulk_import_leaves(
     # Pre-fetch employees by email for O(1) lookup
     emp_cursor = db.employees.find(
         {"is_deleted": {"$ne": True}},
-        {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1}
+        {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1, "employment_type": 1}
     )
     email_to_emp: dict = {}
     async for e in emp_cursor:
@@ -7846,7 +7883,15 @@ async def bulk_import_leaves(
     failed = 0
     errors: List[dict] = []
     inserts: List[dict] = []
-    inbatch_ranges: dict[str, list[tuple[str, str]]] = {}
+
+    # Pre-fetch ALL existing leaves grouped by employee for in-memory duplicate /
+    # overlap checks (one query instead of 2 per row → avoids gateway timeouts on
+    # large files). Newly-accepted rows are appended so in-batch dupes are caught.
+    existing_by_emp: dict[str, list[dict]] = {}
+    async for lv in db.leaves.find(
+        {}, {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1, "leave_type": 1, "status": 1}
+    ):
+        existing_by_emp.setdefault(lv.get("employee_id"), []).append(lv)
 
     for idx, raw_row in enumerate(rows, start=2):  # row 1 is the header
         # Remap sheet headers to canonical field names; unknown columns are dropped
@@ -7864,11 +7909,12 @@ async def bulk_import_leaves(
             errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
             continue
 
-        from_date = _parse_import_date(row.get("start_date"))
-        to_date = _parse_import_date(row.get("end_date"))
+        from_date = _parse_import_date(_clean_null(row.get("start_date")))
+        # End date is optional in the new template → single-day leave (end = start).
+        to_date = _parse_import_date(_clean_null(row.get("end_date"))) or from_date
         if not from_date or not to_date:
             failed += 1
-            errors.append({"row": idx, "email": email, "reason": "Invalid From/To date format (use YYYY-MM-DD or DD-MM-YYYY)"})
+            errors.append({"row": idx, "email": email, "reason": "Invalid/blank Start_Date (use YYYY-MM-DD, DD-MM-YYYY or D/M/YYYY)"})
             continue
 
         try:
@@ -7881,77 +7927,102 @@ async def bulk_import_leaves(
 
         if sd > ed:
             failed += 1
-            errors.append({"row": idx, "email": email, "reason": "From Date must be <= To Date"})
+            errors.append({"row": idx, "email": email, "reason": "Start Date must be <= End Date"})
             continue
 
-        # Leave Split (replaces No of Days). Days are auto-calculated from dates + split.
-        split_norm = _normalize_leave_split(row.get("leave_split"))
+        # Leave Split: Full Day / First Half / Second Half. Days auto-calculated.
+        split_norm = _normalize_leave_split(_clean_null(row.get("leave_split")))
         if split_norm == "INVALID":
             failed += 1
-            errors.append({"row": idx, "email": email, "reason": f"Invalid Leave Split value '{row.get('leave_split')}' (use Full Day or Half Day)"})
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Leave_Split value '{row.get('leave_split')}' (use Full Day / First Half / Second Half)"})
             continue
         leave_split = split_norm or "Full Day"  # default to Full Day when blank
 
-        # Auto-calc days from dates + split
-        if leave_split == "Full Day":
-            days = (ed - sd).days + 1
-        else:  # Half Day variants count as 0.5
-            days = ((ed - sd).days + 1) * 0.5
-        duration_str = f"{int(days) if days == int(days) else days} day(s)"
+        # Duration string — match native create_leave exactly (halves = 0.5 day(s)).
+        if leave_split in ("First Half", "Second Half"):
+            duration_str = "0.5 day(s)"
+        else:
+            duration = (ed - sd).days + 1
+            duration_str = f"{duration} day(s)"
 
-        # Auto Approve & Set LOP flag
-        auto_lop_raw = row.get("auto_approve_lop")
-        auto_lop = _normalize_bool(auto_lop_raw)
-        if auto_lop == "INVALID":
+        raw_leave_type = _clean_null(row.get("leave_type")) or ""
+        leave_type = _normalize_leave_type(raw_leave_type)
+        # Preserve an explicit Paid Leave source as the canonical "Paid" type
+        # (fuzzy normalization would otherwise demote it to "General Leave").
+        if _is_paid_leave_type(raw_leave_type):
+            leave_type = "Paid"
+
+        # Intern restriction: Paid Leave can never be created for an Intern, via
+        # ANY path including import (mirrors the create_leave / UI rule).
+        if _is_paid_leave_type(leave_type) and emp.get("employment_type") == EmploymentType.INTERN:
             failed += 1
-            errors.append({"row": idx, "email": email, "reason": f"Invalid 'Auto Approve & Set LOP Status' value '{auto_lop_raw}' (use Yes/No, TRUE/FALSE, 1/0)"})
+            errors.append({"row": idx, "email": email, "reason": "Paid Leave is not available for Intern employees."})
             continue
 
-        leave_type = _normalize_leave_type(row.get("leave_type"))
-        status_norm = _normalize_status(row.get("status")) or "pending"
-        reason = (str(row.get("reason")).strip() if row.get("reason") not in (None, "") else None)
-        comments = (str(row.get("comments")).strip() if row.get("comments") not in (None, "") else None)
-        applied_at = _parse_import_date(row.get("applied_at"))
-        approved_at = _parse_import_date(row.get("approved_at"))
+        status_norm = _normalize_status(_clean_null(row.get("status"))) or "pending"
+        reason = _clean_null(row.get("reason"))
+        # Remark → admin approval/rejection remark (stored as lop_remark, the
+        # field the approval workflow writes to and the UI shows as the admin remark).
+        remark = _clean_null(row.get("remark")) or _clean_null(row.get("comments"))
 
-        # Resolve Approved By (name / username / email / "Admin" → user_id)
-        approver_raw = row.get("approved_by")
+        # Applied_on → the leave's application timestamp (native uses created_at).
+        applied_date, applied_time = _parse_import_datetime(row.get("applied_on") if row.get("applied_on") not in (None, "") else row.get("applied_at"))
+        applied_at = applied_date
+
+        # Action_Type → LOP selection (is_lop): No_LOP→False, LOP→True, else None.
+        is_lop_flag: Optional[bool] = _normalize_action_type(row.get("action_type"))
+        # Paid Leave is by definition non-LOP — force False to match native rule.
+        if _is_paid_leave_type(leave_type):
+            is_lop_flag = False
+
+        # Resolve Approved By (name / username / email / "Admin" → user_id).
+        approver_raw = _clean_null(row.get("approved_by"))
         approver_id, approver_unresolved = _resolve_approver(approver_raw)
 
-        # If Auto Approve & Set LOP Status = TRUE, force-approve and apply LOP
-        is_lop_flag: Optional[bool] = None
-        if auto_lop is True:
-            status_norm = "approved"
-            is_lop_flag = True
-
-        # Duplicate guard: any non-rejected overlapping leave for this employee?
-        overlap = await db.leaves.find_one({
-            "employee_id": emp["id"],
-            "status": {"$ne": "rejected"},
-            "start_date": {"$lte": to_date},
-            "end_date": {"$gte": from_date}
-        }, {"_id": 0, "id": 1})
-        if overlap:
+        # Duplicate / overlap checks — all in-memory against pre-fetched leaves
+        # (plus rows accepted earlier in this same batch).
+        emp_leaves = existing_by_emp.get(emp["id"], [])
+        # Guard #1 (idempotent re-import): identical record already exists
+        # (same employee + dates + type + status).
+        exact_dupe = any(
+            lv.get("start_date") == from_date and lv.get("end_date") == to_date
+            and lv.get("leave_type") == leave_type and lv.get("status") == status_norm
+            for lv in emp_leaves
+        )
+        if exact_dupe:
             skipped_duplicates += 1
-            errors.append({"row": idx, "email": email, "reason": f"Overlaps with existing leave between {from_date} and {to_date}"})
+            errors.append({"row": idx, "email": email, "reason": f"Duplicate — identical {leave_type} leave on {from_date} already exists"})
             continue
 
-        # Also check overlaps with rows added earlier in THIS batch
-        in_batch_overlap = False
-        for prev_from, prev_to in inbatch_ranges.get(emp["id"], []):
-            if prev_from <= to_date and prev_to >= from_date:
-                in_batch_overlap = True
-                break
-        if in_batch_overlap:
-            skipped_duplicates += 1
-            errors.append({"row": idx, "email": email, "reason": f"Overlaps with another row in this upload between {from_date} and {to_date}"})
-            continue
-        inbatch_ranges.setdefault(emp["id"], []).append((from_date, to_date))
+        # Guard #2: non-rejected overlapping leave (native single-leave-per-day rule).
+        # Rejected imports never block / are never blocked.
+        if status_norm != "rejected":
+            overlap = any(
+                lv.get("status") != "rejected"
+                and (lv.get("start_date") or "") <= to_date
+                and (lv.get("end_date") or lv.get("start_date") or "") >= from_date
+                for lv in emp_leaves
+            )
+            if overlap:
+                skipped_duplicates += 1
+                errors.append({"row": idx, "email": email, "reason": f"Overlaps with existing leave between {from_date} and {to_date}"})
+                continue
 
-        # Final approved_by: resolved user id > current admin (when status approved) > None
+        # Final approved_by: resolved user id > current admin (when approved/rejected) > None
         final_approved_by = approver_id
-        if final_approved_by is None and status_norm == "approved":
+        if final_approved_by is None and status_norm in ("approved", "rejected"):
             final_approved_by = current_user["id"]
+
+        # created_at = the original application timestamp when provided (so the
+        # leave behaves exactly like a natively-created record in history/reports),
+        # else the import time.
+        created_at_iso = get_ist_now().isoformat()
+        if applied_date:
+            try:
+                ca = datetime.strptime(f"{applied_date} {applied_time or '00:00'}", "%Y-%m-%d %H:%M")
+                created_at_iso = ca.isoformat()
+            except ValueError:
+                pass
 
         leave_doc = {
             "id": str(uuid.uuid4()),
@@ -7969,20 +8040,26 @@ async def bulk_import_leaves(
             "supporting_document_name": None,
             "status": status_norm,
             "is_lop": is_lop_flag,
-            "lop_remark": comments,  # Map sheet "Comments" → existing lop_remark column
+            "lop_remark": remark,  # admin approval/rejection remark
+            "rejection_reason": remark if status_norm == "rejected" else None,
             "approved_by": final_approved_by,
             "applied_by_admin": True,
             # Preserve original sheet metadata that can't be mapped to a primary column
             "extra_data": {
                 k: v for k, v in {
                     "applied_at": applied_at,
-                    "approved_at": approved_at,
                     "approver_unresolved": approver_unresolved,
+                    "imported": True,
                 }.items() if v is not None
             } or None,
-            "created_at": get_ist_now().isoformat(),
+            "created_at": created_at_iso,
         }
         inserts.append(leave_doc)
+        # Track in-memory so later rows in THIS batch see it (in-batch dupe/overlap).
+        existing_by_emp.setdefault(emp["id"], []).append({
+            "start_date": from_date, "end_date": to_date,
+            "leave_type": leave_type, "status": status_norm,
+        })
         success += 1
 
     # Batch insert in chunks of 500 for performance with 1000+ rows
