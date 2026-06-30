@@ -5,6 +5,23 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-30 (Payroll: approval-type LOP sync + hours-based Present ✅ TESTED, surgical)
+
+**Bug 2 (false Present):** Past day with a check-in but NO checkout was force-marked `P` based purely on check-in time < 10:00 AM (ignoring hours). Fixed → now `MP` (Missed Punch), salary-neutral (0 LOP), flows through the existing missed-punch correction workflow. Verified: Kota Dhanakumar 30-04-2026 (check-in 09:48, no checkout) was P → now `MP`. (Today's in-progress day correctly stays P.) The with-checkout path already used hours (P≥full / HD≥half / A<half) — unchanged.
+
+**Bug 1 (approval type → payroll):** Leave approval already drove payroll via `is_lop` (PF/SF/PA vs LOP). The gap was Late & Early-Out: both approve endpoints already persist the admin With/Without-LOP choice (`is_lop` via `RequestApproveBody`) but payroll ignored it. Now payroll CONSUMES it (backend-only, no workflow/UI change):
+- Late approved **Without LOP** → `LC`, 0 LOP (excused); **With LOP** → `LC` + 0.5 LOP. (unapproved/no-request late → `LC` + 0.5 LOP).
+- Early-Out approved **Without LOP** → excused `P` (refunds any hours-based LOP); **With LOP** → hours-based `HD`/`A` penalty kept. (Cases 3/4.)
+- Rejected late/early-out → ignored by payroll → original attendance restored (Case 5).
+- `_prefetch_payroll_data` now also batches approved early-out requests (`eo_by_emp`); single-employee path fetches them too. Maps: `late_by_date`/`early_out_by_date` = {date: is_lop}.
+
+**Salary safety:** `final_payable_days = (working_days − lop) + …` — only the `lop` inputs were corrected per the admin's explicit With/Without-LOP decision; pay formula, payslip, reports untouched. MP & P both = 0 LOP.
+
+**Tested:** New `tests/test_payroll_approval_lop.py` (late ±LOP, early-out ±LOP, no-checkout→MP) + `test_payroll_late_sync.py` + 27 `test_payroll_leave_codes.py` all pass (31 total). Batch `/payroll` returns 200. Test data auto-cleaned.
+
+---
+
+
 ## Latest Update — 2026-06-30 (Payroll sync: Late-Coming label + A→Z sorting ✅ TESTED, surgical)
 
 **Investigation (root cause):** Admin Payroll is computed LIVE on every `/api/payroll` fetch (no stored snapshot), so Leave/Late/Missed-Punch approvals already sync in real-time. Confirmed gaps were narrow.

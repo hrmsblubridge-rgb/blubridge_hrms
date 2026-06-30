@@ -2446,6 +2446,16 @@ async def _prefetch_payroll_data(employee_ids: list, year: int, month_num: int, 
     for mp in all_mp:
         mp_by_emp.setdefault(mp["employee_id"], []).append(mp)
 
+    # 4b. Early-out requests (approved) — drive the with/without-LOP payroll outcome
+    all_eo = await db.early_out_requests.find({
+        "employee_id": {"$in": employee_ids},
+        "status": "approved",
+        "date": {"$regex": f"^{year}-{month_num:02d}"}
+    }, {"_id": 0}).to_list(len(employee_ids) * 10)
+    eo_by_emp = {}
+    for eo in all_eo:
+        eo_by_emp.setdefault(eo["employee_id"], []).append(eo)
+
     # 5. Holidays
     holiday_records = await db.holidays.find({
         "date": {
@@ -2464,6 +2474,7 @@ async def _prefetch_payroll_data(employee_ids: list, year: int, month_num: int, 
         "leaves_by_emp": leaves_by_emp,
         "late_by_emp": late_by_emp,
         "mp_by_emp": mp_by_emp,
+        "eo_by_emp": eo_by_emp,
         "holiday_dates": holiday_dates,
     }
 
@@ -2521,6 +2532,7 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
         leave_records = prefetched["leaves_by_emp"].get(employee_id, [])
         late_records = prefetched["late_by_emp"].get(employee_id, [])
         all_missed = prefetched["mp_by_emp"].get(employee_id, [])
+        early_out_records = prefetched.get("eo_by_emp", {}).get(employee_id, [])
     else:
         holiday_records_q = await db.holidays.find({
             "date": {"$gte": f"{year}-{month_num:02d}-01", "$lte": f"{year}-{month_num:02d}-{days_in_month:02d}"}
@@ -2545,6 +2557,10 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
             ]
         }, {"_id": 0}).to_list(100)
         late_records = await db.late_requests.find({
+            "employee_id": employee_id, "status": "approved",
+            "date": {"$regex": f"^{year}-{month_num:02d}"}
+        }, {"_id": 0}).to_list(50)
+        early_out_records = await db.early_out_requests.find({
             "employee_id": employee_id, "status": "approved",
             "date": {"$regex": f"^{year}-{month_num:02d}"}
         }, {"_id": 0}).to_list(50)
@@ -2593,7 +2609,11 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     leave_map[cur.strftime("%Y-%m-%d")] = lv
                 cur += timedelta(days=1)
 
-    late_approved_dates = {lr["date"] for lr in late_records}
+    # Late & Early-Out approvals carry an admin "with/without LOP" decision
+    # (is_lop). Map date → is_lop so payroll calculates from the approval type.
+    late_by_date = {lr["date"]: bool(lr.get("is_lop")) for lr in late_records}
+    late_approved_dates = set(late_by_date)
+    early_out_by_date = {eo["date"]: bool(eo.get("is_lop")) for eo in early_out_records}
 
     mp_approved_dates = set()
     mp_pending_dates = set()
@@ -2805,18 +2825,15 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     else:
                         detail["status"] = "P"
                 else:
-                    # Past day, no checkout = missed out-punch
-                    if ci24:
-                        ci_mins = parse_time_24h_to_minutes(ci24)
-                        if ci_mins is not None and ci_mins < 600:
-                            detail["status"] = "P"
-                        else:
-                            detail["status"] = "HD"
-                            detail["is_lop"] = True
-                            lop += 0.5
-                            detail["lop_value"] = 0.5
-                    else:
-                        detail["status"] = "MP"
+                    # Past day, no checkout = missed OUT-punch. We cannot compute
+                    # login hours without a checkout, so the employee can NEVER be
+                    # auto-marked Present here (fixes the bug where a check-in time
+                    # alone forced "P" despite unknown/insufficient login hours).
+                    # Surface it as MP (Missed Punch) so it flows through the
+                    # existing missed-punch correction workflow. MP carries 0 LOP
+                    # (salary-neutral) until corrected — approving the missed punch
+                    # then yields the correct hours-based status.
+                    detail["status"] = "MP"
             else:
                 # --- With Checkout ---
                 is_late = False
@@ -2832,12 +2849,17 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 if hw >= full_hours and not is_late:
                     detail["status"] = "P"
                 elif hw >= full_hours and is_late:
-                    if date_iso in late_approved_dates:
-                        # Late-coming with an APPROVED Late request → display LC,
-                        # but EXCUSED (no LOP, full pay). Relabel only — salary
-                        # unchanged (this day already carried 0 LOP as "P").
+                    if date_iso in late_by_date:
+                        # Approved Late request → display LC. Admin's approval type
+                        # decides salary: Without LOP = excused (0 LOP); With LOP =
+                        # 0.5 LOP penalty.
                         detail["status"] = "LC"
+                        if late_by_date[date_iso]:
+                            detail["is_lop"] = True
+                            lop += 0.5
+                            detail["lop_value"] = 0.5
                     else:
+                        # No/unapproved late → penalty.
                         detail["status"] = "LC"
                         detail["is_lop"] = True
                         lop += 0.5
@@ -2851,6 +2873,18 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     detail["status"] = "A"
                     lop += 1
                     detail["lop_value"] = 1
+
+                # Early-Out approval overrides the hours-based penalty per the
+                # admin's with/without-LOP decision (Bug 1). Without LOP → the
+                # early departure is excused: mark Present and refund any LOP that
+                # the hours-based rule applied. With LOP → keep the hours-based
+                # penalty (HD/A) as the admin chose to deduct.
+                if date_iso in early_out_by_date and detail["status"] in ("HD", "A", "LC"):
+                    if not early_out_by_date[date_iso]:
+                        lop -= detail.get("lop_value", 0)
+                        detail["status"] = "P"
+                        detail["is_lop"] = False
+                        detail["lop_value"] = 0
 
             attendance_details.append(detail)
             continue
