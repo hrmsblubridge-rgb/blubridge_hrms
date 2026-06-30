@@ -5,6 +5,23 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-30 (Payroll: pending-leave masking Present — ROOT-CAUSE fix ✅ TESTED)
+
+**The real bug (Kota Dhanakumar 22-Jun-2026 showing P despite 3h13m):** Section 6B (`attendance + leave`) in `calculate_payroll_for_employee` hardcoded `P` for any Full-Day-split leave **regardless of leave status or login hours**. Kota had a PENDING Sick Leave that day + a corrected 3.22h punch → wrongly Present.
+
+**Fix (surgical):** 6B now fires ONLY for **approved** leaves: Without LOP → leave code (PF/SF/EF/PA via `_leave_code_for_status`); With LOP → `LOP` (1 day). PENDING/REJECTED leaves no longer mask attendance — they fall through to the hours-based engine (6C) → correct P/HD/A by shift/department thresholds. Verified Kota June: 11→`PA` (paid, no LOP), 22→`A` (was P, 3h13<half), 23/24→`LOP` (approved w/ LOP).
+
+**Other bugs (already satisfied from prior fixes this session):**
+- Bug 1 (approval-type LOP): leave/late/early-out `is_lop` consumed by payroll. ✓
+- Bug 3 (no hardcoded hours): engine uses dept full/half thresholds + actual hours; the no-checkout→MP and 6B fixes remove the only hardcoded-P paths. ✓
+- Bug 4 (live sync): payroll computed on every fetch, no cache. ✓
+- Bug 5 (A→Z sort): `Payroll.js` sorts by `emp_name` (localeCompare) — confirmed in screenshot. ✓
+
+**Tested:** New `tests/test_payroll_pending_leave.py` (pending leave→A; approved leave→SF/LOP) + all payroll suites (leave-codes 27, approval-lop, late-sync, pending-leave) pass = 33. Payroll screenshot: A→Z order, codes render, no console errors. Salary formula/payslip/reports untouched; no data rewritten.
+
+---
+
+
 ## Latest Update — 2026-06-30 (Payroll: approval-type LOP sync + hours-based Present ✅ TESTED, surgical)
 
 **Bug 2 (false Present):** Past day with a check-in but NO checkout was force-marked `P` based purely on check-in time < 10:00 AM (ignoring hours). Fixed → now `MP` (Missed Punch), salary-neutral (0 LOP), flows through the existing missed-punch correction workflow. Verified: Kota Dhanakumar 30-04-2026 (check-in 09:48, no checkout) was P → now `MP`. (Today's in-progress day correctly stays P.) The with-checkout path already used hours (P≥full / HD≥half / A<half) — unchanged.

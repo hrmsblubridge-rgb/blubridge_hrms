@@ -2783,27 +2783,41 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
             attendance_details.append(detail)
             continue
 
-        # --- SECTION 6B: LEAVE + ATTENDANCE ---
-        if leave and att:
+        # --- SECTION 6B: APPROVED LEAVE + ATTENDANCE ---
+        # Only an APPROVED leave turns the day into a leave-coded day. Pending or
+        # rejected leaves are NOT granted, so they must NOT mask the real
+        # attendance — they fall through to the hours-based engine (6C) below
+        # (fixes the bug where a pending leave forced "P" regardless of login
+        # hours, e.g. a 3h13m corrected punch showing Present).
+        if leave and att and leave.get("status") == "approved":
             detail["check_in"] = att.get("check_in")
             detail["check_out"] = att.get("check_out")
             detail["total_hours"] = att.get("total_hours")
-            ls = leave.get("status", "pending")
             is_lop_flag = leave.get("is_lop")
             split = leave.get("leave_split", "Full Day")
 
             if split in ("First Half", "Second Half"):
-                if ls == "approved" and is_lop_flag is not True:
-                    # Half-day approved leave + worked the other half → present full
+                if is_lop_flag is not True:
+                    # Approved Without LOP half-day + worked the other half → present
                     detail["status"] = "P"
                 else:
-                    # Half-day leave was rejected/pending/LOP → 0.5 LOP, show as HD
+                    # Approved With LOP half-day → 0.5 LOP, shown as HD
                     detail["status"] = "HD"
                     detail["is_lop"] = True
                     lop += 0.5
                     detail["lop_value"] = 0.5
             else:
-                detail["status"] = "P"
+                if is_lop_flag is True:
+                    # Approved With LOP full-day leave → unpaid day
+                    detail["status"] = "LOP"
+                    detail["is_lop"] = True
+                    lop += 1
+                    detail["lop_value"] = 1
+                else:
+                    # Approved Without LOP → show the leave code (PF/SF/EF/PA/…)
+                    detail["status"] = _leave_code_for_status(
+                        leave.get("leave_type"), "Full Day"
+                    )
 
             attendance_details.append(detail)
             continue
