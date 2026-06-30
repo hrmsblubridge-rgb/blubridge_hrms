@@ -107,7 +107,14 @@ const Payroll = () => {
         axios.get(`${API}/payroll`, { headers, params: { month: selectedMonth } }),
         axios.get(`${API}/payroll/summary/${selectedMonth}`, { headers })
       ]);
-      setPayrollData(payrollRes.data || []);
+      // Payroll Attendance View must always display employees in alphabetical
+      // ascending order (A→Z) by employee name — applied at the data layer so the
+      // order holds on load, after filters, refresh, sync and any recalculation.
+      // Backend data ordering is untouched (this is a display-only sort).
+      const sorted = [...(payrollRes.data || [])].sort((a, b) =>
+        (a.emp_name || '').localeCompare(b.emp_name || '', undefined, { sensitivity: 'base' })
+      );
+      setPayrollData(sorted);
       setSummary(summaryRes.data || null);
     } catch (error) {
       toast.error('Failed to load payroll data');

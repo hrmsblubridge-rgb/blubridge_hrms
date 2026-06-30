@@ -2833,7 +2833,10 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     detail["status"] = "P"
                 elif hw >= full_hours and is_late:
                     if date_iso in late_approved_dates:
-                        detail["status"] = "P"
+                        # Late-coming with an APPROVED Late request → display LC,
+                        # but EXCUSED (no LOP, full pay). Relabel only — salary
+                        # unchanged (this day already carried 0 LOP as "P").
+                        detail["status"] = "LC"
                     else:
                         detail["status"] = "LC"
                         detail["is_lop"] = True

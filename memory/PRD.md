@@ -5,6 +5,21 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-30 (Payroll sync: Late-Coming label + A→Z sorting ✅ TESTED, surgical)
+
+**Investigation (root cause):** Admin Payroll is computed LIVE on every `/api/payroll` fetch (no stored snapshot), so Leave/Late/Missed-Punch approvals already sync in real-time. Confirmed gaps were narrow.
+
+**Fixes (per user-confirmed decisions):**
+- **Late-Coming (LC):** `calculate_payroll_for_employee` previously showed an *approved* late as `P` (0 LOP). Now relabeled to **`LC` but EXCUSED (0 LOP, full pay)** — decision 1a. Unapproved/no-request late stays `LC` + 0.5 LOP. ZERO salary change (approved-late already carried 0 LOP). server.py ~2832.
+- **Payroll Employee List A→Z:** `Payroll.js` now sorts `payrollData` by `emp_name` (localeCompare, case-insensitive) at the data layer right after fetch — holds on load, filters, refresh, sync, recalculation. Backend ordering untouched (display-only, decision 3a).
+- **Early-Out:** decision 2a (approved + half-day hours → HD + 0.5 LOP) is exactly what the existing hours-based logic already produces (an early punch-out lowers computed hours → HD/A naturally). Rejected → original restored (logic ignores the request). TC 3/4/5 already satisfied — no code change.
+- **Leave sync:** already correct (approved→PF/SF/EF/PA/PH, rejected→reverts, pending→LOP); 27 leave-code tests pass.
+
+**Verified:** Real approved-late day (2026-03-23) → `LC`, lop 0, is_lop False. New `tests/test_payroll_late_sync.py` (approved LC=0 LOP, unapproved LC=0.5 LOP) passes. Payroll page screenshot shows A→Z (Adhitya→Adhya→Adwaid→Ananya→Anuj→Aparna). 27 leave-code tests pass. Test data auto-cleaned. NOTE: `test_payroll_compliance.py::test_payroll_requires_auth` is a PRE-EXISTING 401-vs-403 assertion mismatch (endpoint correctly returns 403) — not caused by this change.
+
+---
+
+
 ## Latest Update — 2026-06-18 (ROOT-CAUSE FIX: Intern Paid-Leave eligibility, all layers ✅ TESTED)
 
 **Root causes found (why the prior "fix" leaked):** (a) Frontend gated on cached `user.employment_type !== 'Intern'` — missed Trainee/Internship/Probationary, ignored Confirmation Date, used stale cache. (b) `/employee/leaves/apply` (the endpoint the UI actually calls) had NO explicit Paid block. (c) `create_leave` + `calculate_paid_leave_balance` used exact `== "Intern"` (Trainee/Internship accrued from DOJ → non-zero balance, applyable). (d) `approve_leave` never re-checked employee eligibility.
