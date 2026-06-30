@@ -2635,6 +2635,7 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     working_days = 0
     weekoff_pay = 0.0
     extra_pay = 0.0
+    oh_pay = 0.0  # Approved Optional Holiday (Without LOP) — payable holiday days
     lop = 0.0
     attendance_details = []
 
@@ -2656,6 +2657,7 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
             "lop_value": 0,
             "weekoff_value": 0,
             "extra_value": 0,
+            "oh_value": 0,
             "check_in": None,
             "check_out": None,
             "total_hours": None,
@@ -2691,6 +2693,34 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
 
         att = attendance_map.get(date_dd)
         leave = leave_map.get(date_iso)
+
+        # ===== APPROVED OPTIONAL HOLIDAY (Without LOP) =====
+        # An approved Optional Holiday request (Without LOP) is a fully payable
+        # day off. When it falls on a calendar HOLIDAY, the holiday branch (5B)
+        # below would otherwise swallow it as "H" (0 pay) and the approval would
+        # never reflect in payroll. Intercept it here so it renders "OH" and is
+        # credited as a payable holiday (oh_pay). Sundays are skipped — they are
+        # already paid via Weekoff, so an OH there must never double-pay. On a
+        # normal working day OH is handled by the leave sections (6A/6B), where
+        # it is already payable inside working_days, so we only special-case the
+        # holiday overlap here.
+        if (
+            is_hol
+            and not is_sun
+            and leave
+            and leave.get("status") == "approved"
+            and not leave.get("is_lop")
+            and (leave.get("leave_type") or "").strip().lower().startswith("optional")
+        ):
+            detail["status"] = "OH"
+            detail["oh_value"] = 1
+            oh_pay += 1
+            if att:
+                detail["check_in"] = att.get("check_in")
+                detail["check_out"] = att.get("check_out")
+                detail["total_hours"] = att.get("total_hours")
+            attendance_details.append(detail)
+            continue
 
         # ===== SECTION 5A: SUNDAY =====
         if is_sun:
@@ -2915,15 +2945,39 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
 
         attendance_details.append(detail)
 
-    # ===== SECTION 8: FINAL PAY FORMULA =====
-    # Payable Days = (Working Days - LOP) + Weekoff Pay + Extra Pay
-    final_payable_days = (working_days - lop) + weekoff_pay + extra_pay
-
-    # ===== SECTION 9: RELIEVED EMPLOYEE ADJUSTMENT =====
+    # ===== SECTION 8: RELIEVED EMPLOYEE ADJUSTMENT (row-level) =====
+    # If a relieved employee's last working day is not payable, reflect that as
+    # a 1-day LOP on the relieving-date row itself (rather than a hidden
+    # subtraction on the final total). This keeps the summary fully reconciled
+    # with the attendance rows while preserving the exact same net pay.
     last_day_payable = employee.get("last_day_payable", True)
-    if emp_status == EmployeeStatus.INACTIVE and last_day_payable in (False, 0, "0", "false", "False"):
-        final_payable_days -= 1
+    if (
+        emp_status == EmployeeStatus.INACTIVE
+        and relieving_date
+        and last_day_payable in (False, 0, "0", "false", "False")
+    ):
+        rel_dd = f"{relieving_date.day:02d}-{relieving_date.month:02d}-{relieving_date.year}"
+        for d in attendance_details:
+            if d["date"] == rel_dd and d["status"] not in ("BLANK", "R"):
+                d["lop_value"] = (d.get("lop_value", 0) or 0) + 1
+                d["is_lop"] = True
+                break
 
+    # ===== SECTION 9: SUMMARY — DERIVED STRICTLY FROM FINAL ATTENDANCE ROWS =====
+    # Single source of truth: the final attendance_details rows. Every summary
+    # field is recomputed from the rows so the displayed totals can never drift
+    # out of sync with the per-day statuses (no stale accumulators).
+    working_days = sum(
+        1 for d in attendance_details
+        if (not d["is_sunday"]) and (not d["is_holiday"]) and d["status"] not in ("BLANK", "R")
+    )
+    weekoff_pay = sum(d.get("weekoff_value", 0) or 0 for d in attendance_details)
+    extra_pay = sum(d.get("extra_value", 0) or 0 for d in attendance_details)
+    oh_pay = sum(d.get("oh_value", 0) or 0 for d in attendance_details)
+    lop = sum(d.get("lop_value", 0) or 0 for d in attendance_details)
+
+    # Payable Days = Working Days + Weekoff Pay + Extra Pay + Optional-Holiday Pay - LOP
+    final_payable_days = working_days + weekoff_pay + extra_pay + oh_pay - lop
     final_payable_days = max(0, final_payable_days)
 
     # Salary calculation
@@ -2956,6 +3010,7 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
         "working_days": working_days,
         "weekoff_pay": weekoff_pay,
         "extra_pay": extra_pay,
+        "oh_pay": oh_pay,
         "lop": lop,
         "final_payable_days": final_payable_days,
         # Salary

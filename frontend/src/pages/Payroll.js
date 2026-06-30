@@ -161,13 +161,13 @@ const Payroll = () => {
   const handleExportCSV = () => {
     let headers, rows, filename;
     if (activeTab === 'attendance') {
-      headers = ['Sl.No', 'Emp ID', 'Name', 'Shift', ...days.map(d => `${String(d.day).padStart(2, '0')} ${d.dayName}`), 'Total Days', 'Working Days', 'Weekoff Pay', 'Extra Pay', 'LOP', 'Payable Days'];
+      headers = ['Sl.No', 'Emp ID', 'Name', 'Shift', ...days.map(d => `${String(d.day).padStart(2, '0')} ${d.dayName}`), 'Total Days', 'Working Days', 'Weekoff Pay', 'Extra Pay', 'Holiday Pay', 'LOP', 'Payable Days'];
       rows = payrollData.map((emp, i) => {
         const dayStatuses = days.map(day => {
           const detail = emp.attendance_details?.find(a => a.date === day.date);
           return getStatusDisplay(detail?.status, detail?.is_lop).code;
         });
-        return [i + 1, emp.emp_id, emp.emp_name, emp.shift_type, ...dayStatuses, emp.total_days, emp.working_days, emp.weekoff_pay, emp.extra_pay, emp.lop, emp.final_payable_days];
+        return [i + 1, emp.emp_id, emp.emp_name, emp.shift_type, ...dayStatuses, emp.total_days, emp.working_days, emp.weekoff_pay, emp.extra_pay, emp.oh_pay, emp.lop, emp.final_payable_days];
       });
       filename = `payroll-attendance-${selectedMonth}.csv`;
     } else {
@@ -361,13 +361,14 @@ const Payroll = () => {
                     <th className="px-2 py-3 text-center text-[11px] font-semibold text-blue-700 bg-blue-100 min-w-[68px] whitespace-nowrap">Working Days</th>
                     <th className="px-2 py-3 text-center text-[11px] font-semibold text-indigo-700 bg-indigo-100 min-w-[72px] whitespace-nowrap">Weekoff Pay</th>
                     <th className="px-2 py-3 text-center text-[11px] font-semibold text-teal-700 bg-teal-100 min-w-[62px] whitespace-nowrap">Extra Pay</th>
+                    <th className="px-2 py-3 text-center text-[11px] font-semibold text-cyan-700 bg-cyan-100 min-w-[72px] whitespace-nowrap">Holiday Pay</th>
                     <th className="px-2 py-3 text-center text-[11px] font-semibold text-red-700 bg-red-100 min-w-[44px] whitespace-nowrap">LOP</th>
                     <th className="px-2 py-3 text-center text-[11px] font-semibold text-emerald-700 bg-emerald-200 min-w-[76px] whitespace-nowrap">Payable Days</th>
                   </tr>
                 </thead>
                 <tbody>
                   {payrollData.length === 0 ? (
-                    <tr><td colSpan={9 + days.length} className="px-4 py-12 text-center text-slate-500">No employees found</td></tr>
+                    <tr><td colSpan={10 + days.length} className="px-4 py-12 text-center text-slate-500">No employees found</td></tr>
                   ) : (
                     payrollData.map((emp, index) => (
                       <tr key={emp.employee_id} className="border-t border-slate-100 hover:bg-slate-50/50">
@@ -390,6 +391,7 @@ const Payroll = () => {
                         <td className="px-3 py-2 text-center text-sm font-medium text-blue-600 bg-blue-50">{emp.working_days}</td>
                         <td className="px-3 py-2 text-center text-sm font-medium text-indigo-600 bg-indigo-50">{emp.weekoff_pay}</td>
                         <td className="px-3 py-2 text-center text-sm font-medium text-teal-600 bg-teal-50">{emp.extra_pay}</td>
+                        <td className="px-3 py-2 text-center text-sm font-medium text-cyan-600 bg-cyan-50">{emp.oh_pay > 0 ? emp.oh_pay : <span className="text-slate-400">0</span>}</td>
                         <td className="px-3 py-2 text-center text-sm font-semibold text-red-600 bg-red-50">{emp.lop > 0 ? emp.lop : <span className="text-slate-400">0</span>}</td>
                         <td className="px-3 py-2 text-center text-sm font-bold text-emerald-700 bg-emerald-100">{emp.final_payable_days}</td>
                       </tr>
@@ -499,7 +501,7 @@ const Payroll = () => {
               <li><strong>Late Coming (LC):</strong> Unapproved late = LOP 0.5 day</li>
               <li><strong>Half Day (PH):</strong> Less than full hours = LOP 0.5 day</li>
               <li><strong>Absent (A):</strong> No attendance = LOP 1 day</li>
-              <li><strong>Formula:</strong> Payable Days = (Working Days - LOP) + Weekoff Pay + Extra Pay</li>
+              <li><strong>Formula:</strong> Payable Days = Working Days + Weekoff Pay + Extra Pay + Holiday Pay - LOP</li>
             </ul>
           </div>
         </TabsContent>

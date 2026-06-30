@@ -5,6 +5,24 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-06-30 (Payroll: Optional Holiday payable + summary recomputed from rows ✅ TESTED)
+
+**Bug (Riswan Ahamed M EMP0113, 26-Jun-2026):** An approved Optional Holiday (Without LOP) that fell on a calendar HOLIDAY was swallowed by the holiday branch (rendered "H", 0 pay) — Payable was 1 short (19.5 vs expected 20.5). Root cause: Section 5B (holiday) ran and `continue`d before the leave sections were consulted.
+
+**Fix (`calculate_payroll_for_employee`, server.py):**
+- New OH interceptor before the Sunday/Holiday branches: approved Optional leave Without LOP on a non-Sunday holiday → status `OH`, credited as a payable holiday (`oh_pay`). Sundays skipped (already paid via Weekoff → no double pay). OH on a normal working day was already payable via working_days (6A/6B) — unchanged.
+- **Summary now recomputed STRICTLY from the final `attendance_details` rows** (single source of truth): `working_days` = count of non-Sun/non-Hol rows (excl. BLANK/R); `weekoff_pay`/`extra_pay`/`oh_pay`/`lop` = sum of per-row values. No stale accumulators → summary can never drift from the row statuses.
+- **Formula:** `Payable Days = Working Days + Weekoff Pay + Extra Pay + Optional-Holiday Pay − LOP` (algebraically same base + new OH term).
+- **Relieved-employee `last_day_payable=No`:** the hidden `final_payable_days −= 1` (which broke the visible formula, e.g. 16+2−0.5 showed 16.5 not 17.5) is replaced by folding 1-day LOP onto the relieving-date ROW. Net pay identical; summary now reconciles.
+- New response field `oh_pay`.
+
+**Frontend (`Payroll.js`):** new "Holiday Pay" column between Extra Pay and LOP (cyan), CSV export header/row, and formula footnote updated. `colSpan` bumped.
+
+**Verified:** Riswan 26-Jun → `OH`, Payable 19.5→**20.5** ✓. Reconciliation invariant = **0 failures across ALL employees for May & June 2026** (incl. relieved). New `tests/test_payroll_optional_holiday.py` (4) + existing payroll suites (33) all pass. Payroll screenshot shows Holiday Pay column; Adhya 16+2+0+0−0.5=**17.5** reconciles. No change to leave apply/punching/approval workflow/payslip; net salary unchanged for existing cases.
+
+---
+
+
 ## Latest Update — 2026-06-30 (Payroll: pending-leave masking Present — ROOT-CAUSE fix ✅ TESTED)
 
 **The real bug (Kota Dhanakumar 22-Jun-2026 showing P despite 3h13m):** Section 6B (`attendance + leave`) in `calculate_payroll_for_employee` hardcoded `P` for any Full-Day-split leave **regardless of leave status or login hours**. Kota had a PENDING Sick Leave that day + a corrected 3.22h punch → wrongly Present.
