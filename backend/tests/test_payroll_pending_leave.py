@@ -70,4 +70,5 @@ async def test_approved_leave_with_attendance_shows_code_or_lop(emp):
     pr = await calculate_payroll_for_employee(eid, "2026-05")
     by = {r["date"]: r for r in pr["attendance_details"]}
     assert by["05-05-2026"]["status"] == "SF" and by["05-05-2026"]["lop_value"] == 0
-    assert by["06-05-2026"]["status"] == "LOP" and by["06-05-2026"]["lop_value"] == 1
+    # Approved WITH LOP now displays the leave code (SF), deduction applied internally
+    assert by["06-05-2026"]["status"] == "SF" and by["06-05-2026"]["lop_value"] == 1

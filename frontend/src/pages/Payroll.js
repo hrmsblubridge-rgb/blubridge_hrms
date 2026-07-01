@@ -127,6 +127,7 @@ const Payroll = () => {
     // New payroll engine status codes (2026-05-07 HR mapping)
     // Worked / Attendance codes
     if (status === 'P') return { code: 'P', color: 'text-emerald-600 font-semibold', bg: '' };
+    if (status === 'FD') return { code: 'FD', color: 'text-teal-700 font-semibold', bg: 'bg-teal-50' };
     if (status === 'HD') return { code: 'HD', color: 'text-blue-600 font-semibold', bg: 'bg-blue-50' };
     if (status === 'WO') return { code: 'WO', color: 'text-slate-400', bg: 'bg-slate-50' };
     if (status === 'H') return { code: 'H', color: 'text-indigo-500', bg: 'bg-indigo-50' };
@@ -404,6 +405,7 @@ const Payroll = () => {
           <div className="flex flex-wrap gap-4 text-xs mt-4">
             {[
               { code: 'P', label: 'Present (Full Day)', color: 'emerald' },
+              { code: 'FD', label: 'Full-Day Extra Work (Week-Off/Holiday)', color: 'teal' },
               { code: 'HD', label: 'Half-Day Worked', color: 'blue' },
               { code: 'WO', label: 'Week Off', color: 'slate' },
               { code: 'H', label: 'Holiday (Office)', color: 'indigo' },

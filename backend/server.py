@@ -629,7 +629,7 @@ COMPANY_POLICIES = [
                             ["Emergency Leave (Half / Full Day)", "Between 9:45 AM and 10:00 AM at the latest", "Supporting documents/evidence mandatory wherever applicable", "Only for unforeseen, urgent, or unavoidable situations"],
                             ["Sick Leave (Half / Full Day)", "Before 7:00 AM", "Medical documentation may be requested", "Upon recovery, reply to the same email thread with date of rejoining and expected reporting time"],
                             ["Pre-Planned Leave (Half / Full Day)", "Minimum of 4 days in advance", "Formal application required", "Subject to managerial approval"],
-                            ["Late Coming (LC)", "Before 9:45 AM (max 10:00 AM)", "Communication must include reason for delay & expected arrival time", "Repeated instances reviewed under performance & discipline policies"]
+                            ["Late Coming (LC)", "Before 10:00 AM (max 10:30 AM)", "Communication must include reason for delay & expected arrival time", "Repeated instances reviewed under performance & discipline policies"]
                         ]
                     },
                     "footer": "Attendance & Productivity Compliance: Employees reporting late shall still be required to complete a minimum of 9 hours 30 minutes of active productive engagement (excluding breaks, lunch, snacks, dinner) AND a minimum total working duration of 11 hours. Upon completion of the above, the day shall be considered a Full Working Day, and salary/stipend eligibility for that day shall remain unaffected, subject to management approval and overall attendance compliance. Half-Day Eligibility: Employees must complete a minimum of 5 hours of productive engagement (excluding breaks and meal durations) to qualify."
@@ -1201,7 +1201,6 @@ class EarlyOutRequest(BaseModel):
     team: str
     department: str
     date: str
-    expected_time: Optional[str] = None
     actual_time: Optional[str] = None
     reason: str
     status: str = "pending"
@@ -1214,7 +1213,6 @@ class EarlyOutRequest(BaseModel):
 class EarlyOutRequestCreate(BaseModel):
     employee_id: Optional[str] = None
     date: str
-    expected_time: Optional[str] = None
     actual_time: Optional[str] = None
     reason: str
     is_lop: Optional[bool] = None
@@ -2465,6 +2463,11 @@ async def _prefetch_payroll_data(employee_ids: list, year: int, month_num: int, 
     }, {"_id": 0}).to_list(50)
     holiday_dates = set()
     for h in holiday_records:
+        # Only STANDARD (paid) holidays count as company holidays for payroll.
+        # Unpaid holidays (is_paid=False) are normal working days — an approved
+        # Optional Holiday (OH) leave is the only way such a day becomes off.
+        if h.get("is_paid", True) is False:
+            continue
         hd = _parse_date_flex(h.get("date"))
         if hd:
             holiday_dates.add(hd)
@@ -2539,6 +2542,9 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
         }, {"_id": 0}).to_list(50)
         holiday_dates = set()
         for h in holiday_records_q:
+            # Only STANDARD (paid) holidays count as company holidays (see prefetch note).
+            if h.get("is_paid", True) is False:
+                continue
             hd = _parse_date_flex(h.get("date"))
             if hd:
                 holiday_dates.add(hd)
@@ -2733,11 +2739,11 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 detail["total_hours"] = att.get("total_hours")
                 hw = _calc_hours_worked(att)
                 if hw >= full_hours:
-                    detail["status"] = "P"
+                    detail["status"] = "FD"  # Full Day extra work on Week-Off
                     extra_pay += 1
                     detail["extra_value"] = 1
                 elif hw >= half_hours:
-                    detail["status"] = "HD"
+                    detail["status"] = "HD"  # Half Day extra work on Week-Off
                     extra_pay += 0.5
                     detail["extra_value"] = 0.5
                 else:
@@ -2757,11 +2763,11 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 detail["total_hours"] = att.get("total_hours")
                 hw = _calc_hours_worked(att)
                 if hw >= full_hours:
-                    detail["status"] = "P"
+                    detail["status"] = "FD"  # Full Day extra work on Holiday
                     extra_pay += 1
                     detail["extra_value"] = 1
                 elif hw >= half_hours:
-                    detail["status"] = "HD"
+                    detail["status"] = "HD"  # Half Day extra work on Holiday
                     extra_pay += 0.5
                     detail["extra_value"] = 0.5
                 else:
@@ -2782,20 +2788,18 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
             split = leave.get("leave_split", "Full Day")
 
             if ls == "approved":
+                # Always display the actual approved leave code (PF/PH/SF/SH/
+                # EF/EH/PA/PP/OH …). The With-LOP choice only drives the
+                # internal salary deduction, never the displayed code.
+                detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
                 if is_lop_flag is True:
+                    detail["is_lop"] = True
                     if split == "Full Day":
-                        detail["status"] = "LOP"
-                        detail["is_lop"] = True
                         lop += 1
                         detail["lop_value"] = 1
                     else:
-                        detail["status"] = "LOP"
-                        detail["is_lop"] = True
                         lop += 0.5
                         detail["lop_value"] = 0.5
-                else:
-                    # Map leave-type + split to granular abbreviation.
-                    detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
             elif ls == "pending":
                 if split == "Full Day":
                     lop += 1
@@ -2831,15 +2835,17 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     # Approved Without LOP half-day + worked the other half → present
                     detail["status"] = "P"
                 else:
-                    # Approved With LOP half-day → 0.5 LOP, shown as HD
-                    detail["status"] = "HD"
+                    # Approved With LOP half-day → display the half leave code
+                    # (PH/SH/EH/PP…); the 0.5 LOP is applied internally only.
+                    detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
                     detail["is_lop"] = True
                     lop += 0.5
                     detail["lop_value"] = 0.5
             else:
                 if is_lop_flag is True:
-                    # Approved With LOP full-day leave → unpaid day
-                    detail["status"] = "LOP"
+                    # Approved With LOP full-day leave → display the leave code;
+                    # the full-day LOP is applied internally for salary only.
+                    detail["status"] = _leave_code_for_status(leave.get("leave_type"), "Full Day")
                     detail["is_lop"] = True
                     lop += 1
                     detail["lop_value"] = 1
@@ -2976,8 +2982,10 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     oh_pay = sum(d.get("oh_value", 0) or 0 for d in attendance_details)
     lop = sum(d.get("lop_value", 0) or 0 for d in attendance_details)
 
-    # Payable Days = Working Days + Weekoff Pay + Extra Pay + Optional-Holiday Pay - LOP
-    final_payable_days = working_days + weekoff_pay + extra_pay + oh_pay - lop
+    # Payable Days = Working Days + Weekoff Pay + Optional-Holiday Pay - LOP
+    # Extra Pay (Week-Off / Holiday work) is an INDEPENDENT payroll component and
+    # is intentionally EXCLUDED from Payable Days (HR spec 2026-06-30 §8).
+    final_payable_days = working_days + weekoff_pay + oh_pay - lop
     final_payable_days = max(0, final_payable_days)
 
     # Salary calculation
@@ -2987,7 +2995,7 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     lop_deduction = monthly_salary - net_salary
 
     # Derived counts for backward compatibility
-    _present_codes = ("P", "HD", "PF", "PH", "SF", "SH", "EF", "EH", "PA", "PP", "OH")
+    _present_codes = ("P", "FD", "HD", "LC", "PF", "PH", "SF", "SH", "EF", "EH", "PA", "PP", "OH")
     _leave_codes = ("PF", "PH", "SF", "SH", "EF", "EH", "PA", "PP", "OH")
     present_count = sum(1 for d in attendance_details if d["status"] in _present_codes)
     leave_count = sum(1 for d in attendance_details if d["status"] in _leave_codes)
@@ -14722,7 +14730,6 @@ async def create_early_out_request(data: EarlyOutRequestCreate, current_user: di
         team=emp["team"],
         department=emp["department"],
         date=data.date,
-        expected_time=data.expected_time,
         actual_time=data.actual_time,
         reason=data.reason,
         applied_by_admin=is_admin,
@@ -14771,7 +14778,6 @@ async def edit_early_out_request(request_id: str, data: EarlyOutRequestCreate, c
     update = {
         "date": data.date,
         "reason": data.reason,
-        "expected_time": data.expected_time,
         "actual_time": data.actual_time,
         "edited_by": current_user["id"],
         "edited_at": get_ist_now().isoformat(),

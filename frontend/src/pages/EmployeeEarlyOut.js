@@ -22,7 +22,7 @@ const EmployeeEarlyOut = () => {
   const [showDialog, setShowDialog] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [formLoading, setFormLoading] = useState(false);
-  const [form, setForm] = useState({ date: '', expected_time: '', actual_time: '', reason: '' });
+  const [form, setForm] = useState({ date: '', actual_time: '', reason: '' });
   const { sortedRows: sortedRequests, sortField, sortDir, toggleSort } = useTableSort(requests);
 
   const fetchData = useCallback(async () => {
@@ -39,12 +39,12 @@ const EmployeeEarlyOut = () => {
       setFormLoading(true);
       if (editingId) { await axios.put(`${API}/early-out-requests/${editingId}`, form, { headers: getAuthHeaders() }); toast.success('Updated'); }
       else { await axios.post(`${API}/early-out-requests`, form, { headers: getAuthHeaders() }); toast.success('Submitted'); }
-      setShowDialog(false); setEditingId(null); setForm({ date: '', expected_time: '', actual_time: '', reason: '' }); fetchData();
+      setShowDialog(false); setEditingId(null); setForm({ date: '', actual_time: '', reason: '' }); fetchData();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
     finally { setFormLoading(false); }
   };
 
-  const handleEdit = (r) => { setEditingId(r.id); setForm({ date: r.date, expected_time: r.expected_time || '', actual_time: r.actual_time || '', reason: r.reason }); setShowDialog(true); };
+  const handleEdit = (r) => { setEditingId(r.id); setForm({ date: r.date, actual_time: r.actual_time || '', reason: r.reason }); setShowDialog(true); };
   const getStatusBadge = (s) => ({ pending: 'badge-warning', approved: 'badge-success', rejected: 'badge-error' }[s] || 'badge-neutral');
   const stats = { pending: requests.filter(r => r.status === 'pending').length, approved: requests.filter(r => r.status === 'approved').length, rejected: requests.filter(r => r.status === 'rejected').length };
 
@@ -58,7 +58,7 @@ const EmployeeEarlyOut = () => {
             <p className="text-sm text-slate-500">Apply and track early out requests</p>
           </div>
         </div>
-        <Button onClick={() => { setEditingId(null); setForm({ date: '', expected_time: '', actual_time: '', reason: '' }); setShowDialog(true); }} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="apply-early-out-btn">
+        <Button onClick={() => { setEditingId(null); setForm({ date: '', actual_time: '', reason: '' }); setShowDialog(true); }} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="apply-early-out-btn">
           <Plus className="w-4 h-4 mr-2" /> Apply Early Out
         </Button>
       </div>
@@ -75,7 +75,6 @@ const EmployeeEarlyOut = () => {
             <table className="table-premium">
               <thead><tr>
                 <SortableTh field="date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
-                <SortableTh field="expected_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Expected Time</SortableTh>
                 <SortableTh field="actual_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Actual Time</SortableTh>
                 <SortableTh field="reason" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Reason</SortableTh>
                 <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
@@ -83,10 +82,9 @@ const EmployeeEarlyOut = () => {
                 <th>Actions</th>
               </tr></thead>
               <tbody>
-                {sortedRequests.length === 0 ? <tr><td colSpan="7" className="text-center py-12 text-slate-500">No early out requests found</td></tr> : sortedRequests.map((r) => (
+                {sortedRequests.length === 0 ? <tr><td colSpan="6" className="text-center py-12 text-slate-500">No early out requests found</td></tr> : sortedRequests.map((r) => (
                   <tr key={r.id}>
                     <td className="font-medium text-slate-900 whitespace-nowrap">{formatDate(r.date)}</td>
-                    <td className="text-slate-600">{r.expected_time || '-'}</td>
                     <td className="text-slate-600">{r.actual_time || '-'}</td>
                     <td className="text-slate-600 max-w-[200px] truncate">{r.reason}</td>
                     <td><Badge className={getStatusBadge(r.status)}>{r.status}</Badge></td>
@@ -105,10 +103,7 @@ const EmployeeEarlyOut = () => {
           <DialogHeader><DialogTitle style={{ fontFamily: 'Outfit' }}>{editingId ? 'Edit' : 'Apply'} Early Out Request</DialogTitle><DialogDescription>Submit your early out request</DialogDescription></DialogHeader>
           <div className="space-y-4 py-4">
             <div><Label>Date</Label><DatePicker value={form.date} onChange={(v) => setForm({ ...form, date: v })} placeholder="Select date" className="mt-1.5 rounded-lg" data-testid="early-out-date-input" /></div>
-            <div className="grid grid-cols-2 gap-4">
-              <div><Label>Expected Logout Time</Label><Input type="time" value={form.expected_time} onChange={e => setForm({ ...form, expected_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
-              <div><Label>Actual Logout Time</Label><Input type="time" value={form.actual_time} onChange={e => setForm({ ...form, actual_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
-            </div>
+            <div><Label>Actual Logout Time</Label><Input type="time" value={form.actual_time} onChange={e => setForm({ ...form, actual_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
             <div><Label>Reason</Label><Textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Reason for early out..." /></div>
           </div>
           <DialogFooter>

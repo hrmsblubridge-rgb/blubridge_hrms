@@ -55,7 +55,8 @@ def _reconciles(pr):
     assert abs(ex - pr["extra_pay"]) < 1e-6
     assert abs(oh - pr["oh_pay"]) < 1e-6
     assert abs(lop - pr["lop"]) < 1e-6
-    assert abs(max(0, wd + wo + ex + oh - lop) - pr["final_payable_days"]) < 1e-6
+    # Extra Pay is EXCLUDED from Payable Days (independent component, HR spec §8)
+    assert abs(max(0, wd + wo + oh - lop) - pr["final_payable_days"]) < 1e-6
 
 
 @pytest.mark.asyncio
@@ -108,4 +109,60 @@ async def test_relieved_last_day_not_payable_reconciles(emp):
     # still reconciles with the rows (no hidden subtraction).
     by = {r["date"]: r for r in pr["attendance_details"]}
     assert by["20-05-2026"]["lop_value"] >= 1
+    _reconciles(pr)
+
+
+async def _att(eid, d, dec):
+    await db.attendance.insert_one({
+        "id": str(uuid.uuid4()), "employee_id": eid, "date": d,
+        "check_in_24h": "09:30", "check_out_24h": "19:30", "total_hours_decimal": dec,
+        "check_in": "09:30 AM", "check_out": "07:30 PM", "total_hours": f"{int(dec)}h",
+    })
+
+
+@pytest.mark.asyncio
+async def test_unpaid_holiday_is_normal_working_day(emp):
+    """is_paid=False holiday = normal working day: full hours -> P, NO extra pay."""
+    eid = emp
+    await db.holidays.insert_one({"id": str(uuid.uuid4()), "date": "2026-05-22", "name": "Unpaid Hol", "is_paid": False})
+    await _att(eid, "2026-05-22", 10.0)  # full day (Support Staff full=9h)
+    try:
+        pr = await calculate_payroll_for_employee(eid, "2026-05")
+        by = {r["date"]: r for r in pr["attendance_details"]}
+        assert by["22-05-2026"]["status"] == "P", by["22-05-2026"]
+        assert by["22-05-2026"]["extra_value"] == 0  # NO extra pay on a normal working day
+        assert by["22-05-2026"]["is_holiday"] is False
+        _reconciles(pr)
+    finally:
+        await db.holidays.delete_many({"date": "2026-05-22", "name": "Unpaid Hol"})
+
+
+@pytest.mark.asyncio
+async def test_weekoff_full_work_is_FD_and_excluded_from_payable(emp):
+    """Full-day work on a Sunday -> FD + extra pay; extra pay NOT in Payable Days."""
+    eid = emp
+    await _att(eid, "2026-05-17", 10.0)  # Sunday, full hours
+    pr = await calculate_payroll_for_employee(eid, "2026-05")
+    by = {r["date"]: r for r in pr["attendance_details"]}
+    assert by["17-05-2026"]["status"] == "FD"
+    assert by["17-05-2026"]["extra_value"] == 1
+    assert by["17-05-2026"]["weekoff_value"] == 1
+    assert pr["extra_pay"] >= 1
+    _reconciles(pr)  # verifies extra_pay is excluded from final_payable_days
+
+
+@pytest.mark.asyncio
+async def test_approved_with_lop_full_leave_shows_code_not_lop(emp):
+    """Approved leave WITH LOP must display the leave code (SF), not 'LOP'."""
+    eid = emp
+    await db.leaves.insert_one({
+        "id": str(uuid.uuid4()), "employee_id": eid, "leave_type": "Sick",
+        "leave_split": "Full Day", "start_date": "2026-05-19", "end_date": "2026-05-19",
+        "status": "approved", "is_lop": True,
+    })
+    pr = await calculate_payroll_for_employee(eid, "2026-05")
+    by = {r["date"]: r for r in pr["attendance_details"]}
+    assert by["19-05-2026"]["status"] == "SF"      # leave code, NOT "LOP"
+    assert by["19-05-2026"]["lop_value"] == 1        # deduction still applied internally
+    assert by["19-05-2026"]["is_lop"] is True
     _reconciles(pr)

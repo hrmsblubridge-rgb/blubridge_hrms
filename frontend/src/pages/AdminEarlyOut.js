@@ -32,12 +32,12 @@ const AdminEarlyOut = () => {
   const [showReject, setShowReject] = useState(false);
   const [showApply, setShowApply] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
-  const [editForm, setEditForm] = useState({ date: '', expected_time: '', actual_time: '', reason: '' });
+  const [editForm, setEditForm] = useState({ date: '', actual_time: '', reason: '' });
   const [actionLoading, setActionLoading] = useState(false);
   const [lopChoice, setLopChoice] = useState('no_lop');
   const [lopRemark, setLopRemark] = useState('');
   const [searchName, setSearchName] = useState('');
-  const [form, setForm] = useState({ employee_id: '', date: '', expected_time: '', actual_time: '', reason: '', is_lop: null, auto_approve: false });
+  const [form, setForm] = useState({ employee_id: '', date: '', actual_time: '', reason: '', is_lop: null, auto_approve: false });
 
   const fetchData = useCallback(async () => {
     try { setLoading(true);
@@ -82,7 +82,7 @@ const AdminEarlyOut = () => {
     try {
       await axios.post(`${API}/early-out-requests`, form, { headers: getAuthHeaders() });
       toast.success(form.auto_approve ? 'Applied & Approved' : 'Applied for employee');
-      setShowApply(false); setForm({ employee_id: '', date: '', expected_time: '', actual_time: '', reason: '', is_lop: null, auto_approve: false }); fetchData();
+      setShowApply(false); setForm({ employee_id: '', date: '', actual_time: '', reason: '', is_lop: null, auto_approve: false }); fetchData();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
     finally { setActionLoading(false); }
   };
@@ -91,7 +91,6 @@ const AdminEarlyOut = () => {
     setSelected(r);
     setEditForm({
       date: r.date || '',
-      expected_time: r.expected_time || '',
       actual_time: r.actual_time || '',
       reason: r.reason || '',
     });
@@ -106,7 +105,6 @@ const AdminEarlyOut = () => {
       await axios.put(`${API}/early-out-requests/${selected.id}`, {
         employee_id: selected.employee_id,
         date: editForm.date,
-        expected_time: editForm.expected_time,
         actual_time: editForm.actual_time,
         reason: editForm.reason,
       }, { headers: getAuthHeaders() });
@@ -136,7 +134,6 @@ const AdminEarlyOut = () => {
           <SortableTh field="emp_name" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Employee</SortableTh>
           <SortableTh field="team" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Team</SortableTh>
           <SortableTh field="date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
-          <SortableTh field="expected_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Expected</SortableTh>
           <SortableTh field="actual_time" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Actual</SortableTh>
           <SortableTh field="reason" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Reason</SortableTh>
           <SortableTh field="status" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Status</SortableTh>
@@ -144,12 +141,11 @@ const AdminEarlyOut = () => {
           {isHR && <th>Actions</th>}
         </tr></thead>
         <tbody>
-          {sortedRows.length === 0 ? <tr><td colSpan={isHR ? 9 : 8} className="text-center py-12 text-slate-500">No records</td></tr> : sortedRows.map(r => (
+          {sortedRows.length === 0 ? <tr><td colSpan={isHR ? 8 : 7} className="text-center py-12 text-slate-500">No records</td></tr> : sortedRows.map(r => (
             <tr key={r.id}>
               <td className="font-medium text-slate-900">{r.emp_name}</td>
               <td className="text-slate-600">{r.team}</td>
               <td className="text-slate-600">{formatDate(r.date)}</td>
-              <td className="text-slate-600">{r.expected_time || '-'}</td>
               <td className="text-slate-600">{r.actual_time || '-'}</td>
               <td className="text-slate-600 max-w-[180px] truncate">{r.reason}</td>
               <td><Badge className={getStatusBadge(r.status)}>{r.status}</Badge></td>
@@ -204,7 +200,7 @@ const AdminEarlyOut = () => {
       <Sheet open={showDetail} onOpenChange={setShowDetail}>
         <SheetContent className="w-full sm:max-w-md bg-[#fffdf7]"><SheetHeader><SheetTitle style={{ fontFamily: 'Outfit' }}>Early Out Details</SheetTitle></SheetHeader>
           {selected && <div className="py-6 space-y-4">
-            {[{ l: 'Employee', v: selected.emp_name }, { l: 'Team', v: selected.team }, { l: 'Date', v: selected.date }, { l: 'Expected Time', v: selected.expected_time || '-' }, { l: 'Actual Time', v: selected.actual_time || '-' }, { l: 'Reason', v: selected.reason }].map((item, i) => (
+            {[{ l: 'Employee', v: selected.emp_name }, { l: 'Team', v: selected.team }, { l: 'Date', v: selected.date }, { l: 'Actual Time', v: selected.actual_time || '-' }, { l: 'Reason', v: selected.reason }].map((item, i) => (
               <div key={i} className="flex justify-between py-2 border-b border-dashed border-slate-200"><span className="text-slate-500 text-sm">{item.l}</span><span className="font-medium text-slate-900 text-right max-w-[60%]">{item.v}</span></div>
             ))}
             {selected.status === 'pending' && isHR && <div className="flex gap-3 pt-4">
@@ -249,10 +245,7 @@ const AdminEarlyOut = () => {
               </Select>
             </div>
             <div><Label>Date</Label><DatePicker value={form.date} onChange={(val) => setForm({ ...form, date: val })} className="mt-1.5 rounded-lg" /></div>
-            <div className="grid grid-cols-2 gap-4">
-              <div><Label>Expected Time</Label><Input type="time" value={form.expected_time} onChange={e => setForm({ ...form, expected_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
-              <div><Label>Actual Time</Label><Input type="time" value={form.actual_time} onChange={e => setForm({ ...form, actual_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
-            </div>
+            <div><Label>Actual Time</Label><Input type="time" value={form.actual_time} onChange={e => setForm({ ...form, actual_time: e.target.value })} className="mt-1.5 rounded-lg" /></div>
             <div><Label>Reason</Label><Textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Reason..." /></div>
             <div className="flex items-center gap-4 pt-2">
               <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={form.auto_approve} onChange={e => setForm({ ...form, auto_approve: e.target.checked })} className="rounded" /><span className="text-sm text-slate-700">Auto-approve</span></label>
@@ -276,10 +269,7 @@ const AdminEarlyOut = () => {
             <div className="space-y-4 py-2">
               <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — <Badge className={getStatusBadge(selected.status)}>{selected.status}</Badge></p>
               <div><Label>Date</Label><DatePicker value={editForm.date} onChange={(val) => setEditForm({ ...editForm, date: val })} className="mt-1.5 rounded-lg" data-testid="edit-eo-date" /></div>
-              <div className="grid grid-cols-2 gap-4">
-                <div><Label>Expected Time</Label><Input type="time" value={editForm.expected_time} onChange={e => setEditForm({ ...editForm, expected_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-eo-expected" /></div>
-                <div><Label>Actual Time</Label><Input type="time" value={editForm.actual_time} onChange={e => setEditForm({ ...editForm, actual_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-eo-actual" /></div>
-              </div>
+              <div><Label>Actual Time</Label><Input type="time" value={editForm.actual_time} onChange={e => setEditForm({ ...editForm, actual_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-eo-actual" /></div>
               <div><Label>Reason</Label><Textarea value={editForm.reason} onChange={e => setEditForm({ ...editForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" data-testid="edit-eo-reason" /></div>
             </div>
           )}
