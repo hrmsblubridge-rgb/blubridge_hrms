@@ -5,6 +5,28 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-01 (Payroll sync rework + Policy + Early-Out field removal ✅ TESTED)
+
+Production surgical update spanning Policies, Early Out, and the Payroll engine (server.py `calculate_payroll_for_employee`). Frontend testing_agent iter_52 = 5/5 flows pass, 0 payroll math mismatches.
+
+**§1 Policy text (Research Unit):** "Leave Policy & Attendance Compliance" table + the duplicate LC bullet in the HR-induction docs updated: Late Coming (LC) "Before 9:45 AM (max 10:00 AM)" → **"Before 10:00 AM (max 10:30 AM)"**. Updated seed + DB (policy_research, policy_research_hr, policy_support_hr). Emergency-Leave 9:45–10:00 window left untouched.
+
+**§8/§9 Payroll calc (per user decisions):**
+- **Payable Days = Working + Week-Off + Optional-Holiday(OH) − LOP.** Extra Pay is now an INDEPENDENT column, EXCLUDED from Payable Days (was included).
+- **Standard vs unpaid holidays:** `holiday_dates` now only includes holidays where `is_paid != False`. Unpaid holidays (e.g. 26-Jun Muharram, is_paid=False) are NORMAL working days → worker gets P (no extra pay). Fixed the Adhitya Charan false-Extra-Pay audit (was P+extra on Muharram; now P, no extra, counted in working_days).
+- **New status codes FD/HD:** full-shift work on a Week-Off/paid-Holiday → **FD** (was "P") + full extra; ≥ dept half-hours → **HD** + half extra; else no extra. Uses the existing department attendance engine (Research 11/6, B&P 10/5, Support 9/4.5), not a flat 5h.
+- **§7 LOP display:** approved leave WITH LOP now shows the actual leave code (PF/SF/EF/PH/SH/…) instead of generic "LOP"; the deduction is applied internally only. Pending leave-only still shows LOP.
+- Summary still recomputed strictly from final attendance rows (0 reconciliation failures across all employees, May & June 2026). Relieved last-day-not-payable still folded into the relieving-row LOP.
+
+**Frontend Payroll.js:** Holiday Pay column (added prior), FD code in legend/getStatusDisplay, formula footnote reflects the new formula (Extra Pay shown but not summed into Payable).
+
+**§10 Early Out — "Expected Time" permanently removed:** dropped from EarlyOutRequest/EarlyOutRequestCreate models, create + edit endpoints, and ALL frontend (EmployeeEarlyOut + AdminEarlyOut: apply/edit forms, table columns, detail sheet). "Actual Time" retained. Late Request module UNTOUCHED (still has Expected Login Time). Historical DB records retain expected_time (not displayed). Bulk-import parser left as-is (admin utility, value never surfaced). New POST verified 200 with no expected_time; also fixed a `<p>`→`<div>` DOM-nesting warning in the EO edit dialog.
+
+**Tests:** `tests/test_payroll_optional_holiday.py` (7: OH payable, OH+LOP not credited, unpaid-holiday=normal working day, Week-Off FD + extra excluded from payable, approved-with-LOP shows code, relieved reconcile, row reconcile). All payroll suites (40) pass. `test_payroll_pending_leave` updated (approved-with-LOP → "SF"). NOTE: pre-existing `test_payroll_sundays_only`/`_shifts` HTTP-fixture LocationParseErrors are unrelated infra errors.
+
+---
+
+
 ## Latest Update — 2026-06-30 (Payroll: Optional Holiday payable + summary recomputed from rows ✅ TESTED)
 
 **Bug (Riswan Ahamed M EMP0113, 26-Jun-2026):** An approved Optional Holiday (Without LOP) that fell on a calendar HOLIDAY was swallowed by the holiday branch (rendered "H", 0 pay) — Payable was 1 short (19.5 vs expected 20.5). Root cause: Section 5B (holiday) ran and `continue`d before the leave sections were consulted.

@@ -267,7 +267,7 @@ const AdminEarlyOut = () => {
           </DialogHeader>
           {selected && (
             <div className="space-y-4 py-2">
-              <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — <Badge className={getStatusBadge(selected.status)}>{selected.status}</Badge></p>
+              <div className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — <Badge className={getStatusBadge(selected.status)}>{selected.status}</Badge></div>
               <div><Label>Date</Label><DatePicker value={editForm.date} onChange={(val) => setEditForm({ ...editForm, date: val })} className="mt-1.5 rounded-lg" data-testid="edit-eo-date" /></div>
               <div><Label>Actual Time</Label><Input type="time" value={editForm.actual_time} onChange={e => setEditForm({ ...editForm, actual_time: e.target.value })} className="mt-1.5 rounded-lg" data-testid="edit-eo-actual" /></div>
               <div><Label>Reason</Label><Textarea value={editForm.reason} onChange={e => setEditForm({ ...editForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" data-testid="edit-eo-reason" /></div>

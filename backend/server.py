@@ -812,7 +812,7 @@ COMPANY_POLICIES = [
                         "Emergency Leave (Half/Full Day) — for unforeseen or urgent situations. Must inform via email between 9:45 AM – 10:00 AM. Supporting documents are mandatory.",
                         "Sick Leave (Half/Full Day) — Email intimation required before 7:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
                         "Pre-Planned Leave (Half/Full Day) — Must be applied at least 4 days in advance.",
-                        "Late Coming (LC) — Must inform before 9:45 AM (latest by 10:00 AM); should include expected arrival time.",
+                        "Late Coming (LC) — Must inform before 10:00 AM (latest by 10:30 AM); should include expected arrival time.",
                         "Half Day Criteria — Minimum 5 hours of productive work.",
                         "Leave Approval Process — All leaves must be approved by management (via Teams). Post approval: send email and update in HRMS portal."
                     ]
@@ -895,7 +895,7 @@ COMPANY_POLICIES = [
                         "Emergency Leave (Half/Full Day) — for unforeseen or urgent situations. Must inform via email between 9:45 AM – 10:00 AM. Supporting documents are mandatory.",
                         "Sick Leave (Half/Full Day) — Email intimation required before 7:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
                         "Pre-Planned Leave (Half/Full Day) — Must be applied at least 4 days in advance.",
-                        "Late Coming (LC) — Must inform before 9:45 AM (latest by 10:00 AM); should include expected arrival time.",
+                        "Late Coming (LC) — Must inform before 10:00 AM (latest by 10:30 AM); should include expected arrival time.",
                         "Half Day Criteria — Minimum 5 hours of productive work.",
                         "Leave Approval Process — All leaves must be approved by management (via Teams). Post approval: send email and update in HRMS portal."
                     ]
