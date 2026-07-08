@@ -49,7 +49,7 @@ async def test_late_with_and_without_lop(emp):
     await db.late_requests.insert_one({"id": str(uuid.uuid4()), "employee_id": eid, "date": DAYS["d2"], "status": "approved", "is_lop": True})
     pr = await calculate_payroll_for_employee(eid, "2026-05")
     by = {r["date"]: r for r in pr["attendance_details"]}
-    assert by["04-05-2026"]["status"] == "LC" and by["04-05-2026"]["lop_value"] == 0    # without LOP
+    assert by["04-05-2026"]["status"] == "P" and by["04-05-2026"]["lop_value"] == 0     # without LOP → P
     assert by["05-05-2026"]["status"] == "LC" and by["05-05-2026"]["lop_value"] == 0.5  # with LOP
 
 

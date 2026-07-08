@@ -1,8 +1,7 @@
 """Regression: Payroll Late-Coming (LC) sync.
 
-Approved Late request  -> day shows 'LC' but is EXCUSED (0 LOP, full pay).
-No/Unapproved late      -> day shows 'LC' with 0.5 LOP penalty.
-Salary (LOP) for approved-late is unchanged vs the previous 'P' behaviour.
+Approved Late WITHOUT LOP -> day shows 'P' (excused, 0 LOP, full pay).
+No/Unapproved late        -> day shows 'LC' with 0.5 LOP penalty.
 """
 import os
 import sys
@@ -54,7 +53,7 @@ async def test_late_coming_sync(late_scenario):
     by_date = {row["date"]: row for row in pr["attendance_details"]}
 
     approved = by_date["04-05-2026"]
-    assert approved["status"] == "LC", approved          # relabelled from P
+    assert approved["status"] == "P", approved           # approved Without LOP → P
     assert approved["lop_value"] == 0, approved          # EXCUSED — no penalty
     assert approved["is_lop"] is False, approved
 

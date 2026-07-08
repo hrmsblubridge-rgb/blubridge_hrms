@@ -59,8 +59,8 @@ async def test_pending_leave_does_not_force_present(emp):
 @pytest.mark.asyncio
 async def test_approved_leave_with_attendance_shows_code_or_lop(emp):
     eid = emp
-    await _att(eid, "2026-05-05", 3.22)  # approved Sick WITHOUT LOP -> SF
-    await _att(eid, "2026-05-06", 3.22)  # approved Sick WITH LOP   -> LOP
+    await _att(eid, "2026-05-05", 3.22)  # approved Sick WITHOUT LOP -> P
+    await _att(eid, "2026-05-06", 3.22)  # approved Sick WITH LOP   -> SF
     await db.leaves.insert_one({"id": str(uuid.uuid4()), "employee_id": eid, "leave_type": "Sick",
         "leave_split": "Full Day", "start_date": "2026-05-05", "end_date": "2026-05-05",
         "status": "approved", "is_lop": False})
@@ -69,6 +69,7 @@ async def test_approved_leave_with_attendance_shows_code_or_lop(emp):
         "status": "approved", "is_lop": True})
     pr = await calculate_payroll_for_employee(eid, "2026-05")
     by = {r["date"]: r for r in pr["attendance_details"]}
-    assert by["05-05-2026"]["status"] == "SF" and by["05-05-2026"]["lop_value"] == 0
-    # Approved WITH LOP now displays the leave code (SF), deduction applied internally
+    # Approved WITHOUT LOP → fully payable → displays "P"
+    assert by["05-05-2026"]["status"] == "P" and by["05-05-2026"]["lop_value"] == 0
+    # Approved WITH LOP displays the leave code (SF), deduction applied internally
     assert by["06-05-2026"]["status"] == "SF" and by["06-05-2026"]["lop_value"] == 1

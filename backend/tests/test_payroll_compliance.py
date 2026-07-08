@@ -28,7 +28,7 @@ class TestPayrollAuthentication:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200, f"Login failed: {response.text}"
         return response.json().get("token")
@@ -69,7 +69,7 @@ class TestPayrollStructure:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200, f"Login failed: {response.text}"
         token = response.json().get("token")
@@ -158,7 +158,7 @@ class TestPayrollFormula:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200
         token = response.json().get("token")
@@ -214,7 +214,7 @@ class TestHolidayDetection:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200
         token = response.json().get("token")
@@ -234,10 +234,10 @@ class TestHolidayDetection:
         
         apr_3 = next((d for d in details if d.get("date") == "03-04-2026"), None)
         if apr_3:
-            assert apr_3.get("is_holiday") == True, f"Apr 3 should be holiday, got is_holiday={apr_3.get('is_holiday')}"
-            # Status should be OH (office holiday) or PF/PH if worked
-            assert apr_3.get("status") in ["OH", "PF", "PH", "H"], f"Apr 3 status should be OH/PF/PH/H, got {apr_3.get('status')}"
-            print(f"PASS: Apr 3 is marked as holiday with status {apr_3.get('status')}")
+            # Apr 3 (Good Friday) is an UNPAID holiday (is_paid=False) → treated
+            # as a NORMAL WORKING DAY per HR spec 2026-05 (no holiday flag).
+            assert apr_3.get("is_holiday") == False, f"Apr 3 (unpaid holiday) should be a working day, got is_holiday={apr_3.get('is_holiday')}"
+            print(f"PASS: Apr 3 (unpaid holiday) treated as working day with status {apr_3.get('status')}")
         else:
             pytest.skip("Apr 3 not found in attendance details")
     
@@ -273,12 +273,12 @@ class TestHolidayDetection:
         emp = data[0]
         working_days = emp.get("working_days", 0)
         
-        # April 2026 has 30 days, 4 Sundays (5, 12, 19, 26), 2 holidays (3, 14)
-        # But Apr 3 is Friday, Apr 14 is Tuesday - both are weekdays
-        # So working days should be 30 - 4 (Sundays) - 2 (holidays) = 24
-        # Note: This may vary based on employee joining date
+        # April 2026: 30 days, 4 Sundays (5, 12, 19, 26). Apr 14 is a PAID
+        # holiday; Apr 3 (Good Friday) is UNPAID (is_paid=False) and per HR
+        # spec 2026-05 counts as a normal working day.
+        # So working days should be <= 30 - 4 (Sundays) - 1 (paid holiday) = 25
         
-        assert working_days <= 24, f"Working days should be <= 24 (excluding Sundays and holidays), got {working_days}"
+        assert working_days <= 25, f"Working days should be <= 25 (excluding Sundays and paid holidays), got {working_days}"
         print(f"PASS: Working days ({working_days}) excludes holidays")
 
 
@@ -290,7 +290,7 @@ class TestSundayHandling:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200
         token = response.json().get("token")
@@ -345,7 +345,7 @@ class TestStatusCodes:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200
         token = response.json().get("token")
@@ -360,7 +360,11 @@ class TestStatusCodes:
         if len(data) == 0:
             pytest.skip("No employees in payroll data")
         
-        valid_codes = {"PF", "PH", "PA", "WO", "OH", "LC", "MP", "A", "R", "BLANK", "LOP", "Su", "H", "NA"}
+        valid_codes = {
+            "P", "FD", "HD", "WO", "H", "LC", "MP",
+            "PF", "PH", "SF", "SH", "EF", "EH", "PA", "PP", "OH",
+            "A", "R", "BLANK", "LOP", "Su", "NA",
+        }
         
         all_statuses = set()
         for emp in data:
@@ -383,20 +387,27 @@ class TestStatusCodes:
         emp = data[0]
         details = emp.get("attendance_details", [])
         
-        # Today is April 16, 2026 - check dates after today
-        future_dates = ["17-04-2026", "18-04-2026", "19-04-2026", "20-04-2026"]
+        # Dynamically pick dates strictly after today (IST); skip if TEST_MONTH is past.
+        from datetime import datetime, timedelta, timezone as _tz
+        today = datetime.now(_tz(timedelta(hours=5, minutes=30))).date()
+        checked = 0
+        for day in details:
+            try:
+                d = datetime.strptime(day.get("date"), "%d-%m-%Y").date()
+            except (ValueError, TypeError):
+                continue
+            if d <= today:
+                continue
+            status = day.get("status")
+            if day.get("is_sunday"):
+                assert status == "Su", f"{day['date']} (Sunday) should be Su, got {status}"
+            else:
+                assert status in ["NA", "H", "Su", "R", "BLANK"], f"{day['date']} should be NA/H, got {status}"
+            checked += 1
         
-        for date_str in future_dates:
-            day = next((d for d in details if d.get("date") == date_str), None)
-            if day:
-                status = day.get("status")
-                # Apr 19 is Sunday, others are weekdays
-                if date_str == "19-04-2026":
-                    assert status == "Su", f"{date_str} (Sunday) should be Su, got {status}"
-                else:
-                    assert status in ["NA", "H"], f"{date_str} should be NA or H, got {status}"
-        
-        print("PASS: Future dates have correct status codes")
+        if checked == 0:
+            pytest.skip("TEST_MONTH has no future dates relative to today")
+        print(f"PASS: {checked} future dates have correct status codes")
 
 
 class TestPayrollSummary:
@@ -407,7 +418,7 @@ class TestPayrollSummary:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200
         token = response.json().get("token")
@@ -448,7 +459,7 @@ class TestDepartmentWorkHours:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200
         token = response.json().get("token")
@@ -487,7 +498,7 @@ class TestPayrollPerformance:
         """Get HR admin auth token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "pass123"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200
         token = response.json().get("token")

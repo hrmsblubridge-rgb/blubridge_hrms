@@ -2788,11 +2788,11 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
             split = leave.get("leave_split", "Full Day")
 
             if ls == "approved":
-                # Always display the actual approved leave code (PF/PH/SF/SH/
-                # EF/EH/PA/PP/OH …). The With-LOP choice only drives the
-                # internal salary deduction, never the displayed code.
-                detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
+                # Display rule (HR spec 2026-06): Without LOP → "P" (fully
+                # payable day). With LOP → the actual approved leave code
+                # (PF/PH/SF/SH/EF/EH/PA/PP/OH …); deduction stays internal.
                 if is_lop_flag is True:
+                    detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
                     detail["is_lop"] = True
                     if split == "Full Day":
                         lop += 1
@@ -2800,6 +2800,8 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     else:
                         lop += 0.5
                         detail["lop_value"] = 0.5
+                else:
+                    detail["status"] = "P"
             elif ls == "pending":
                 if split == "Full Day":
                     lop += 1
@@ -2850,10 +2852,8 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     lop += 1
                     detail["lop_value"] = 1
                 else:
-                    # Approved Without LOP → show the leave code (PF/SF/EF/PA/…)
-                    detail["status"] = _leave_code_for_status(
-                        leave.get("leave_type"), "Full Day"
-                    )
+                    # Approved Without LOP → fully payable day → display "P"
+                    detail["status"] = "P"
 
             attendance_details.append(detail)
             continue
@@ -2900,14 +2900,15 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     detail["status"] = "P"
                 elif hw >= full_hours and is_late:
                     if date_iso in late_by_date:
-                        # Approved Late request → display LC. Admin's approval type
-                        # decides salary: Without LOP = excused (0 LOP); With LOP =
-                        # 0.5 LOP penalty.
-                        detail["status"] = "LC"
+                        # Approved Late request: Without LOP → excused → "P"
+                        # (0 LOP). With LOP → "LC" with 0.5 LOP penalty.
                         if late_by_date[date_iso]:
+                            detail["status"] = "LC"
                             detail["is_lop"] = True
                             lop += 0.5
                             detail["lop_value"] = 0.5
+                        else:
+                            detail["status"] = "P"
                     else:
                         # No/unapproved late → penalty.
                         detail["status"] = "LC"
