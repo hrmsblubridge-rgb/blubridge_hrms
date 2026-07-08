@@ -4961,6 +4961,9 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
             "is_deleted": False,
             "deleted_at": None,
             "employee_status": EmployeeStatus.ACTIVE,
+            "inactive_type": None,
+            "inactive_date": None,
+            "inactive_reason": None,
             "full_name": data.full_name,
             "phone_number": data.phone_number,
             "gender": data.gender,
@@ -5277,6 +5280,17 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
         raise HTTPException(status_code=400, detail="No data to update")
     
     update_data["updated_at"] = get_ist_now().isoformat()
+
+    # BUSINESS RULE (2026-07-01): Inactive Type/Date/Reason are valid ONLY while
+    # the employee is Inactive. If this edit leaves the employee Active (including
+    # reactivating Inactive → Active), clear the stored inactive reason so an
+    # active employee never displays "Relieved/Terminated/…". Enforced server-side
+    # because the None-strip above means the client cannot clear these itself.
+    effective_status = update_data.get("employee_status", existing.get("employee_status"))
+    if effective_status == EmployeeStatus.ACTIVE:
+        update_data["inactive_type"] = None
+        update_data["inactive_date"] = None
+        update_data["inactive_reason"] = None
 
     # If shift_type matches a Settings shift, expand all derived fields so
     # the employee record stays consistent with central shift configuration.
@@ -5851,6 +5865,9 @@ async def reactivate_employee(employee_id: str, current_user: dict = Depends(get
     update_data = {
         "employee_status": EmployeeStatus.ACTIVE,
         "login_enabled": True,
+        "inactive_type": None,
+        "inactive_date": None,
+        "inactive_reason": None,
         "updated_at": get_ist_now().isoformat()
     }
 

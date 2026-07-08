@@ -5,6 +5,21 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-01 (Employee Rejoin/Reactivation status sync ✅ TESTED)
+
+**Bug:** Reactivating an employee (Status Inactive → Active) left the old `inactive_type` (Relieved/Terminated/…) displayed. Root cause: `update_employee` (PUT /employees/{id}) strips `None` values from the payload (`{k:v ... if v is not None}`), so the client could never clear `inactive_type` when flipping status to Active.
+
+**Fix (backend-driven, server.py):**
+- `update_employee`: after building update_data, if effective status is Active (from payload or existing) → force `inactive_type=inactive_date=inactive_reason=None`. Self-healing invariant: an Active employee never retains an inactive reason, regardless of edit path.
+- `reactivate_employee` (PUT /employees/{id}/reactivate): now also clears the three inactive fields (audit log still records the prior reason from the pre-update doc → history preserved).
+- Create-with-deleted-email reactivation path: clears inactive fields too.
+- Deactivation (DELETE /employees/{id}) unchanged — still sets inactive_type/date/reason.
+
+**Verified e2e (real API, admin/HR):** Case1 Edit Inactive/Relieved→Active clears all three fields (200); Case2 /reactivate clears (200); Case3 Active→Inactive/Terminated retains reason (200, no regression). Grid/Details/Export read `inactive_type` from the record → show blank automatically once null (no frontend change needed). Note: no bulk-update-reactivate endpoint exists (bulk-import only creates/deactivates, bulk-deactivate only deactivates), so Test Case 4 is N/A.
+
+---
+
+
 ## Latest Update — 2026-07-01 (Payroll sync rework + Policy + Early-Out field removal ✅ TESTED)
 
 Production surgical update spanning Policies, Early Out, and the Payroll engine (server.py `calculate_payroll_for_employee`). Frontend testing_agent iter_52 = 5/5 flows pass, 0 payroll math mismatches.
