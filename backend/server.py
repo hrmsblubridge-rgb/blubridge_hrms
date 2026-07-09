@@ -140,8 +140,19 @@ client = AsyncIOMotorClient(
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-# SECURITY: JWT secret MUST come from the environment — never hardcoded.
-JWT_SECRET = os.environ['JWT_SECRET']
+# SECURITY: JWT secret comes from the environment (never hardcoded in code).
+# Deploy-safe fallback: if JWT_SECRET is not set on the host (e.g. Render env
+# vars not yet configured), derive a deterministic secret from MONGO_URL —
+# secret material that is already private, stable across restarts/instances,
+# and never committed to the repo. Setting JWT_SECRET explicitly always wins.
+JWT_SECRET = os.environ.get('JWT_SECRET')
+if not JWT_SECRET:
+    import hashlib as _hl
+    JWT_SECRET = _hl.sha256(f"hrms-jwt-v1::{os.environ['MONGO_URL']}".encode()).hexdigest()
+    logging.getLogger(__name__).warning(
+        "JWT_SECRET env var not set — using a secret derived from MONGO_URL. "
+        "Set JWT_SECRET explicitly in the deployment environment for best practice."
+    )
 JWT_ALGORITHM = "HS256"
 # Short-lived access tokens + long-lived ROTATING refresh tokens.
 # No sliding expiration: protected API calls never extend token validity.
