@@ -135,8 +135,8 @@ const Layout = ({ children }) => {
     office_admin: 'Office Admin',
   };
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout(); // revoke session server-side + clear tokens BEFORE navigating
     navigate('/login');
   };
 

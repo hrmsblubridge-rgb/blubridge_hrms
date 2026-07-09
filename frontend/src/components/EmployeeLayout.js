@@ -78,8 +78,8 @@ const EmployeeLayout = ({ children }) => {
     ? [...navItems, { path: '/employee/vigilance', label: 'Vigilance Report', icon: ShieldAlert }]
     : navItems;
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout(); // revoke session server-side + clear tokens BEFORE navigating
     navigate('/login');
   };
 
