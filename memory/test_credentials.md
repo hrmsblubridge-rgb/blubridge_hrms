@@ -63,3 +63,13 @@
 
 Base URL: https://blank-tab-debug.preview.emergentagent.com
 Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "..."}
+
+## JWT Session Security (added 2026-07-09)
+- Login `POST /api/auth/login` now returns `{token, refresh_token, user}`.
+- Access token: SHORT-LIVED (`ACCESS_TOKEN_EXPIRE_MINUTES=10`, backend/.env), claims: user_id, role, token_type=access, session_id, jti, iat, exp. NO sliding expiry.
+- Refresh token: 7 days (`REFRESH_TOKEN_EXPIRE_DAYS`), rotated on every `POST /api/auth/refresh` (body: `{"refresh_token": "..."}`). Reusing a rotated token REVOKES the whole session.
+- `POST /api/auth/logout` (Bearer access token) revokes the session server-side → old access AND refresh tokens return 401 immediately.
+- Sessions stored hashed in Mongo collection `auth_sessions` (session_id indexed).
+- JWT secret: `JWT_SECRET` in backend/.env (required, no fallback).
+- Frontend stores `blubridge_token` + `blubridge_refresh_token` in localStorage; axios interceptor auto-refreshes on 401 once and retries.
+- NOTE for testing agents: tokens issued BEFORE 2026-07-09 are invalid (new secret + new claims) — always login fresh.

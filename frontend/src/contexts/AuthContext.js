@@ -18,10 +18,87 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 // ============================================================================
 const ONBOARDING_ENABLED = false;
 
+// ============================================================================
+// SECURITY — Access token (short-lived, ~10 min) + rotating refresh token.
+// Access token is attached to every API request; on a 401 the interceptor
+// silently calls /auth/refresh ONCE and retries. Logout revokes the session
+// server-side, so old tokens stop working immediately.
+// ============================================================================
+export const TOKEN_KEY = 'blubridge_token';
+export const REFRESH_TOKEN_KEY = 'blubridge_refresh_token';
+
+// Bare client (NO interceptors) for refresh/logout calls — avoids loops.
+const bareAxios = axios.create();
+
+// Single-flight refresh: concurrent 401s share one refresh request.
+let refreshPromise = null;
+const refreshAuthTokens = () => {
+  if (!refreshPromise) {
+    refreshPromise = (async () => {
+      const rt = localStorage.getItem(REFRESH_TOKEN_KEY);
+      if (!rt) throw new Error('No refresh token');
+      const { data } = await bareAxios.post(`${API}/auth/refresh`, { refresh_token: rt });
+      localStorage.setItem(TOKEN_KEY, data.token);
+      localStorage.setItem(REFRESH_TOKEN_KEY, data.refresh_token); // rotated
+      return data.token;
+    })().finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+};
+
+const clearStoredAuth = () => {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(REFRESH_TOKEN_KEY);
+};
+
+const isOurApi = (url) => !!url && (url.startsWith(API) || url.startsWith('/api'));
+const AUTH_ENDPOINTS = ['/auth/login', '/auth/refresh', '/auth/logout'];
+const isAuthEndpoint = (url) => AUTH_ENDPOINTS.some((p) => (url || '').includes(p));
+
+// Attach the CURRENT access token to every backend request (overrides any
+// stale token a page captured before a silent refresh happened).
+axios.interceptors.request.use((config) => {
+  if (isOurApi(config.url) && !isAuthEndpoint(config.url)) {
+    const t = localStorage.getItem(TOKEN_KEY);
+    if (t) config.headers.Authorization = `Bearer ${t}`;
+  }
+  return config;
+});
+
+// On 401 (expired access token or revoked session): refresh once, retry once.
+// If refresh fails, clear auth state and send the user to login.
+axios.interceptors.response.use(
+  (res) => res,
+  async (error) => {
+    const { config, response } = error;
+    if (
+      response?.status === 401 &&
+      config &&
+      isOurApi(config.url) &&
+      !isAuthEndpoint(config.url) &&
+      !config._authRetried
+    ) {
+      const hadSession = !!localStorage.getItem(TOKEN_KEY);
+      try {
+        const newToken = await refreshAuthTokens();
+        config._authRetried = true;
+        config.headers = { ...config.headers, Authorization: `Bearer ${newToken}` };
+        return axios(config);
+      } catch (_) {
+        clearStoredAuth();
+        if (hadSession && window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [token, setToken] = useState(localStorage.getItem('blubridge_token'));
+  const [token, setToken] = useState(localStorage.getItem(TOKEN_KEY));
   // Centralized avatar cache: { employee_id: avatar_url }. Single source of
   // truth for all admin modules (Attendance, Leave, Verification, etc.) so
   // they can render the correct photo without each endpoint having to
@@ -29,7 +106,7 @@ export const AuthProvider = ({ children }) => {
   const [avatarMap, setAvatarMap] = useState({});
 
   const refreshAvatars = useCallback(async (tk) => {
-    const useToken = tk || token || localStorage.getItem('blubridge_token');
+    const useToken = tk || token || localStorage.getItem(TOKEN_KEY);
     if (!useToken) return;
     try {
       const resp = await axios.get(`${API}/employee-avatars`, {
@@ -50,19 +127,19 @@ export const AuthProvider = ({ children }) => {
 
   useEffect(() => {
     const initAuth = async () => {
-      const savedToken = localStorage.getItem('blubridge_token');
+      const savedToken = localStorage.getItem(TOKEN_KEY);
       if (savedToken) {
         try {
-          const response = await axios.get(`${API}/auth/me`, {
-            headers: { Authorization: `Bearer ${savedToken}` }
-          });
+          // The response interceptor transparently refreshes an expired
+          // access token here, so a returning user stays signed in.
+          const response = await axios.get(`${API}/auth/me`);
           setUser(response.data);
-          setToken(savedToken);
+          setToken(localStorage.getItem(TOKEN_KEY));
           // Hydrate avatar cache on app boot.
-          refreshAvatars(savedToken);
+          refreshAvatars(localStorage.getItem(TOKEN_KEY));
         } catch (error) {
           console.error('Auth init error:', error);
-          localStorage.removeItem('blubridge_token');
+          clearStoredAuth();
           setToken(null);
         }
       }
@@ -75,23 +152,36 @@ export const AuthProvider = ({ children }) => {
   const login = async (username, password) => {
     try {
       const response = await axios.post(`${API}/auth/login`, { username, password });
-      const { token: newToken, user: userData } = response.data;
-      localStorage.setItem('blubridge_token', newToken);
+      const { token: newToken, refresh_token: newRefresh, user: userData } = response.data;
+      localStorage.setItem(TOKEN_KEY, newToken);
+      if (newRefresh) localStorage.setItem(REFRESH_TOKEN_KEY, newRefresh);
       setToken(newToken);
       setUser(userData);
       // Hydrate avatar cache immediately after login.
       refreshAvatars(newToken);
       return { success: true, user: userData };
     } catch (error) {
-      return { 
-        success: false, 
-        error: error.response?.data?.detail || 'Login failed' 
+      return {
+        success: false,
+        error: error.response?.data?.detail || 'Login failed'
       };
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem('blubridge_token');
+  const logout = async () => {
+    // Revoke the session server-side FIRST so the old access/refresh tokens
+    // are dead even if someone copied them. Local cleanup always runs.
+    const t = localStorage.getItem(TOKEN_KEY);
+    try {
+      if (t) {
+        await bareAxios.post(`${API}/auth/logout`, {}, {
+          headers: { Authorization: `Bearer ${t}` },
+        });
+      }
+    } catch (_) {
+      // Best-effort — even if the network call fails we clear local state.
+    }
+    clearStoredAuth();
     setToken(null);
     setUser(null);
     setAvatarMap({});
@@ -112,8 +202,10 @@ export const AuthProvider = ({ children }) => {
     });
   }, []);
 
+  // Always read the CURRENT token — a silent refresh may have rotated it
+  // after this component captured `token` state.
   const getAuthHeaders = useCallback(() => ({
-    Authorization: `Bearer ${token}`
+    Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY) || token}`
   }), [token]);
 
   // Check if user needs onboarding

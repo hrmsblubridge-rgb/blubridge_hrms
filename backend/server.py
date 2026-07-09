@@ -140,9 +140,13 @@ client = AsyncIOMotorClient(
 db = client[os.environ['DB_NAME']]
 
 # JWT Configuration
-JWT_SECRET = os.environ.get('JWT_SECRET', 'blubridge-hrms-secret-key-2024')
+# SECURITY: JWT secret MUST come from the environment — never hardcoded.
+JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24
+# Short-lived access tokens + long-lived ROTATING refresh tokens.
+# No sliding expiration: protected API calls never extend token validity.
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get('ACCESS_TOKEN_EXPIRE_MINUTES', '10'))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get('REFRESH_TOKEN_EXPIRE_DAYS', '7'))
 
 # Cloudinary Configuration
 cloudinary.config(
@@ -952,6 +956,7 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     token: str
+    refresh_token: str
     user: dict
 
 # Comprehensive Employee Model
@@ -1710,25 +1715,107 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return hash_password(password) == hashed
 
-def create_token(user_id: str, role: str) -> str:
+def _hash_token(token: str) -> str:
+    # Refresh tokens are stored server-side ONLY as SHA-256 hashes.
+    return hashlib.sha256(token.encode()).hexdigest()
+
+def create_access_token(user_id: str, role: str, session_id: str) -> str:
+    """Short-lived access JWT (ACCESS_TOKEN_EXPIRE_MINUTES). Never extended."""
+    now = datetime.now(timezone.utc)
     payload = {
         "user_id": user_id,
         "role": role,
-        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS)
+        "token_type": "access",
+        "session_id": session_id,
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
+def create_refresh_token(user_id: str, session_id: str, ttl: timedelta) -> tuple:
+    """Long-lived refresh JWT. Returns (token, jti). Single-use: rotated on refresh."""
+    now = datetime.now(timezone.utc)
+    jti = str(uuid.uuid4())
+    payload = {
+        "user_id": user_id,
+        "token_type": "refresh",
+        "session_id": session_id,
+        "jti": jti,
+        "iat": now,
+        "exp": now + ttl,
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM), jti
+
+async def create_auth_session(user: dict, http_request: Optional[Request] = None,
+                              refresh_ttl: Optional[timedelta] = None) -> tuple:
+    """Create a server-side auth session and return (access_token, refresh_token).
+
+    The session record is the revocation authority: revoking it kills BOTH the
+    access token (middleware check) and the refresh token (refresh check).
+    """
+    ttl = refresh_ttl or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    session_id = str(uuid.uuid4())
+    refresh_token, refresh_jti = create_refresh_token(user["id"], session_id, ttl)
+    now = datetime.now(timezone.utc)
+    await db.auth_sessions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "session_id": session_id,
+        "refresh_token_hash": _hash_token(refresh_token),
+        "refresh_jti": refresh_jti,
+        "user_agent": (http_request.headers.get("user-agent") if http_request else None),
+        "ip_address": (http_request.client.host if http_request and http_request.client else None),
+        "expires_at": (now + ttl).isoformat(),
+        "revoked_at": None,
+        "revoke_reason": None,
+        "replaced_by_jti": None,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    })
+    return create_access_token(user["id"], user["role"], session_id), refresh_token
+
+async def revoke_auth_session(session_id: str, reason: str = "logout"):
+    await db.auth_sessions.update_one(
+        {"session_id": session_id, "revoked_at": None},
+        {"$set": {
+            "revoked_at": datetime.now(timezone.utc).isoformat(),
+            "revoke_reason": reason,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Protected-API auth middleware.
+
+    SECURITY checks (in order): signature valid → token_type == "access" →
+    exp valid (no sliding extension) → session exists AND not revoked →
+    user exists AND is active. Refresh tokens are rejected here.
+    """
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-        return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    if payload.get("token_type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Server-side revocation check: logout kills the access token instantly.
+    session = await db.auth_sessions.find_one({"session_id": session_id}, {"_id": 0, "revoked_at": 1})
+    if session is None or session.get("revoked_at"):
+        raise HTTPException(status_code=401, detail="Session revoked. Please login again.")
+
+    user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=401, detail="Account is inactive")
+    return user
 
 async def log_audit(user_id: str, action: str, resource: str, resource_id: str = None, details: str = None):
     log = AuditLog(user_id=user_id, action=action, resource=resource, resource_id=resource_id, details=details)
@@ -3548,7 +3635,7 @@ async def stream_document(token: str = Query(..., min_length=10)):
 # ============== AUTH ROUTES ==============
 
 @api_router.post("/auth/login", response_model=LoginResponse)
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, http_request: Request):
     # Case-insensitive username/email match + trim whitespace (users often type with capital letter / autofill trailing space)
     raw_identifier = (request.username or "").strip()
     if not raw_identifier:
@@ -3568,7 +3655,7 @@ async def login(request: LoginRequest):
     if not verify_password(request.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    token = create_token(user["id"], user["role"])
+    token, refresh_token = await create_auth_session(user, http_request)
     await log_audit(user["id"], "login", "auth")
     
     user_response = {k: v for k, v in user.items() if k != "password_hash"}
@@ -3593,7 +3680,96 @@ async def login(request: LoginRequest):
                 user_response["avatar"] = emp["avatar"]
             user_response["designation"] = emp.get("designation")
     
-    return {"token": token, "user": user_response}
+    return {"token": token, "refresh_token": refresh_token, "user": user_response}
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@api_router.post("/auth/refresh")
+async def refresh_auth_tokens(body: RefreshRequest):
+    """Rotate the refresh token and issue a new short-lived access token.
+
+    SECURITY: refresh tokens are single-use. Replaying a rotated (old) refresh
+    token is treated as possible token theft — the ENTIRE session is revoked.
+    """
+    try:
+        payload = jwt.decode(body.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Access tokens must never be usable on the refresh endpoint.
+    if payload.get("token_type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+
+    session_id = payload.get("session_id")
+    session = await db.auth_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Session not found. Please login again.")
+    if session.get("revoked_at"):
+        raise HTTPException(status_code=401, detail="Session revoked. Please login again.")
+
+    now = datetime.now(timezone.utc)
+    try:
+        session_exp = datetime.fromisoformat(session["expires_at"])
+    except (KeyError, TypeError, ValueError):
+        session_exp = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    if session_exp <= now:
+        await revoke_auth_session(session_id, "expired")
+        raise HTTPException(status_code=401, detail="Session expired. Please login again.")
+
+    # Rotation reuse detection: jti/hash mismatch means an OLD refresh token
+    # is being replayed after rotation → revoke the whole session.
+    if (payload.get("jti") != session.get("refresh_jti")
+            or _hash_token(body.refresh_token) != session.get("refresh_token_hash")):
+        await revoke_auth_session(session_id, "refresh_token_reuse")
+        await log_audit(payload.get("user_id"), "refresh_token_reuse_detected", "auth", session_id)
+        raise HTTPException(status_code=401, detail="Refresh token reuse detected. Session revoked.")
+
+    user = await db.users.find_one({"id": payload.get("user_id")}, {"_id": 0})
+    if not user or not user.get("is_active", True):
+        await revoke_auth_session(session_id, "user_inactive")
+        raise HTTPException(status_code=401, detail="Account is inactive")
+
+    # Rotate: new refresh token capped at the session's ABSOLUTE expiry
+    # (refreshing never extends the session beyond its original lifetime).
+    new_refresh, new_jti = create_refresh_token(user["id"], session_id, session_exp - now)
+    await db.auth_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {
+            "refresh_token_hash": _hash_token(new_refresh),
+            "refresh_jti": new_jti,
+            "replaced_by_jti": new_jti,
+            "updated_at": now.isoformat(),
+        }},
+    )
+    access = create_access_token(user["id"], user["role"], session_id)
+    return {"token": access, "refresh_token": new_refresh}
+
+
+@api_router.post("/auth/logout")
+async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Server-side logout: revokes the session so BOTH the access token and
+    the refresh token immediately stop working. Signature is still verified,
+    but exp is ignored so an already-expired access token can end its session.
+    """
+    try:
+        payload = jwt.decode(
+            credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    session_id = payload.get("session_id")
+    if session_id:
+        await revoke_auth_session(session_id, "logout")
+    if payload.get("user_id"):
+        await log_audit(payload["user_id"], "logout", "auth")
+    return {"message": "Logged out"}
+
 
 @api_router.get("/auth/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
@@ -6302,6 +6478,7 @@ async def redeem_profile_upload_token(body: dict):
 
     return {
         "token": auth_token,
+        "refresh_token": refresh_token,
         "user": {k: v for k, v in user.items() if k != "password_hash"},
         "employee": serialize_doc(emp) if emp else None,
         "redirect": "/employee/profile?welcome=upload",
@@ -16508,6 +16685,14 @@ async def ensure_indexes():
             unique=True,
             name="unique_employee_date"
         )
+    except Exception:
+        pass
+
+    # Auth sessions (refresh-token store) — session_id is looked up on EVERY
+    # protected request for revocation checks, so it must be indexed.
+    try:
+        await db.auth_sessions.create_index([("session_id", 1)], unique=True, name="auth_session_id")
+        await db.auth_sessions.create_index([("user_id", 1)], name="auth_session_user")
     except Exception:
         pass
 

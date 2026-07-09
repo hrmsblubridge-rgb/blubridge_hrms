@@ -55,7 +55,7 @@ const ProfileUploadRedeem = () => {
 
         // 2) redeem (single-use)
         const redResp = await axios.post(`${API}/profile-upload/redeem`, { token });
-        const { token: authToken, redirect } = redResp.data || {};
+        const { token: authToken, refresh_token: refreshToken, redirect } = redResp.data || {};
         if (!authToken) {
           setPhase('invalid');
           setReason('Server did not return a sign-in token.');
@@ -64,6 +64,7 @@ const ProfileUploadRedeem = () => {
 
         // 3) hydrate session — same shape AuthContext expects on init
         localStorage.setItem('blubridge_token', authToken);
+        if (refreshToken) localStorage.setItem('blubridge_refresh_token', refreshToken);
         setPhase('redirecting');
         toast.success('Signed in. Taking you to your profile…');
         // Best-effort: prime the avatar cache for snappy UX once landed.
