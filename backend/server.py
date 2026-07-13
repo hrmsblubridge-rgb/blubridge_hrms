@@ -567,7 +567,7 @@ COMPANY_POLICIES = [
         "id": "policy_research",
         "name": "BluBridge — HR Induction, Company Conduct & Leave Policy (Research Unit)",
         "category": "Department",
-        "version": "2.0",
+        "version": "2.1",
         "effective_date": "2026-02-12",
         "applicable_to": "Research Unit",
         "content": {
@@ -642,7 +642,7 @@ COMPANY_POLICIES = [
                         "headers": ["Leave Type", "Intimation Window", "Documentation", "Notes"],
                         "rows": [
                             ["Emergency Leave (Half / Full Day)", "Between 9:45 AM and 10:00 AM at the latest", "Supporting documents/evidence mandatory wherever applicable", "Only for unforeseen, urgent, or unavoidable situations"],
-                            ["Sick Leave (Half / Full Day)", "Before 7:00 AM", "Medical documentation may be requested", "Upon recovery, reply to the same email thread with date of rejoining and expected reporting time"],
+                            ["Sick Leave (Half / Full Day)", "Before 7:00 AM", "Medical documentation is mandatory only when Sick Leave is availed for two (2) or more consecutive days. For Sick Leave of less than two days, documentation is generally not required unless specifically requested by management or HR.", "Employees required to submit medical documentation should ensure that the certificate or supporting documents are authentic, clearly indicate the period of illness, and are submitted promptly to facilitate timely verification and approval."],
                             ["Pre-Planned Leave (Half / Full Day)", "Minimum of 4 days in advance", "Formal application required", "Subject to managerial approval"],
                             ["Late Coming (LC)", "Before 10:00 AM (max 10:30 AM)", "Communication must include reason for delay & expected arrival time", "Repeated instances reviewed under performance & discipline policies"]
                         ]
@@ -653,7 +653,6 @@ COMPANY_POLICIES = [
                     "title": "Leave Approval Process",
                     "text": "All leave requests are subject to the following mandatory approval workflow. Leave shall be considered approved only upon completion of all steps below.",
                     "items": [
-                        "Prior approval from management through Microsoft Teams",
                         "Formal leave email submission",
                         "HRMS portal update and regularization"
                     ]
