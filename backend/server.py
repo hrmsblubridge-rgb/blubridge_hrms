@@ -12861,6 +12861,22 @@ class EmployeeDocumentUpload(BaseModel):
     file_public_id: Optional[str] = None
     document_type: str = "offer_letter"  # offer_letter, appointment_letter, etc.
 
+
+def _guess_cloudinary_resource_type(name_or_url: Optional[str]) -> str:
+    """Return the Cloudinary `resource_type` used at upload time for the given
+    file. Cloudinary's `auto` upload treats PDFs and images as `image` and
+    Office / archive binaries as `raw` — we mirror that here so `destroy`
+    targets the correct bucket. Defaults to `image` (historical default)."""
+    if not name_or_url:
+        return "image"
+    lower = name_or_url.lower()
+    RAW_EXTS = (".doc", ".docx", ".zip", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".rtf")
+    for ext in RAW_EXTS:
+        # Match either "…file.docx" or "…file.docx?…" / "…file.docx#…"
+        if lower.endswith(ext) or f"{ext}?" in lower or f"{ext}#" in lower:
+            return "raw"
+    return "image"
+
 @api_router.get("/employees/{employee_id}/documents")
 async def get_employee_documents(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Get employee's official documents (Admin can view any, Employee can view own)"""
@@ -12891,7 +12907,18 @@ async def upload_employee_document(
     data: EmployeeDocumentUpload,
     current_user: dict = Depends(get_current_user)
 ):
-    """Upload official document for an employee (Admin only)"""
+    """Upload official document for an employee (Admin only).
+
+    Replacement contract (2026-07-13 — offer-letter bug fix):
+      * Exactly ONE row per (employee_id, document_type) is kept — any
+        pre-existing duplicates (created by an earlier race) are pruned
+        atomically as part of this call.
+      * The old Cloudinary asset is purged AFTER the DB write succeeds
+        (best-effort). Failure to purge never rolls back a successful
+        replacement — orphans are logged for later reaping instead.
+      * If the DB write fails, the caller's freshly-uploaded file is left
+        intact and the previous Offer Letter remains valid.
+    """
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
     
@@ -12899,14 +12926,22 @@ async def upload_employee_document(
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
     
-    # Check if document of this type already exists
-    existing = await db.employee_documents.find_one({
+    # Load every row of this document_type (race-safe — normally 0 or 1).
+    existing_docs = await db.employee_documents.find({
         "employee_id": employee_id,
-        "document_type": data.document_type
-    })
-    
+        "document_type": data.document_type,
+    }, {"_id": 0}).to_list(50)
+    # Keep the most-recent row as the primary to update in place.
+    existing_docs.sort(
+        key=lambda d: (d.get("updated_at") or d.get("uploaded_at") or ""),
+        reverse=True,
+    )
+    primary = existing_docs[0] if existing_docs else None
+    dupes = existing_docs[1:] if len(existing_docs) > 1 else []
+
+    now_iso = get_ist_now().isoformat()
     doc = {
-        "id": str(uuid.uuid4()),
+        "id": primary["id"] if primary else str(uuid.uuid4()),
         "employee_id": employee_id,
         "document_type": data.document_type,
         "file_url": data.file_url,
@@ -12915,14 +12950,21 @@ async def upload_employee_document(
         "file_public_id": data.file_public_id,
         "uploaded_by": current_user["id"],
         "uploaded_by_name": current_user.get("name"),
-        "uploaded_at": get_ist_now().isoformat(),
-        "updated_at": get_ist_now().isoformat()
+        "uploaded_at": (primary or {}).get("uploaded_at") or now_iso,
+        "updated_at": now_iso,
     }
-    
-    if existing:
-        # Update existing document
-        await db.employee_documents.update_one(
-            {"id": existing["id"]},
+
+    # Public IDs of Cloudinary assets that must be purged AFTER the DB write.
+    # Only queue an ID for deletion when its content differs from the new
+    # upload (guard against the caller re-submitting the same file).
+    old_public_ids: list = []
+    def _queue_old(pid, name_hint):
+        if pid and pid != data.file_public_id:
+            old_public_ids.append((pid, name_hint))
+
+    if primary:
+        result = await db.employee_documents.update_one(
+            {"id": primary["id"]},
             {"$set": {
                 "file_url": data.file_url,
                 "file_name": data.file_name,
@@ -12930,15 +12972,51 @@ async def upload_employee_document(
                 "file_public_id": data.file_public_id,
                 "uploaded_by": current_user["id"],
                 "uploaded_by_name": current_user.get("name"),
-                "updated_at": get_ist_now().isoformat()
+                "updated_at": now_iso,
             }}
         )
-        doc["id"] = existing["id"]
-        await log_audit(current_user["id"], "update_employee_document", "employee_document", existing["id"], f"Updated {data.document_type} for {employee.get('full_name')}")
+        # If the primary row disappeared between find + update (highly
+        # unlikely), fall through to insert to avoid leaving the employee
+        # without an Offer Letter.
+        if result.matched_count == 0:
+            await db.employee_documents.insert_one(doc.copy())
+            await log_audit(current_user["id"], "upload_employee_document", "employee_document", doc["id"], f"Uploaded {data.document_type} for {employee.get('full_name')}")
+        else:
+            _queue_old(primary.get("file_public_id"), primary.get("file_name") or primary.get("file_url"))
+            await log_audit(current_user["id"], "update_employee_document", "employee_document", primary["id"], f"Updated {data.document_type} for {employee.get('full_name')}")
     else:
-        # Insert new document
         await db.employee_documents.insert_one(doc.copy())
         await log_audit(current_user["id"], "upload_employee_document", "employee_document", doc["id"], f"Uploaded {data.document_type} for {employee.get('full_name')}")
+
+    # Prune any race-condition duplicate rows so the employee is left with
+    # exactly ONE Offer Letter record, and queue their Cloudinary assets for
+    # deletion too (they are orphans by definition).
+    if dupes:
+        dupe_ids = [d["id"] for d in dupes]
+        await db.employee_documents.delete_many({"id": {"$in": dupe_ids}})
+        for d in dupes:
+            _queue_old(d.get("file_public_id"), d.get("file_name") or d.get("file_url"))
+
+    # Best-effort Cloudinary purge — runs AFTER the DB is in its final state
+    # so a failure here can never leave the employee without an Offer Letter.
+    for pid, name_hint in old_public_ids:
+        try:
+            rtype = _guess_cloudinary_resource_type(name_hint)
+            result = await asyncio.to_thread(
+                cloudinary.uploader.destroy, pid, invalidate=True, resource_type=rtype
+            )
+            # Cloudinary returns {"result": "not found"} when the asset lives
+            # under a different resource_type than we guessed. Retry with the
+            # other bucket so orphans in either place get cleaned up.
+            if isinstance(result, dict) and result.get("result") == "not found":
+                other = "raw" if rtype == "image" else "image"
+                await asyncio.to_thread(
+                    cloudinary.uploader.destroy, pid, invalidate=True, resource_type=other
+                )
+        except Exception as _e:
+            logger.warning(
+                f"Old {data.document_type} asset {pid} could not be purged from Cloudinary: {_e}"
+            )
     
     return {"message": f"Document uploaded successfully", "document": serialize_doc(doc)}
 
