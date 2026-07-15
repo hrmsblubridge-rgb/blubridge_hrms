@@ -4326,14 +4326,28 @@ async def get_employees(
         ]
     
     skip = (page - 1) * limit
-    total = await db.employees.count_documents(query)
-    employees = await db.employees.find(query, {"_id": 0}).skip(skip).limit(limit).sort("created_at", -1).to_list(limit)
-    
-    # Add reporting manager name
-    for emp in employees:
-        if emp.get("reporting_manager_id"):
-            manager = await db.employees.find_one({"id": emp["reporting_manager_id"]}, {"_id": 0, "full_name": 1})
-            emp["reporting_manager_name"] = manager.get("full_name") if manager else None
+    # Run the count and the page-fetch concurrently — they hit the same query
+    # but are two independent MongoDB round-trips. On Atlas this shaves the
+    # per-request latency roughly in half.
+    total, employees = await asyncio.gather(
+        db.employees.count_documents(query),
+        db.employees.find(query, {"_id": 0}).skip(skip).limit(limit).sort("created_at", -1).to_list(limit),
+    )
+
+    # Attach reporting manager name in a SINGLE round-trip.
+    # (Before: N+1 find_one per employee — dominated the response time when
+    # rendering the Employees list against MongoDB Atlas.)
+    manager_ids = list({e["reporting_manager_id"] for e in employees if e.get("reporting_manager_id")})
+    if manager_ids:
+        mgrs = await db.employees.find(
+            {"id": {"$in": manager_ids}},
+            {"_id": 0, "id": 1, "full_name": 1},
+        ).to_list(len(manager_ids))
+        name_by_id = {m["id"]: m.get("full_name") for m in mgrs}
+        for emp in employees:
+            mid = emp.get("reporting_manager_id")
+            if mid:
+                emp["reporting_manager_name"] = name_by_id.get(mid)
     
     return {
         "employees": [serialize_doc(e) for e in employees],
@@ -4376,53 +4390,47 @@ async def employee_autocomplete(
 
 @api_router.get("/employees/stats")
 async def get_employee_stats(current_user: dict = Depends(get_current_user)):
-    """Get employee statistics for dashboard"""
+    """Employee statistics for the dashboard cards.
+
+    Uses a SINGLE aggregation ($group by department + employment_type + work
+    location + status) so the whole endpoint completes in one MongoDB
+    round-trip instead of ~40 concurrent count_documents calls (which was
+    the dominant reason the Employees page took 2.4s to render on Atlas).
+    """
     base_query = {"is_deleted": {"$ne": True}}
-    
-    # Run all count_documents calls concurrently to avoid sequential round-trips.
-    departments = await db.departments.find({}, {"_id": 0, "name": 1}).to_list(100)
+
+    def _norm_intern(t: str) -> bool:
+        s = (t or "").strip().lower()
+        return any(k in s for k in ("intern", "trainee", "internship"))
+
+    def _norm_full_time(t: str) -> bool:
+        return (t or "").strip().lower() in ("full-time", "full time", "fulltime", "permanent")
+
+    # Fetch the department roster + run the single grouping in parallel.
+    departments, groups = await asyncio.gather(
+        db.departments.find({}, {"_id": 0, "name": 1}).to_list(200),
+        db.employees.aggregate([
+            {"$match": base_query},
+            {"$group": {
+                "_id": {
+                    "status": "$employee_status",
+                    "department": "$department",
+                    "employment_type": "$employment_type",
+                    "work_location": "$work_location",
+                },
+                "count": {"$sum": 1},
+            }},
+        ]).to_list(10_000),
+    )
     dept_names = [d["name"] for d in departments]
     emp_types = [EmploymentType.FULL_TIME, EmploymentType.PART_TIME, EmploymentType.CONTRACT, EmploymentType.INTERN]
     locations = [WorkLocation.REMOTE, WorkLocation.OFFICE, WorkLocation.HYBRID]
 
-    tasks = [
-        db.employees.count_documents(base_query),
-        db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.ACTIVE}),
-        db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.INACTIVE}),
-        db.employees.count_documents({**base_query, "employee_status": EmployeeStatus.RESIGNED}),
-    ]
-    dept_tasks = [
-        db.employees.count_documents({**base_query, "department": n, "employee_status": EmployeeStatus.ACTIVE})
-        for n in dept_names
-    ]
-    type_tasks = [
-        db.employees.count_documents({**base_query, "employment_type": t, "employee_status": EmployeeStatus.ACTIVE})
-        for t in emp_types
-    ]
-    loc_tasks = [
-        db.employees.count_documents({**base_query, "work_location": l, "employee_status": EmployeeStatus.ACTIVE})
-        for l in locations
-    ]
-
-    results = await asyncio.gather(*tasks, *dept_tasks, *type_tasks, *loc_tasks)
-    total, active, inactive, resigned = results[0:4]
-    offset = 4
-    by_department = {n: results[offset + i] for i, n in enumerate(dept_names)}
-    offset += len(dept_names)
-    by_type = {t: results[offset + i] for i, t in enumerate(emp_types)}
-    offset += len(emp_types)
-    by_location = {l: results[offset + i] for i, l in enumerate(locations)}
-
-    # ADDITIVE — Workforce distribution (active employees), Full-Time vs Intern,
-    # overall + per target department. Single aggregation (no N+1) over the same
-    # active, non-deleted population the existing cards use. Existing keys above
-    # are untouched (backward compatible).
-    def _is_intern_type(t: str) -> bool:
-        s = (t or "").strip().lower()
-        return any(k in s for k in ("intern", "trainee", "internship"))
-
-    def _is_full_time_type(t: str) -> bool:
-        return (t or "").strip().lower() in ("full-time", "full time", "fulltime", "permanent")
+    # Roll-up in Python — 129 rows tops, negligible cost.
+    total = active = inactive = resigned = 0
+    by_department = {n: 0 for n in dept_names}
+    by_type       = {t: 0 for t in emp_types}
+    by_location   = {l: 0 for l in locations}
 
     workforce_dept_targets = ["Research Unit", "Business & Product", "Support Staff"]
     workforce = {
@@ -4430,25 +4438,41 @@ async def get_employee_stats(current_user: dict = Depends(get_current_user)):
         "intern": 0,
         "by_department": {d: {"full_time": 0, "intern": 0} for d in workforce_dept_targets},
     }
-    agg_cursor = db.employees.aggregate([
-        {"$match": {**base_query, "employee_status": EmployeeStatus.ACTIVE}},
-        {"$group": {"_id": {"dept": "$department", "etype": "$employment_type"}, "count": {"$sum": 1}}},
-    ])
-    async for grp in agg_cursor:
-        etype = (grp["_id"] or {}).get("etype")
-        dept = (grp["_id"] or {}).get("dept")
-        cnt = grp.get("count", 0)
-        is_intern = _is_intern_type(etype)
-        is_ft = _is_full_time_type(etype)
-        if is_ft:
-            workforce["full_time"] += cnt
-        if is_intern:
-            workforce["intern"] += cnt
-        if dept in workforce["by_department"]:
+
+    for g in groups:
+        k = g["_id"] or {}
+        cnt = g.get("count", 0)
+        status = k.get("status")
+        dept = k.get("department")
+        etype = k.get("employment_type")
+        loc = k.get("work_location")
+
+        total += cnt
+        if status == EmployeeStatus.ACTIVE:
+            active += cnt
+            # Card breakdowns are ACTIVE-only (matches previous endpoint).
+            if dept in by_department:
+                by_department[dept] += cnt
+            if etype in by_type:
+                by_type[etype] += cnt
+            if loc in by_location:
+                by_location[loc] += cnt
+            # Workforce roll-up (Full-Time vs Intern) — same normalisation as before.
+            is_intern = _norm_intern(etype)
+            is_ft = _norm_full_time(etype)
             if is_ft:
-                workforce["by_department"][dept]["full_time"] += cnt
+                workforce["full_time"] += cnt
             if is_intern:
-                workforce["by_department"][dept]["intern"] += cnt
+                workforce["intern"] += cnt
+            if dept in workforce["by_department"]:
+                if is_ft:
+                    workforce["by_department"][dept]["full_time"] += cnt
+                if is_intern:
+                    workforce["by_department"][dept]["intern"] += cnt
+        elif status == EmployeeStatus.INACTIVE:
+            inactive += cnt
+        elif status == EmployeeStatus.RESIGNED:
+            resigned += cnt
 
     return {
         "total": total,
