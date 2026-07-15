@@ -183,6 +183,7 @@ const Employees = () => {
   const [documentsData, setDocumentsData] = useState(null);
   const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [uploadingDocument, setUploadingDocument] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);  // 0–100 for Offer Letter upload
   
   // Salary state
   const [salaryData, setSalaryData] = useState(null);
@@ -501,13 +502,16 @@ const Employees = () => {
     }
   };
   
-  // Upload offer letter
+  // Upload offer letter — supports files up to 25 MB via Cloudinary's
+  // chunked-upload protocol (single POST works up to ~10 MB on the free plan,
+  // which is why replaces of larger PDFs used to fail with "File size too
+  // large"). Chunked path is used for anything ≥ 5 MB.
   const handleUploadOfferLetter = async (file) => {
     if (!selectedEmployee) return;
 
     // Client-side guards — surface errors immediately instead of letting the
     // browser hang on a doomed Cloudinary upload.
-    const MAX_BYTES = 25 * 1024 * 1024; // 25 MB — matches HR-doc policy
+    const MAX_BYTES = 25 * 1024 * 1024; // 25 MB
     if (file.size > MAX_BYTES) {
       toast.error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 25 MB.`);
       return;
@@ -519,33 +523,69 @@ const Employees = () => {
     }
 
     setUploadingDocument(true);
+    setUploadProgress(0);
     try {
       // Get signed upload params from backend
       const sigResponse = await axios.get(`${API}/cloudinary/signature?folder=documents`, {
         headers: getAuthHeaders()
       });
       const { signature, timestamp, cloud_name, api_key, folder } = sigResponse.data;
+      const uploadUrl = `https://api.cloudinary.com/v1_1/${cloud_name}/auto/upload`;
 
-      // Upload to Cloudinary with signed params. Hard timeout of 90s so a
-      // stalled network never leaves the button spinning forever.
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('signature', signature);
-      formData.append('timestamp', timestamp);
-      formData.append('api_key', api_key);
-      formData.append('folder', folder);
-      formData.append('type', 'upload');
+      // Common signed fields sent with every request (single or chunked).
+      const baseFields = {
+        signature, timestamp, api_key, folder, type: 'upload',
+      };
 
-      let cloudinaryResponse;
+      const CHUNK_SIZE = 5 * 1024 * 1024;   // 5 MB — Cloudinary minimum
+      const useChunked = file.size > CHUNK_SIZE;
+
+      let cloudinaryData;
       try {
-        cloudinaryResponse = await axios.post(
-          `https://api.cloudinary.com/v1_1/${cloud_name}/auto/upload`,
-          formData,
-          { timeout: 90000, transformRequest: [(d) => d] }
-        );
+        if (!useChunked) {
+          // Fast path: single POST, works for small (<5 MB) files.
+          const fd = new FormData();
+          fd.append('file', file);
+          Object.entries(baseFields).forEach(([k, v]) => fd.append(k, v));
+          const resp = await axios.post(uploadUrl, fd, {
+            timeout: 120000,
+            transformRequest: [(d) => d],
+            onUploadProgress: (e) => {
+              if (e.total) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+            },
+          });
+          cloudinaryData = resp.data;
+        } else {
+          // Chunked path: bypasses Cloudinary's per-request 10 MB free-plan
+          // cap. Every chunk carries the same X-Unique-Upload-Id; the final
+          // chunk returns the fully-assembled asset payload.
+          const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          const total = file.size;
+          for (let start = 0; start < total; start += CHUNK_SIZE) {
+            const end = Math.min(start + CHUNK_SIZE, total);
+            const chunk = file.slice(start, end);
+            const fd = new FormData();
+            fd.append('file', chunk);
+            Object.entries(baseFields).forEach(([k, v]) => fd.append(k, v));
+            const resp = await axios.post(uploadUrl, fd, {
+              timeout: 120000,
+              transformRequest: [(d) => d],
+              headers: {
+                'X-Unique-Upload-Id': uniqueId,
+                'Content-Range': `bytes ${start}-${end - 1}/${total}`,
+              },
+              onUploadProgress: (e) => {
+                if (!e.total) return;
+                const chunkLoaded = e.loaded;
+                const overall = Math.min(100, Math.round(((start + chunkLoaded) / total) * 100));
+                setUploadProgress(overall);
+              },
+            });
+            // The FINAL chunk's response contains the full asset metadata.
+            if (end >= total) cloudinaryData = resp.data;
+          }
+        }
       } catch (clErr) {
-        // Cloudinary returns {error: {message}} on validation failures — surface
-        // it so HR sees the real reason instead of an endless "Uploading…".
         const clMsg = clErr?.response?.data?.error?.message
           || (clErr?.code === 'ECONNABORTED' ? 'Upload timed out — please retry.' : null)
           || clErr?.message
@@ -554,13 +594,19 @@ const Employees = () => {
         return; // finally still clears the spinner
       }
 
+      if (!cloudinaryData?.secure_url || !cloudinaryData?.public_id) {
+        toast.error('Upload finished but Cloudinary did not return a usable file. Please retry.');
+        return;
+      }
+      setUploadProgress(100);
+
       // Save document reference to backend (backend swaps the DB row and
       // purges the old Cloudinary asset — see upload_employee_document).
       await axios.post(`${API}/employees/${selectedEmployee.id}/documents`, {
-        file_url: cloudinaryResponse.data.secure_url,
+        file_url: cloudinaryData.secure_url,
         file_name: file.name,
         file_type: file.type,
-        file_public_id: cloudinaryResponse.data.public_id,
+        file_public_id: cloudinaryData.public_id,
         document_type: 'offer_letter'
       }, { headers: getAuthHeaders(), timeout: 60000 });
 
@@ -572,6 +618,7 @@ const Employees = () => {
       toast.error(typeof detail === 'string' ? detail : 'Failed to upload offer letter');
     } finally {
       setUploadingDocument(false);
+      setUploadProgress(0);
     }
   };
   
@@ -2108,10 +2155,27 @@ const Employees = () => {
                                 <Upload className="w-5 h-5 text-blue-500" />
                               )}
                               <span className="text-sm font-medium text-blue-600">
-                                {uploadingDocument ? 'Uploading...' : documentsData?.documents?.find(d => d.document_type === 'offer_letter') ? 'Replace Offer Letter' : 'Upload Offer Letter'}
+                                {uploadingDocument
+                                  ? `Uploading… ${uploadProgress}%`
+                                  : documentsData?.documents?.find(d => d.document_type === 'offer_letter') ? 'Replace Offer Letter' : 'Upload Offer Letter'}
                               </span>
                             </label>
-                            <p className="text-xs text-slate-400 text-center mt-2">Supported: PDF, DOC, DOCX</p>
+                            {uploadingDocument && (
+                              <div
+                                className="mt-2 h-1.5 w-full bg-blue-100 rounded-full overflow-hidden"
+                                role="progressbar"
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={uploadProgress}
+                                data-testid="upload-offer-letter-progress"
+                              >
+                                <div
+                                  className="h-full bg-blue-500 transition-all duration-200"
+                                  style={{ width: `${uploadProgress}%` }}
+                                />
+                              </div>
+                            )}
+                            <p className="text-xs text-slate-400 text-center mt-2">Supported: PDF, DOC, DOCX · Max 25 MB</p>
                           </div>
                         )}
                       </div>
