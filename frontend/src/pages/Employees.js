@@ -7,6 +7,7 @@ import SalarySlip from '../components/SalarySlip';
 import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
 import EmployeeAvatar from '../components/EmployeeAvatar';
 import { viewSecureDocument, downloadSecureDocument } from '../lib/documentAccess';
+import { compressPdfIfNeeded } from '../lib/pdfCompressor';
 import AvatarUploader from '../components/AvatarUploader';
 import { useTableSort, SortableTh } from '../components/useTableSort';
 import {
@@ -184,6 +185,7 @@ const Employees = () => {
   const [loadingDocuments, setLoadingDocuments] = useState(false);
   const [uploadingDocument, setUploadingDocument] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);  // 0–100 for Offer Letter upload
+  const [uploadPhase, setUploadPhase] = useState('');       // 'compressing' | 'uploading' | ''
   
   // Salary state
   const [salaryData, setSalaryData] = useState(null);
@@ -528,7 +530,50 @@ const Employees = () => {
 
     setUploadingDocument(true);
     setUploadProgress(0);
+    setUploadPhase('');
     try {
+      // ── Phase 1: shrink over-sized PDFs (Cloudinary Free plan caps at 10 MB
+      // per asset). Target 9 MB so we leave headroom for the multipart wrap.
+      // Non-PDFs pass through untouched.
+      const CLOUDINARY_LIMIT = 10 * 1024 * 1024;   // 10 MB hard cap on our plan
+      const COMPRESS_TARGET  = 9  * 1024 * 1024;   // 9  MB leaves ~1 MB margin
+      let uploadFile = file;
+      if (/\.pdf$/i.test(file.name) && file.size > CLOUDINARY_LIMIT) {
+        setUploadPhase('compressing');
+        setUploadProgress(0);
+        try {
+          const { file: compressed, compressed: didShrink, originalBytes, finalBytes, preset } =
+            await compressPdfIfNeeded(file, COMPRESS_TARGET, (pct) => setUploadProgress(pct));
+          if (didShrink) {
+            const from = (originalBytes / 1024 / 1024).toFixed(1);
+            const to   = (finalBytes   / 1024 / 1024).toFixed(1);
+            toast.success(`Compressed PDF: ${from} MB → ${to} MB (${preset})`);
+            uploadFile = compressed;
+          }
+        } catch (compErr) {
+          console.warn('PDF compression failed, will attempt raw upload:', compErr);
+        }
+        // Even after compression, if it's still over Cloudinary's cap, fail
+        // fast with a clear message instead of watching Cloudinary reject it.
+        if (uploadFile.size > CLOUDINARY_LIMIT) {
+          toast.error(
+            `Could not shrink the PDF below 10 MB (final: ${(uploadFile.size / 1024 / 1024).toFixed(1)} MB). ` +
+            `Please compress it externally or upgrade the Cloudinary plan.`
+          );
+          return;
+        }
+      } else if (!/\.pdf$/i.test(file.name) && file.size > CLOUDINARY_LIMIT) {
+        // DOC/DOCX can't be compressed in-browser meaningfully. Ask the user.
+        toast.error(
+          `File is ${(file.size / 1024 / 1024).toFixed(1)} MB. ` +
+          `Non-PDF files must be under 10 MB — please compress or convert to PDF.`
+        );
+        return;
+      }
+
+      setUploadPhase('uploading');
+      setUploadProgress(0);
+
       // Get signed upload params from backend
       const sigResponse = await axios.get(`${API}/cloudinary/signature?folder=documents`, {
         headers: getAuthHeaders()
@@ -542,14 +587,14 @@ const Employees = () => {
       };
 
       const CHUNK_SIZE = 5 * 1024 * 1024;   // 5 MB — Cloudinary minimum
-      const useChunked = file.size > CHUNK_SIZE;
+      const useChunked = uploadFile.size > CHUNK_SIZE;
 
       let cloudinaryData;
       try {
         if (!useChunked) {
           // Fast path: single POST, works for small (<5 MB) files.
           const fd = new FormData();
-          fd.append('file', file);
+          fd.append('file', uploadFile);
           Object.entries(baseFields).forEach(([k, v]) => fd.append(k, v));
           const resp = await axios.post(uploadUrl, fd, {
             timeout: 120000,
@@ -564,10 +609,10 @@ const Employees = () => {
           // cap. Every chunk carries the same X-Unique-Upload-Id; the final
           // chunk returns the fully-assembled asset payload.
           const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-          const total = file.size;
+          const total = uploadFile.size;
           for (let start = 0; start < total; start += CHUNK_SIZE) {
             const end = Math.min(start + CHUNK_SIZE, total);
-            const chunk = file.slice(start, end);
+            const chunk = uploadFile.slice(start, end);
             const fd = new FormData();
             fd.append('file', chunk);
             Object.entries(baseFields).forEach(([k, v]) => fd.append(k, v));
@@ -608,8 +653,8 @@ const Employees = () => {
       // purges the old Cloudinary asset — see upload_employee_document).
       await axios.post(`${API}/employees/${selectedEmployee.id}/documents`, {
         file_url: cloudinaryData.secure_url,
-        file_name: file.name,
-        file_type: file.type,
+        file_name: uploadFile.name,
+        file_type: uploadFile.type,
         file_public_id: cloudinaryData.public_id,
         document_type: 'offer_letter'
       }, { headers: getAuthHeaders(), timeout: 60000 });
@@ -623,6 +668,7 @@ const Employees = () => {
     } finally {
       setUploadingDocument(false);
       setUploadProgress(0);
+      setUploadPhase('');
     }
   };
   
@@ -2163,7 +2209,9 @@ const Employees = () => {
                               )}
                               <span className="text-sm font-medium text-blue-600">
                                 {uploadingDocument
-                                  ? `Uploading… ${uploadProgress}%`
+                                  ? (uploadPhase === 'compressing'
+                                      ? `Compressing PDF… ${uploadProgress}%`
+                                      : `Uploading… ${uploadProgress}%`)
                                   : documentsData?.documents?.find(d => d.document_type === 'offer_letter') ? 'Replace Offer Letter' : 'Upload Offer Letter'}
                               </span>
                             </label>
