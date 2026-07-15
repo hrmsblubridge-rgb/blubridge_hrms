@@ -504,7 +504,20 @@ const Employees = () => {
   // Upload offer letter
   const handleUploadOfferLetter = async (file) => {
     if (!selectedEmployee) return;
-    
+
+    // Client-side guards — surface errors immediately instead of letting the
+    // browser hang on a doomed Cloudinary upload.
+    const MAX_BYTES = 15 * 1024 * 1024; // 15 MB — matches HR-doc policy
+    if (file.size > MAX_BYTES) {
+      toast.error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 15 MB.`);
+      return;
+    }
+    const okExt = /\.(pdf|doc|docx)$/i.test(file.name || '');
+    if (!okExt) {
+      toast.error('Only PDF, DOC or DOCX files are supported.');
+      return;
+    }
+
     setUploadingDocument(true);
     try {
       // Get signed upload params from backend
@@ -512,8 +525,9 @@ const Employees = () => {
         headers: getAuthHeaders()
       });
       const { signature, timestamp, cloud_name, api_key, folder } = sigResponse.data;
-      
-      // Upload to Cloudinary with signed params
+
+      // Upload to Cloudinary with signed params. Hard timeout of 90s so a
+      // stalled network never leaves the button spinning forever.
       const formData = new FormData();
       formData.append('file', file);
       formData.append('signature', signature);
@@ -521,26 +535,41 @@ const Employees = () => {
       formData.append('api_key', api_key);
       formData.append('folder', folder);
       formData.append('type', 'upload');
-      
-      const cloudinaryResponse = await axios.post(
-        `https://api.cloudinary.com/v1_1/${cloud_name}/auto/upload`,
-        formData
-      );
-      
-      // Save document reference to backend
+
+      let cloudinaryResponse;
+      try {
+        cloudinaryResponse = await axios.post(
+          `https://api.cloudinary.com/v1_1/${cloud_name}/auto/upload`,
+          formData,
+          { timeout: 90000, transformRequest: [(d) => d] }
+        );
+      } catch (clErr) {
+        // Cloudinary returns {error: {message}} on validation failures — surface
+        // it so HR sees the real reason instead of an endless "Uploading…".
+        const clMsg = clErr?.response?.data?.error?.message
+          || (clErr?.code === 'ECONNABORTED' ? 'Upload timed out — please retry.' : null)
+          || clErr?.message
+          || 'Cloudinary upload failed';
+        toast.error(`Upload failed: ${clMsg}`);
+        return; // finally still clears the spinner
+      }
+
+      // Save document reference to backend (backend swaps the DB row and
+      // purges the old Cloudinary asset — see upload_employee_document).
       await axios.post(`${API}/employees/${selectedEmployee.id}/documents`, {
         file_url: cloudinaryResponse.data.secure_url,
         file_name: file.name,
         file_type: file.type,
         file_public_id: cloudinaryResponse.data.public_id,
         document_type: 'offer_letter'
-      }, { headers: getAuthHeaders() });
-      
+      }, { headers: getAuthHeaders(), timeout: 60000 });
+
       toast.success('Offer letter uploaded successfully');
-      fetchDocuments(selectedEmployee.id);
+      await fetchDocuments(selectedEmployee.id);
     } catch (error) {
       console.error('Upload error:', error);
-      toast.error('Failed to upload offer letter');
+      const detail = error?.response?.data?.detail || error?.message || 'Failed to upload offer letter';
+      toast.error(typeof detail === 'string' ? detail : 'Failed to upload offer letter');
     } finally {
       setUploadingDocument(false);
     }
@@ -1534,7 +1563,7 @@ const Employees = () => {
                   </div>
                   <div>
                     <Label className="text-sm font-medium text-slate-700">Official Email <span className="text-red-500">*</span></Label>
-                    <Input type="email" value={form.official_email} onChange={(e) => setForm(prev => ({ ...prev, official_email: e.target.value }))} placeholder="Enter email" className="mt-1.5 rounded-lg" data-testid="input-email" disabled />
+                    <Input type="email" value={form.official_email} onChange={(e) => setForm(prev => ({ ...prev, official_email: e.target.value }))} placeholder="Enter email" className="mt-1.5 rounded-lg" data-testid="input-email" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
@@ -2059,9 +2088,13 @@ const Employees = () => {
                               className="hidden"
                               accept=".pdf,.doc,.docx"
                               onChange={(e) => {
-                                if (e.target.files?.[0]) {
-                                  handleUploadOfferLetter(e.target.files[0]);
-                                }
+                                const f = e.target.files?.[0];
+                                // Reset value so picking the SAME file next
+                                // time still fires onChange (fixes a common
+                                // "Replace" no-op when the user re-selects
+                                // the exact same filename).
+                                e.target.value = '';
+                                if (f) handleUploadOfferLetter(f);
                               }}
                             />
                             <label
