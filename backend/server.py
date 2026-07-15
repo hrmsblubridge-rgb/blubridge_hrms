@@ -11126,21 +11126,43 @@ async def update_employee_leave(leave_id: str, data: EmployeeLeaveCreate, curren
 # ============== ONBOARDING ROUTES ==============
 
 @api_router.get("/onboarding/stats")
-async def get_onboarding_stats(current_user: dict = Depends(get_current_user)):
+async def get_onboarding_stats(
+    employee_status: Optional[str] = None,
+    department: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
     """Get onboarding statistics for dashboard.
 
     TRUE REFLECTION of the Employee Module: stats are computed over live (non
     -deleted) employees only, joined with their onboarding record. Orphan
     onboarding rows (employee deleted) can never inflate these counts.
 
-    Perf (2026-07-15): the two upload/rejected counts and the onboarding-per
-    -employee lookup now run concurrently with the employee fetch via
-    asyncio.gather, cutting the endpoint from ~1.6s → ~0.6s against Atlas.
+    NEW (2026-07-15) — accepts the same filter params as /onboarding/list
+    (`employee_status`, `department`, `search`) so the 4 dashboard cards stay
+    in lock-step with the Onboarding Queue table below them. Previously the
+    cards counted the global population while the list was filtered to
+    Active-only, producing a card-vs-list mismatch (e.g. card said "3
+    Pending" while the table showed 2).
+
+    Perf: the two upload/rejected doc counts and the onboarding-per-employee
+    lookup run concurrently with the employee fetch via asyncio.gather.
     """
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    employees = await db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1}).to_list(5000)
+    emp_query = {"is_deleted": {"$ne": True}}
+    if department and department != "All":
+        emp_query["department"] = department
+    if employee_status and employee_status != "All":
+        emp_query["employee_status"] = employee_status
+    if search:
+        emp_query["$or"] = [
+            {"full_name": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}},
+        ]
+
+    employees = await db.employees.find(emp_query, {"_id": 0, "id": 1}).to_list(5000)
     emp_ids = [e["id"] for e in employees]
     total = len(emp_ids)
 
@@ -11700,6 +11722,73 @@ async def rollback_document_verification(document_id: str, current_user: dict = 
 
     await log_audit(current_user["id"], "rollback_document", "onboarding", doc["employee_id"], f"{doc.get('status')} -> {target}")
     return {"message": f"Verification rolled back to {target}", "status": target}
+
+@api_router.delete("/onboarding/documents/{document_id}")
+async def remove_onboarding_document(document_id: str, current_user: dict = Depends(get_current_user)):
+    """ADMIN ONLY: remove an uploaded onboarding document.
+
+    Behaviour:
+      • Resets the document row to `not_uploaded` (clears file_url,
+        file_public_id, file_name, rejection_reason, verification fields).
+      • Purges the underlying Cloudinary asset (best-effort, `image` and
+        `raw` resource types both tried — same pattern used by the
+        offer-letter delete flow).
+      • Recomputes the parent onboarding status from the live document set.
+      • Reflects instantly in the employee's My Documents view because
+        that view queries this same `onboarding_documents` row.
+    Response shape: `{ message, status }`.
+    """
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    doc = await db.onboarding_documents.find_one({"id": document_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    old_public_id = doc.get("file_public_id")
+    name_hint = doc.get("file_name") or doc.get("file_url")
+
+    await db.onboarding_documents.update_one(
+        {"id": document_id},
+        {"$set": {
+            "status": DocumentStatus.NOT_UPLOADED,
+            "previous_status": doc.get("status"),
+            "file_url": None,
+            "file_public_id": None,
+            "file_name": None,
+            "uploaded_at": None,
+            "verified_at": None,
+            "verified_by": None,
+            "rejection_reason": None,
+        }},
+    )
+
+    # Recompute the parent onboarding status now that this doc is gone.
+    await recompute_onboarding_status(doc["employee_id"])
+
+    # Best-effort Cloudinary purge — never blocks the API response.
+    if old_public_id:
+        try:
+            rtype = _guess_cloudinary_resource_type(name_hint)
+            result = await asyncio.to_thread(
+                cloudinary.uploader.destroy, old_public_id, invalidate=True, resource_type=rtype
+            )
+            if isinstance(result, dict) and result.get("result") == "not found":
+                other = "raw" if rtype == "image" else "image"
+                await asyncio.to_thread(
+                    cloudinary.uploader.destroy, old_public_id, invalidate=True, resource_type=other
+                )
+        except Exception as _e:
+            logger.warning(
+                f"Onboarding document {document_id} asset {old_public_id} "
+                f"could not be purged from Cloudinary: {_e}"
+            )
+
+    await log_audit(
+        current_user["id"], "remove_onboarding_document", "onboarding",
+        doc["employee_id"], doc.get("document_type"),
+    )
+    return {"message": "Document removed", "status": DocumentStatus.NOT_UPLOADED}
 
 @api_router.post("/onboarding/approve/{employee_id}")
 async def approve_onboarding(employee_id: str, data: OnboardingApproval, current_user: dict = Depends(get_current_user)):

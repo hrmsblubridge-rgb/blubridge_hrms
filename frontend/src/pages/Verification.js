@@ -135,6 +135,14 @@ const Verification = () => {
           headers: { Authorization: `Bearer ${token}` }
         }),
         axios.get(`${API}/onboarding/stats`, {
+          // Stats cards must reflect the SAME employee-population subset the
+          // list below is showing — otherwise the "Pending Verifications" card
+          // count can drift from the row count in the Onboarding Queue table.
+          params: {
+            employee_status: applied.employeeStatus !== 'All' ? applied.employeeStatus : undefined,
+            department: applied.department !== 'All' ? applied.department : undefined,
+            search: applied.search || undefined,
+          },
           headers: { Authorization: `Bearer ${token}` }
         }),
         axios.get(`${API}/departments`, {
@@ -226,6 +234,33 @@ const Verification = () => {
       setEmployeeDocuments(response.data.documents || []);
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to rollback verification');
+    } finally {
+      setProcessingAction(null);
+    }
+  };
+
+  // Admin can remove an uploaded onboarding document. The row is reset to
+  // 'not_uploaded' server-side (Cloudinary asset purged), so the employee's
+  // My Documents view instantly reflects that the file is gone and they can
+  // re-upload if needed.
+  const handleRemoveDocument = async (doc) => {
+    const label = doc.document_label || 'this document';
+    if (!window.confirm(`Remove ${label}? The uploaded file will be deleted and the employee will need to re-upload it.`)) return;
+    setProcessingAction(doc.id);
+    try {
+      await axios.delete(`${API}/onboarding/documents/${doc.id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 30000,
+      });
+      toast.success(`${label} removed`);
+      const response = await axios.get(`${API}/onboarding/employee/${selectedEmployee.employee_id}`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setEmployeeDocuments(response.data.documents || []);
+      // Refresh the outer list + stats too so the counts reflect the removal.
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to remove document');
     } finally {
       setProcessingAction(null);
     }
@@ -713,6 +748,25 @@ const Verification = () => {
                                 <RotateCcw className="w-4 h-4" />
                               )}
                               Rollback
+                            </Button>
+                          )}
+
+                          {isAdmin && doc.file_url && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200 rounded-lg gap-1.5"
+                              onClick={() => handleRemoveDocument(doc)}
+                              disabled={processingAction === doc.id}
+                              title="Remove this document — employee will need to re-upload"
+                              data-testid={`verify-remove-${doc.document_type}`}
+                            >
+                              {processingAction === doc.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-4 h-4" />
+                              )}
+                              Remove
                             </Button>
                           )}
                         </div>
