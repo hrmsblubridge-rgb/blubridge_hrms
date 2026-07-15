@@ -13026,17 +13026,41 @@ async def delete_employee_document(
     document_id: str,
     current_user: dict = Depends(get_current_user)
 ):
-    """Delete an employee document (Admin only)"""
+    """Delete an employee document (Admin only).
+
+    Also purges the underlying Cloudinary asset (best-effort) so no orphan
+    files remain in storage after HR removes an Offer Letter.
+    """
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
-    
+
     document = await db.employee_documents.find_one({"id": document_id, "employee_id": employee_id})
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
     await db.employee_documents.delete_one({"id": document_id})
     await log_audit(current_user["id"], "delete_employee_document", "employee_document", document_id)
-    
+
+    # Best-effort Cloudinary purge — runs AFTER the DB delete has committed.
+    # Failure to purge never fails the API call; the orphan is logged instead.
+    pid = document.get("file_public_id")
+    if pid:
+        try:
+            name_hint = document.get("file_name") or document.get("file_url")
+            rtype = _guess_cloudinary_resource_type(name_hint)
+            result = await asyncio.to_thread(
+                cloudinary.uploader.destroy, pid, invalidate=True, resource_type=rtype
+            )
+            if isinstance(result, dict) and result.get("result") == "not found":
+                other = "raw" if rtype == "image" else "image"
+                await asyncio.to_thread(
+                    cloudinary.uploader.destroy, pid, invalidate=True, resource_type=other
+                )
+        except Exception as _e:
+            logger.warning(
+                f"Document {document_id} asset {pid} could not be purged from Cloudinary: {_e}"
+            )
+
     return {"message": "Document deleted successfully"}
 
 @api_router.get("/employee-profile/documents")

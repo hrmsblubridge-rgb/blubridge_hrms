@@ -671,6 +671,26 @@ const Employees = () => {
       setUploadPhase('');
     }
   };
+
+  // Delete offer letter (removes DB row + purges Cloudinary asset server-side)
+  const handleDeleteOfferLetter = async () => {
+    if (!selectedEmployee) return;
+    const doc = documentsData?.documents?.find(d => d.document_type === 'offer_letter');
+    if (!doc) return;
+    const name = doc.file_name || 'this Offer Letter';
+    if (!window.confirm(`Delete “${name}”? This cannot be undone.`)) return;
+    try {
+      await axios.delete(
+        `${API}/employees/${selectedEmployee.id}/documents/${doc.id}`,
+        { headers: getAuthHeaders(), timeout: 30000 }
+      );
+      toast.success('Offer letter deleted');
+      await fetchDocuments(selectedEmployee.id);
+    } catch (error) {
+      const detail = error?.response?.data?.detail || error?.message || 'Failed to delete offer letter';
+      toast.error(typeof detail === 'string' ? detail : 'Failed to delete offer letter');
+    }
+  };
   
   // Fetch employee salary
   const fetchSalary = async (employeeId) => {
@@ -2169,6 +2189,16 @@ const Employees = () => {
                                 >
                                   <Download className="w-4 h-4" />
                                   Download
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleDeleteOfferLetter}
+                                  className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                  data-testid="delete-offer-letter-btn"
+                                  title="Delete offer letter"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                  Delete
                                 </button>
                               </div>
                             </div>
