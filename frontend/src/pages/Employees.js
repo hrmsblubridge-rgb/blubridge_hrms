@@ -507,9 +507,9 @@ const Employees = () => {
 
     // Client-side guards — surface errors immediately instead of letting the
     // browser hang on a doomed Cloudinary upload.
-    const MAX_BYTES = 15 * 1024 * 1024; // 15 MB — matches HR-doc policy
+    const MAX_BYTES = 25 * 1024 * 1024; // 25 MB — matches HR-doc policy
     if (file.size > MAX_BYTES) {
-      toast.error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 15 MB.`);
+      toast.error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 25 MB.`);
       return;
     }
     const okExt = /\.(pdf|doc|docx)$/i.test(file.name || '');
