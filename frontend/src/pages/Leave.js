@@ -797,7 +797,18 @@ const Leave = () => {
             </div>
             <div>
               <Label>Leave Date</Label>
-              <DatePicker value={applyForm.start_date} onChange={(val) => setApplyForm({ ...applyForm, start_date: val })} className="mt-1.5 rounded-lg" data-testid="admin-apply-leave-date" />
+              <DatePicker
+                value={applyForm.start_date}
+                onChange={(val) => setApplyForm({ ...applyForm, start_date: val })}
+                className="mt-1.5 rounded-lg"
+                data-testid="admin-apply-leave-date"
+                max={applyForm.leave_type === 'Sick'
+                  ? (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; })()
+                  : undefined}
+              />
+              {applyForm.leave_type === 'Sick' && (
+                <p className="text-[11px] text-amber-600 mt-1">Sick leave: past dates, today, or the immediate next calendar day only</p>
+              )}
             </div>
             <div><Label>Reason (min 10 chars)</Label><Textarea value={applyForm.reason} onChange={e => setApplyForm({ ...applyForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Reason for leave..." /></div>
             <div className="flex items-center gap-4 pt-2">

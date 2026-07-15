@@ -320,7 +320,7 @@ const EmployeeLeave = () => {
                   </SelectContent>
                 </Select>
                 {/* Leave rule hints */}
-                {form.leave_type === 'Sick' && <p className="text-[11px] text-amber-600 mt-1">Sick leave: past & current dates only</p>}
+                {form.leave_type === 'Sick' && <p className="text-[11px] text-amber-600 mt-1">Sick leave: past dates, today, or the immediate next calendar day only</p>}
                 {form.leave_type === 'Casual' && <p className="text-[11px] text-blue-600 mt-1">Casual leave: min 4 working days in advance (excl. Sundays)</p>}
                 {form.leave_type === 'Emergency' && <p className="text-[11px] text-emerald-600 mt-1">Emergency leave: no date restrictions</p>}
                 {form.leave_type === 'Optional' && <p className="text-[11px] text-violet-600 mt-1">Optional leave: no balance / policy restrictions — pick any date</p>}
@@ -349,7 +349,7 @@ const EmployeeLeave = () => {
                 value={form.start_date}
                 onChange={(v) => setForm({ ...form, start_date: v })}
                 placeholder="Select date"
-                max={form.leave_type === 'Sick' ? new Date().toISOString().split('T')[0] : undefined}
+                max={form.leave_type === 'Sick' ? (() => { const d = new Date(); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0]; })() : undefined}
                 min={form.leave_type === 'Casual' ? (() => { let d = new Date(); let days = 0; while (days < 4) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0) days++; } return d.toISOString().split('T')[0]; })() : undefined}
                 className="mt-1.5 rounded-lg"
                 data-testid="leave-date-input"

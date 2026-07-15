@@ -7771,7 +7771,19 @@ async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(ge
 
     start = datetime.strptime(data.start_date, "%Y-%m-%d")
     end = datetime.strptime(data.end_date, "%Y-%m-%d")
-    
+
+    # Sick Leave calendar window — same rule as /employee/leaves/apply so
+    # admin & employee portals stay in lock-step. Past dates and today are
+    # always fine; the future is capped at tomorrow (calendar comparison
+    # ignoring time; IST is the SSOT via get_ist_now()).
+    if data.leave_type == "Sick":
+        today = get_ist_now().date()
+        if start.date() > (today + timedelta(days=1)):
+            raise HTTPException(
+                status_code=400,
+                detail="Sick Leave can only be applied for past dates, today, or the immediate next calendar day.",
+            )
+
     # JOB 7: Single leave per day check
     current_date = start
     while current_date <= end:
@@ -10975,9 +10987,15 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     
     # JOB 6: Leave type-specific rules
     if data.leave_type == "Sick":
-        # Sick leave: past + current only, no future
-        if start_dt.date() > today:
-            raise HTTPException(status_code=400, detail="Sick leave can only be applied for past or current dates")
+        # Sick leave: past, today, and the immediate next calendar day only.
+        # Rule updated 2026-07-15 — sick-leave window extended by one calendar
+        # day so employees can inform HR the evening before an already-known
+        # medical appointment (previous rule was past+today only).
+        if start_dt.date() > (today + timedelta(days=1)):
+            raise HTTPException(
+                status_code=400,
+                detail="Sick Leave can only be applied for past dates, today, or the immediate next calendar day.",
+            )
     elif data.leave_type == "Casual":
         # Casual leave: minimum 4 working days before (exclude Sundays)
         if start_dt.date() <= today:
