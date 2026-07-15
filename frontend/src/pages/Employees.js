@@ -293,17 +293,21 @@ const Employees = () => {
   const fetchData = useCallback(async () => {
     try {
       setLoading(true);
+      // When the user has typed a search term we ignore the Status filter so
+      // employees are findable regardless of whether they are Active or
+      // Inactive (a typed name/email/ID is a global lookup, not a scoped one).
+      const searchActive = !!(filters.search && filters.search.trim());
       const params = {
         page: pagination.page, limit: pagination.limit,
         ...(filters.search && { search: filters.search }),
         ...(filters.department !== 'All' && { department: filters.department }),
         ...(filters.team !== 'All' && { team: filters.team }),
         ...(filters.designation !== 'All' && { designation: filters.designation }),
-        ...(filters.status !== 'All' && { status: filters.status }),
+        ...(!searchActive && filters.status !== 'All' && { status: filters.status }),
         ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
         ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
         ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
-        ...(inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
+        ...(!searchActive && inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
       };
       
       const [employeesRes, statsRes, teamsRes, deptsRes, designationsRes, allEmpRes, officeLocsRes] = await Promise.all([
@@ -925,16 +929,19 @@ const Employees = () => {
   const handleExportCSV = async () => {
     try {
       // Build same filter params as the list view so export honors current filters.
+      // Mirror the list-view rule: a typed search overrides Status / inactive-type
+      // so the export reflects exactly what the user is seeing on screen.
+      const searchActive = !!(filters.search && filters.search.trim());
       const params = {
         ...(filters.search && { search: filters.search }),
         ...(filters.department !== 'All' && { department: filters.department }),
         ...(filters.team !== 'All' && { team: filters.team }),
         ...(filters.designation !== 'All' && { designation: filters.designation }),
-        ...(filters.status !== 'All' && { status: filters.status }),
+        ...(!searchActive && filters.status !== 'All' && { status: filters.status }),
         ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
         ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
         ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
-        ...(inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
+        ...(!searchActive && inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
       };
       const response = await axios.get(`${API}/employees/export`, {
         headers: getAuthHeaders(),
