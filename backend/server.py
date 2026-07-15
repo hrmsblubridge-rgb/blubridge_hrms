@@ -370,11 +370,33 @@ async def recompute_onboarding_status(employee_id: str) -> str:
     on the `onboarding` record so list/stat/filter queries (which read the stored
     `status`) stay consistent. NOTE: deliberately does NOT touch
     `users.onboarding_status` / `employees.onboarding_status` (which gate HRMS
-    access) — this only corrects the Verification view, never revokes access."""
+    access) — this only corrects the Verification view, never revokes access.
+
+    Stickiness (2026-07-15): HR's explicit "Approve Onboarding" click is
+    treated as authoritative. Once an onboarding sits at APPROVED, a
+    subsequent per-document verify/upload will NOT demote it back to
+    UNDER_REVIEW just because an optional-but-required doc (e.g. Education
+    Certificates never uploaded) still fails the strict derive rule. Only a
+    NEW rejection on a required document can pull APPROVED down to REJECTED,
+    matching HR's mental model of "we approved this employee — pending means
+    we haven't decided yet, not that we've already decided but forgot".
+    """
     if not employee_id:
         return OnboardingStatus.NOT_STARTED
     docs = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(50)
     derived = derive_onboarding_status(docs)
+
+    # Read the current stored status so we can honour a manual APPROVED.
+    current_row = await db.onboarding.find_one(
+        {"employee_id": employee_id}, {"_id": 0, "status": 1}
+    )
+    current_status = (current_row or {}).get("status")
+
+    # APPROVED is sticky except when a required doc is now REJECTED (safety
+    # override — surface the regression to HR immediately).
+    if current_status == OnboardingStatus.APPROVED and derived != OnboardingStatus.REJECTED:
+        derived = OnboardingStatus.APPROVED
+
     await db.onboarding.update_one(
         {"employee_id": employee_id},
         {"$set": {"status": derived, "updated_at": get_ist_now().isoformat()}},
