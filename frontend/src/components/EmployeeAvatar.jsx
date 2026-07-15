@@ -97,7 +97,7 @@ const EmployeeAvatar = ({
 
   return (
     <div
-      className={`${base} relative bg-gradient-to-br from-[#063c88] to-[#0a5cba] shadow-md`}
+      className={`${base} relative bg-gradient-to-br from-[#063c88] to-[#0a5cba] shadow-md ring-2 ring-white ring-offset-2 ring-offset-slate-100/70 transition-shadow duration-200 hover:shadow-lg`}
       data-testid={testId}
     >
       {/* Initial-letter base layer — always rendered. The photo (if any)

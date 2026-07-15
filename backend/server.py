@@ -11229,14 +11229,32 @@ async def get_onboarding_stats(
 
 @api_router.get("/verification/pending-count")
 async def get_verification_pending_count(current_user: dict = Depends(get_current_user)):
-    """Lightweight endpoint for sidebar badge — returns count of pending
-    verifications. One aggregate ($group by status) replaces three sequential
-    count_documents that used to take ~3×240ms of Atlas round-trip time."""
+    """Sidebar badge — count of pending verifications.
+
+    MUST mirror the Verification page's default view (LIVE + ACTIVE employees
+    with pending onboarding). Previously counted orphan onboarding rows too,
+    which caused the badge to show "3" while the Verification page's Pending
+    card + Onboarding Queue table both showed 1.
+
+    One aggregation with $lookup + $match keeps the endpoint fast (single
+    Atlas round-trip).
+    """
     if current_user["role"] not in ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="Permission denied")
     pending_states = [OnboardingStatus.UNDER_REVIEW, OnboardingStatus.PENDING, OnboardingStatus.IN_PROGRESS]
     agg = await db.onboarding.aggregate([
         {"$match": {"status": {"$in": pending_states}}},
+        {"$lookup": {
+            "from": "employees",
+            "localField": "employee_id",
+            "foreignField": "id",
+            "as": "_emp",
+        }},
+        {"$match": {
+            "_emp.0": {"$exists": True},                    # employee must still exist
+            "_emp.0.is_deleted": {"$ne": True},             # not soft-deleted
+            "_emp.0.employee_status": EmployeeStatus.ACTIVE,  # Active employees only
+        }},
         {"$count": "n"},
     ]).to_list(1)
     return {"count": agg[0]["n"] if agg else 0}
