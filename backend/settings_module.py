@@ -459,12 +459,22 @@ def register(api_router, deps):
         await _seed_designations_from_employees()
         q = {} if include_deleted else {"is_deleted": {"$ne": True}}
         desigs = await db.designations.find(q, {"_id": 0}).sort("name", 1).to_list(500)
-        for d in desigs:
-            d["employee_count"] = await db.employees.count_documents({
-                "designation": d["name"],
-                "is_deleted": {"$ne": True},
-                "employee_status": EmployeeStatus.ACTIVE,
-            })
+        # Bucket active-employee counts in a single $group pipeline instead of
+        # one count_documents per designation (was the main reason this
+        # endpoint took 5+ seconds against Atlas).
+        if desigs:
+            names = [d["name"] for d in desigs]
+            agg = await db.employees.aggregate([
+                {"$match": {
+                    "designation": {"$in": names},
+                    "is_deleted": {"$ne": True},
+                    "employee_status": EmployeeStatus.ACTIVE,
+                }},
+                {"$group": {"_id": "$designation", "count": {"$sum": 1}}},
+            ]).to_list(len(names))
+            cmap = {row["_id"]: row["count"] for row in agg}
+            for d in desigs:
+                d["employee_count"] = cmap.get(d["name"], 0)
         return [serialize_doc(d) for d in desigs]
 
     @api_router.post("/settings/designations")
@@ -587,12 +597,21 @@ def register(api_router, deps):
         await _seed_office_locations_from_employees()
         q = {} if include_deleted else {"is_deleted": {"$ne": True}}
         locs = await db.office_locations.find(q, {"_id": 0}).sort("name", 1).to_list(500)
-        for loc in locs:
-            loc["employee_count"] = await db.employees.count_documents({
-                "office_location": loc["name"],
-                "is_deleted": {"$ne": True},
-                "employee_status": EmployeeStatus.ACTIVE,
-            })
+        # Single-aggregation batch instead of N count_documents (same latency
+        # fix that was applied to /settings/designations).
+        if locs:
+            names = [loc["name"] for loc in locs]
+            agg = await db.employees.aggregate([
+                {"$match": {
+                    "office_location": {"$in": names},
+                    "is_deleted": {"$ne": True},
+                    "employee_status": EmployeeStatus.ACTIVE,
+                }},
+                {"$group": {"_id": "$office_location", "count": {"$sum": 1}}},
+            ]).to_list(len(names))
+            cmap = {row["_id"]: row["count"] for row in agg}
+            for loc in locs:
+                loc["employee_count"] = cmap.get(loc["name"], 0)
         return [serialize_doc(loc) for loc in locs]
 
     @api_router.post("/settings/office-locations")
