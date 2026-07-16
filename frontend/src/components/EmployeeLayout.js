@@ -74,20 +74,10 @@ const EmployeeLayout = ({ children }) => {
     return () => { active = false; };
   }, [token]);
 
-  // "My Rewards" is only meaningful for Research Unit employees (per business
-  // rule enforced in POST /star-rewards). We call the endpoint once — a 200
-  // means the current user is a valid recipient and has data to browse;
-  // 404/400 means "not eligible" and we simply hide the nav entry.
-  useEffect(() => {
-    let active = true;
-    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/employee/star-rewards/me`, {
-      headers: { Authorization: `Bearer ${token}` },
-    }).then(res => {
-      if (!active) return;
-      const isResearchUnit = res.data?.employee?.department === 'Research Unit';
-    }).catch(() => {});
-    return () => { active = false; };
-  }, [token]);
+  // "My Rewards" is DISABLED for all employees (2026-07-16 user mandate).
+  // The Star Reward module is HR-only now — visible in the admin sidebar
+  // only. We keep the state variable so the render code below stays a
+  // no-op without a bigger refactor; it will always remain false.
 
   // "My Warnings" nav shows only if the employee has ≥1 warning record
   // (mirrors the graceful "My Rewards" reveal pattern — no dead nav entries).

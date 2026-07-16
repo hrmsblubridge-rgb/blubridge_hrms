@@ -34,7 +34,7 @@ import EmployeeIssueTickets from "./pages/EmployeeIssueTickets";
 import EmployeeDocuments from "./pages/EmployeeDocuments";
 import EmployeeSalary from "./pages/EmployeeSalary";
 import EmployeeProfile from "./pages/EmployeeProfile";
-import EmployeeStarReward from "./pages/EmployeeStarReward";
+// import EmployeeStarReward from "./pages/EmployeeStarReward";  // disabled: Star module HR-only (2026-07-16)
 import EmployeeOnboarding from "./pages/EmployeeOnboarding";
 import EmployeeLateRequest from "./pages/EmployeeLateRequest";
 import EmployeeEarlyOut from "./pages/EmployeeEarlyOut";
@@ -215,7 +215,10 @@ function App() {
           <Route path="/employee/policies" element={<EmployeeRoute><Policies /></EmployeeRoute>} />
           <Route path="/employee/tickets" element={<EmployeeRoute><EmployeeIssueTickets /></EmployeeRoute>} />
           <Route path="/employee/documents" element={<EmployeeRoute><EmployeeDocuments /></EmployeeRoute>} />
-          <Route path="/employee/rewards" element={<EmployeeRoute><EmployeeStarReward /></EmployeeRoute>} />
+          {/* Employee Star Reward route DISABLED (2026-07-16 user mandate).
+              Star module is HR-only now. Any direct visit is redirected to
+              the employee dashboard. */}
+          <Route path="/employee/rewards" element={<Navigate to="/employee/dashboard" replace />} />
           <Route path="/employee/salary" element={<EmployeeRoute><EmployeeSalary /></EmployeeRoute>} />
           <Route path="/employee/late-request" element={<EmployeeRoute><EmployeeLateRequest /></EmployeeRoute>} />
           <Route path="/employee/early-out" element={<EmployeeRoute><EmployeeEarlyOut /></EmployeeRoute>} />
