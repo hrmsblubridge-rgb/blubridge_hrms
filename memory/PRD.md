@@ -5,6 +5,35 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-16 (Warning Module Phase 1 — Leave & Attendance Policy Non-Compliance Framework ✅ TESTED)
+
+**Feature:** Production-ready Warning module for the 3-tier escalation framework: **Warning Notice 1 → Final Warning → Termination of Employment/Internship**. Applies to Leave & Attendance Policy non-compliance.
+
+**Backend (`/app/backend/warning_module.py`):**
+- Single collection `warning_cases` with embedded `audit_log`, attachments, employee_snapshot (locked at creation), email_log.
+- 15 endpoints under `/api/warnings/*` + `/api/employee/warnings/me` — role-gated: HR/system_admin create/approve/send/revoke/close; employees see only their own.
+- Sequential reference `WARN/YYYY/MM/NNNN` assigned atomically at approval via a `counters` collection `find_one_and_update` (upsert + $inc).
+- System-suggested level from prior valid warnings; override requires reason.
+- Full audit trail on every action (created/edited/submitted/approved/rejected/email_sent/email_failed/acknowledged/response_submitted/closed/revoked) with actor id+name+role+timestamp+prev/new status.
+- Email delivery via existing `send_email_notification`, idempotency lock via `email_status: sending`, graceful `email_failed` state on Resend errors.
+- Bug fix (testing_agent RCA iter_54): removed `warning_reference: None` from create payload — MongoDB sparse-unique index treats explicit null as present, causing DuplicateKeyError on 2nd draft; field is now omitted and assigned only at approval.
+- Regression suite: `/app/backend/tests/test_warning_module.py` — 22 tests (21 pass, 1 skip), covers all endpoints + role gating + full lifecycle.
+
+**Frontend:**
+- `/app/frontend/src/pages/Warnings.js` (Admin): Dashboard (6 stat cards clickable-to-filter), escalation banner, filters (search+status+level), list table, Create wizard (employee search → prior-warning history → auto-suggested level with override reason) with Save-Draft or Submit-for-Approval, Detail dialog with role-based action row (approve/reject/send/close/revoke) + timeline.
+- `/app/frontend/src/pages/EmployeeWarnings.js` (NEW - Employee): "My Warnings" card list, detail dialog with acknowledge + written response + timeline, "Action Required" indicator on unacknowledged warnings.
+- Admin sidebar: added "Warnings" nav (AlertTriangle icon, between Vigilance Report and Holidays, roles=['hr','system_admin']).
+- Employee sidebar: "My Warnings" nav CONDITIONAL — only appears if the employee has ≥1 warning issued (mirrors "My Rewards" reveal pattern); shows amber count badge.
+- Routes: `/warnings` (AdminRoute), `/employee/warnings` (EmployeeRoute).
+
+**Testing (iter_54):** Frontend 100% flows verified; backend 21/22 pytest — all critical paths (create → submit → approve → email → ack → respond → close/revoke) work; no critical/high issues remaining. All new UI elements carry `data-testid` (`warnings-page`, `warnings-create-btn`, `stat-under-warning`, `create-emp-search`, `send-email-btn`, `employee-warnings-page`, `ack-btn`, `submit-response-btn`, etc.).
+
+**Deferred to Phase 2 (P1):** PDF generation, follow-ups sub-tab, Excel/XLSX export, CC/BCC recipient config, in-app notifications feed, HTML-escape of user text in outbound email template.
+
+---
+
+
+
 ## Latest Update — 2026-07-01 (Employee Rejoin/Reactivation status sync ✅ TESTED)
 
 **Bug:** Reactivating an employee (Status Inactive → Active) left the old `inactive_type` (Relieved/Terminated/…) displayed. Root cause: `update_employee` (PUT /employees/{id}) strips `None` values from the payload (`{k:v ... if v is not None}`), so the client could never clear `inactive_type` when flipping status to Active.
