@@ -11749,7 +11749,23 @@ async def submit_onboarding(current_user: dict = Depends(get_current_user)):
         missing_labels = [d["label"] for d in REQUIRED_DOCUMENTS if d["type"] in missing]
         raise HTTPException(status_code=400, detail=f"Missing required documents: {', '.join(missing_labels)}")
     
-    # Update onboarding status
+    # Update onboarding status — but preserve HR's explicit APPROVED decision.
+    # Without this guard, re-submissions from the employee (or an auto-submit
+    # from the employee dashboard) would silently demote an already-approved
+    # onboarding back to UNDER_REVIEW, causing Adari-style flip-flops between
+    # Approved and Pending every ~5-10 minutes.
+    current = await db.onboarding.find_one(
+        {"employee_id": employee_id}, {"_id": 0, "status": 1}
+    )
+    if current and current.get("status") == OnboardingStatus.APPROVED:
+        # Already approved by HR — refuse to re-open. Log the attempt for
+        # traceability but keep the record intact.
+        await log_audit(
+            current_user["id"], "submit_onboarding_ignored_already_approved",
+            "onboarding", employee_id,
+        )
+        return {"message": "Onboarding already approved", "status": OnboardingStatus.APPROVED}
+
     await db.onboarding.update_one(
         {"employee_id": employee_id},
         {"$set": {
