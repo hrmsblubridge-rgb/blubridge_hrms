@@ -91,7 +91,7 @@ const StarReward = () => {
     try {
       setLoading(true);
       const [employeesRes, teamsRes] = await Promise.all([
-        axios.get(`${API}/star-rewards`, { headers: getAuthHeaders(), params: { department: 'Research Unit', team: filters.team !== 'All' ? filters.team : undefined } }),
+        axios.get(`${API}/star-rewards`, { headers: getAuthHeaders(), params: { department: 'Research Unit', team: filters.team !== 'All' ? filters.team : undefined, month: filters.month } }),
         axios.get(`${API}/teams`, { headers: getAuthHeaders(), params: { department: 'Research Unit' } })
       ]);
       setEmployees(employeesRes.data);
@@ -633,7 +633,9 @@ const StarReward = () => {
                         <th>Employee</th>
                         <th>Email</th>
                         <th>Team</th>
-                        <th className="text-center">Stars</th>
+                        <th className="text-center" title={filters.month ? `Stars earned in ${filters.month}` : 'Cumulative stars'}>
+                          Stars {filters.month && <span className="text-[10px] font-normal text-slate-500 block leading-none">({filters.month})</span>}
+                        </th>
                         <th className="text-center">Unsafe</th>
                         <th>Actions</th>
                       </tr>

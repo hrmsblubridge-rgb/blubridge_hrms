@@ -9021,12 +9021,39 @@ async def get_star_rewards(
         ]
     
     employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
-    
+    emp_ids = [e["id"] for e in employees]
+
+    # When a specific month is chosen, override `stars` and `unsafe_count` on
+    # each employee with the count EARNED IN THAT MONTH (from star_rewards
+    # aggregate). Without this, the "Stars" column shows the cumulative total
+    # regardless of Month filter — which is exactly what HR just flagged.
+    if month and emp_ids:
+        month_agg = await db.star_rewards.aggregate([
+            {"$match": {
+                "employee_id": {"$in": emp_ids},
+                "month": month,
+                "is_deleted": {"$ne": True},
+            }},
+            {"$group": {
+                "_id": "$employee_id",
+                "stars": {"$sum": "$stars"},
+                "unsafe": {"$sum": {"$cond": [{"$eq": ["$type", "unsafe"]}, 1, 0]}},
+            }},
+        ]).to_list(2000)
+        month_map = {r["_id"]: r for r in month_agg}
+        for emp in employees:
+            m = month_map.get(emp["id"])
+            emp["stars"] = m["stars"] if m else 0
+            emp["unsafe_count"] = m["unsafe"] if m else 0
+        # Also expose the filter month on each row for the frontend to label the col.
+        for emp in employees:
+            emp["stars_filter_month"] = month
+
     # Map full_name to name for backward compatibility
     for emp in employees:
         emp["name"] = emp.get("full_name", "")
         emp["email"] = emp.get("official_email", "")
-    
+
     return [serialize_doc(e) for e in employees]
 
 @api_router.post("/star-rewards")
