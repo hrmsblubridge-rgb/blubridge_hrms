@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
-import EmployeeLayout from '../components/EmployeeLayout';
 import { Card } from '../components/ui/card';
 import { toast } from 'sonner';
 import { Star, Sparkles, TrendingUp, ShieldAlert, Award, Trophy } from 'lucide-react';
@@ -39,9 +38,7 @@ const EmployeeStarReward = () => {
 
   if (loading) {
     return (
-      <EmployeeLayout>
-        <div className="p-6 text-slate-500 text-sm" data-testid="rewards-loading">Loading your rewards…</div>
-      </EmployeeLayout>
+      <div className="p-6 text-slate-500 text-sm" data-testid="rewards-loading">Loading your rewards…</div>
     );
   }
 
@@ -52,8 +49,7 @@ const EmployeeStarReward = () => {
   const firstName = (data?.employee?.full_name || 'there').split(' ')[0];
 
   return (
-    <EmployeeLayout>
-      <div className="p-4 sm:p-6 lg:p-8 space-y-6" data-testid="employee-star-reward-page">
+    <div className="p-4 sm:p-6 lg:p-8 space-y-6" data-testid="employee-star-reward-page">
         {/* Header — celebratory hero */}
         <div
           className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#063c88] via-[#0a5cba] to-[#1e88e5] p-6 sm:p-8 text-white shadow-lg"
@@ -198,8 +194,7 @@ const EmployeeStarReward = () => {
             </ol>
           )}
         </Card>
-      </div>
-    </EmployeeLayout>
+    </div>
   );
 };
 
