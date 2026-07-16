@@ -589,7 +589,7 @@ COMPANY_POLICIES = [
         "id": "policy_research",
         "name": "BluBridge — HR Induction, Company Conduct & Leave Policy (Research Unit)",
         "category": "Department",
-        "version": "2.2",
+        "version": "2.3",
         "effective_date": "2026-02-12",
         "applicable_to": "Research Unit",
         "content": {
@@ -670,6 +670,18 @@ COMPANY_POLICIES = [
                         ]
                     },
                     "footer": "Attendance & Productivity Compliance: Employees reporting late shall still be required to complete a minimum of 9 hours 30 minutes of active productive engagement (excluding breaks, lunch, snacks, dinner) AND a minimum total working duration of 11 hours. Upon completion of the above, the day shall be considered a Full Working Day, and salary/stipend eligibility for that day shall remain unaffected, subject to management approval and overall attendance compliance. Half-Day Eligibility: Employees must complete a minimum of 5 hours of productive engagement (excluding breaks and meal durations) to qualify."
+                },
+                {
+                    "title": "Leave and Attendance Policy Non-Compliance Framework",
+                    "table": {
+                        "headers": ["Instance of Non-Compliance", "Action"],
+                        "rows": [
+                            ["First Instance",  "Warning Notice 1"],
+                            ["Second Instance", "Warning Notice 2 – Final Warning"],
+                            ["Third Instance",  "Termination of Employment/Internship"],
+                        ]
+                    },
+                    "footer": "Note: This framework applies to any failure to adhere to the Leave and Attendance Policy, including prescribed timelines, leave categories, required documentation, email and HRMS submission requirements, and defined communication formats."
                 },
                 {
                     "title": "Leave Approval Process",
