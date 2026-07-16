@@ -248,7 +248,9 @@ async def warnings_create(body: dict, current_user: dict = Depends(get_current_u
     now = _now()
     doc = {
         "id": str(uuid.uuid4()),
-        "warning_reference": None,  # Assigned at approval
+        # warning_reference is intentionally omitted for drafts so the
+        # sparse unique index does NOT treat multiple `null`s as duplicates.
+        # It is assigned atomically at approval time via _next_reference().
         "employee_id": emp_id,
         "employee_snapshot": {  # Locked historical snapshot
             "full_name": emp.get("full_name"),

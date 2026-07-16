@@ -26,6 +26,7 @@ import {
   HelpCircle,
   FileSpreadsheet,
   ShieldAlert,
+  AlertTriangle,
   Star
 } from 'lucide-react';
 import { Button } from './ui/button';
@@ -61,6 +62,7 @@ const EmployeeLayout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [hasVigilance, setHasVigilance] = useState(false);
   const [hasStarRewards, setHasStarRewards] = useState(false);
+  const [warningsCount, setWarningsCount] = useState(0);
 
   // Dynamically reveal the Operational Vigilance Report link ONLY for employees
   // whose designation == "Vigilance" (resolved server-side, no hardcoding).
@@ -83,7 +85,19 @@ const EmployeeLayout = ({ children }) => {
     }).then(res => {
       if (!active) return;
       const isResearchUnit = res.data?.employee?.department === 'Research Unit';
-      setHasStarRewards(isResearchUnit);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [token]);
+
+  // "My Warnings" nav shows only if the employee has ≥1 warning record
+  // (mirrors the graceful "My Rewards" reveal pattern — no dead nav entries).
+  useEffect(() => {
+    let active = true;
+    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/employee/warnings/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(res => {
+      if (!active) return;
+      setWarningsCount((res.data?.warnings || []).length);
     }).catch(() => {});
     return () => { active = false; };
   }, [token]);
@@ -101,6 +115,7 @@ const EmployeeLayout = ({ children }) => {
       items.splice(insertAt >= 0 ? insertAt + 1 : items.length, 0, rewardItem);
     }
     if (hasVigilance) items.push({ path: '/employee/vigilance', label: 'Vigilance Report', icon: ShieldAlert });
+    if (warningsCount > 0) items.push({ path: '/employee/warnings', label: 'My Warnings', icon: AlertTriangle, badge: warningsCount });
     return items;
   })();
 
@@ -199,7 +214,10 @@ const EmployeeLayout = ({ children }) => {
                 data-testid={`nav-${item.path.replace('/employee/', '')}`}
               >
                 <item.icon className="w-5 h-5" strokeWidth={isActive ? 2 : 1.5} />
-                <span>{item.label}</span>
+                <span className="flex-1">{item.label}</span>
+                {item.badge ? (
+                  <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white min-w-[18px] text-center">{item.badge}</span>
+                ) : null}
               </NavLink>
             );
           })}

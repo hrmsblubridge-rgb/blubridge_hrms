@@ -48,6 +48,8 @@ import Settings from "./pages/Settings";
 import CronManagement from "./pages/CronManagement";
 import PolicyAcknowledgements from "./pages/PolicyAcknowledgements";
 import OperationalVigilance from "./pages/OperationalVigilance";
+import Warnings from "./pages/Warnings";
+import EmployeeWarnings from "./pages/EmployeeWarnings";
 import { FEATURE_FLAGS } from "./config/featureFlags";
 import "./App.css";
 
@@ -199,6 +201,7 @@ function App() {
           <Route path="/early-out-requests" element={<AdminRoute><AdminEarlyOut /></AdminRoute>} />
           <Route path="/missed-punches" element={<AdminRoute><AdminMissedPunch /></AdminRoute>} />
           <Route path="/vigilance" element={<AdminRoute><OperationalVigilance /></AdminRoute>} />
+          <Route path="/warnings" element={<AdminRoute><Warnings /></AdminRoute>} />
           <Route path="/admin-profile" element={<AdminRoute><AdminProfile /></AdminRoute>} />
           <Route path="/change-password" element={<AdminRoute><ChangePassword /></AdminRoute>} />
           
@@ -219,6 +222,7 @@ function App() {
           <Route path="/employee/missed-punch" element={<EmployeeRoute><EmployeeMissedPunch /></EmployeeRoute>} />
           <Route path="/employee/profile" element={<EmployeeRoute><EmployeeProfile /></EmployeeRoute>} />
           <Route path="/employee/vigilance" element={<EmployeeRoute><OperationalVigilance /></EmployeeRoute>} />
+          <Route path="/employee/warnings" element={<EmployeeRoute><EmployeeWarnings /></EmployeeRoute>} />
           
           {/* Fallback */}
           <Route path="*" element={<RoleBasedRedirect />} />

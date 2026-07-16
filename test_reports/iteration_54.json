@@ -1,0 +1,46 @@
+{
+  "summary": "Comprehensive backend + frontend testing of the new Warning module (Leave & Attendance Policy Non-Compliance Framework). Wrote pytest suite covering all 15 endpoints + role gating + full lifecycle (create → submit → approve → email → ack → respond → close/revoke) — 21 passed / 1 skipped / 0 failed. Frontend UI verified end-to-end: HR sidebar link, /warnings page + stat cards + escalation banner + Create dialog, /employee/warnings page + My Warnings sidebar + detail dialog + timeline. RCA and applied fix for a critical duplicate-key bug found during testing.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/warnings/stats", "issue": "'warning_notice_1' counter includes cases in 'closed' status via VALID_INSTANCE_STATUSES — reveals 2 WN1 while UNDER WARNING = 0. Confirm business intent (closed count toward escalation but not toward active-under-warning population)."},
+      {"endpoint": "POST /api/warnings/{id}/send-email", "issue": "When email sending fails (no RESEND_API_KEY), endpoint returns 502 AND flips status to email_failed. The test verified graceful failure; consider returning 200 with {status: 'failed'} so the UI can still show optimistic toast + failed state without an alarming HTTP error."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "All modal dialogs on Warnings + Employee Warnings pages", "issues": ["Radix DialogContent missing `Description` / `aria-describedby` — accessibility warnings in console (non-blocking)."]},
+      {"screen": "HR /warnings dashboard", "issues": ["The 6 stat cards + 3-step escalation banner + create/export buttons + list all render correctly. No contrast/spacing issues observed. Design matches existing HRMS theme."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_warning_module.py",
+    "/app/test_reports/pytest/warning_module_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Reconsider stats semantics — should 'closed' warnings still populate warning_notice_1 counter, or only active-lifecycle states?",
+    "(Optional) Add `aria-describedby` / DialogDescription to Warning dialogs to silence Radix a11y console warnings.",
+    "(Optional) Consider persisting warning creator/approver full_name — currently created_by_name uses current_user.name which is fine when present. Verified working."
+  ],
+  "critical_code_review_comments": [
+    "FIXED (in this test iteration): warning_module.py line 251 was inserting `warning_reference: None` for drafts. Combined with `db.warning_cases.create_index('warning_reference', unique=True, sparse=True)` this caused a DuplicateKeyError on the SECOND draft creation, because MongoDB sparse index only excludes docs where the field is ABSENT (not null). Fix applied: field is now omitted from the insert doc entirely; assigned atomically at approval via _next_reference(). Also cleaned up 1 existing DB row that had `warning_reference: null`.",
+    "Route ordering is safe: /warnings/stats (2-seg) is declared before /warnings/{case_id} (2-seg with param) — FastAPI matches literal-first, OK. /warnings/export/csv (3-seg) doesn't conflict with 2-seg param routes.",
+    "The `_render_warning_email` helper uses HTML f-string with unescaped user text (incident_description, corrective_action) — potential HTML injection into outbound emails. Low-severity but worth escaping in Phase 2.",
+    "employee acknowledge endpoint allows acknowledgement when status is 'email_failed' — good (graceful recovery), documented behaviour.",
+    "Employee-visible /api/employee/warnings/me correctly filters out drafts/rejected/pending_approval, and redacts internal_remarks + edited/email_failed audit entries in /api/warnings/{id} for non-HR viewers. Good."
+  ],
+  "updated_files": [
+    "/app/backend/warning_module.py (removed `warning_reference: None` from create doc so sparse-unique index does not treat multiple nulls as duplicates)",
+    "/app/backend/tests/test_warning_module.py (new — 22 tests, 21 pass, 1 skip)",
+    "MongoDB: unset warning_reference field on 1 existing draft doc to unblock the sparse index"
+  ],
+  "success_rate": {"backend": "95% (21/22 executed, 1 skipped — no unrelated employee to test cross-employee 403)", "frontend": "100% (all critical UI flows validated)"},
+  "test_credentials": "HR: admin / HrAdmin786$ (PINNED — do not change). Employee: user / pass123 (Rishi S Nayak, employee_id=2ce742cb-f44b-4224-b19b-4dd44ca6ae51).",
+  "seed_data_creation": "Created ~5 TEST_QA warnings against Rishi S Nayak (2 closed WN1, 1 rejected, 1 revoked final, 1 pending) + 1 against Shift Test User (rejected). All prefixed with 'TEST_QA' in description. These are visible in HR list and on Employee's /employee/warnings.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Warning module Phase 1 is functionally COMPLETE and WORKING end-to-end. Test suite lives at /app/backend/tests/test_warning_module.py — reusable regression. Login timeouts can be transient (backend cold-start took ~25s once) — `_login` helper already retries with 90s timeout. Employee 'My Warnings' link is conditional on count>0; test data seeded above ensures it appears for user=Rishi S Nayak.",
+  "rca_of_the_issue": "The DuplicateKeyError on second draft-create was caused by MongoDB sparse-unique index semantics: sparse only excludes documents where the indexed field is truly absent, but the app was explicitly inserting `warning_reference: null` — which the index counts as present. Two documents with `warning_reference: null` therefore violated the unique constraint. Reproduction: create warning A (inserts null), create warning B (inserts null) → 500. Mitigation applied: (1) omit the field on insert; MongoDB then skips it in the sparse index. (2) Cleaned up existing docs via `$unset warning_reference` where value was null. Verified with 3 sequential creates in the same test session — all succeed."
+}
