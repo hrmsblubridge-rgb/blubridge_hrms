@@ -380,3 +380,105 @@ async def apply_auto_stars(db, employee_id: str, start_date: str, end_date: str,
         "range": result["range"],
         "breakdown": result["breakdown"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Daily automatic recompute — runs at 02:00 IST every day so that when HR /
+# researcher opens HRMS on the next day, the star totals already include
+# yesterday's attendance. Manual awards remain untouched (source='auto' only).
+# ---------------------------------------------------------------------------
+
+async def _daily_bulk_recompute(db, awarded_by_id: str = "system-scheduler"):
+    """Run the bulk auto-compute for every active Research Unit employee.
+    Each employee's window is [date_of_joining, yesterday]. Idempotent.
+    """
+    import logging
+    from collections import defaultdict as _dd
+    logger = logging.getLogger("hrms.star.scheduler")
+
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    fallback = "2026-01-01"
+
+    employees = await db.employees.find({
+        "department": "Research Unit",
+        "is_deleted": {"$ne": True},
+        "employee_status": "Active",
+    }, {"_id": 0, "id": 1, "full_name": 1, "date_of_joining": 1}).to_list(500)
+    if not employees:
+        logger.info("[star:daily] no active RU employees, skipping")
+        return {"processed": 0, "entries": 0}
+
+    emp_ids = [e["id"] for e in employees]
+    att_by_emp, leaves_by_emp = _dd(list), _dd(list)
+    async for a in db.attendance.find({"employee_id": {"$in": emp_ids}}, {"_id": 0}):
+        att_by_emp[a["employee_id"]].append(a)
+    async for lv in db.leaves.find({
+        "employee_id": {"$in": emp_ids},
+        "status": {"$in": ["approved", "Approved"]},
+    }, {"_id": 0}):
+        leaves_by_emp[lv["employee_id"]].append(lv)
+
+    total_entries = 0
+    total_errors = 0
+    for emp in employees:
+        start = emp.get("date_of_joining") or fallback
+        if not isinstance(start, str):
+            try: start = start.strftime("%Y-%m-%d")
+            except Exception: start = fallback
+        try:
+            res = await apply_auto_stars(
+                db, emp["id"], start, yesterday, awarded_by_id,
+                att_docs_override=att_by_emp.get(emp["id"], []),
+                leaves_docs_override=leaves_by_emp.get(emp["id"], []),
+            )
+            total_entries += res.get("applied", 0) or 0
+        except Exception as e:
+            total_errors += 1
+            logger.exception("[star:daily] failed for %s: %s", emp.get("full_name"), e)
+
+    # Record scheduler heartbeat so admins can verify the last run.
+    await db.cron_settings.update_one(
+        {"job_name": "daily_star_recompute"},
+        {"$set": {
+            "job_name": "daily_star_recompute",
+            "last_run_at": datetime.now().isoformat(),
+            "last_run_result": "success" if total_errors == 0 else f"partial ({total_errors} errors)",
+            "last_run_end_date": yesterday,
+            "last_run_processed": len(employees),
+            "last_run_entries": total_entries,
+        }},
+        upsert=True,
+    )
+    logger.info(
+        "[star:daily] processed=%d entries=%d errors=%d end=%s",
+        len(employees), total_entries, total_errors, yesterday,
+    )
+    return {"processed": len(employees), "entries": total_entries, "errors": total_errors, "end_date": yesterday}
+
+
+def start_star_scheduler(db):
+    """Attach the daily star-recompute job to the running event loop.
+    Called once at FastAPI startup. Uses APScheduler AsyncIO with IST cron.
+    """
+    from apscheduler.schedulers.asyncio import AsyncIOScheduler
+    from apscheduler.triggers.cron import CronTrigger
+    import logging, pytz
+    logger = logging.getLogger("hrms.star.scheduler")
+
+    tz = pytz.timezone("Asia/Kolkata")
+    scheduler = AsyncIOScheduler(timezone=tz)
+
+    async def _job():
+        try:
+            await _daily_bulk_recompute(db)
+        except Exception:
+            logger.exception("[star:daily] scheduler tick failed")
+
+    # 02:00 IST every day — early enough to be ready before shift starts.
+    scheduler.add_job(_job, CronTrigger(hour=2, minute=0, timezone=tz),
+                      id="daily_star_recompute", max_instances=1,
+                      coalesce=True, replace_existing=True)
+    scheduler.start()
+    logger.info("[star:daily] scheduler started — daily 02:00 IST")
+    return scheduler
+

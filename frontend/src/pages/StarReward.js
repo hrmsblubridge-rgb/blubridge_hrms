@@ -80,6 +80,7 @@ const StarReward = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [autoCalcEmp, setAutoCalcEmp] = useState(null);
   const [showBulkAuto, setShowBulkAuto] = useState(false);
+  const [schedulerStatus, setSchedulerStatus] = useState(null);
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (addFormType === 'performance' || addFormType === 'learning') setWeeklyData(getWeeksForMonth(addFormMonth)); }, [addFormMonth, addFormType]);
@@ -93,6 +94,10 @@ const StarReward = () => {
       ]);
       setEmployees(employeesRes.data);
       setTeams(teamsRes.data.filter(t => t.department === 'Research Unit'));
+      // Non-blocking: fetch scheduler status for the header strip
+      axios.get(`${API}/star-rewards/auto/scheduler-status`, { headers: getAuthHeaders() })
+        .then(r => setSchedulerStatus(r.data))
+        .catch(() => {});
     } catch (error) {
       toast.error('Failed to load star rewards data');
     } finally {
@@ -460,6 +465,26 @@ const StarReward = () => {
             </Button>
           </div>
         </div>
+
+        {/* Daily auto-recompute status strip */}
+        {canAddStars && schedulerStatus && (
+          <div className="rounded-xl border border-slate-200 bg-gradient-to-r from-amber-50 to-white px-4 py-2 flex items-center gap-3 text-xs flex-wrap" data-testid="scheduler-status-strip">
+            <span className={`w-2 h-2 rounded-full ${schedulerStatus.last_run_result === 'success' ? 'bg-emerald-500' : schedulerStatus.last_run_at ? 'bg-amber-500' : 'bg-slate-400'} animate-pulse`}/>
+            <span className="font-semibold text-slate-700">Auto-recompute:</span>
+            {schedulerStatus.last_run_at ? (
+              <>
+                <span className="text-slate-600">Last ran {new Date(schedulerStatus.last_run_at).toLocaleString('en-IN')}</span>
+                <span className="text-slate-400">·</span>
+                <span className="text-slate-600">Through <b>{schedulerStatus.last_run_end_date}</b></span>
+                <span className="text-slate-400">·</span>
+                <span className="text-slate-600"><b>{schedulerStatus.last_run_processed}</b> employees · <b>{schedulerStatus.last_run_entries}</b> entries · <b className={schedulerStatus.last_run_result === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{schedulerStatus.last_run_result}</b></span>
+              </>
+            ) : (
+              <span className="text-slate-500">Not run yet — daily job runs at 02:00 IST. Click &ldquo;Auto-Calculate All&rdquo; for the first sync.</span>
+            )}
+            <span className="ml-auto text-[10px] text-slate-500 italic">Runs automatically every day at 02:00 IST · Manual awards never touched</span>
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -917,7 +942,7 @@ function BulkAutoStarDialog({ onClose, onApplied, getAuthHeaders }) {
         {/* Policy notice */}
         <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900">
           <div className="font-semibold mb-1">Policy — BluBridge Research Star Framework</div>
-          <div>Uses each employee's <b>joining date → the end date</b>. Runs the same rules used per-employee: full monthly attendance (+2), 10+ hrs weekly avg (+1), uninformed absences (−2), &gt;4 monthly absences (−4), &gt;2 emergency leaves/month (−3), late sick notification (−1), and consecutive-day engagement/commitment shortfalls (§10). <b>Manual awards remain untouched.</b></div>
+          <div>Uses each employee&apos;s <b>joining date → the end date</b>. Runs the same rules used per-employee: full monthly attendance (+2), 10+ hrs weekly avg (+1), uninformed absences (−2), &gt;4 monthly absences (−4), &gt;2 emergency leaves/month (−3), late sick notification (−1), and consecutive-day engagement/commitment shortfalls (§10). <b>Manual awards remain untouched.</b></div>
         </div>
 
         {!result ? (

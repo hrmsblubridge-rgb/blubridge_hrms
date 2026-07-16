@@ -9238,6 +9238,94 @@ async def star_auto_bulk_apply(body: dict = None, current_user: dict = Depends(g
     }
 
 
+@api_router.get("/star-rewards/auto/monthly/{employee_id}")
+async def star_auto_monthly(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Return the month-wise star breakdown for an employee (auto + manual).
+    Used by admin drill-down and the employee dashboard timeline.
+    """
+    emp = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    # Access control: employees can only see their own monthly view.
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+    rewards = await db.star_rewards.find(
+        {"employee_id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0}
+    ).sort("ref_date", 1).to_list(2000)
+
+    from collections import defaultdict as _dd
+    months = {}
+    for r in rewards:
+        m = r.get("month") or (r.get("ref_date") or r.get("created_at", ""))[:7]
+        if not m: continue
+        bucket = months.setdefault(m, {
+            "month": m, "stars": 0, "positive": 0, "negative": 0,
+            "auto_stars": 0, "manual_stars": 0, "entries": 0,
+            "categories": _dd(int), "items": [],
+        })
+        s = r.get("stars", 0) or 0
+        bucket["stars"] += s
+        bucket["entries"] += 1
+        if s > 0: bucket["positive"] += s
+        else:     bucket["negative"] += s
+        if r.get("source") == "auto":
+            bucket["auto_stars"] += s
+        else:
+            bucket["manual_stars"] += s
+        cat = r.get("category") or ("Manual" if r.get("source") != "auto" else "Auto")
+        bucket["categories"][cat] += s
+        bucket["items"].append({
+            "id": r.get("id"),
+            "date": r.get("ref_date") or (r.get("created_at", "")[:10]),
+            "stars": s,
+            "reason": r.get("reason"),
+            "category": cat,
+            "rule": r.get("rule"),
+            "source": r.get("source") or "manual",
+        })
+
+    # Convert defaultdicts and sort items in each month by date
+    ordered = []
+    for m in sorted(months.keys()):
+        b = months[m]
+        b["categories"] = dict(b["categories"])
+        b["items"].sort(key=lambda x: x.get("date") or "")
+        ordered.append(b)
+
+    total = sum(m["stars"] for m in ordered)
+    return {
+        "employee": {"id": emp["id"], "full_name": emp.get("full_name"),
+                     "date_of_joining": emp.get("date_of_joining"),
+                     "department": emp.get("department"), "team": emp.get("team")},
+        "months": ordered,
+        "cumulative_stars": total,
+        "current_month": datetime.now().strftime("%Y-%m"),
+    }
+
+
+@api_router.get("/star-rewards/auto/scheduler-status")
+async def star_auto_scheduler_status(current_user: dict = Depends(get_current_user)):
+    """Report the last automatic recompute — proves the daily job is healthy."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    doc = await db.cron_settings.find_one({"job_name": "daily_star_recompute"}, {"_id": 0})
+    return doc or {"job_name": "daily_star_recompute", "last_run_at": None,
+                   "note": "Not run yet — the daily job triggers at 02:00 IST."}
+
+
+@api_router.post("/star-rewards/auto/scheduler-run-now")
+async def star_auto_scheduler_run_now(current_user: dict = Depends(get_current_user)):
+    """Trigger the daily recompute immediately (useful for QA + first-time setup)."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    from star_reward_automation import _daily_bulk_recompute
+    res = await _daily_bulk_recompute(db, current_user["id"])
+    return {"message": "Recompute complete", **res}
+
+
+
 @api_router.get("/employee/star-rewards/me")
 async def employee_get_own_stars(current_user: dict = Depends(get_current_user)):
     """Employee-facing view of their own star rewards.
@@ -17438,6 +17526,10 @@ async def ensure_indexes():
         from policy_ack import ensure_state_indexes as _pa_ensure_indexes
         await _pa_ensure_indexes(db)
         _start_email_scheduler(db)
+        # Daily automatic star-reward recompute for Research Unit — runs at
+        # 02:00 IST so next-day totals are always fresh without manual action.
+        from star_reward_automation import start_star_scheduler as _start_star_scheduler
+        _start_star_scheduler(db)
     except Exception as e:
         print(f"Email scheduler startup failed: {e}")
 

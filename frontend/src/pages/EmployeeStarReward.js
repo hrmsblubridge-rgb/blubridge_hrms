@@ -15,18 +15,27 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
  * state with a warm empty-state message so the page never looks broken.
  */
 const EmployeeStarReward = () => {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
+  const [monthly, setMonthly] = useState(null);
+  const [expandedMonth, setExpandedMonth] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await axios.get(`${API}/employee/star-rewards/me`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const H = { Authorization: `Bearer ${token}` };
+        const res = await axios.get(`${API}/employee/star-rewards/me`, { headers: H });
         if (!cancelled) setData(res.data);
+        // Also fetch monthly breakdown (auto + manual, grouped by month)
+        const empId = res.data?.employee?.id || user?.employee_id;
+        if (empId) {
+          try {
+            const mres = await axios.get(`${API}/star-rewards/auto/monthly/${empId}`, { headers: H });
+            if (!cancelled) setMonthly(mres.data);
+          } catch (_e) { /* monthly is optional */ }
+        }
       } catch (err) {
         toast.error(err?.response?.data?.detail || 'Failed to load rewards');
       } finally {
@@ -34,7 +43,7 @@ const EmployeeStarReward = () => {
       }
     })();
     return () => { cancelled = true; };
-  }, [token]);
+  }, [token, user]);
 
   if (loading) {
     return (
@@ -44,9 +53,10 @@ const EmployeeStarReward = () => {
 
   const totals = data?.totals || { stars: 0, unsafe: 0 };
   const history = data?.history || [];
-  const monthly = data?.monthly || [];
-  const maxMonthly = Math.max(1, ...monthly.map((m) => m.stars || 0));
+  const trend = data?.monthly || [];  // legacy — small trend strip
+  const maxMonthly = Math.max(1, ...trend.map((m) => m.stars || 0));
   const firstName = (data?.employee?.full_name || 'there').split(' ')[0];
+  const monthlyBreakdown = monthly?.months || [];
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 space-y-6" data-testid="employee-star-reward-page">
@@ -98,14 +108,14 @@ const EmployeeStarReward = () => {
         </div>
 
         {/* Monthly trend strip — only if there's data */}
-        {monthly.length > 0 && (
+        {trend.length > 0 && (
           <Card className="p-5 rounded-2xl border-slate-200/70" data-testid="rewards-monthly">
             <div className="flex items-center gap-2 text-slate-700">
               <TrendingUp className="w-4 h-4 text-[#063c88]" />
-              <h2 className="text-sm font-semibold">Last {monthly.length} month{monthly.length === 1 ? '' : 's'}</h2>
+              <h2 className="text-sm font-semibold">Last {trend.length} month{trend.length === 1 ? '' : 's'}</h2>
             </div>
             <div className="mt-4 flex items-end gap-3 h-32">
-              {monthly.map((m) => {
+              {trend.map((m) => {
                 const pct = Math.max(6, Math.round((m.stars / maxMonthly) * 100));
                 const label = new Date(m.month + '-01').toLocaleString('en-IN', { month: 'short' });
                 return (
@@ -119,6 +129,74 @@ const EmployeeStarReward = () => {
                     </div>
                     <div className="text-[11px] text-slate-500 font-medium">{label}</div>
                     <div className="text-xs text-slate-800 font-semibold tabular-nums">{m.stars}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        )}
+
+        {/* Month-by-month breakdown — each month expands to show every star */}
+        {monthlyBreakdown.length > 0 && (
+          <Card className="p-5 rounded-2xl border-slate-200/70" data-testid="rewards-monthly-breakdown">
+            <div className="flex items-center gap-2 text-slate-700 mb-3">
+              <TrendingUp className="w-4 h-4 text-[#063c88]" />
+              <h2 className="text-sm font-semibold">Month-by-month breakdown</h2>
+              <span className="ml-auto text-[11px] text-slate-500">
+                Auto-refreshed daily · Joined {monthly?.employee?.date_of_joining || '—'}
+              </span>
+            </div>
+            <div className="space-y-2">
+              {monthlyBreakdown.map((m) => {
+                const isOpen = expandedMonth === m.month;
+                const isCurrent = m.month === monthly?.current_month;
+                const [y, mm] = m.month.split('-');
+                const mLabel = new Date(Number(y), Number(mm) - 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+                return (
+                  <div key={m.month} className={`rounded-xl border ${isCurrent ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200 bg-white'}`} data-testid={`month-row-${m.month}`}>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedMonth(isOpen ? null : m.month)}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-slate-800">
+                          {mLabel}
+                          {isCurrent && <span className="ml-2 text-[10px] uppercase font-bold text-amber-700 tracking-wider">Current</span>}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          {m.entries} entr{m.entries === 1 ? 'y' : 'ies'}
+                          {m.auto_stars !== 0 && <> · Auto {m.auto_stars > 0 ? `+${m.auto_stars}` : m.auto_stars}</>}
+                          {m.manual_stars !== 0 && <> · Manual {m.manual_stars > 0 ? `+${m.manual_stars}` : m.manual_stars}</>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {m.positive > 0 && <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-100 rounded px-2 py-0.5">+{m.positive}</span>}
+                        {m.negative < 0 && <span className="text-[11px] font-semibold text-rose-700 bg-rose-100 rounded px-2 py-0.5">{m.negative}</span>}
+                        <div className={`px-3 py-1 rounded-lg text-sm font-bold ${m.stars > 0 ? 'bg-emerald-50 text-emerald-700' : m.stars < 0 ? 'bg-rose-50 text-rose-700' : 'bg-slate-50 text-slate-700'}`}>
+                          {m.stars > 0 ? '+' : ''}{m.stars} <Star className="inline w-3 h-3 fill-current -mt-0.5" />
+                        </div>
+                        <span className="text-slate-400 text-lg leading-none w-4 text-center">{isOpen ? '−' : '+'}</span>
+                      </div>
+                    </button>
+                    {isOpen && m.items.length > 0 && (
+                      <div className="border-t border-slate-200 divide-y divide-slate-100">
+                        {m.items.map(it => (
+                          <div key={it.id} className="px-4 py-2.5 flex items-start gap-3 text-sm">
+                            <div className="mt-0.5 shrink-0">
+                              <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] ${it.stars > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                                {it.stars > 0 ? '+' : ''}{it.stars}
+                              </span>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[13px] text-slate-800">{it.category}</div>
+                              <div className="text-[11px] text-slate-500 mt-0.5">{it.reason}</div>
+                            </div>
+                            <div className="text-[11px] text-slate-400 shrink-0 tabular-nums">{it.date}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}

@@ -5,6 +5,22 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-16 (Monthly Star Auto-Compute + Daily Scheduler ✅)
+
+**User need:** "Each employee calculate every month, when next day starts values must be correct — no HR click required. No emails to anyone while working."
+
+**What ships:**
+- **APScheduler daily job** `daily_star_recompute` — runs **02:00 IST every day** at server startup. Recomputes stars for every active Research Unit employee from `date_of_joining` → *yesterday*. Idempotent. NEVER touches manual awards. NEVER sends email. Persists heartbeat in `cron_settings.daily_star_recompute`.
+- 2 new endpoints: `GET /api/star-rewards/auto/scheduler-status` (heartbeat), `POST /api/star-rewards/auto/scheduler-run-now` (HR-triggered run for QA / first-time seed).
+- 1 new endpoint: `GET /api/star-rewards/auto/monthly/{employee_id}` — month-wise breakdown grouping every reward (auto + manual) by `YYYY-MM` with per-month totals (positive, negative, auto_stars, manual_stars, entries), each with expandable item list.
+- **Admin Star Reward page**: shows a live status strip "Auto-recompute: Last ran 16/7/2026 · Through 2026-07-15 · 46 employees · 932 entries · success" plus the earlier "Auto-Calculate All" bulk button.
+- **Employee "My Rewards" page**: new **Month-by-month breakdown card** with expandable months (current month highlighted amber). Each expanded month shows every star line with category, reason, date. Header says *"Auto-refreshed daily · Joined YYYY-MM-DD"*.
+- Verified E2E on Aparna A: Feb +1, Mar +6, Apr +4 (5 auto -1), May +5 (6 auto -1), Jun +4, Jul +1 (with an additional +10 manual overlay); cumulative 21 stars, 4 unsafe flags — all displayed correctly.
+- **No emails sent by the automation path** — grep-confirmed zero `send_email_notification` / `resend.Emails.send` calls in `star_reward_automation.py` and the auto endpoints. Only manual "Add Stars" (POST /api/star-rewards) still emails the employee, matching existing behaviour.
+
+---
+
+
 ## Latest Update — 2026-07-16 (Warning Module — Editable Email Templates + Preview Before Send ✅ TESTED)
 
 **Feature request:** Make the email heading + description for each of the 3 warning levels editable, and require a preview step before sending.

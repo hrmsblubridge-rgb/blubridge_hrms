@@ -52,7 +52,7 @@
 - **Employee**: `vijayan.k` / `pass123` (created 2026-04-27, onboarding approved)
 - **Employee**: `kasper` / `pass123` (kasper@blubridge.com, EMP0050, reactivated 2026-04-27, dept=System Engineer) — ⚠️ reported DEACTIVATED on 2026-06-05; reactivate before using.
 - **Employee**: `Umesh.Gana` / `pass123` (used for password-reset flow tests; restored after each suite)
-- **Employee (Research Unit)**: `aparna.a` / `TestRU#2026` (Research Unit dept — used to verify department-restricted policy visibility on 2026-05-22)
+- **Employee (Research Unit)**: `aparna.a` / `pass123` (Research Unit dept — Aparna A, active — re-synced to `pass123` on 2026-07-16 for star-reward automation UI verification; SHA256 password_hash on `users`)
 
 ## Password Reset Endpoints (added 2026-05-05)
 - Admin reset: `POST /api/admin/employees/{employee_id}/reset-credentials` (HR/system_admin token; body: `{password,confirm_password,auto_generate,force_change_on_next_login}`)
