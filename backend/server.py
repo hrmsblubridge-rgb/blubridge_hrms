@@ -17037,6 +17037,12 @@ async def admin_set_cron_cc(
     return {"job_name": job_name, "cc_emails": cleaned, "status": "ok"}
 
 
+# Warning module — Leave & Attendance Policy Non-Compliance Framework
+try:
+    import warning_module  # noqa: F401  (registers routes via api_router import)
+except Exception as _e:
+    print(f"Warning module load failed: {_e}")
+
 app.include_router(api_router)
 
 # ---------------------------------------------------------------------------
@@ -17367,3 +17373,10 @@ async def ensure_indexes():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+# Warning module — Leave & Attendance policy non-compliance framework
+try:
+    import warning_module  # noqa: F401  (registers routes via api_router import)
+except Exception as _e:
+    print(f'Warning module load failed: {_e}')
+
