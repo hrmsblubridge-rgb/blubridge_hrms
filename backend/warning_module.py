@@ -79,8 +79,108 @@ async def _ensure_indexes():
         await db.warning_cases.create_index("warning_level")
         await db.warning_cases.create_index("incident_date")
         await db.warning_cases.create_index("created_at")
+        await db.warning_email_templates.create_index("level", unique=True)
     except Exception:
         pass  # Idempotent on restarts
+    await _seed_default_templates()
+
+
+# ---------------------------------------------------------------------------
+# Editable email templates — one row per warning level, with placeholders like
+# {{employee_name}}, {{warning_reference}}, {{incident_date}}, etc. Kept in a
+# tiny dedicated collection so HR can edit heading + description without a
+# code change. Defaults are seeded once on startup.
+# ---------------------------------------------------------------------------
+
+DEFAULT_EMAIL_TEMPLATES = {
+    "first": {
+        "level": "first",
+        "level_label": "Warning Notice 1",
+        "subject": "Warning Notice 1 – Leave and Attendance Policy Non-Compliance – {{employee_name}}",
+        "heading": "Warning Notice 1 – Leave and Attendance Policy Non-Compliance",
+        "body_html": (
+            "<p>Dear {{employee_name}},</p>"
+            "<p>This email is to formally notify you of a recorded instance of non-compliance "
+            "with the company's <b>Leave and Attendance Policy</b>. This constitutes "
+            "<b>Warning Notice 1 (First Warning)</b> under our escalation framework.</p>"
+            "<p>Please treat this notice as an opportunity for course correction. Continued "
+            "non-compliance will result in a <b>Final Warning</b>, followed by <b>Termination "
+            "of Employment/Internship</b> as per policy.</p>"
+        ),
+    },
+    "final": {
+        "level": "final",
+        "level_label": "Final Warning",
+        "subject": "Final Warning – Leave and Attendance Policy Non-Compliance – {{employee_name}}",
+        "heading": "Final Warning – Leave and Attendance Policy Non-Compliance",
+        "body_html": (
+            "<p>Dear {{employee_name}},</p>"
+            "<p>This email is a <b>Final Warning</b> regarding continued non-compliance with the "
+            "company's <b>Leave and Attendance Policy</b>. A prior Warning Notice 1 was already "
+            "issued for a similar concern.</p>"
+            "<p>Please treat this as a <b>final opportunity</b> for corrective action. Any further "
+            "instance of non-compliance will lead to <b>Termination of Employment/Internship</b> "
+            "without additional notice, in accordance with our escalation framework.</p>"
+        ),
+    },
+    "termination": {
+        "level": "termination",
+        "level_label": "Termination of Employment/Internship",
+        "subject": "Termination Action – Leave and Attendance Policy Non-Compliance – {{employee_name}}",
+        "heading": "Termination of Employment/Internship – Leave and Attendance Policy Non-Compliance",
+        "body_html": (
+            "<p>Dear {{employee_name}},</p>"
+            "<p>Despite prior Warning Notice 1 and Final Warning issued to you for non-compliance "
+            "with the company's <b>Leave and Attendance Policy</b>, the pattern of non-compliance "
+            "has continued.</p>"
+            "<p>Accordingly, this email is to formally communicate the initiation of "
+            "<b>Termination of your Employment/Internship</b>. HR will be in touch regarding "
+            "exit formalities, final settlement, and handover.</p>"
+        ),
+    },
+}
+
+
+async def _seed_default_templates():
+    try:
+        for lvl, tpl in DEFAULT_EMAIL_TEMPLATES.items():
+            existing = await db.warning_email_templates.find_one({"level": lvl})
+            if not existing:
+                await db.warning_email_templates.insert_one({
+                    **tpl, "created_at": _now(), "updated_at": _now(),
+                    "updated_by": None, "updated_by_name": None,
+                })
+    except Exception:
+        pass
+
+
+def _apply_placeholders(text: str, ctx: dict) -> str:
+    if not text: return text
+    for k, v in ctx.items():
+        text = text.replace("{{" + k + "}}", str(v if v is not None else "—"))
+    return text
+
+
+def _build_email_context(case: dict) -> dict:
+    emp = case.get("employee_snapshot") or {}
+    return {
+        "employee_name": emp.get("full_name") or "",
+        "employee_id": emp.get("emp_id") or "",
+        "department": emp.get("department") or "",
+        "designation": emp.get("designation") or "",
+        "official_email": emp.get("official_email") or "",
+        "warning_reference": case.get("warning_reference") or "—",
+        "warning_level_label": WARNING_LEVELS.get(case.get("warning_level"), {}).get("label", ""),
+        "incident_date": case.get("incident_date") or "",
+        "warning_issue_date": case.get("warning_issue_date") or "",
+        "acknowledgement_due_date": case.get("acknowledgement_due_date") or "",
+        "incident_category": (case.get("incident_category") or "").replace("_", " ").title(),
+        "incident_description": case.get("incident_description") or "",
+        "corrective_action": case.get("corrective_action") or "",
+        "issued_by": case.get("approved_by_name") or case.get("created_by_name") or "HR Admin",
+        "company": "BluBridge Technologies",
+    }
+
 
 
 async def _append_audit(case_id, actor, action, prev_status=None, new_status=None,
@@ -395,7 +495,7 @@ async def warnings_send_email(case_id: str, current_user: dict = Depends(get_cur
         raise HTTPException(status_code=409, detail="Email already being processed")
 
     emp = case["employee_snapshot"]
-    subject, body_html = _render_warning_email(case)
+    subject, body_html = await _render_warning_email(case)
     try:
         await send_email_notification(emp["official_email"], subject, body_html)
         now = _now()
@@ -420,32 +520,117 @@ async def warnings_send_email(case_id: str, current_user: dict = Depends(get_cur
         raise HTTPException(status_code=502, detail=f"Email send failed: {e}")
 
 
-def _render_warning_email(case):
-    emp = case["employee_snapshot"]
-    lvl = case["warning_level"]
-    lvl_label = WARNING_LEVELS[lvl]["label"]
-    subj_prefix = {"first": "Warning Notice 1", "final": "Final Warning", "termination": "Employment/Internship Termination Action"}[lvl]
-    subject = f"{subj_prefix} – Leave and Attendance Policy Non-Compliance – {emp['full_name']}"
-    cat = case.get("incident_category", "").replace("_", " ").title()
-    body = f"""
-<p>Dear {emp['full_name']},</p>
-<p>This email is to formally notify you of a recorded instance of non-compliance with the
-company's Leave and Attendance Policy. This constitutes <b>{lvl_label}</b>.</p>
-<table cellpadding="4" cellspacing="0" border="0" style="font-family:Arial;font-size:13px;color:#333">
-<tr><td><b>Warning Reference:</b></td><td>{case.get('warning_reference', '-')}</td></tr>
-<tr><td><b>Employee ID:</b></td><td>{emp.get('emp_id','-')}</td></tr>
-<tr><td><b>Department:</b></td><td>{emp.get('department','-')}</td></tr>
-<tr><td><b>Incident Date:</b></td><td>{case['incident_date']}</td></tr>
-<tr><td><b>Warning Issued Date:</b></td><td>{case.get('warning_issue_date','-')}</td></tr>
-<tr><td><b>Incident Category:</b></td><td>{cat}</td></tr>
-<tr><td><b>Acknowledgement Due:</b></td><td>{case.get('acknowledgement_due_date','-')}</td></tr>
-</table>
-<p><b>Details of Non-Compliance:</b><br>{case['incident_description']}</p>
-{'<p><b>Required Corrective Action:</b><br>'+case['corrective_action']+'</p>' if case.get('corrective_action') else ''}
-<p>Please log in to the HRMS to acknowledge receipt of this notice.</p>
-<p>Regards,<br>{case.get('approved_by_name') or case.get('created_by_name') or 'HR Admin'}<br>BluBridge Technologies</p>
-"""
-    return subject, body
+def _render_case_details_table(case, ctx):
+    """The fixed 'case details' section — always appended after the editable body."""
+    rows = [
+        ("Warning Reference", ctx["warning_reference"]),
+        ("Employee ID", ctx["employee_id"]),
+        ("Department", ctx["department"]),
+        ("Designation", ctx["designation"]),
+        ("Incident Date", ctx["incident_date"]),
+        ("Warning Issued Date", ctx["warning_issue_date"] or "—"),
+        ("Incident Category", ctx["incident_category"]),
+        ("Acknowledgement Due", ctx["acknowledgement_due_date"] or "—"),
+    ]
+    tr = "".join(f"<tr><td style='padding:6px 10px;background:#f8fafc;font-weight:600;color:#334155;border:1px solid #e2e8f0;width:220px'>{k}</td><td style='padding:6px 10px;color:#0f172a;border:1px solid #e2e8f0'>{v or '—'}</td></tr>" for k, v in rows)
+    details = (f"<h4 style='margin:16px 0 8px;color:#0f172a;font-size:14px'>Details of Non-Compliance</h4>"
+               f"<div style='padding:10px;background:#f1f5f9;border-radius:6px;color:#0f172a;white-space:pre-wrap'>{ctx['incident_description']}</div>")
+    if ctx["corrective_action"]:
+        details += (f"<h4 style='margin:16px 0 8px;color:#0f172a;font-size:14px'>Required Corrective Action</h4>"
+                    f"<div style='padding:10px;background:#fef3c7;border-radius:6px;color:#0f172a;white-space:pre-wrap'>{ctx['corrective_action']}</div>")
+    signoff = (f"<p style='margin-top:20px'>Please log in to the HRMS to acknowledge receipt of this notice.</p>"
+               f"<p style='margin-top:16px'>Regards,<br><b>{ctx['issued_by']}</b><br>{ctx['company']}</p>")
+    return (f"<table cellpadding='0' cellspacing='0' border='0' style='border-collapse:collapse;width:100%;margin-top:12px;font-family:Arial,sans-serif;font-size:13px'>{tr}</table>"
+            f"{details}{signoff}")
+
+
+async def _render_warning_email(case):
+    """Build (subject, full_body_html) using the editable template for this case's level."""
+    tpl = await db.warning_email_templates.find_one({"level": case["warning_level"]}, {"_id": 0})
+    if not tpl:
+        tpl = DEFAULT_EMAIL_TEMPLATES[case["warning_level"]]
+    ctx = _build_email_context(case)
+    subject = _apply_placeholders(tpl["subject"], ctx)
+    heading = _apply_placeholders(tpl.get("heading") or tpl["subject"], ctx)
+    body = _apply_placeholders(tpl["body_html"], ctx)
+    full = (f"<div style='font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6'>"
+            f"<h3 style='margin:0 0 12px;color:#7c2d12;border-left:4px solid #dc2626;padding-left:10px'>{heading}</h3>"
+            f"{body}"
+            f"{_render_case_details_table(case, ctx)}"
+            f"</div>")
+    return subject, full
+
+
+# ---------------------------------------------------------------------------
+# Email Template Management (HR-only)
+# ---------------------------------------------------------------------------
+
+@api_router.get("/warnings/email-templates")
+async def get_email_templates(current_user: dict = Depends(get_current_user)):
+    if not await _is_hr(current_user):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    tpls = await db.warning_email_templates.find({}, {"_id": 0}).to_list(10)
+    by_lvl = {t["level"]: t for t in tpls}
+    # Ensure all 3 exist in response (return defaults for any missing)
+    out = []
+    for lvl in ("first", "final", "termination"):
+        out.append(by_lvl.get(lvl) or {**DEFAULT_EMAIL_TEMPLATES[lvl], "is_default": True})
+    return {"templates": out, "placeholders": list(_build_email_context({"employee_snapshot": {}}).keys())}
+
+
+@api_router.put("/warnings/email-templates/{level}")
+async def update_email_template(level: str, body: dict, current_user: dict = Depends(get_current_user)):
+    if not await _is_hr(current_user):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if level not in DEFAULT_EMAIL_TEMPLATES:
+        raise HTTPException(status_code=400, detail="Invalid warning level")
+    subj = (body or {}).get("subject", "").strip()
+    heading = (body or {}).get("heading", "").strip()
+    body_html = (body or {}).get("body_html", "").strip()
+    if not subj or not heading or not body_html:
+        raise HTTPException(status_code=400, detail="Subject, heading and body are required")
+    upd = {
+        "level": level,
+        "level_label": DEFAULT_EMAIL_TEMPLATES[level]["level_label"],
+        "subject": subj, "heading": heading, "body_html": body_html,
+        "updated_at": _now(),
+        "updated_by": current_user["id"],
+        "updated_by_name": current_user.get("name") or current_user.get("full_name"),
+    }
+    await db.warning_email_templates.update_one({"level": level}, {"$set": upd, "$setOnInsert": {"created_at": _now()}}, upsert=True)
+    return {"message": "Template updated", "template": upd}
+
+
+@api_router.post("/warnings/email-templates/{level}/reset")
+async def reset_email_template(level: str, current_user: dict = Depends(get_current_user)):
+    if not await _is_hr(current_user):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if level not in DEFAULT_EMAIL_TEMPLATES:
+        raise HTTPException(status_code=400, detail="Invalid warning level")
+    d = DEFAULT_EMAIL_TEMPLATES[level]
+    await db.warning_email_templates.update_one({"level": level}, {"$set": {
+        **d, "updated_at": _now(), "updated_by": current_user["id"],
+        "updated_by_name": current_user.get("name") or current_user.get("full_name"),
+    }}, upsert=True)
+    return {"message": "Reset to default", "template": d}
+
+
+@api_router.get("/warnings/{case_id}/email-preview")
+async def preview_warning_email(case_id: str, current_user: dict = Depends(get_current_user)):
+    if not await _is_hr(current_user):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    case = await db.warning_cases.find_one({"id": case_id}, {"_id": 0})
+    if not case: raise HTTPException(status_code=404, detail="Warning not found")
+    subject, body_html = await _render_warning_email(case)
+    return {
+        "subject": subject, "body_html": body_html,
+        "recipient": case.get("employee_snapshot", {}).get("official_email"),
+        "level": case["warning_level"],
+        "level_label": WARNING_LEVELS.get(case["warning_level"], {}).get("label", ""),
+    }
+
+
+
 
 
 @api_router.get("/warnings/{case_id}")

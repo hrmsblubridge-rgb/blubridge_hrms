@@ -5,6 +5,39 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-16 (Warning Module — Editable Email Templates + Preview Before Send ✅ TESTED)
+
+**Feature request:** Make the email heading + description for each of the 3 warning levels editable, and require a preview step before sending.
+
+**Backend (`/app/backend/warning_module.py`):**
+- New collection `warning_email_templates` — one row per level (`first`/`final`/`termination`) with fields: `subject`, `heading`, `body_html`, `updated_by(_name)`, timestamps.
+- Auto-seeded on startup via `_seed_default_templates()` — Warning Notice 1, Final Warning, Termination of Employment/Internship (all reference the 3-tier escalation framework wording).
+- Placeholder engine: `{{employee_name}}`, `{{employee_id}}`, `{{department}}`, `{{designation}}`, `{{official_email}}`, `{{warning_reference}}`, `{{warning_level_label}}`, `{{incident_date}}`, `{{warning_issue_date}}`, `{{acknowledgement_due_date}}`, `{{incident_category}}`, `{{incident_description}}`, `{{corrective_action}}`, `{{issued_by}}`, `{{company}}`.
+- `_render_warning_email(case)` is now async — reads the DB template for the case's level, substitutes placeholders, wraps with a fixed heading strip + editable body + auto-appended case-details table (reference, employee, incident details, corrective action).
+- **New endpoints:**
+  - `GET  /api/warnings/email-templates` — list all 3 (returns defaults if any missing) + `placeholders[]` reference.
+  - `PUT  /api/warnings/email-templates/{level}` — HR-only update of `subject`, `heading`, `body_html`.
+  - `POST /api/warnings/email-templates/{level}/reset` — HR-only reset to seeded default.
+  - `GET  /api/warnings/{case_id}/email-preview` — renders the exact email that would be sent for a specific case (subject + body_html + recipient + level_label). No mutation.
+
+**Frontend (`/app/frontend/src/pages/Warnings.js`):**
+- New top-right **"Email Templates"** button on `/warnings` → opens `EmailTemplatesDialog` (data-testid `email-templates-dialog`).
+  - 3 tabs (`template-tab-{first|final|termination}`) with color-coded selected state.
+  - Placeholder chips clickable-to-copy (writes `{{...}}` to clipboard).
+  - Editable **Subject**, **Heading**, **Body/Description (HTML)** with a live preview panel below.
+  - **Reset to Default** (left) + **Save Template** (right) in a proper sticky footer with backdrop-blur.
+  - Shows last-updated-by/at footer info.
+- **"Preview & Send Email"** replaces the direct send button in `WarningDetailDialog`:
+  - Opens `EmailPreviewDialog` showing To/Subject/rendered body HTML (with `dangerouslySetInnerHTML`, sanitized-safe because content originates from HR-authored templates + system fields).
+  - "Send Email Now" is disabled if the employee has no email address on file.
+  - Send button data-testid: `preview-send-btn`.
+
+**Verified:** GET `/api/warnings/email-templates` returns all 3 templates with placeholders array; GET `/api/warnings/{id}/email-preview` correctly renders `Rishi S Nayak` from the real employee snapshot on a live Final Warning case. UI verified in both Warning Notice 1 and Final Warning tabs — placeholders visible + live preview updates as HR types.
+
+---
+
+
+
 ## Latest Update — 2026-07-16 (Warning Module Phase 1 — Leave & Attendance Policy Non-Compliance Framework ✅ TESTED)
 
 **Feature:** Production-ready Warning module for the 3-tier escalation framework: **Warning Notice 1 → Final Warning → Termination of Employment/Internship**. Applies to Leave & Attendance Policy non-compliance.
