@@ -386,6 +386,12 @@ async def warnings_create(body: dict, current_user: dict = Depends(get_current_u
         "employee_visible_remarks": body.get("employee_visible_remarks"),
         "internal_remarks": body.get("internal_remarks"),
         "attachments": body.get("attachments") or [],
+        # Per-case email content — pre-filled from the level's default template on the
+        # frontend, but editable per warning. Empty/missing means "fall back to the
+        # level's default template at render time".
+        "email_subject": (body.get("email_subject") or "").strip() or None,
+        "email_heading": (body.get("email_heading") or "").strip() or None,
+        "email_body_html": (body.get("email_body_html") or "").strip() or None,
         "status": "draft",
         "email_status": "not_sent",
         "acknowledgement_status": "not_required",
@@ -416,6 +422,7 @@ async def warnings_update(case_id: str, body: dict, current_user: dict = Depends
         "level_override_reason","warning_issue_date","warning_effective_date",
         "acknowledgement_due_date","employee_response_due_date","follow_up_date",
         "corrective_action","employee_visible_remarks","internal_remarks","attachments",
+        "email_subject","email_heading","email_body_html",
     }
     update = {k: v for k, v in body.items() if k in editable}
     update["updated_at"] = _now()
@@ -545,14 +552,19 @@ def _render_case_details_table(case, ctx):
 
 
 async def _render_warning_email(case):
-    """Build (subject, full_body_html) using the editable template for this case's level."""
+    """Build (subject, full_body_html). Uses per-case fields when set; otherwise falls
+    back to the editable level template. Placeholders are always substituted last so
+    HR-authored per-case content can still use them."""
     tpl = await db.warning_email_templates.find_one({"level": case["warning_level"]}, {"_id": 0})
     if not tpl:
         tpl = DEFAULT_EMAIL_TEMPLATES[case["warning_level"]]
+    subject_src = case.get("email_subject") or tpl["subject"]
+    heading_src = case.get("email_heading") or tpl.get("heading") or tpl["subject"]
+    body_src    = case.get("email_body_html") or tpl["body_html"]
     ctx = _build_email_context(case)
-    subject = _apply_placeholders(tpl["subject"], ctx)
-    heading = _apply_placeholders(tpl.get("heading") or tpl["subject"], ctx)
-    body = _apply_placeholders(tpl["body_html"], ctx)
+    subject = _apply_placeholders(subject_src, ctx)
+    heading = _apply_placeholders(heading_src, ctx)
+    body = _apply_placeholders(body_src, ctx)
     full = (f"<div style='font-family:Arial,sans-serif;font-size:14px;color:#0f172a;line-height:1.6'>"
             f"<h3 style='margin:0 0 12px;color:#7c2d12;border-left:4px solid #dc2626;padding-left:10px'>{heading}</h3>"
             f"{body}"

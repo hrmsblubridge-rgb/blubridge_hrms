@@ -8,7 +8,7 @@ import { Badge } from '../components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Select, SelectTrigger, SelectContent, SelectValue, SelectItem } from '../components/ui/select';
 import { toast } from 'sonner';
-import { AlertTriangle, Plus, Download, Search, Send, ShieldAlert, XOctagon, CheckCircle2, Mail, Eye, RotateCcw } from 'lucide-react';
+import { AlertTriangle, Plus, Download, Search, Send, ShieldAlert, XOctagon, CheckCircle2, Mail, Eye } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -78,7 +78,6 @@ export default function Warnings() {
   const [q, setQ] = useState({ search: '', status: 'All', level: 'All' });
   const [showCreate, setShowCreate] = useState(false);
   const [detail, setDetail] = useState(null);
-  const [showTemplates, setShowTemplates] = useState(false);
 
   const reload = useCallback(async () => {
     try {
@@ -103,9 +102,6 @@ export default function Warnings() {
           <p className="text-sm text-slate-500">Track, issue and manage employee leave & attendance policy warnings.</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" className="rounded-xl" onClick={() => setShowTemplates(true)} data-testid="email-templates-btn">
-            <Mail className="w-4 h-4 mr-1.5"/>Email Templates
-          </Button>
           <Button variant="outline" className="rounded-xl" onClick={() => window.open(`${API}/warnings/export/csv?_=${Date.now()}`, '_blank')} data-testid="warnings-export-btn">
             <Download className="w-4 h-4 mr-1.5"/>Export CSV
           </Button>
@@ -209,7 +205,6 @@ export default function Warnings() {
 
       {showCreate && <CreateWarningDialog onClose={() => setShowCreate(false)} onCreated={reload}/>}
       {detail && <WarningDetailDialog id={detail} onClose={() => setDetail(null)} onChanged={reload}/>}
-      {showTemplates && <EmailTemplatesDialog onClose={() => setShowTemplates(false)}/>}
     </div>
   );
 }
@@ -227,6 +222,24 @@ function CreateWarningDialog({ onClose, onCreated }) {
     acknowledgement_due_date: '', level_override_reason: '',
   });
   const [level, setLevel] = useState(null); // overrides suggestion
+  const [templatesByLevel, setTemplatesByLevel] = useState({});
+  const [placeholders, setPlaceholders] = useState([]);
+  const [email, setEmail] = useState({ subject: '', heading: '', body_html: '' });
+  const [emailTouched, setEmailTouched] = useState({ subject: false, heading: false, body_html: false });
+
+  // Fetch level templates once. Used to auto-fill the email fields when
+  // the effective level (system-suggested OR user-overridden) changes,
+  // unless HR has already edited that field manually.
+  useEffect(() => {
+    axios.get(`${API}/warnings/email-templates`, { headers: H })
+      .then(r => {
+        const map = {};
+        (r.data.templates || []).forEach(t => { map[t.level] = t; });
+        setTemplatesByLevel(map);
+        setPlaceholders(r.data.placeholders || []);
+      })
+      .catch(() => {});
+  }, []); // eslint-disable-line
 
   const searchEmps = async (v) => {
     setEmpSearch(v);
@@ -234,7 +247,7 @@ function CreateWarningDialog({ onClose, onCreated }) {
     try {
       const r = await axios.get(`${API}/employees`, { headers: H, params: { search: v, limit: 8 }});
       setEmpResults(r.data.employees || []);
-    } catch {}
+    } catch (_e) { /* silent */ }
   };
   const pickEmp = async (e) => {
     setEmp(e); setEmpResults([]); setEmpSearch(e.full_name);
@@ -243,6 +256,44 @@ function CreateWarningDialog({ onClose, onCreated }) {
   };
   const suggested = history?.suggested_level;
   const chosenLevel = level || suggested;
+
+  // When effective level changes → pre-fill email fields from that level's template
+  // (only if HR hasn't edited that specific field yet).
+  useEffect(() => {
+    if (!chosenLevel || !templatesByLevel[chosenLevel]) return;
+    const t = templatesByLevel[chosenLevel];
+    setEmail(prev => ({
+      subject:   emailTouched.subject   ? prev.subject   : (t.subject   || ''),
+      heading:   emailTouched.heading   ? prev.heading   : (t.heading   || ''),
+      body_html: emailTouched.body_html ? prev.body_html : (t.body_html || ''),
+    }));
+  }, [chosenLevel, templatesByLevel]); // eslint-disable-line
+
+  // Build a placeholder context from the currently-selected employee and form data.
+  // This mirrors the backend's `_build_email_context` but is client-side for live preview.
+  const previewCtx = {
+    employee_name:            emp?.full_name || '{{employee_name}}',
+    employee_id:              emp?.emp_id || emp?.custom_employee_id || '{{employee_id}}',
+    department:               emp?.department || '{{department}}',
+    designation:              emp?.designation || '{{designation}}',
+    official_email:           emp?.official_email || '{{official_email}}',
+    warning_reference:        '{{will be assigned at approval}}',
+    warning_level_label:      LEVEL_META[chosenLevel]?.label || '{{warning_level_label}}',
+    incident_date:            form.incident_date || '{{incident_date}}',
+    warning_issue_date:       form.warning_issue_date || '{{warning_issue_date}}',
+    acknowledgement_due_date: form.acknowledgement_due_date || '{{acknowledgement_due_date}}',
+    incident_category:        (form.incident_category || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || '{{incident_category}}',
+    incident_description:     form.incident_description || '{{incident_description}}',
+    corrective_action:        form.corrective_action || '',
+    issued_by:                'HR Admin',
+    company:                  'BluBridge Technologies',
+  };
+  const substitute = (s) => Object.entries(previewCtx).reduce((acc, [k, v]) => acc.replace(new RegExp(`\\{\\{${k}\\}\\}`, 'g'), v), s || '');
+
+  const copyPlaceholder = (p) => {
+    const tag = `{{${p}}}`;
+    navigator.clipboard.writeText(tag).then(() => toast.success('Copied ' + tag));
+  };
 
   const submit = async (asDraft) => {
     if (!emp) return toast.error('Select an employee');
@@ -253,6 +304,9 @@ function CreateWarningDialog({ onClose, onCreated }) {
     try {
       const r = await axios.post(`${API}/warnings`, {
         employee_id: emp.id, warning_level: chosenLevel, ...form,
+        email_subject: email.subject,
+        email_heading: email.heading,
+        email_body_html: email.body_html,
       }, { headers: H });
       if (!asDraft) {
         await axios.post(`${API}/warnings/${r.data.id}/submit`, {}, { headers: H });
@@ -262,9 +316,14 @@ function CreateWarningDialog({ onClose, onCreated }) {
     } catch (e) { toast.error(e?.response?.data?.detail || 'Failed'); }
   };
 
+  const setEmailField = (k, v) => {
+    setEmail(prev => ({ ...prev, [k]: v }));
+    setEmailTouched(prev => ({ ...prev, [k]: true }));
+  };
+
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto" data-testid="create-warning-dialog">
         <DialogHeader><DialogTitle>Create Warning</DialogTitle></DialogHeader>
         <div className="space-y-4">
           {/* Employee */}
@@ -285,6 +344,7 @@ function CreateWarningDialog({ onClose, onCreated }) {
               <div className="mt-2 p-3 rounded-lg bg-slate-50 text-sm">
                 <div className="font-semibold">{emp.full_name} <span className="text-slate-500 font-normal">· {emp.department} · {emp.designation}</span></div>
                 <div className="text-xs text-slate-600 mt-1">Prior valid warnings: <b>{history.valid_prior_count}</b> · System-suggested next level: <b className="text-amber-700">{LEVEL_META[history.suggested_level]?.label}</b></div>
+                {emp.official_email && <div className="text-xs text-slate-600 mt-0.5">Email: <span className="font-mono">{emp.official_email}</span></div>}
               </div>
             )}
           </div>
@@ -328,6 +388,65 @@ function CreateWarningDialog({ onClose, onCreated }) {
                 <div className="mt-2"><label className="text-xs font-semibold">Override reason *</label>
                   <Input value={form.level_override_reason} onChange={e => setForm({...form, level_override_reason: e.target.value})} className="mt-1 rounded-lg bg-white"/></div>
               )}
+            </div>
+          )}
+
+          {/* Email content — pre-filled from level template, editable per case */}
+          {chosenLevel && (
+            <div className="rounded-xl border border-slate-200 p-4 bg-white space-y-3" data-testid="create-email-section">
+              <div className="flex items-center gap-2">
+                <Mail className="w-4 h-4 text-[#063c88]"/>
+                <div className="text-sm font-semibold text-slate-800">Warning Email Content</div>
+                <span className={`ml-auto text-[11px] font-semibold px-2 py-0.5 rounded border ${LEVEL_META[chosenLevel]?.cls || ''}`}>{LEVEL_META[chosenLevel]?.label}</span>
+              </div>
+              <p className="text-[11px] text-slate-500 -mt-1">Pre-filled from the default template for this level. Edit as needed for this specific case. Placeholders auto-resolve using the selected employee.</p>
+
+              {/* Placeholder chips */}
+              <div className="p-2 rounded-lg bg-blue-50 border border-blue-200">
+                <div className="text-[11px] font-semibold text-blue-900 mb-1.5">Placeholders <span className="font-normal text-blue-700">(click to copy)</span></div>
+                <div className="flex flex-wrap gap-1">
+                  {placeholders.map(p => (
+                    <button
+                      key={p}
+                      onClick={() => copyPlaceholder(p)}
+                      className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-white border border-blue-200 text-blue-800 hover:bg-blue-100 transition-colors"
+                      title="Copy"
+                    >{`{{${p}}}`}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-slate-600">Email Subject *</label>
+                <Input value={email.subject} onChange={e => setEmailField('subject', e.target.value)} className="mt-1 rounded-lg" data-testid="create-email-subject"/>
+                {emp && <div className="mt-1 text-[11px] text-slate-500">Resolves to: <span className="font-medium text-slate-800">{substitute(email.subject)}</span></div>}
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-600">Heading *</label>
+                <Input value={email.heading} onChange={e => setEmailField('heading', e.target.value)} className="mt-1 rounded-lg" data-testid="create-email-heading"/>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-600">Body / Description * <span className="font-normal text-slate-400">(HTML allowed)</span></label>
+                <textarea
+                  className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm font-mono"
+                  rows={8}
+                  value={email.body_html}
+                  onChange={e => setEmailField('body_html', e.target.value)}
+                  data-testid="create-email-body"
+                />
+                <div className="text-[11px] text-slate-500 mt-1">A case-details table (reference, employee, incident, corrective action) is auto-appended below your body.</div>
+              </div>
+
+              {/* Live preview */}
+              <div>
+                <div className="text-xs font-semibold text-slate-600 mb-1">Live Preview {emp && <span className="text-emerald-600">· using {emp.full_name}</span>}</div>
+                <div className="border border-slate-200 rounded-lg p-3 bg-slate-50 max-h-[220px] overflow-y-auto">
+                  <div className="text-[11px] text-slate-500 mb-2"><b>Subject:</b> {substitute(email.subject)}</div>
+                  <h3 style={{ margin: '0 0 12px', color: '#7c2d12', borderLeft: '4px solid #dc2626', paddingLeft: '10px', fontSize: '15px' }}>{substitute(email.heading)}</h3>
+                  <div dangerouslySetInnerHTML={{ __html: substitute(email.body_html) }}/>
+                  <div className="text-[10px] text-slate-400 italic mt-2">… + case-details table (auto-appended)</div>
+                </div>
+              </div>
             </div>
           )}
         </div>
@@ -486,152 +605,3 @@ function EmailPreviewDialog({ caseId, onClose, onSent }) {
   );
 }
 
-const TEMPLATE_TABS = [
-  { level: 'first',       label: 'Warning Notice 1',                  tone: 'text-amber-700 border-amber-300' },
-  { level: 'final',       label: 'Warning Notice 2 – Final Warning',  tone: 'text-orange-700 border-orange-300' },
-  { level: 'termination', label: 'Termination of Employment/Internship', tone: 'text-red-700 border-red-300' },
-];
-
-function EmailTemplatesDialog({ onClose }) {
-  const { token } = useAuth();
-  const H = { Authorization: `Bearer ${token}` };
-  const [tab, setTab] = useState('first');
-  const [templates, setTemplates] = useState({});
-  const [placeholders, setPlaceholders] = useState([]);
-  const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const r = await axios.get(`${API}/warnings/email-templates`, { headers: H });
-      const map = {};
-      (r.data.templates || []).forEach(t => { map[t.level] = t; });
-      setTemplates(map);
-      setPlaceholders(r.data.placeholders || []);
-    } catch (e) { toast.error(e?.response?.data?.detail || 'Failed to load templates'); }
-    finally { setLoading(false); }
-  }, [token]); // eslint-disable-line
-  useEffect(() => { load(); }, [load]);
-
-  const current = templates[tab];
-  const patch = (patchObj) => setTemplates(s => ({ ...s, [tab]: { ...s[tab], ...patchObj } }));
-
-  const save = async () => {
-    if (!current?.subject || !current?.heading || !current?.body_html) return toast.error('Subject, heading and body are required');
-    setSaving(true);
-    try {
-      await axios.put(`${API}/warnings/email-templates/${tab}`, {
-        subject: current.subject, heading: current.heading, body_html: current.body_html,
-      }, { headers: H });
-      toast.success('Template saved');
-      await load();
-    } catch (e) { toast.error(e?.response?.data?.detail || 'Save failed'); }
-    finally { setSaving(false); }
-  };
-
-  const resetDefault = async () => {
-    if (!window.confirm('Reset this template to the default? Your customizations for this level will be lost.')) return;
-    setSaving(true);
-    try {
-      await axios.post(`${API}/warnings/email-templates/${tab}/reset`, {}, { headers: H });
-      toast.success('Reset to default');
-      await load();
-    } catch (e) { toast.error(e?.response?.data?.detail || 'Reset failed'); }
-    finally { setSaving(false); }
-  };
-
-  return (
-    <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto" data-testid="email-templates-dialog">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2"><Mail className="w-5 h-5"/>Manage Warning Email Templates</DialogTitle>
-        </DialogHeader>
-
-        {/* Tabs */}
-        <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
-          {TEMPLATE_TABS.map(t => (
-            <button
-              key={t.level}
-              onClick={() => setTab(t.level)}
-              data-testid={`template-tab-${t.level}`}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium border-2 transition-colors ${tab === t.level ? `bg-white ${t.tone} shadow-sm` : 'text-slate-500 border-transparent hover:bg-slate-50'}`}
-            >{t.label}</button>
-          ))}
-        </div>
-
-        {loading || !current ? (
-          <div className="p-10 text-center text-slate-500">Loading…</div>
-        ) : (
-          <div className="space-y-4 text-sm">
-            {/* Placeholders reference */}
-            <Card className="p-3 rounded-lg bg-blue-50 border-blue-200">
-              <div className="text-xs font-semibold text-blue-900 mb-1.5">Available Placeholders</div>
-              <div className="flex flex-wrap gap-1.5">
-                {placeholders.map(p => (
-                  <button
-                    key={p}
-                    onClick={() => navigator.clipboard.writeText('{{' + p + '}}').then(() => toast.success('Copied {{' + p + '}}'))}
-                    className="px-2 py-0.5 rounded text-[11px] font-mono bg-white border border-blue-200 text-blue-800 hover:bg-blue-100 transition-colors"
-                    title="Click to copy"
-                  >{`{{${p}}}`}</button>
-                ))}
-              </div>
-              <div className="text-[11px] text-blue-700 mt-1.5 italic">Click any tag to copy. Paste into the subject, heading or body.</div>
-            </Card>
-
-            <div>
-              <label className="text-xs font-semibold text-slate-600">Subject Line *</label>
-              <Input value={current.subject || ''} onChange={e => patch({ subject: e.target.value })} className="mt-1 rounded-lg" data-testid="template-subject"/>
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-600">Heading (shown at top of email) *</label>
-              <Input value={current.heading || ''} onChange={e => patch({ heading: e.target.value })} className="mt-1 rounded-lg" data-testid="template-heading"/>
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-600">Body / Description * <span className="font-normal text-slate-400">(HTML allowed — &lt;p&gt;, &lt;b&gt;, &lt;br&gt;, &lt;ul&gt;/&lt;li&gt;)</span></label>
-              <textarea
-                className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm font-mono"
-                rows={9}
-                value={current.body_html || ''}
-                onChange={e => patch({ body_html: e.target.value })}
-                data-testid="template-body"
-              />
-              <div className="text-[11px] text-slate-500 mt-1">A standard case-details table (reference, employee, incident date, description, corrective action) is appended automatically below your body.</div>
-            </div>
-
-            {/* Live preview */}
-            <div>
-              <div className="text-xs font-semibold text-slate-600 mb-1">Live Preview</div>
-              <div className="border border-slate-200 rounded-lg p-3 bg-white max-h-[240px] overflow-y-auto">
-                <div className="text-[11px] text-slate-500 mb-2">
-                  <b>Subject:</b> {current.subject}
-                </div>
-                <h3 style={{ margin: '0 0 12px', color: '#7c2d12', borderLeft: '4px solid #dc2626', paddingLeft: '10px', fontSize: '16px' }}>{current.heading}</h3>
-                <div dangerouslySetInnerHTML={{ __html: current.body_html || '' }}/>
-                <div className="text-[10px] text-slate-400 italic mt-3">… + case details table (auto-appended)</div>
-              </div>
-              <div className="text-[11px] text-slate-500 mt-1 italic">Placeholders show as-is here. They are substituted with real values when the email is rendered for a specific warning case.</div>
-            </div>
-
-            {current.updated_by_name && (
-              <div className="text-[11px] text-slate-500">Last updated by <b>{current.updated_by_name}</b> on {current.updated_at ? new Date(current.updated_at).toLocaleString('en-IN') : '—'}</div>
-            )}
-          </div>
-        )}
-
-        <div className="flex flex-wrap justify-between gap-2 pt-4 mt-4 -mx-6 -mb-6 px-6 py-4 border-t border-slate-200 sticky bottom-0 bg-white/95 backdrop-blur-sm rounded-b-lg shadow-[0_-4px_12px_-4px_rgba(15,23,42,0.08)]">
-          <Button variant="outline" className="rounded-lg h-9 px-4 text-slate-600" onClick={resetDefault} disabled={saving || loading} data-testid="template-reset-btn">
-            <RotateCcw className="w-4 h-4 mr-1.5"/>Reset to Default
-          </Button>
-          <div className="flex gap-2">
-            <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={saving}>Close</Button>
-            <Button className="rounded-lg h-9 px-5 bg-[#063c88] hover:bg-[#052e6b]" onClick={save} disabled={saving || loading} data-testid="template-save-btn">
-              {saving ? 'Saving…' : 'Save Template'}
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
