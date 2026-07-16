@@ -672,6 +672,14 @@ COMPANY_POLICIES = [
                     "footer": "Attendance & Productivity Compliance: Employees reporting late shall still be required to complete a minimum of 9 hours 30 minutes of active productive engagement (excluding breaks, lunch, snacks, dinner) AND a minimum total working duration of 11 hours. Upon completion of the above, the day shall be considered a Full Working Day, and salary/stipend eligibility for that day shall remain unaffected, subject to management approval and overall attendance compliance. Half-Day Eligibility: Employees must complete a minimum of 5 hours of productive engagement (excluding breaks and meal durations) to qualify."
                 },
                 {
+                    "title": "Leave Approval Process",
+                    "text": "All leave requests are subject to the following mandatory approval workflow. Leave shall be considered approved only upon completion of all steps below.",
+                    "items": [
+                        "Formal leave email submission",
+                        "HRMS portal update and regularization"
+                    ]
+                },
+                {
                     "title": "Leave and Attendance Policy Non-Compliance Framework",
                     "table": {
                         "headers": ["Instance of Non-Compliance", "Action"],
@@ -682,14 +690,6 @@ COMPANY_POLICIES = [
                         ]
                     },
                     "footer": "Note: This framework applies to any failure to adhere to the Leave and Attendance Policy, including prescribed timelines, leave categories, required documentation, email and HRMS submission requirements, and defined communication formats."
-                },
-                {
-                    "title": "Leave Approval Process",
-                    "text": "All leave requests are subject to the following mandatory approval workflow. Leave shall be considered approved only upon completion of all steps below.",
-                    "items": [
-                        "Formal leave email submission",
-                        "HRMS portal update and regularization"
-                    ]
                 },
                 {
                     "title": "5. Company Conduct & Workplace Protocol",
