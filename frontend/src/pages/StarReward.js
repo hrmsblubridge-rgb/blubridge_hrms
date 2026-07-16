@@ -74,6 +74,8 @@ const StarReward = () => {
   const [simpleFormData, setSimpleFormData] = useState({ value: '', reason: '' });
   const [showViewModal, setShowViewModal] = useState(false);
   const [starHistory, setStarHistory] = useState([]);
+  const [monthlyView, setMonthlyView] = useState(null);
+  const [expandedViewMonth, setExpandedViewMonth] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [filters, setFilters] = useState({ team: 'All', month: new Date().toISOString().slice(0, 7), search: '' });
   const [tableFilters, setTableFilters] = useState({ fromMonth: new Date().toISOString().slice(0, 7), toMonth: new Date().toISOString().slice(0, 7), pageSize: 25 });
@@ -142,11 +144,23 @@ const StarReward = () => {
   const handleViewEmployee = async (employee) => {
     setSelectedEmployee(employee);
     setStarHistory([]);
+    setMonthlyView(null);
+    setExpandedViewMonth(null);
     setLoadingHistory(true);
     setShowViewModal(true);
     try {
-      const response = await axios.get(`${API}/star-rewards/history/${employee.id}`, { headers: getAuthHeaders() });
-      setStarHistory(response.data);
+      // Fetch BOTH flat history AND month-wise breakdown in parallel.
+      const [histRes, monthlyRes] = await Promise.all([
+        axios.get(`${API}/star-rewards/history/${employee.id}`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/star-rewards/auto/monthly/${employee.id}`, { headers: getAuthHeaders() }).catch(() => null),
+      ]);
+      setStarHistory(histRes.data);
+      if (monthlyRes && monthlyRes.data) {
+        setMonthlyView(monthlyRes.data);
+        // Auto-expand the most recent month so HR sees a clear per-month view
+        const months = monthlyRes.data.months || [];
+        if (months.length) setExpandedViewMonth(months[months.length - 1].month);
+      }
     } catch (error) {
       setStarHistory([]);
     } finally {
@@ -197,10 +211,14 @@ const StarReward = () => {
   const totalStars = useMemo(() => filteredEmployees.reduce((sum, e) => sum + (e.stars || 0), 0), [filteredEmployees]);
   const topPerformer = useMemo(() => filteredEmployees.reduce((top, e) => (!top || (e.stars || 0) > (top.stars || 0)) ? e : top, null), [filteredEmployees]);
 
-  // View History Modal
-  const ViewHistoryModal = () => (
+  // View History Modal — now shows a proper MONTH-BY-MONTH breakdown so HR
+  // can clearly see each month's stars separately (fixes the "all months look
+  // the same" concern). Expanding a month reveals the individual reward lines.
+  const ViewHistoryModal = () => {
+    const months = monthlyView?.months || [];
+    return (
     <Dialog open={showViewModal} onOpenChange={setShowViewModal}>
-      <DialogContent className="bg-[#fffdf7] max-w-2xl rounded-2xl">
+      <DialogContent className="bg-[#fffdf7] max-w-3xl rounded-2xl max-h-[85vh] overflow-y-auto" data-testid="view-history-modal">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3" style={{ fontFamily: 'Outfit' }}>
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-lg">
@@ -208,39 +226,88 @@ const StarReward = () => {
             </div>
             Star History - {selectedEmployee?.name}
           </DialogTitle>
-          <DialogDescription>View award history and performance</DialogDescription>
+          <DialogDescription>
+            Month-by-month rollup · {monthlyView?.employee?.date_of_joining && (<>Joined <b>{monthlyView.employee.date_of_joining}</b> · </>)}
+            {months.length} month{months.length === 1 ? '' : 's'} of records
+          </DialogDescription>
         </DialogHeader>
         <div className="py-4">
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            <div className="p-4 rounded-xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200/50">
-              <p className="text-xs text-amber-600 uppercase tracking-wide font-medium">Total Stars</p>
-              <p className={`text-2xl font-bold mt-1 ${(selectedEmployee?.stars || 0) >= 0 ? 'text-amber-600' : 'text-red-600'}`}>{selectedEmployee?.stars || 0}</p>
+          {/* Summary cards */}
+          <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="p-3 rounded-xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200/50">
+              <p className="text-[11px] text-amber-700 uppercase tracking-wide font-semibold">Cumulative Stars</p>
+              <p className={`text-2xl font-bold mt-0.5 ${(selectedEmployee?.stars || 0) >= 0 ? 'text-amber-600' : 'text-red-600'}`}>{selectedEmployee?.stars || 0}</p>
             </div>
-            <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/50">
-              <p className="text-xs text-slate-500 uppercase tracking-wide font-medium">Unsafe Count</p>
-              <p className="text-2xl font-bold text-red-500 mt-1">{selectedEmployee?.unsafe_count || 0}</p>
+            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/50">
+              <p className="text-[11px] text-slate-500 uppercase tracking-wide font-semibold">Unsafe Count</p>
+              <p className="text-2xl font-bold text-red-500 mt-0.5">{selectedEmployee?.unsafe_count || 0}</p>
+            </div>
+            <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200/50">
+              <p className="text-[11px] text-emerald-700 uppercase tracking-wide font-semibold">Months Recorded</p>
+              <p className="text-2xl font-bold text-emerald-600 mt-0.5">{months.length}</p>
             </div>
           </div>
+
           {loadingHistory ? (
-            <div className="flex items-center justify-center py-8">
+            <div className="flex items-center justify-center py-10">
               <div className="w-8 h-8 border-2 border-amber-500 border-t-transparent rounded-full animate-spin" />
             </div>
-          ) : starHistory.length === 0 ? (
-            <p className="text-center text-slate-500 py-8">No history records found</p>
+          ) : months.length === 0 ? (
+            <p className="text-center text-slate-500 py-10">No star history yet.</p>
           ) : (
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {starHistory.map((record) => (
-                <div key={record.id} className="flex items-center justify-between p-3 rounded-xl bg-white border border-slate-100 hover:border-amber-200 transition-colors">
-                  <div>
-                    <p className="text-sm font-medium text-slate-900">{record.type}</p>
-                    <p className="text-sm text-slate-600">{record.reason}</p>
-                    <p className="text-xs text-slate-400 mt-1">{record.month}</p>
+            <div className="space-y-2">
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider px-1">Month-by-month breakdown</div>
+              {months.map((m) => {
+                const isOpen = expandedViewMonth === m.month;
+                const isCurrent = m.month === monthlyView?.current_month;
+                const [y, mm] = m.month.split('-');
+                const mLabel = new Date(Number(y), Number(mm) - 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+                return (
+                  <div key={m.month} className={`rounded-xl border ${isCurrent ? 'border-amber-300 bg-amber-50/50' : 'border-slate-200 bg-white'}`} data-testid={`admin-month-${m.month}`}>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedViewMonth(isOpen ? null : m.month)}
+                      className="w-full flex items-center gap-3 px-4 py-3 text-left"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-slate-800">
+                          {mLabel}
+                          {isCurrent && <span className="ml-2 text-[10px] uppercase font-bold text-amber-700 tracking-wider">Current</span>}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5 flex gap-2 flex-wrap">
+                          <span>{m.entries} entr{m.entries === 1 ? 'y' : 'ies'}</span>
+                          {m.auto_stars !== 0 && <span>· Auto <b>{m.auto_stars > 0 ? `+${m.auto_stars}` : m.auto_stars}</b></span>}
+                          {m.manual_stars !== 0 && <span>· Manual <b>{m.manual_stars > 0 ? `+${m.manual_stars}` : m.manual_stars}</b></span>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {m.positive > 0 && <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-100 rounded px-2 py-0.5">+{m.positive}</span>}
+                        {m.negative < 0 && <span className="text-[11px] font-semibold text-rose-700 bg-rose-100 rounded px-2 py-0.5">{m.negative}</span>}
+                        <div className={`px-3 py-1 rounded-lg text-sm font-bold ${m.stars > 0 ? 'bg-emerald-50 text-emerald-700' : m.stars < 0 ? 'bg-rose-50 text-rose-700' : 'bg-slate-50 text-slate-700'}`}>
+                          {m.stars > 0 ? '+' : ''}{m.stars} <Star className="inline w-3 h-3 fill-current -mt-0.5" />
+                        </div>
+                        <span className="text-slate-400 text-lg leading-none w-4 text-center">{isOpen ? '−' : '+'}</span>
+                      </div>
+                    </button>
+                    {isOpen && m.items.length > 0 && (
+                      <div className="border-t border-slate-200 divide-y divide-slate-100">
+                        {m.items.map(it => (
+                          <div key={it.id} className="px-4 py-2.5 flex items-start gap-3 text-sm">
+                            <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] shrink-0 ${it.stars > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                              {it.stars > 0 ? '+' : ''}{it.stars}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-[13px] font-medium text-slate-800">{it.category}</div>
+                              <div className="text-[11px] text-slate-500 mt-0.5">{it.reason}</div>
+                            </div>
+                            <div className="text-[11px] text-slate-400 shrink-0 tabular-nums">{it.date}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <Badge className={`${record.stars >= 0 ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-red-100 text-red-700 border-red-200'}`}>
-                    {record.stars > 0 ? `+${record.stars}` : record.stars} <Star className="w-3 h-3 ml-1 fill-current" />
-                  </Badge>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -249,7 +316,8 @@ const StarReward = () => {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
+    );
+  };
 
   if (loading) {
     return (

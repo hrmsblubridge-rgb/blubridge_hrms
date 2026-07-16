@@ -9360,17 +9360,20 @@ async def employee_get_own_stars(current_user: dict = Depends(get_current_user))
         r["awarded_by_name"] = awarder_names.get(r.get("awarded_by"), "HR")
 
     # Derive month-wise breakdown (last 6 months) for a small trend chart.
-    from collections import OrderedDict
-    monthly = OrderedDict()
+    # BUGFIX 2026-07-16: previously used dict-insertion order (which depended on
+    # history sort order, arbitrary when many rows share the same created_at).
+    # Now sorted deterministically by month-key ASCENDING and unsafe entries
+    # correctly contribute their negative stars to the monthly total.
+    monthly_map = {}
     for r in history:
-        m = r.get("month") or (r.get("created_at", "")[:7])
+        m = r.get("month") or (r.get("ref_date") or r.get("created_at", ""))[:7]
         if not m:
             continue
-        cell = monthly.setdefault(m, {"month": m, "stars": 0, "unsafe": 0})
+        cell = monthly_map.setdefault(m, {"month": m, "stars": 0, "unsafe": 0})
+        cell["stars"] += (r.get("stars", 0) or 0)  # always contribute (pos and neg)
         if r.get("type") == "unsafe":
             cell["unsafe"] += 1
-        else:
-            cell["stars"] += (r.get("stars", 0) or 0)
+    monthly_sorted = [monthly_map[k] for k in sorted(monthly_map.keys())]
 
     return {
         "employee": {
@@ -9383,7 +9386,7 @@ async def employee_get_own_stars(current_user: dict = Depends(get_current_user))
         },
         "totals": {"stars": stars_total, "unsafe": unsafe_total},
         "history": [serialize_doc(r) for r in history],
-        "monthly": list(reversed(list(monthly.values())))[-6:],
+        "monthly": monthly_sorted[-6:],  # last 6 months, in chronological order
     }
 
 # ============== TEAM ROUTES ==============
