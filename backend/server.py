@@ -9089,8 +9089,65 @@ async def add_star_reward(data: StarRewardCreate, current_user: dict = Depends(g
 
 @api_router.get("/star-rewards/history/{employee_id}")
 async def get_star_history(employee_id: str, current_user: dict = Depends(get_current_user)):
-    rewards = await db.star_rewards.find({"employee_id": employee_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    rewards = await db.star_rewards.find({"employee_id": employee_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [serialize_doc(r) for r in rewards]
+
+
+# ============================================================================
+# Star Reward AUTOMATION — per §4/§5/§6/§10 of the BluBridge Research Star
+# Policy. Manual awards remain untouched. Auto rows carry `source: 'auto'`.
+# ============================================================================
+from star_reward_automation import compute_auto_stars, apply_auto_stars, RULE_CATALOG
+
+
+@api_router.get("/star-rewards/auto/rules")
+async def star_auto_rules(current_user: dict = Depends(get_current_user)):
+    """Return the automation rule catalog (read-only reference for the UI)."""
+    return {"rules": RULE_CATALOG}
+
+
+@api_router.post("/star-rewards/auto/preview")
+async def star_auto_preview(body: dict, current_user: dict = Depends(get_current_user)):
+    """Compute what would be awarded for an employee between start_date and end_date.
+    Read-only — HR previews the breakdown before applying."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp_id = (body or {}).get("employee_id")
+    start_date = (body or {}).get("start_date")
+    end_date = (body or {}).get("end_date") or datetime.now().strftime("%Y-%m-%d")
+    if not emp_id or not start_date:
+        raise HTTPException(status_code=400, detail="employee_id and start_date are required")
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if emp.get("department") != "Research Unit":
+        raise HTTPException(status_code=400, detail="Automation is available for Research Unit employees only")
+    result = await compute_auto_stars(db, emp_id, start_date, end_date)
+    result["employee"] = {"id": emp["id"], "full_name": emp.get("full_name"),
+                          "department": emp.get("department"), "team": emp.get("team")}
+    return result
+
+
+@api_router.post("/star-rewards/auto/apply")
+async def star_auto_apply(body: dict, current_user: dict = Depends(get_current_user)):
+    """Persist the auto-computed rewards. Idempotent: re-running for the same
+    range replaces prior auto rows for that employee in that window."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp_id = (body or {}).get("employee_id")
+    start_date = (body or {}).get("start_date")
+    end_date = (body or {}).get("end_date") or datetime.now().strftime("%Y-%m-%d")
+    if not emp_id or not start_date:
+        raise HTTPException(status_code=400, detail="employee_id and start_date are required")
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if emp.get("department") != "Research Unit":
+        raise HTTPException(status_code=400, detail="Automation is available for Research Unit employees only")
+    result = await apply_auto_stars(db, emp_id, start_date, end_date, current_user["id"])
+    await log_audit(current_user["id"], "auto_award_stars", "star_reward", emp_id,
+                    f"range={start_date}→{end_date} applied={result.get('applied',0)} total_stars={result.get('total_stars',0)}")
+    return result
 
 @api_router.get("/employee/star-rewards/me")
 async def employee_get_own_stars(current_user: dict = Depends(get_current_user)):

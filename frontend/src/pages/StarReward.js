@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import EmployeeAvatar from '../components/EmployeeAvatar';
-import { Download, Plus, Eye, ArrowLeft, Star, Users, Award, TrendingUp, Trophy, Sparkles, AlertTriangle } from 'lucide-react';
+import { Download, Plus, Eye, ArrowLeft, Star, Users, Award, TrendingUp, Trophy, Sparkles, AlertTriangle, Zap, Loader2, CheckCircle2 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/ui/date-picker';
@@ -78,6 +78,7 @@ const StarReward = () => {
   const [filters, setFilters] = useState({ team: 'All', month: new Date().toISOString().slice(0, 7), search: '' });
   const [tableFilters, setTableFilters] = useState({ fromMonth: new Date().toISOString().slice(0, 7), toMonth: new Date().toISOString().slice(0, 7), pageSize: 25 });
   const [currentPage, setCurrentPage] = useState(1);
+  const [autoCalcEmp, setAutoCalcEmp] = useState(null);
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (addFormType === 'performance' || addFormType === 'learning') setWeeklyData(getWeeksForMonth(addFormMonth)); }, [addFormMonth, addFormType]);
@@ -407,8 +408,13 @@ const StarReward = () => {
                             <Button size="sm" variant="ghost" onClick={() => handleViewEmployee(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`view-history-${emp.id}`}>
                               <Eye className="w-4 h-4 text-slate-500" />
                             </Button>
+                            {canAddStars && emp.department === 'Research Unit' && (
+                              <Button size="sm" variant="ghost" onClick={() => setAutoCalcEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`auto-calc-${emp.id}`} title="Auto-Calculate stars per policy">
+                                <Zap className="w-4 h-4 text-amber-500" />
+                              </Button>
+                            )}
                             {canAddStars && (
-                              <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`add-stars-${emp.id}`}>
+                              <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`add-stars-${emp.id}`} title="Add manual reward">
                                 <Plus className="w-4 h-4 text-amber-500" />
                               </Button>
                             )}
@@ -556,8 +562,13 @@ const StarReward = () => {
                                 <Button size="sm" variant="ghost" onClick={() => handleViewEmployee(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`view-history-${emp.id}`}>
                                   <Eye className="w-4 h-4 text-slate-500" />
                                 </Button>
+                                {canAddStars && emp.department === 'Research Unit' && (
+                                  <Button size="sm" variant="ghost" onClick={() => setAutoCalcEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`auto-calc-${emp.id}`} title="Auto-Calculate stars per policy">
+                                    <Zap className="w-4 h-4 text-amber-500" />
+                                  </Button>
+                                )}
                                 {canAddStars && (
-                                  <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`add-stars-${emp.id}`}>
+                                  <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`add-stars-${emp.id}`} title="Add manual reward">
                                     <Plus className="w-4 h-4 text-amber-500" />
                                   </Button>
                                 )}
@@ -611,6 +622,11 @@ const StarReward = () => {
                         <Button size="sm" variant="ghost" onClick={() => handleViewEmployee(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`grid-view-${emp.id}`}>
                           <Eye className="w-4 h-4 text-slate-500" />
                         </Button>
+                        {canAddStars && emp.department === 'Research Unit' && (
+                          <Button size="sm" variant="ghost" onClick={() => setAutoCalcEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`grid-auto-${emp.id}`} title="Auto-Calculate">
+                            <Zap className="w-4 h-4 text-amber-500" />
+                          </Button>
+                        )}
                         {canAddStars && (
                           <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`grid-add-${emp.id}`}>
                             <Plus className="w-4 h-4 text-amber-500" />
@@ -656,8 +672,176 @@ const StarReward = () => {
           </TabsContent>
         </Tabs>
       </div>
+      {autoCalcEmp && (
+        <AutoStarDialog
+          employee={autoCalcEmp}
+          onClose={() => setAutoCalcEmp(null)}
+          onApplied={() => { setAutoCalcEmp(null); fetchData(); }}
+          getAuthHeaders={getAuthHeaders}
+        />
+      )}
     </>
   );
 };
+
+// ---------------------------------------------------------------------------
+// Auto-Calculate Stars Dialog — Research Unit only. Fetches a policy-driven
+// breakdown of stars for [start_date, today], HR reviews, then Apply persists.
+// ---------------------------------------------------------------------------
+function AutoStarDialog({ employee, onClose, onApplied, getAuthHeaders }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const defaultStart = employee.join_date || (() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 3); return d.toISOString().slice(0, 10);
+  })();
+  const [startDate, setStartDate] = React.useState(defaultStart);
+  const [endDate, setEndDate] = React.useState(today);
+  const [preview, setPreview] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [applying, setApplying] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await axios.post(`${API}/star-rewards/auto/preview`,
+        { employee_id: employee.id, start_date: startDate, end_date: endDate },
+        { headers: getAuthHeaders() });
+      setPreview(r.data);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Preview failed');
+      setPreview(null);
+    } finally { setLoading(false); }
+  }, [employee.id, startDate, endDate, getAuthHeaders]);
+
+  React.useEffect(() => { load(); }, [load]);
+
+  const apply = async () => {
+    if (!preview?.breakdown?.length) return toast.error('Nothing to apply');
+    if (!window.confirm(`Apply ${preview.breakdown.length} auto-calculated entries (${preview.total_stars >= 0 ? '+' : ''}${preview.total_stars} stars) for ${employee.full_name}?\n\nThis will REPLACE any previous automatic entries for this date range but will NOT touch manual awards.`)) return;
+    setApplying(true);
+    try {
+      const r = await axios.post(`${API}/star-rewards/auto/apply`,
+        { employee_id: employee.id, start_date: startDate, end_date: endDate },
+        { headers: getAuthHeaders() });
+      toast.success(`Applied ${r.data.applied} entries · Total stars now ${r.data.total_stars}`);
+      onApplied();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Apply failed');
+    } finally { setApplying(false); }
+  };
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto" data-testid="auto-star-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Zap className="w-5 h-5 text-amber-500" />
+            Auto-Calculate Stars · {employee.full_name}
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Range picker */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs font-semibold text-slate-600">Start Date</Label>
+            <Input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} max={endDate} className="mt-1 rounded-lg" data-testid="auto-start-date" />
+          </div>
+          <div>
+            <Label className="text-xs font-semibold text-slate-600">End Date</Label>
+            <Input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} min={startDate} max={today} className="mt-1 rounded-lg" data-testid="auto-end-date" />
+          </div>
+        </div>
+
+        {/* Policy summary strip */}
+        <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900">
+          <div className="font-semibold mb-1">Policy-driven — BluBridge Research Star Framework</div>
+          <div className="text-blue-800">This computes stars from attendance and leave records per the policy: full monthly attendance (+2), 10+ hrs weekly avg (+1), uninformed absences (−2 each), &gt;4 monthly absences (−4), &gt;2 emergency leaves/month (−3), late sick notification (−1), and consecutive-day engagement/commitment shortfalls (§10). <b>Manual awards remain untouched.</b></div>
+        </div>
+
+        {loading ? (
+          <div className="p-10 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin inline mr-2" />Computing per policy…</div>
+        ) : !preview ? (
+          <div className="p-6 text-center text-rose-600">Failed to load preview.</div>
+        ) : (
+          <>
+            {/* Summary cards */}
+            <div className="grid grid-cols-4 gap-3">
+              <div className="p-3 rounded-lg bg-white border border-slate-200 text-center">
+                <div className="text-[11px] text-slate-500">Net Stars</div>
+                <div className={`text-2xl font-bold ${preview.total_stars > 0 ? 'text-emerald-600' : preview.total_stars < 0 ? 'text-rose-600' : 'text-slate-700'}`} data-testid="auto-total-stars">
+                  {preview.total_stars > 0 ? '+' : ''}{preview.total_stars}
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
+                <div className="text-[11px] text-emerald-700">Positive</div>
+                <div className="text-2xl font-bold text-emerald-600">+{preview.positive_stars}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-center">
+                <div className="text-[11px] text-rose-700">Deductions</div>
+                <div className="text-2xl font-bold text-rose-600">{preview.negative_stars}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-center">
+                <div className="text-[11px] text-slate-500">Days Evaluated</div>
+                <div className="text-2xl font-bold text-slate-700">{preview.meta?.attendance_days_evaluated ?? 0}</div>
+              </div>
+            </div>
+
+            {/* Breakdown */}
+            {preview.breakdown.length === 0 ? (
+              <div className="p-8 text-center border border-dashed border-slate-300 rounded-xl">
+                <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto" />
+                <p className="mt-2 text-sm text-slate-700 font-medium">No policy triggers in this range.</p>
+                <p className="text-xs text-slate-500 mt-1">The employee has no attendance/leave events matching any auto-computed rule between the selected dates.</p>
+              </div>
+            ) : (
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[380px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 sticky top-0 z-10">
+                    <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500">
+                      <th className="px-3 py-2">Date</th>
+                      <th className="px-3 py-2">Category</th>
+                      <th className="px-3 py-2">Event</th>
+                      <th className="px-3 py-2 text-center">Stars</th>
+                      <th className="px-3 py-2">Remarks</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {preview.breakdown.map(x => (
+                      <tr key={x.id} className={x.stars > 0 ? 'bg-emerald-50/30' : 'bg-rose-50/30'}>
+                        <td className="px-3 py-2 whitespace-nowrap font-mono text-[12px]">{x.date}</td>
+                        <td className="px-3 py-2 text-[12px]">{x.category}</td>
+                        <td className="px-3 py-2 text-[12px]">{x.event}</td>
+                        <td className="px-3 py-2 text-center">
+                          <span className={`inline-block px-2 py-0.5 rounded font-bold ${x.stars > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                            {x.stars > 0 ? '+' : ''}{x.stars}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-[11px] text-slate-500">{x.remarks}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-2 pt-4 mt-4 -mx-6 -mb-6 px-6 py-4 border-t border-slate-200 sticky bottom-0 bg-white/95 backdrop-blur-sm rounded-b-lg shadow-[0_-4px_12px_-4px_rgba(15,23,42,0.08)]">
+          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={applying}>Close</Button>
+          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={load} disabled={loading || applying}>
+            <Loader2 className={`w-4 h-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} />Recompute
+          </Button>
+          <Button
+            className="rounded-lg h-9 px-5 bg-amber-500 hover:bg-amber-600 shadow-sm"
+            onClick={apply}
+            disabled={applying || loading || !preview?.breakdown?.length}
+            data-testid="auto-apply-btn"
+          >
+            <Zap className="w-4 h-4 mr-1.5"/>{applying ? 'Applying…' : 'Apply Auto-Awards'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 export default StarReward;
