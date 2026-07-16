@@ -116,22 +116,26 @@ def _classify(rec: dict) -> str:
 # Compute engine
 # ---------------------------------------------------------------------------
 
-async def compute_auto_stars(db, employee_id: str, start_date: str, end_date: str) -> dict:
+async def compute_auto_stars(db, employee_id: str, start_date: str, end_date: str,
+                             att_docs_override=None, leaves_docs_override=None) -> dict:
     """Build the star-reward breakdown for an employee over [start_date, end_date].
 
     All dates are YYYY-MM-DD. Read-only — does NOT mutate the DB.
+
+    Optional overrides let a bulk caller pre-fetch attendance & leaves for the
+    entire department in one shot to avoid N round-trips.
     """
     sd = _parse_date_str(start_date)
     ed = _parse_date_str(end_date)
     if not sd or not ed or ed < sd:
         return {"error": "Invalid date range", "total_stars": 0, "breakdown": [], "counts": {}}
 
-    # Pull all attendance rows for this employee. `date` is DD-MM-YYYY, so we
-    # can't filter server-side; fetch and filter in Python (~30 days × N emps
-    # is trivial).
-    att_docs = await db.attendance.find(
-        {"employee_id": employee_id}, {"_id": 0}
-    ).to_list(20000)
+    if att_docs_override is not None:
+        att_docs = att_docs_override
+    else:
+        att_docs = await db.attendance.find(
+            {"employee_id": employee_id}, {"_id": 0}
+        ).to_list(20000)
     att_in_range = []
     for a in att_docs:
         d = _parse_date_str(a.get("date"))
@@ -141,10 +145,13 @@ async def compute_auto_stars(db, employee_id: str, start_date: str, end_date: st
     att_in_range.sort(key=lambda x: x["_date"])
 
     # Pull approved leaves that overlap the range.
-    leaves_docs = await db.leaves.find(
-        {"employee_id": employee_id, "status": {"$in": ["approved", "Approved"]}},
-        {"_id": 0}
-    ).to_list(2000)
+    if leaves_docs_override is not None:
+        leaves_docs = leaves_docs_override
+    else:
+        leaves_docs = await db.leaves.find(
+            {"employee_id": employee_id, "status": {"$in": ["approved", "Approved"]}},
+            {"_id": 0}
+        ).to_list(2000)
     approved_leave_dates = set()  # dates covered by any approved leave
     emergency_leaves_by_month = defaultdict(list)   # month → list of leave docs
     late_sick_leaves = []          # sick leaves notified after 07:00 AM
@@ -302,13 +309,16 @@ async def compute_auto_stars(db, employee_id: str, start_date: str, end_date: st
 
 
 async def apply_auto_stars(db, employee_id: str, start_date: str, end_date: str,
-                           awarded_by_id: str) -> dict:
+                           awarded_by_id: str,
+                           att_docs_override=None, leaves_docs_override=None) -> dict:
     """Persist the auto breakdown. Idempotent for the same range:
       1. Delete existing source='auto' rewards for this employee overlapping the range.
       2. Insert freshly-computed rows.
       3. Recompute employee.stars = SUM of every non-deleted reward.
     """
-    result = await compute_auto_stars(db, employee_id, start_date, end_date)
+    result = await compute_auto_stars(db, employee_id, start_date, end_date,
+                                       att_docs_override=att_docs_override,
+                                       leaves_docs_override=leaves_docs_override)
     if result.get("error"):
         return {"error": result["error"], "applied": 0}
 

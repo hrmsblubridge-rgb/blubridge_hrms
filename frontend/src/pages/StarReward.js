@@ -79,6 +79,7 @@ const StarReward = () => {
   const [tableFilters, setTableFilters] = useState({ fromMonth: new Date().toISOString().slice(0, 7), toMonth: new Date().toISOString().slice(0, 7), pageSize: 25 });
   const [currentPage, setCurrentPage] = useState(1);
   const [autoCalcEmp, setAutoCalcEmp] = useState(null);
+  const [showBulkAuto, setShowBulkAuto] = useState(false);
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (addFormType === 'performance' || addFormType === 'learning') setWeeklyData(getWeeksForMonth(addFormMonth)); }, [addFormMonth, addFormType]);
@@ -448,9 +449,16 @@ const StarReward = () => {
               <p className="text-sm text-slate-500">Research Unit • {filters.month}</p>
             </div>
           </div>
-          <Button onClick={handleExportCSV} variant="outline" className="rounded-xl" data-testid="export-csv-btn">
-            <Download className="w-4 h-4 mr-2" /> Export
-          </Button>
+          <div className="flex gap-2">
+            {canAddStars && (
+              <Button onClick={() => setShowBulkAuto(true)} className="rounded-xl bg-amber-500 hover:bg-amber-600 text-white" data-testid="bulk-auto-btn" title="Auto-Calculate stars for ALL Research Unit employees using each one's joining date">
+                <Zap className="w-4 h-4 mr-2" /> Auto-Calculate All
+              </Button>
+            )}
+            <Button onClick={handleExportCSV} variant="outline" className="rounded-xl" data-testid="export-csv-btn">
+              <Download className="w-4 h-4 mr-2" /> Export
+            </Button>
+          </div>
         </div>
 
         {/* Stats */}
@@ -680,6 +688,13 @@ const StarReward = () => {
           getAuthHeaders={getAuthHeaders}
         />
       )}
+      {showBulkAuto && (
+        <BulkAutoStarDialog
+          onClose={() => setShowBulkAuto(false)}
+          onApplied={() => { setShowBulkAuto(false); fetchData(); }}
+          getAuthHeaders={getAuthHeaders}
+        />
+      )}
     </>
   );
 };
@@ -845,3 +860,160 @@ function AutoStarDialog({ employee, onClose, onApplied, getAuthHeaders }) {
 }
 
 export default StarReward;
+
+// ---------------------------------------------------------------------------
+// Bulk Auto-Calculate Dialog — runs the automation for EVERY active Research
+// Unit employee, using each employee's own date_of_joining as the start.
+// Idempotent per-employee: prior auto rows in the same range are replaced.
+// Manual awards are never touched.
+// ---------------------------------------------------------------------------
+function BulkAutoStarDialog({ onClose, onApplied, getAuthHeaders }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [endDate, setEndDate] = React.useState(today);
+  const [running, setRunning] = React.useState(false);
+  const [result, setResult] = React.useState(null);
+
+  const run = async () => {
+    if (!window.confirm("This will auto-compute stars for ALL active Research Unit employees using each employee's joining date → the selected end date.\n\nManual awards will NOT be affected. Prior auto entries in the same range will be replaced.\n\nContinue?")) return;
+    setRunning(true); setResult(null);
+    try {
+      const r = await axios.post(`${API}/star-rewards/auto/bulk-apply`,
+        { end_date: endDate },
+        { headers: getAuthHeaders(), timeout: 120000 });
+      setResult(r.data);
+      toast.success(`Processed ${r.data.processed} employees · ${r.data.total_entries_applied} entries applied`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Bulk apply failed');
+    } finally { setRunning(false); }
+  };
+
+  const perEmployeeSorted = React.useMemo(() => {
+    if (!result?.per_employee) return [];
+    return [...result.per_employee].sort((a, b) => (b.total_stars ?? -999) - (a.total_stars ?? -999));
+  }, [result]);
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-5xl max-h-[90vh] overflow-y-auto" data-testid="bulk-auto-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Zap className="w-5 h-5 text-amber-500" />
+            Auto-Calculate Stars for All Research Unit Employees
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+            <div className="text-[11px] font-semibold text-slate-600">Start Date (per employee)</div>
+            <div className="text-sm font-medium text-slate-800 mt-0.5">Each employee&apos;s own <b>Date of Joining</b></div>
+            <div className="text-[11px] text-slate-500 mt-0.5">Employees without a joining date fall back to <b>2026-01-01</b>.</div>
+          </div>
+          <div>
+            <Label className="text-xs font-semibold text-slate-600">End Date (applied to all)</Label>
+            <Input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} max={today} className="mt-1 rounded-lg" data-testid="bulk-end-date" />
+          </div>
+        </div>
+
+        {/* Policy notice */}
+        <div className="p-3 rounded-lg bg-blue-50 border border-blue-200 text-xs text-blue-900">
+          <div className="font-semibold mb-1">Policy — BluBridge Research Star Framework</div>
+          <div>Uses each employee's <b>joining date → the end date</b>. Runs the same rules used per-employee: full monthly attendance (+2), 10+ hrs weekly avg (+1), uninformed absences (−2), &gt;4 monthly absences (−4), &gt;2 emergency leaves/month (−3), late sick notification (−1), and consecutive-day engagement/commitment shortfalls (§10). <b>Manual awards remain untouched.</b></div>
+        </div>
+
+        {!result ? (
+          <div className="p-10 text-center text-slate-600">
+            {running ? (
+              <>
+                <Loader2 className="w-8 h-8 animate-spin mx-auto text-amber-500" />
+                <p className="mt-3 font-semibold">Running policy across every Research Unit employee…</p>
+                <p className="text-xs text-slate-500 mt-1">This may take up to a minute for the whole department.</p>
+              </>
+            ) : (
+              <>
+                <Zap className="w-10 h-10 text-amber-500 mx-auto" />
+                <p className="mt-3 font-semibold">Ready to run</p>
+                <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">Click <b>Run for All Employees</b> below to compute + apply auto-stars for every active Research Unit employee using their joining date as the starting point.</p>
+              </>
+            )}
+          </div>
+        ) : (
+          <>
+            {/* Summary */}
+            <div className="grid grid-cols-4 gap-3">
+              <div className="p-3 rounded-lg bg-white border border-slate-200 text-center">
+                <div className="text-[11px] text-slate-500">Employees Processed</div>
+                <div className="text-2xl font-bold text-slate-800">{result.processed}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-center">
+                <div className="text-[11px] text-emerald-700">Positive Stars</div>
+                <div className="text-2xl font-bold text-emerald-600">+{result.total_positive_stars}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-center">
+                <div className="text-[11px] text-rose-700">Deductions</div>
+                <div className="text-2xl font-bold text-rose-600">{result.total_negative_stars}</div>
+              </div>
+              <div className="p-3 rounded-lg bg-amber-50 border border-amber-200 text-center">
+                <div className="text-[11px] text-amber-700">Total Entries Applied</div>
+                <div className="text-2xl font-bold text-amber-600">{result.total_entries_applied}</div>
+              </div>
+            </div>
+
+            {/* Per-employee table */}
+            <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[420px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500">
+                    <th className="px-3 py-2">Employee</th>
+                    <th className="px-3 py-2">Team</th>
+                    <th className="px-3 py-2">Start</th>
+                    <th className="px-3 py-2 text-center">Entries</th>
+                    <th className="px-3 py-2 text-center">Positive</th>
+                    <th className="px-3 py-2 text-center">Deductions</th>
+                    <th className="px-3 py-2 text-center">Net Stars</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {perEmployeeSorted.map(e => (
+                    <tr key={e.employee_id} className={e.error ? 'bg-rose-50/40' : ''}>
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-slate-800 text-[12px]">{e.full_name}</div>
+                        <div className="text-[10px] text-slate-500">{e.emp_id}</div>
+                      </td>
+                      <td className="px-3 py-2 text-[11px] text-slate-600">{e.team || '—'}</td>
+                      <td className="px-3 py-2 font-mono text-[11px]">{e.start_date}</td>
+                      <td className="px-3 py-2 text-center text-[12px]">{e.applied ?? 0}</td>
+                      <td className="px-3 py-2 text-center text-[12px] text-emerald-600 font-semibold">+{e.positive ?? 0}</td>
+                      <td className="px-3 py-2 text-center text-[12px] text-rose-600 font-semibold">{e.negative ?? 0}</td>
+                      <td className="px-3 py-2 text-center">
+                        {e.error ? (
+                          <span className="text-[10px] text-rose-700" title={e.error}>error</span>
+                        ) : (
+                          <span className={`inline-block px-2 py-0.5 rounded font-bold text-[12px] ${(e.total_stars ?? 0) > 0 ? 'bg-emerald-100 text-emerald-700' : (e.total_stars ?? 0) < 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>
+                            {(e.total_stars ?? 0) > 0 ? '+' : ''}{e.total_stars ?? 0}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-2 pt-4 mt-4 -mx-6 -mb-6 px-6 py-4 border-t border-slate-200 sticky bottom-0 bg-white/95 backdrop-blur-sm rounded-b-lg shadow-[0_-4px_12px_-4px_rgba(15,23,42,0.08)]">
+          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={running}>Close</Button>
+          {result ? (
+            <Button className="rounded-lg h-9 px-5 bg-[#063c88] hover:bg-[#052e6b]" onClick={onApplied} data-testid="bulk-done-btn">
+              Done · Refresh Table
+            </Button>
+          ) : (
+            <Button className="rounded-lg h-9 px-5 bg-amber-500 hover:bg-amber-600" onClick={run} disabled={running} data-testid="bulk-run-btn">
+              <Zap className="w-4 h-4 mr-1.5"/>{running ? 'Running…' : 'Run for All Employees'}
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

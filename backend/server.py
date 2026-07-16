@@ -9149,6 +9149,95 @@ async def star_auto_apply(body: dict, current_user: dict = Depends(get_current_u
                     f"range={start_date}→{end_date} applied={result.get('applied',0)} total_stars={result.get('total_stars',0)}")
     return result
 
+
+@api_router.post("/star-rewards/auto/bulk-apply")
+async def star_auto_bulk_apply(body: dict = None, current_user: dict = Depends(get_current_user)):
+    """Auto-compute and apply stars for EVERY active Research Unit employee.
+    Each employee is scanned from their own `date_of_joining` (fallback: 2026-01-01)
+    through `end_date` (default: today). Runs sequentially — light on DB pressure
+    and gives a per-employee audit line.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    end_date = ((body or {}).get("end_date")) or datetime.now().strftime("%Y-%m-%d")
+    fallback_start = (body or {}).get("fallback_start_date") or "2026-01-01"
+
+    employees = await db.employees.find({
+        "department": "Research Unit",
+        "is_deleted": {"$ne": True},
+        "employee_status": EmployeeStatus.ACTIVE,
+    }, {"_id": 0, "id": 1, "full_name": 1, "emp_id": 1, "date_of_joining": 1, "team": 1}).to_list(500)
+
+    # Pre-fetch attendance + leaves for the whole department in bulk to avoid
+    # N × network round-trips on this endpoint. Group by employee_id in-memory.
+    emp_ids = [e["id"] for e in employees]
+    from collections import defaultdict as _dd
+    att_by_emp = _dd(list)
+    leaves_by_emp = _dd(list)
+    if emp_ids:
+        att_cursor = db.attendance.find({"employee_id": {"$in": emp_ids}}, {"_id": 0})
+        async for a in att_cursor:
+            att_by_emp[a["employee_id"]].append(a)
+        lv_cursor = db.leaves.find({
+            "employee_id": {"$in": emp_ids},
+            "status": {"$in": ["approved", "Approved"]},
+        }, {"_id": 0})
+        async for lv in lv_cursor:
+            leaves_by_emp[lv["employee_id"]].append(lv)
+
+    per_employee = []
+    total_entries = 0
+    total_positive = 0
+    total_negative = 0
+    for emp in employees:
+        start = emp.get("date_of_joining") or fallback_start
+        # Guard: date_of_joining might be a datetime — coerce to YYYY-MM-DD.
+        if not isinstance(start, str):
+            try: start = start.strftime("%Y-%m-%d")
+            except Exception: start = fallback_start
+        try:
+            res = await apply_auto_stars(
+                db, emp["id"], start, end_date, current_user["id"],
+                att_docs_override=att_by_emp.get(emp["id"], []),
+                leaves_docs_override=leaves_by_emp.get(emp["id"], []),
+            )
+            applied = res.get("applied", 0) or 0
+            total_entries += applied
+            pos = sum(x["stars"] for x in res.get("breakdown", []) if x["stars"] > 0)
+            neg = sum(x["stars"] for x in res.get("breakdown", []) if x["stars"] < 0)
+            total_positive += pos
+            total_negative += neg
+            per_employee.append({
+                "employee_id": emp["id"],
+                "full_name": emp.get("full_name"),
+                "emp_id": emp.get("emp_id"),
+                "team": emp.get("team"),
+                "start_date": start,
+                "applied": applied,
+                "replaced": res.get("replaced", 0),
+                "total_stars": res.get("total_stars", 0),
+                "unsafe_count": res.get("unsafe_count", 0),
+                "positive": pos,
+                "negative": neg,
+                "error": None,
+            })
+        except Exception as e:
+            per_employee.append({
+                "employee_id": emp["id"], "full_name": emp.get("full_name"),
+                "start_date": start, "applied": 0, "total_stars": None, "error": str(e),
+            })
+    await log_audit(current_user["id"], "auto_award_stars_bulk", "star_reward", None,
+                    f"employees={len(employees)} total_entries={total_entries} end_date={end_date}")
+    return {
+        "processed": len(employees),
+        "total_entries_applied": total_entries,
+        "total_positive_stars": total_positive,
+        "total_negative_stars": total_negative,
+        "end_date": end_date,
+        "per_employee": per_employee,
+    }
+
+
 @api_router.get("/employee/star-rewards/me")
 async def employee_get_own_stars(current_user: dict = Depends(get_current_user)):
     """Employee-facing view of their own star rewards.
