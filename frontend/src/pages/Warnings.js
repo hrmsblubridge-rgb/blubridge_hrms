@@ -327,10 +327,10 @@ function CreateWarningDialog({ onClose, onCreated }) {
           )}
         </div>
 
-        <div className="flex justify-end gap-2 pt-4 border-t sticky bottom-0 bg-white">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button variant="outline" onClick={() => submit(true)}>Save Draft</Button>
-          <Button className="bg-[#063c88] hover:bg-[#052e6b]" onClick={() => submit(false)} data-testid="create-submit">Submit for Approval</Button>
+        <div className="flex flex-wrap justify-end gap-2 pt-4 mt-4 -mx-6 -mb-6 px-6 py-4 border-t border-slate-200 sticky bottom-0 bg-white/95 backdrop-blur-sm rounded-b-lg shadow-[0_-4px_12px_-4px_rgba(15,23,42,0.08)]">
+          <Button variant="outline" onClick={onClose} className="rounded-lg h-9 px-4">Cancel</Button>
+          <Button variant="outline" onClick={() => submit(true)} className="rounded-lg h-9 px-4 border-slate-300">Save Draft</Button>
+          <Button className="rounded-lg h-9 px-5 bg-[#063c88] hover:bg-[#052e6b] shadow-sm" onClick={() => submit(false)} data-testid="create-submit">Submit for Approval</Button>
         </div>
       </DialogContent>
     </Dialog>
