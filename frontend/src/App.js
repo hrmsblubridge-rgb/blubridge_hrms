@@ -34,6 +34,7 @@ import EmployeeIssueTickets from "./pages/EmployeeIssueTickets";
 import EmployeeDocuments from "./pages/EmployeeDocuments";
 import EmployeeSalary from "./pages/EmployeeSalary";
 import EmployeeProfile from "./pages/EmployeeProfile";
+import EmployeeStarReward from "./pages/EmployeeStarReward";
 import EmployeeOnboarding from "./pages/EmployeeOnboarding";
 import EmployeeLateRequest from "./pages/EmployeeLateRequest";
 import EmployeeEarlyOut from "./pages/EmployeeEarlyOut";
@@ -211,6 +212,7 @@ function App() {
           <Route path="/employee/policies" element={<EmployeeRoute><Policies /></EmployeeRoute>} />
           <Route path="/employee/tickets" element={<EmployeeRoute><EmployeeIssueTickets /></EmployeeRoute>} />
           <Route path="/employee/documents" element={<EmployeeRoute><EmployeeDocuments /></EmployeeRoute>} />
+          <Route path="/employee/rewards" element={<EmployeeRoute><EmployeeStarReward /></EmployeeRoute>} />
           <Route path="/employee/salary" element={<EmployeeRoute><EmployeeSalary /></EmployeeRoute>} />
           <Route path="/employee/late-request" element={<EmployeeRoute><EmployeeLateRequest /></EmployeeRoute>} />
           <Route path="/employee/early-out" element={<EmployeeRoute><EmployeeEarlyOut /></EmployeeRoute>} />

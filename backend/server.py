@@ -9080,6 +9080,66 @@ async def get_star_history(employee_id: str, current_user: dict = Depends(get_cu
     rewards = await db.star_rewards.find({"employee_id": employee_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
     return [serialize_doc(r) for r in rewards]
 
+@api_router.get("/employee/star-rewards/me")
+async def employee_get_own_stars(current_user: dict = Depends(get_current_user)):
+    """Employee-facing view of their own star rewards.
+
+    Any authenticated user with a linked employee record can call this — the
+    query is anchored on the current user's linked employee only, so there's
+    no cross-employee data leak. Returns the totals shown on the employee's
+    dashboard tile plus the full award history for the timeline UI.
+    """
+    employee = await db.employees.find_one(
+        {"id": current_user.get("employee_id")}, {"_id": 0}
+    )
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee profile not found")
+
+    stars_total = employee.get("stars", 0) or 0
+    unsafe_total = employee.get("unsafe_count", 0) or 0
+
+    history = await db.star_rewards.find(
+        {"employee_id": employee["id"]}, {"_id": 0},
+    ).sort("created_at", -1).to_list(200)
+
+    # Resolve awarder names in a single batch (avoid N+1 for long histories).
+    awarder_ids = list({r["awarded_by"] for r in history if r.get("awarded_by")})
+    awarder_names = {}
+    if awarder_ids:
+        users = await db.users.find(
+            {"id": {"$in": awarder_ids}}, {"_id": 0, "id": 1, "name": 1, "full_name": 1, "username": 1}
+        ).to_list(len(awarder_ids))
+        awarder_names = {u["id"]: (u.get("name") or u.get("full_name") or u.get("username") or "HR") for u in users}
+    for r in history:
+        r["awarded_by_name"] = awarder_names.get(r.get("awarded_by"), "HR")
+
+    # Derive month-wise breakdown (last 6 months) for a small trend chart.
+    from collections import OrderedDict
+    monthly = OrderedDict()
+    for r in history:
+        m = r.get("month") or (r.get("created_at", "")[:7])
+        if not m:
+            continue
+        cell = monthly.setdefault(m, {"month": m, "stars": 0, "unsafe": 0})
+        if r.get("type") == "unsafe":
+            cell["unsafe"] += 1
+        else:
+            cell["stars"] += (r.get("stars", 0) or 0)
+
+    return {
+        "employee": {
+            "id": employee["id"],
+            "full_name": employee.get("full_name"),
+            "department": employee.get("department"),
+            "team": employee.get("team"),
+            "designation": employee.get("designation"),
+            "avatar": employee.get("avatar"),
+        },
+        "totals": {"stars": stars_total, "unsafe": unsafe_total},
+        "history": [serialize_doc(r) for r in history],
+        "monthly": list(reversed(list(monthly.values())))[-6:],
+    }
+
 # ============== TEAM ROUTES ==============
 
 @api_router.get("/teams")

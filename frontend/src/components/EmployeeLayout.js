@@ -25,7 +25,8 @@ import {
   Fingerprint,
   HelpCircle,
   FileSpreadsheet,
-  ShieldAlert
+  ShieldAlert,
+  Star
 } from 'lucide-react';
 import { Button } from './ui/button';
 import EmployeeAvatar from './EmployeeAvatar';
@@ -59,6 +60,7 @@ const EmployeeLayout = ({ children }) => {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [hasVigilance, setHasVigilance] = useState(false);
+  const [hasStarRewards, setHasStarRewards] = useState(false);
 
   // Dynamically reveal the Operational Vigilance Report link ONLY for employees
   // whose designation == "Vigilance" (resolved server-side, no hardcoding).
@@ -70,13 +72,37 @@ const EmployeeLayout = ({ children }) => {
     return () => { active = false; };
   }, [token]);
 
+  // "My Rewards" is only meaningful for Research Unit employees (per business
+  // rule enforced in POST /star-rewards). We call the endpoint once — a 200
+  // means the current user is a valid recipient and has data to browse;
+  // 404/400 means "not eligible" and we simply hide the nav entry.
+  useEffect(() => {
+    let active = true;
+    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/employee/star-rewards/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(res => {
+      if (!active) return;
+      const isResearchUnit = res.data?.employee?.department === 'Research Unit';
+      setHasStarRewards(isResearchUnit);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [token]);
+
   // "My Documents" is ALWAYS visible — it's the permanent destination for
   // onboarding document uploads + viewing official HR letters. (Earlier this
   // was hidden during the 14-day onboarding bypass; users now need access to
   // it from day one to upload onboarding documents at their pace.)
-  const visibleNavItems = hasVigilance
-    ? [...navItems, { path: '/employee/vigilance', label: 'Vigilance Report', icon: ShieldAlert }]
-    : navItems;
+  const visibleNavItems = (() => {
+    let items = [...navItems];
+    if (hasStarRewards) {
+      // Insert "My Rewards" right after Holidays (near the recognition/policies group)
+      const insertAt = items.findIndex((i) => i.path === '/employee/holidays');
+      const rewardItem = { path: '/employee/rewards', label: 'My Rewards', icon: Star };
+      items.splice(insertAt >= 0 ? insertAt + 1 : items.length, 0, rewardItem);
+    }
+    if (hasVigilance) items.push({ path: '/employee/vigilance', label: 'Vigilance Report', icon: ShieldAlert });
+    return items;
+  })();
 
   const handleLogout = async () => {
     await logout(); // revoke session server-side + clear tokens BEFORE navigating
