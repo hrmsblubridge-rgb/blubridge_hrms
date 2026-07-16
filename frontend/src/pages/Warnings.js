@@ -255,7 +255,9 @@ function CreateWarningDialog({ onClose, onCreated }) {
     setHistory(r.data);
   };
   const suggested = history?.suggested_level;
-  const chosenLevel = level || suggested;
+  // Effective level for email pre-fill. Before an employee is picked, default to 'first'
+  // so the Warning Email Content section is visible from the moment the dialog opens.
+  const chosenLevel = level || suggested || 'first';
 
   // When effective level changes → pre-fill email fields from that level's template
   // (only if HR hasn't edited that specific field yet).
