@@ -5,6 +5,29 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-17 (Star Reward · Msg 677 12-Point Spec ✅ TESTED)
+
+**User need (Msg 677):** Fix month filter behavior in the Star Reward history modal and deeply integrate leave-instance editing INSIDE the same modal — no separate page.
+
+**Backend (`/app/backend/server.py`):**
+- `POST /api/star-rewards/entry-override` now accepts optional `leave_validity` ("valid"/"invalid"), records `awarded_by_name`, and **soft-deletes prior overrides** for the same `(employee_id, ref_date, overrides_rule)` tuple so repeat edits do NOT accumulate. Snapshots superseded rows into `prior_overrides` for audit. Returns a fresh `month_summary` (`stars`/`positive`/`negative`/`entries`) for in-place UI refresh.
+- `GET /api/star-rewards/auto/monthly/{employee_id}` — each item now exposes `leave_validity`, `admin_edited_by_name`, `override_id`.
+
+**Frontend (`/app/frontend/src/pages/StarReward.js`):**
+- `handleViewEmployee` captures the active `filters.month` and expands ONLY that month in the modal. Falls back to the most recent month if the filtered month has no records. Never auto-expands the current calendar month when a different month is filtered (§1, §2).
+- Pencil icon restricted to leave-related entries via `isLeaveEntry` helper (rules: `uninformed_absence`, `excess_absences`, `excess_emergency`, `late_sick_notification`, or reason mentioning leave/absence/sick) — §3.
+- `EntryOverrideDialog` rewritten (§4–§10, §12): mandatory Valid/Invalid toggle, all read-only context (Employee, Leave date, Category, Original Source, Original Star, Current Effective, Original Reason), editable Revised Star Value with quick-pick pills `-2..+2`, mandatory Reason textarea. Submit blocked until validity + note + differing revised value. Confirmation dialog on Submit with full message (validity + old→new + month name).
+- Post-submit flow: closes ONLY the edit modal, keeps ViewHistoryModal open, keeps the filtered month expanded, refetches monthly view + main table quietly, syncs `selectedEmployee.stars`. Auto-scrolls to expanded month via `scrollIntoView` (§1).
+- Edited entries render grey `0` badge (`bg-slate-100 text-slate-600 border`), `Valid leave`/`Invalid leave` badge, `Admin adjusted` label, and inline admin note with editor name (§8, §11).
+
+**Tests (`/app/backend/tests/test_star_reward_override.py`):** 10/10 pass — validation, happy paths, sysadmin permission, and critically the `test_repeat_edit_does_not_accumulate` that proves cumulative totals do not drift after multiple edits of the same entry.
+
+**Verified E2E:** HR admin filters to June 2026, opens Aparna's view → June expanded, July collapsed, modal scrolls to June. Pencil only on Compliance / Uninformed Absence rows. Full edit flow (Valid + revised 0 + note) → confirmation → success toast, modal stays open, June still expanded, badges + note visible, totals recalculated. Non-HR user denied access. All 12 spec items ✅.
+
+---
+
+
+
 ## Latest Update — 2026-07-16 (Monthly Star Auto-Compute + Daily Scheduler ✅)
 
 **User need:** "Each employee calculate every month, when next day starts values must be correct — no HR click required. No emails to anyone while working."
