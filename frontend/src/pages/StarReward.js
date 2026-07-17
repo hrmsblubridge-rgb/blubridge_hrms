@@ -18,6 +18,25 @@ import { PageSizeSelector } from '../components/PageSizeSelector';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
+// Rules that stem from a Leave / Attendance / Sick-notice event. Only these
+// entries expose the leave-verification pencil per Msg 677 §3.
+const LEAVE_RULE_SET = new Set([
+  'uninformed_absence',
+  'excess_absences',
+  'excess_emergency',
+  'late_sick_notification',
+]);
+const isLeaveEntry = (item) => {
+  if (!item) return false;
+  const rule = (item.rule || '').toLowerCase();
+  if (LEAVE_RULE_SET.has(rule)) return true;
+  // Also cover override rows whose rule is stored as `override:<rule>`
+  const stripped = rule.startsWith('override:') ? rule.slice(9) : rule;
+  if (LEAVE_RULE_SET.has(stripped)) return true;
+  const hay = `${item.category || ''} ${item.reason || ''}`.toLowerCase();
+  return /\b(leave|absence|absent|sick)\b/.test(hay);
+};
+
 const getWeeksForMonth = (monthStr) => {
   const [year, month] = monthStr.split('-').map(Number);
   const firstDay = new Date(year, month - 1, 1);
@@ -151,6 +170,9 @@ const StarReward = () => {
     setExpandedViewMonth(null);
     setLoadingHistory(true);
     setShowViewModal(true);
+    // Capture the month the admin was filtering on so we can preferentially
+    // expand it once the monthly view arrives. Msg 677 §1/§2.
+    const preferredMonth = filters.month || null;
     try {
       // Fetch BOTH flat history AND month-wise breakdown in parallel.
       const [histRes, monthlyRes] = await Promise.all([
@@ -160,9 +182,15 @@ const StarReward = () => {
       setStarHistory(histRes.data);
       if (monthlyRes && monthlyRes.data) {
         setMonthlyView(monthlyRes.data);
-        // Auto-expand the most recent month so HR sees a clear per-month view
         const months = monthlyRes.data.months || [];
-        if (months.length) setExpandedViewMonth(months[months.length - 1].month);
+        // Expand the filtered month if it exists in the data. Otherwise fall
+        // back to the most recent recorded month (never blindly the current
+        // calendar month if another was explicitly filtered).
+        if (preferredMonth && months.some(m => m.month === preferredMonth)) {
+          setExpandedViewMonth(preferredMonth);
+        } else if (months.length) {
+          setExpandedViewMonth(months[months.length - 1].month);
+        }
       }
     } catch (error) {
       setStarHistory([]);
@@ -219,6 +247,18 @@ const StarReward = () => {
   // the same" concern). Expanding a month reveals the individual reward lines.
   const ViewHistoryModal = () => {
     const months = monthlyView?.months || [];
+    // Auto-scroll the expanded month card into view once the DOM renders.
+    // Msg 677 §1 requires: "The modal must scroll to <selected month>".
+    React.useEffect(() => {
+      if (!showViewModal || !expandedViewMonth) return;
+      const id = requestAnimationFrame(() => {
+        const el = document.querySelector(`[data-testid="admin-month-${expandedViewMonth}"]`);
+        if (el && typeof el.scrollIntoView === 'function') {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+      return () => cancelAnimationFrame(id);
+    }, [showViewModal, expandedViewMonth, monthlyView]);
     return (
     <Dialog open={showViewModal} onOpenChange={setShowViewModal}>
       <DialogContent className="bg-[#fffdf7] max-w-3xl rounded-2xl max-h-[85vh] overflow-y-auto" data-testid="view-history-modal">
@@ -300,6 +340,8 @@ const StarReward = () => {
                           const badgeCls = isZero
                             ? 'bg-slate-100 text-slate-600 border border-slate-300'
                             : stars > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700';
+                          const leaveEntry = isLeaveEntry(it);
+                          const validity = it.leave_validity;
                           return (
                           <div key={it.id} className={`px-4 py-2.5 flex items-start gap-3 text-sm group ${it.edited ? 'bg-indigo-50/30' : ''}`}>
                             <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] shrink-0 ${badgeCls}`} data-testid={`entry-badge-${it.id}`}>
@@ -311,7 +353,17 @@ const StarReward = () => {
                                 {it.source === 'auto' && <span className="text-[9px] uppercase tracking-wider font-semibold text-slate-400">Auto-generated</span>}
                                 {it.edited && (
                                   <span className="text-[9px] uppercase tracking-wider font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded" data-testid={`edited-label-${it.id}`}>
-                                    Admin edited
+                                    Admin adjusted
+                                  </span>
+                                )}
+                                {validity === 'valid' && (
+                                  <span className="text-[9px] uppercase tracking-wider font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded" data-testid={`validity-badge-${it.id}`}>
+                                    Valid leave
+                                  </span>
+                                )}
+                                {validity === 'invalid' && (
+                                  <span className="text-[9px] uppercase tracking-wider font-bold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded" data-testid={`validity-badge-${it.id}`}>
+                                    Invalid leave
                                   </span>
                                 )}
                                 {it.edited && it.original_stars !== stars && (
@@ -324,15 +376,18 @@ const StarReward = () => {
                               {it.edited && it.admin_note && (
                                 <div className="mt-1.5 text-[11px] text-indigo-800 bg-indigo-50 border-l-2 border-indigo-400 px-2 py-1 rounded-r" data-testid={`admin-note-${it.id}`}>
                                   <span className="font-semibold">Admin note:</span> {it.admin_note}
+                                  {it.admin_edited_by_name && (
+                                    <span className="ml-1 text-indigo-500">— {it.admin_edited_by_name}</span>
+                                  )}
                                 </div>
                               )}
                             </div>
                             <div className="text-[11px] text-slate-400 shrink-0 tabular-nums">{it.date}</div>
-                            {canAddStars && (
+                            {canAddStars && leaveEntry && (
                               <button
-                                onClick={() => setEntryEdit({ item: it, employee: selectedEmployee })}
+                                onClick={() => setEntryEdit({ item: it, employee: selectedEmployee, monthKey: m.month })}
                                 className="opacity-60 hover:opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity ml-1 p-1 rounded hover:bg-indigo-50 shrink-0"
-                                title={it.edited ? 'Revise the current adjustment' : 'Edit this entry'}
+                                title={it.edited ? 'Revise the current adjustment' : 'Edit this leave entry'}
                                 data-testid={`edit-entry-${it.id}`}
                               >
                                 <Pencil className="w-3.5 h-3.5 text-indigo-500" />
@@ -858,14 +913,40 @@ const StarReward = () => {
           item={entryEdit.item}
           employee={entryEdit.employee}
           onClose={() => setEntryEdit(null)}
-          onApplied={async () => {
+          onApplied={async (result) => {
+            // Msg 677 §9 & §12: close only edit modal, keep history modal
+            // open, keep selected month expanded, refresh in-place.
+            const keepMonth = entryEdit.monthKey || expandedViewMonth;
             setEntryEdit(null);
-            // Refresh the monthly view so the overridden entry reflects instantly
             if (selectedEmployee) {
-              const r = await axios.get(`${API}/star-rewards/auto/monthly/${selectedEmployee.id}`, { headers: getAuthHeaders() }).catch(() => null);
-              if (r) setMonthlyView(r.data);
+              try {
+                const r = await axios.get(
+                  `${API}/star-rewards/auto/monthly/${selectedEmployee.id}`,
+                  { headers: getAuthHeaders() }
+                );
+                setMonthlyView(r.data);
+              } catch (_) { /* silent */ }
+              // Restore expansion regardless of the incoming data
+              if (keepMonth) setExpandedViewMonth(keepMonth);
             }
-            fetchData();
+            // Refresh the main table's per-month stars quietly (no toast, no
+            // full spinner) so the totals line up with the new state.
+            try {
+              const listRes = await axios.get(`${API}/star-rewards`, {
+                headers: getAuthHeaders(),
+                params: {
+                  department: 'Research Unit',
+                  team: filters.team !== 'All' ? filters.team : undefined,
+                  month: filters.month,
+                  search: filters.search || undefined,
+                },
+              });
+              setEmployees(listRes.data);
+              // Also sync the selected employee card so the header total updates
+              if (result?.new_stars != null && selectedEmployee) {
+                setSelectedEmployee(prev => prev ? { ...prev, stars: result.new_stars } : prev);
+              }
+            } catch (_) { /* silent */ }
           }}
           getAuthHeaders={getAuthHeaders}
         />
@@ -1603,46 +1684,60 @@ function LeaveAdjustDialog({ employee, onClose, onApplied, getAuthHeaders }) {
 }
 
 // ---------------------------------------------------------------------------
-// EntryOverrideDialog — HR clicks the pencil on ONE line inside the monthly
-// breakdown to override that specific auto-generated star entry. E.g. a "-1
-// Compliance · Sick leave notified after 07:00 AM" auto row can be set to 0
-// with a note, marking the leave as actually valid. A compensating manual
-// row is persisted so that (target + compensation) = new value. Survives
-// daily re-runs because it's anchored by (employee, ref_date, rule).
+// EntryOverrideDialog — HR clicks the pencil on ONE leave-related line inside
+// the monthly breakdown to override that specific auto-generated star entry.
+// Implements Msg 677 §4–§10, §12.
 // ---------------------------------------------------------------------------
 function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeaders }) {
   const originalStars = Number(item.original_stars ?? item.stars ?? 0);
-  const [newStars, setNewStars] = React.useState(String(item.stars ?? 0));
+  const currentEffective = Number(item.stars ?? 0);
+  const originalSource = item.source === 'auto' ? 'Auto-generated' : 'Manual';
+  const [validity, setValidity] = React.useState(item.leave_validity || '');
+  const [newStars, setNewStars] = React.useState(String(currentEffective));
   const [note, setNote] = React.useState('');
   const [saving, setSaving] = React.useState(false);
-  const revised = Number(newStars);
-  const delta = revised - originalStars;
-  const noteTrimmed = note.trim();
-  const identical = revised === originalStars;
-  const canSubmit = !saving && !identical && noteTrimmed.length > 0 && !isNaN(revised);
+  const [confirmOpen, setConfirmOpen] = React.useState(false);
 
-  const submit = async () => {
-    if (identical) return toast.error('Revised score must differ from the original.');
-    if (!noteTrimmed) return toast.error('Admin note is required.');
-    if (isNaN(revised)) return toast.error('Enter a valid revised score.');
-    // Confirmation before save — required per spec.
-    const original = originalStars > 0 ? `+${originalStars}` : `${originalStars}`;
-    const target = revised > 0 ? `+${revised}` : `${revised}`;
-    const confirmMsg = `You are changing this employee's score from ${original} to ${target}. This will recalculate the monthly total. Do you want to continue?`;
-    if (!window.confirm(confirmMsg)) return;
+  const revised = Number(newStars);
+  const noteTrimmed = note.trim();
+  // "No changes" means nothing meaningful was modified. If revised == originalStars
+  // AND validity is unchanged, block submission per §10.
+  const identical = revised === currentEffective && (validity || '') === (item.leave_validity || '');
+  const validityMissing = !validity;
+  const noteMissing = noteTrimmed.length === 0;
+  const revisedInvalid = isNaN(revised) || newStars === '';
+  const canSubmit = !saving && !identical && !validityMissing && !noteMissing && !revisedInvalid;
+
+  const monthLabel = React.useMemo(() => {
+    if (!item.date) return '';
+    const [y, m] = item.date.split('-');
+    return new Date(Number(y), Number(m) - 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' });
+  }, [item.date]);
+
+  const attemptSubmit = () => {
+    if (validityMissing) return toast.error('Please select Valid or Invalid Leave.');
+    if (revisedInvalid) return toast.error('Please enter a revised star value.');
+    if (noteMissing) return toast.error('Adjustment note is required.');
+    if (identical) return toast.error('No changes were made.');
+    setConfirmOpen(true);
+  };
+
+  const doSubmit = async () => {
+    setConfirmOpen(false);
     setSaving(true);
     try {
       const r = await axios.post(`${API}/star-rewards/entry-override`, {
         employee_id: employee.id,
         ref_date: item.date,
         rule: item.rule,
-        target_stars: originalStars,
+        target_stars: originalStars, // anchor to the ORIGINAL auto value
         new_stars: revised,
         target_entry_id: item.id,
+        leave_validity: validity,
         note: noteTrimmed,
       }, { headers: getAuthHeaders() });
-      toast.success(`Score entry updated successfully · Employee total: ${r.data.new_stars} stars`);
-      onApplied();
+      toast.success(r.data?.message || 'Leave verification and star value updated successfully.');
+      onApplied(r.data);
     } catch (e) {
       toast.error(e?.response?.data?.detail || 'Update failed');
     } finally { setSaving(false); }
@@ -1655,48 +1750,86 @@ function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeader
     return <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] ${cls}`}>{val > 0 ? '+' : ''}{val}</span>;
   };
 
+  const originalBadgeStr = originalStars > 0 ? `+${originalStars}` : `${originalStars}`;
+  const revisedBadgeStr = revised > 0 ? `+${revised}` : `${revised}`;
+
   return (
-    <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-lg" data-testid="entry-override-dialog">
+    <>
+    <Dialog open={!confirmOpen} onOpenChange={onClose}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto" data-testid="entry-override-dialog">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Pencil className="w-5 h-5 text-indigo-500" />
-            Edit score entry
+            Edit Leave Verification &amp; Star
           </DialogTitle>
+          <DialogDescription>
+            Review and adjust this specific leave-related score entry. The original entry is preserved for audit.
+          </DialogDescription>
         </DialogHeader>
 
-        {/* Read-only entry context */}
+        {/* Read-only entry context — Msg 677 §7 */}
         <div className="space-y-2 text-sm">
           <div className="grid grid-cols-2 gap-3">
             <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
               <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Employee</div>
-              <div className="font-medium text-slate-800 mt-0.5">{employee.full_name || employee.name}</div>
+              <div className="font-medium text-slate-800 mt-0.5" data-testid="entry-employee-name">{employee.full_name || employee.name}</div>
             </div>
             <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Entry Date</div>
-              <div className="font-mono text-slate-800 mt-0.5">{item.date}</div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Leave Date</div>
+              <div className="font-mono text-slate-800 mt-0.5" data-testid="entry-leave-date">{item.date}</div>
             </div>
           </div>
-          <div className="grid grid-cols-[1fr_auto] gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Category</div>
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Leave Type / Category</div>
               <div className="font-medium text-slate-800 mt-0.5">{item.category}</div>
             </div>
-            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 min-w-[110px]">
-              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Original Score</div>
-              <div className="mt-0.5">{scoreBadge(originalStars)}</div>
+            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Original Source</div>
+              <div className="font-medium text-slate-800 mt-0.5">{originalSource}</div>
             </div>
           </div>
           <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Original Reason</div>
             <div className="text-[12px] text-slate-700 mt-0.5">{item.reason}</div>
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Original Star Value</div>
+              <div className="mt-0.5">{scoreBadge(originalStars)}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Current Effective</div>
+              <div className="mt-0.5" data-testid="entry-current-effective">{scoreBadge(currentEffective)}</div>
+            </div>
+          </div>
         </div>
 
-        {/* Revised score */}
+        {/* Field 1: Valid / Invalid — Msg 677 §4 (mandatory) */}
         <div>
           <Label className="text-xs font-semibold text-slate-600">
-            Revised Score <span className="text-rose-500">*</span>
+            Leave Verification <span className="text-rose-500">*</span>
+          </Label>
+          <div className="mt-1.5 flex gap-2">
+            <button
+              onClick={() => setValidity('valid')}
+              data-testid="override-validity-valid"
+              className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold border-2 transition ${validity === 'valid' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+              <CheckCircle2 className="w-4 h-4 inline mr-1.5"/>Valid Leave
+            </button>
+            <button
+              onClick={() => setValidity('invalid')}
+              data-testid="override-validity-invalid"
+              className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold border-2 transition ${validity === 'invalid' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+              <AlertTriangle className="w-4 h-4 inline mr-1.5"/>Invalid Leave
+            </button>
+          </div>
+        </div>
+
+        {/* Field 2: Revised star — Msg 677 §5 (independent of validity) */}
+        <div>
+          <Label className="text-xs font-semibold text-slate-600">
+            Revised Star Value <span className="text-rose-500">*</span>
           </Label>
           <div className="mt-1.5 flex items-center gap-2 flex-wrap">
             <Input
@@ -1719,26 +1852,21 @@ function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeader
                 </button>
               ))}
             </div>
-            {!identical && !isNaN(revised) && (
-              <span className="text-[11px] text-slate-500 ml-2">
-                Delta: <b className={delta > 0 ? 'text-emerald-600' : delta < 0 ? 'text-rose-600' : 'text-slate-600'}>{delta > 0 ? '+' : ''}{delta}</b>
-              </span>
-            )}
           </div>
-          {identical && (
-            <div className="text-[11px] text-amber-700 mt-1">Revised score must differ from the original.</div>
+          {identical && !validityMissing && !revisedInvalid && (
+            <div className="text-[11px] text-amber-700 mt-1">No changes were made.</div>
           )}
         </div>
 
-        {/* Admin note */}
+        {/* Field 3: Adjustment note — Msg 677 §6 (mandatory) */}
         <div>
           <Label className="text-xs font-semibold text-slate-600">
-            Admin Note / Edit Reason <span className="text-rose-500">*</span>
+            Reason for Star Adjustment <span className="text-rose-500">*</span>
           </Label>
           <textarea
             className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"
             rows={3}
-            placeholder='e.g. "Leave notification verified and accepted as valid. Negative score neutralized."'
+            placeholder='e.g. "Leave notification was verified and accepted as valid. The automatically generated -1 star has been changed to 0."'
             value={note}
             onChange={e => setNote(e.target.value)}
             data-testid="entry-note"
@@ -1753,14 +1881,33 @@ function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeader
           <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={saving} data-testid="entry-cancel-btn">Cancel</Button>
           <Button
             className="rounded-lg h-9 px-5 bg-indigo-500 hover:bg-indigo-600"
-            onClick={submit}
+            onClick={attemptSubmit}
             disabled={!canSubmit}
             data-testid="entry-submit-btn"
           >
-            {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : 'Save Changes'}
+            {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : 'Submit'}
           </Button>
         </div>
       </DialogContent>
     </Dialog>
+
+    {/* Confirmation dialog — Msg 677 §10 */}
+    <Dialog open={confirmOpen} onOpenChange={(v) => !v && setConfirmOpen(false)}>
+      <DialogContent className="max-w-md" data-testid="entry-confirm-dialog">
+        <DialogHeader>
+          <DialogTitle>Confirm change</DialogTitle>
+          <DialogDescription>
+            You are marking this leave as <b className={validity === 'valid' ? 'text-emerald-700' : 'text-rose-700'}>{validity === 'valid' ? 'Valid' : 'Invalid'}</b> and changing the star value from <b>{originalBadgeStr}</b> to <b>{revisedBadgeStr}</b>. This will recalculate the employee&apos;s {monthLabel} total. Do you want to continue?
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={() => setConfirmOpen(false)} disabled={saving} data-testid="entry-confirm-cancel">Cancel</Button>
+          <Button className="rounded-lg h-9 px-5 bg-indigo-500 hover:bg-indigo-600" onClick={doSubmit} disabled={saving} data-testid="entry-confirm-yes">
+            {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : 'Yes, continue'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

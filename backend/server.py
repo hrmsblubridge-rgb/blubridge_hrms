@@ -9309,6 +9309,9 @@ async def override_star_entry(body: dict, current_user: dict = Depends(get_curre
     target = b.get("target_stars")
     new_val = b.get("new_stars")
     note = (b.get("note") or "").strip()
+    leave_validity = (b.get("leave_validity") or "").strip().lower() or None
+    if leave_validity and leave_validity not in ("valid", "invalid"):
+        raise HTTPException(status_code=400, detail="leave_validity must be 'valid' or 'invalid'")
     if not emp_id or not ref_date: raise HTTPException(status_code=400, detail="employee_id and ref_date required")
     if not note: raise HTTPException(status_code=400, detail="Note is required")
     try:
@@ -9321,6 +9324,32 @@ async def override_star_entry(body: dict, current_user: dict = Depends(get_curre
 
     compensation = new_val - target  # add this to reach new_val net
     current_month = ref_date[:7]
+
+    # Msg 677 §12: run within an "all-or-nothing" style flow. Soft-delete any
+    # prior override for the same (employee, ref_date, overrides_rule) so
+    # repeated edits don't stack. The anchor `target_stars` is the ORIGINAL
+    # auto entry value; the compensation persisted equals (new_val - original).
+    prior_query = {
+        "employee_id": emp_id,
+        "ref_date": ref_date,
+        "source": "manual_adjustment",
+        "overrides_rule": rule,
+        "is_deleted": {"$ne": True},
+    }
+    prior_docs = await db.star_rewards.find(prior_query, {"_id": 0}).to_list(50)
+    if prior_docs:
+        await db.star_rewards.update_many(prior_query, {"$set": {
+            "is_deleted": True,
+            "superseded_at": datetime.now().isoformat(),
+            "superseded_by": current_user["id"],
+        }})
+    prior_snapshot = [
+        {"id": p.get("id"), "stars": p.get("stars"), "leave_validity": p.get("leave_validity"),
+         "note": p.get("note"), "created_at": p.get("created_at"),
+         "awarded_by": p.get("awarded_by"), "awarded_by_name": p.get("awarded_by_name")}
+        for p in prior_docs
+    ]
+
     row = {
         "id": str(uuid.uuid4()),
         "employee_id": emp_id,
@@ -9329,6 +9358,7 @@ async def override_star_entry(body: dict, current_user: dict = Depends(get_curre
                    f"{rule or 'entry'} on {ref_date}: {target:+d} → {new_val:+d} — {note}"),
         "type": "adjustment",
         "awarded_by": current_user["id"],
+        "awarded_by_name": current_user.get("name") or current_user.get("username"),
         "month": current_month,
         "ref_date": ref_date,
         "rule": f"override:{rule or 'manual'}",
@@ -9337,7 +9367,9 @@ async def override_star_entry(body: dict, current_user: dict = Depends(get_curre
         "overrides_target_stars": target,
         "overrides_new_stars": new_val,
         "target_entry_id": b.get("target_entry_id"),
+        "leave_validity": leave_validity,
         "note": note,
+        "prior_overrides": prior_snapshot,
         "created_at": datetime.now().isoformat(),
     }
     await db.star_rewards.insert_one(row.copy())
@@ -9356,13 +9388,35 @@ async def override_star_entry(body: dict, current_user: dict = Depends(get_curre
     }})
 
     await log_audit(current_user["id"], "override_star_entry", "star_reward", emp_id,
-                    f"date={ref_date} rule={rule} {target:+d}→{new_val:+d} note={note[:80]}")
+                    f"date={ref_date} rule={rule} {target:+d}→{new_val:+d} validity={leave_validity or '—'} note={note[:80]}")
+
+    # Build a fresh month summary for the affected month so the UI can update in-place
+    month_agg = await db.star_rewards.aggregate([
+        {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}, "month": current_month}},
+        {"$group": {
+            "_id": None,
+            "stars": {"$sum": "$stars"},
+            "positive": {"$sum": {"$cond": [{"$gt": ["$stars", 0]}, "$stars", 0]}},
+            "negative": {"$sum": {"$cond": [{"$lt": ["$stars", 0]}, "$stars", 0]}},
+            "entries": {"$sum": 1},
+        }}
+    ]).to_list(1)
+    ms = month_agg[0] if month_agg else {"stars": 0, "positive": 0, "negative": 0, "entries": 0}
+    month_summary = {
+        "month": current_month,
+        "stars": ms.get("stars", 0),
+        "positive": ms.get("positive", 0),
+        "negative": ms.get("negative", 0),
+        "entries": ms.get("entries", 0),
+    }
     return {
-        "message": "Entry override recorded",
+        "message": "Leave verification and star value updated successfully.",
         "compensation": compensation,
         "new_stars": stars_total,
         "new_unsafe": unsafe_total,
         "audit_row_id": row["id"],
+        "month_summary": month_summary,
+        "leave_validity": leave_validity,
     }
 
 
@@ -9700,7 +9754,10 @@ async def star_auto_monthly(employee_id: str, current_user: dict = Depends(get_c
             "edited": bool(ovr),
             "admin_note": ovr.get("note") if ovr else None,
             "admin_edited_by": ovr.get("awarded_by") if ovr else None,
+            "admin_edited_by_name": ovr.get("awarded_by_name") if ovr else None,
             "admin_edited_at": ovr.get("created_at") if ovr else None,
+            "leave_validity": ovr.get("leave_validity") if ovr else None,
+            "override_id": ovr.get("id") if ovr else None,
         })
 
     # Also surface any orphan overrides (ones whose target auto row no longer
@@ -9737,7 +9794,10 @@ async def star_auto_monthly(employee_id: str, current_user: dict = Depends(get_c
                 "edited": True,
                 "admin_note": ovr.get("note"),
                 "admin_edited_by": ovr.get("awarded_by"),
+                "admin_edited_by_name": ovr.get("awarded_by_name"),
                 "admin_edited_at": ovr.get("created_at"),
+                "leave_validity": ovr.get("leave_validity"),
+                "override_id": ovr.get("id"),
             })
 
     # Convert defaultdicts and sort items in each month by date
