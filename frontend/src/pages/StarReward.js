@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import EmployeeAvatar from '../components/EmployeeAvatar';
-import { Download, Plus, Eye, ArrowLeft, Star, Users, Award, TrendingUp, Trophy, Sparkles, AlertTriangle, Zap, Loader2, CheckCircle2 } from 'lucide-react';
+import { Download, Plus, Eye, ArrowLeft, Star, Users, Award, TrendingUp, Trophy, Sparkles, AlertTriangle, Zap, Loader2, CheckCircle2, Pencil } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/ui/date-picker';
@@ -83,6 +83,7 @@ const StarReward = () => {
   const [autoCalcEmp, setAutoCalcEmp] = useState(null);
   const [showBulkAuto, setShowBulkAuto] = useState(false);
   const [schedulerStatus, setSchedulerStatus] = useState(null);
+  const [editEmp, setEditEmp] = useState(null);
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (addFormType === 'performance' || addFormType === 'learning') setWeeklyData(getWeeksForMonth(addFormMonth)); }, [addFormMonth, addFormType]);
@@ -671,6 +672,11 @@ const StarReward = () => {
                                   </Button>
                                 )}
                                 {canAddStars && (
+                                  <Button size="sm" variant="ghost" onClick={() => setEditEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`edit-stars-${emp.id}`} title="Edit stars / flags">
+                                    <Pencil className="w-4 h-4 text-indigo-500" />
+                                  </Button>
+                                )}
+                                {canAddStars && (
                                   <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`add-stars-${emp.id}`} title="Add manual reward">
                                     <Plus className="w-4 h-4 text-amber-500" />
                                   </Button>
@@ -787,6 +793,14 @@ const StarReward = () => {
         <BulkAutoStarDialog
           onClose={() => setShowBulkAuto(false)}
           onApplied={() => { setShowBulkAuto(false); fetchData(); }}
+          getAuthHeaders={getAuthHeaders}
+        />
+      )}
+      {editEmp && (
+        <EditStarsDialog
+          employee={editEmp}
+          onClose={() => setEditEmp(null)}
+          onApplied={() => { setEditEmp(null); fetchData(); }}
           getAuthHeaders={getAuthHeaders}
         />
       )}
@@ -955,6 +969,160 @@ function AutoStarDialog({ employee, onClose, onApplied, getAuthHeaders }) {
 }
 
 export default StarReward;
+
+// ---------------------------------------------------------------------------
+// Edit Stars & Flags Dialog — HR manual override. Recorded as a single audit
+// row with `source: 'manual_adjustment'` so re-runs of the auto policy never
+// touch it. Supports Increase / Decrease / Reset-to-zero for both stars and
+// the flag (unsafe) counter. A note is mandatory for accountability.
+// ---------------------------------------------------------------------------
+function EditStarsDialog({ employee, onClose, onApplied, getAuthHeaders }) {
+  const [starMode, setStarMode] = React.useState('increase');
+  const [starValue, setStarValue] = React.useState('');
+  const [flagMode, setFlagMode] = React.useState('none');
+  const [flagValue, setFlagValue] = React.useState('');
+  const [note, setNote] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+
+  const previewStar = React.useMemo(() => {
+    const cur = Number(employee.stars || 0);
+    const v = Number(starValue || 0);
+    if (starMode === 'increase') return { delta: v, next: cur + v };
+    if (starMode === 'decrease') return { delta: -v, next: cur - v };
+    if (starMode === 'set_zero') return { delta: -cur, next: 0 };
+    return { delta: 0, next: cur };
+  }, [starMode, starValue, employee.stars]);
+  const previewFlag = React.useMemo(() => {
+    const cur = Number(employee.unsafe_count || 0);
+    const v = Number(flagValue || 0);
+    if (flagMode === 'increase') return { delta: v, next: cur + v };
+    if (flagMode === 'decrease') return { delta: -v, next: Math.max(0, cur - v) };
+    if (flagMode === 'set_zero') return { delta: -cur, next: 0 };
+    return { delta: 0, next: cur };
+  }, [flagMode, flagValue, employee.unsafe_count]);
+
+  const submit = async () => {
+    if (starMode === 'none' && flagMode === 'none') return toast.error('Pick an action for stars or flags');
+    if ((starMode === 'increase' || starMode === 'decrease') && (!starValue || Number(starValue) <= 0)) return toast.error('Enter a positive star value');
+    if ((flagMode === 'increase' || flagMode === 'decrease') && (!flagValue || Number(flagValue) <= 0)) return toast.error('Enter a positive flag value');
+    if (!note.trim()) return toast.error('Please add a note explaining this adjustment');
+    setSaving(true);
+    try {
+      const r = await axios.post(`${API}/star-rewards/adjust`, {
+        employee_id: employee.id,
+        star_mode: starMode, star_value: starMode === 'set_zero' || starMode === 'none' ? 0 : Number(starValue),
+        flag_mode: flagMode, flag_value: flagMode === 'set_zero' || flagMode === 'none' ? 0 : Number(flagValue),
+        note: note.trim(),
+      }, { headers: getAuthHeaders() });
+      toast.success(`Saved · Stars ${r.data.new_stars} · Flags ${r.data.new_unsafe}`);
+      onApplied();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Adjustment failed');
+    } finally { setSaving(false); }
+  };
+
+  const ModePills = ({ mode, setMode, testidPrefix }) => (
+    <div className="flex gap-1.5 flex-wrap">
+      {[
+        { k: 'increase',  label: 'Increase',    cls: 'bg-emerald-500 hover:bg-emerald-600' },
+        { k: 'decrease',  label: 'Decrease',    cls: 'bg-rose-500 hover:bg-rose-600' },
+        { k: 'set_zero',  label: 'Set to 0',    cls: 'bg-slate-500 hover:bg-slate-600' },
+        { k: 'none',      label: 'No change',   cls: 'bg-slate-300 hover:bg-slate-400 text-slate-700' },
+      ].map(m => (
+        <button key={m.k}
+          onClick={() => setMode(m.k)}
+          data-testid={`${testidPrefix}-${m.k}`}
+          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition ${mode === m.k ? `${m.cls} text-white shadow-sm` : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto" data-testid="edit-stars-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Pencil className="w-5 h-5 text-indigo-500" />
+            Edit Stars &amp; Flags · {employee.full_name || employee.name}
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Current state summary */}
+        <div className="grid grid-cols-2 gap-3">
+          <div className="p-3 rounded-xl bg-amber-50 border border-amber-200">
+            <div className="text-[11px] text-amber-700 uppercase tracking-wide font-semibold">Current Stars</div>
+            <div className="text-2xl font-bold text-amber-700 mt-0.5">{employee.stars ?? 0} <Star className="inline w-4 h-4 fill-current -mt-0.5"/></div>
+          </div>
+          <div className="p-3 rounded-xl bg-rose-50 border border-rose-200">
+            <div className="text-[11px] text-rose-700 uppercase tracking-wide font-semibold">Current Flags</div>
+            <div className="text-2xl font-bold text-rose-700 mt-0.5">{employee.unsafe_count ?? 0} <AlertTriangle className="inline w-4 h-4 -mt-0.5"/></div>
+          </div>
+        </div>
+
+        {/* Star adjustment */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-700">Star Value</div>
+            {starMode !== 'none' && starMode !== 'set_zero' && (
+              <div className="text-[11px] text-slate-500">New total: <b className={previewStar.next > (employee.stars || 0) ? 'text-emerald-600' : previewStar.next < (employee.stars || 0) ? 'text-rose-600' : 'text-slate-700'}>{previewStar.next}</b></div>
+            )}
+            {starMode === 'set_zero' && (<div className="text-[11px] text-slate-500">New total: <b className="text-slate-700">0</b></div>)}
+          </div>
+          <ModePills mode={starMode} setMode={setStarMode} testidPrefix="star-mode" />
+          {(starMode === 'increase' || starMode === 'decrease') && (
+            <Input type="number" min="1" placeholder="Value (e.g. 5)" value={starValue} onChange={e => setStarValue(e.target.value)} className="rounded-lg" data-testid="star-value-input"/>
+          )}
+        </div>
+
+        {/* Flag adjustment */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-700">Flag (Unsafe) Value</div>
+            {flagMode !== 'none' && flagMode !== 'set_zero' && (
+              <div className="text-[11px] text-slate-500">New total: <b>{previewFlag.next}</b></div>
+            )}
+            {flagMode === 'set_zero' && (<div className="text-[11px] text-slate-500">New total: <b>0</b></div>)}
+          </div>
+          <ModePills mode={flagMode} setMode={setFlagMode} testidPrefix="flag-mode" />
+          {(flagMode === 'increase' || flagMode === 'decrease') && (
+            <Input type="number" min="1" placeholder="Value (e.g. 1)" value={flagValue} onChange={e => setFlagValue(e.target.value)} className="rounded-lg" data-testid="flag-value-input"/>
+          )}
+        </div>
+
+        {/* Note */}
+        <div>
+          <Label className="text-xs font-semibold text-slate-600">Note / Reason *</Label>
+          <textarea
+            className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"
+            rows={3}
+            placeholder="Explain the reason for this adjustment. Visible in the audit trail."
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            data-testid="edit-note-input"
+          />
+        </div>
+
+        <div className="text-[11px] text-slate-500 italic p-2 rounded bg-slate-50 border border-slate-200">
+          Manual adjustments are stored as an audit row with <b>source: manual_adjustment</b> and are <b>never overwritten</b> by the daily auto-recompute.
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-2 pt-4 mt-4 -mx-6 -mb-6 px-6 py-4 border-t border-slate-200 sticky bottom-0 bg-white/95 backdrop-blur-sm rounded-b-lg shadow-[0_-4px_12px_-4px_rgba(15,23,42,0.08)]">
+          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button
+            className="rounded-lg h-9 px-5 bg-indigo-500 hover:bg-indigo-600"
+            onClick={submit}
+            disabled={saving}
+            data-testid="edit-submit-btn"
+          >
+            {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : 'Submit'}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Bulk Auto-Calculate Dialog — runs the automation for EVERY active Research

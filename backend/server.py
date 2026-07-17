@@ -9120,6 +9120,130 @@ async def get_star_history(employee_id: str, current_user: dict = Depends(get_cu
     return [serialize_doc(r) for r in rewards]
 
 
+@api_router.post("/star-rewards/adjust")
+async def adjust_star_reward(body: dict, current_user: dict = Depends(get_current_user)):
+    """HR manual override — increase / decrease / set-to-zero an employee's
+    star and/or flag (unsafe) totals. Recorded in `star_rewards` as an audit
+    row with `source: 'manual_adjustment'` so re-runs of the automation never
+    touch it (auto only replaces `source: 'auto'` rows).
+
+    Body:
+      employee_id: str
+      star_mode: "increase" | "decrease" | "set_zero" | "none"
+      star_value: int (ignored when mode="set_zero" or "none")
+      flag_mode: "increase" | "decrease" | "set_zero" | "none"
+      flag_value: int (ignored when mode="set_zero" or "none")
+      note: str  (required — audit trail)
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    body = body or {}
+    emp_id = body.get("employee_id")
+    note = (body.get("note") or "").strip()
+    if not emp_id: raise HTTPException(status_code=400, detail="employee_id is required")
+    if not note:   raise HTTPException(status_code=400, detail="Note / reason is required")
+
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp: raise HTTPException(status_code=404, detail="Employee not found")
+
+    star_mode = body.get("star_mode", "none")
+    flag_mode = body.get("flag_mode", "none")
+    if star_mode not in ("increase","decrease","set_zero","none"):
+        raise HTTPException(status_code=400, detail="Invalid star_mode")
+    if flag_mode not in ("increase","decrease","set_zero","none"):
+        raise HTTPException(status_code=400, detail="Invalid flag_mode")
+    if star_mode == "none" and flag_mode == "none":
+        raise HTTPException(status_code=400, detail="Choose an action for star and/or flag")
+
+    # ---- Compute star delta -----------------------------------------------
+    star_delta = 0
+    try: star_val = int(body.get("star_value") or 0)
+    except (ValueError, TypeError): star_val = 0
+    if star_mode == "increase":
+        if star_val <= 0: raise HTTPException(status_code=400, detail="Star increase value must be > 0")
+        star_delta = star_val
+    elif star_mode == "decrease":
+        if star_val <= 0: raise HTTPException(status_code=400, detail="Star decrease value must be > 0")
+        star_delta = -star_val
+    elif star_mode == "set_zero":
+        # Neutralize existing total by inserting a negative adjustment of the
+        # same magnitude. Reads current cumulative from the source of truth.
+        agg = await db.star_rewards.aggregate([
+            {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}}},
+            {"$group": {"_id": None, "s": {"$sum": "$stars"}}},
+        ]).to_list(1)
+        current_stars = agg[0]["s"] if agg else 0
+        star_delta = -current_stars
+
+    # ---- Compute flag delta -----------------------------------------------
+    try: flag_val = int(body.get("flag_value") or 0)
+    except (ValueError, TypeError): flag_val = 0
+    flag_delta = 0
+    if flag_mode == "increase":
+        if flag_val <= 0: raise HTTPException(status_code=400, detail="Flag increase value must be > 0")
+        flag_delta = flag_val
+    elif flag_mode == "decrease":
+        if flag_val <= 0: raise HTTPException(status_code=400, detail="Flag decrease value must be > 0")
+        flag_delta = -flag_val
+    elif flag_mode == "set_zero":
+        agg = await db.star_rewards.aggregate([
+            {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True},
+                        "type": "unsafe"}},
+            {"$count": "c"},
+        ]).to_list(1)
+        current_flags = agg[0]["c"] if agg else 0
+        flag_delta = -current_flags
+
+    # ---- Persist a single audit row per adjustment ------------------------
+    current_month = get_ist_now().strftime("%Y-%m")
+    today_iso = datetime.now().isoformat()
+    audit_reason = f"[Adjustment · {current_user.get('name') or current_user.get('username')}] {note}"
+    if star_mode != "none":
+        audit_reason += f" · Stars: {star_mode}({star_delta:+d})"
+    if flag_mode != "none":
+        audit_reason += f" · Flags: {flag_mode}({flag_delta:+d})"
+
+    row = {
+        "id": str(uuid.uuid4()),
+        "employee_id": emp_id,
+        "stars": int(star_delta),           # actual delta persisted
+        "flag_delta": int(flag_delta),      # informational only
+        "reason": audit_reason,
+        "type": "adjustment",               # not 'unsafe' — we manage flag_delta separately
+        "awarded_by": current_user["id"],
+        "month": current_month,
+        "ref_date": get_ist_now().strftime("%Y-%m-%d"),
+        "source": "manual_adjustment",      # protected from auto-recompute
+        "note": note,
+        "created_at": today_iso,
+    }
+    await db.star_rewards.insert_one(row.copy())
+
+    # ---- Recompute totals from source-of-truth ----------------------------
+    star_agg = await db.star_rewards.aggregate([
+        {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}}},
+        {"$group": {"_id": None, "stars": {"$sum": "$stars"},
+                    "flag_adj": {"$sum": "$flag_delta"},
+                    "unsafe_rows": {"$sum": {"$cond": [{"$eq": ["$type", "unsafe"]}, 1, 0]}}}}
+    ]).to_list(1)
+    stars_total = star_agg[0]["stars"] if star_agg else 0
+    unsafe_from_rows = star_agg[0]["unsafe_rows"] if star_agg else 0
+    flag_adj = star_agg[0].get("flag_adj", 0) if star_agg else 0
+    unsafe_total = max(0, unsafe_from_rows + flag_adj)  # flags never go negative
+    await db.employees.update_one({"id": emp_id}, {"$set": {
+        "stars": stars_total, "unsafe_count": unsafe_total,
+    }})
+
+    await log_audit(current_user["id"], "adjust_star_reward", "star_reward", emp_id,
+                    f"star_delta={star_delta:+d} flag_delta={flag_delta:+d} note={note[:80]}")
+    return {
+        "message": "Adjustment recorded",
+        "star_delta": star_delta, "flag_delta": flag_delta,
+        "new_stars": stars_total, "new_unsafe": unsafe_total,
+        "audit_row_id": row["id"],
+    }
+
+
 # ============================================================================
 # Star Reward AUTOMATION — per §4/§5/§6/§10 of the BluBridge Research Star
 # Policy. Manual awards remain untouched. Auto rows carry `source: 'auto'`.
