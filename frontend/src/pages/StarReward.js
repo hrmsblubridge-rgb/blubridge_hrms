@@ -294,26 +294,52 @@ const StarReward = () => {
                     </button>
                     {isOpen && m.items.length > 0 && (
                       <div className="border-t border-slate-200 divide-y divide-slate-100">
-                        {m.items.map(it => (
-                          <div key={it.id} className="px-4 py-2.5 flex items-start gap-3 text-sm group">
-                            <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] shrink-0 ${it.stars > 0 ? 'bg-emerald-100 text-emerald-700' : it.stars < 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>
-                              {it.stars > 0 ? '+' : ''}{it.stars}
+                        {m.items.map(it => {
+                          const stars = it.stars;
+                          const isZero = stars === 0;
+                          const badgeCls = isZero
+                            ? 'bg-slate-100 text-slate-600 border border-slate-300'
+                            : stars > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700';
+                          return (
+                          <div key={it.id} className={`px-4 py-2.5 flex items-start gap-3 text-sm group ${it.edited ? 'bg-indigo-50/30' : ''}`}>
+                            <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] shrink-0 ${badgeCls}`} data-testid={`entry-badge-${it.id}`}>
+                              {stars > 0 ? '+' : ''}{stars}
                             </span>
                             <div className="flex-1 min-w-0">
-                              <div className="text-[13px] font-medium text-slate-800">{it.category}</div>
+                              <div className="text-[13px] font-medium text-slate-800 flex items-center gap-1.5 flex-wrap">
+                                {it.category}
+                                {it.source === 'auto' && <span className="text-[9px] uppercase tracking-wider font-semibold text-slate-400">Auto-generated</span>}
+                                {it.edited && (
+                                  <span className="text-[9px] uppercase tracking-wider font-bold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded" data-testid={`edited-label-${it.id}`}>
+                                    Admin edited
+                                  </span>
+                                )}
+                                {it.edited && it.original_stars !== stars && (
+                                  <span className="text-[10px] text-slate-400">
+                                    (was {it.original_stars > 0 ? `+${it.original_stars}` : it.original_stars})
+                                  </span>
+                                )}
+                              </div>
                               <div className="text-[11px] text-slate-500 mt-0.5">{it.reason}</div>
+                              {it.edited && it.admin_note && (
+                                <div className="mt-1.5 text-[11px] text-indigo-800 bg-indigo-50 border-l-2 border-indigo-400 px-2 py-1 rounded-r" data-testid={`admin-note-${it.id}`}>
+                                  <span className="font-semibold">Admin note:</span> {it.admin_note}
+                                </div>
+                              )}
                             </div>
                             <div className="text-[11px] text-slate-400 shrink-0 tabular-nums">{it.date}</div>
-                            <button
-                              onClick={() => setEntryEdit({ item: it, employee: selectedEmployee })}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 p-1 rounded hover:bg-indigo-50"
-                              title="Edit this entry"
-                              data-testid={`edit-entry-${it.id}`}
-                            >
-                              <Pencil className="w-3.5 h-3.5 text-indigo-500" />
-                            </button>
+                            {canAddStars && (
+                              <button
+                                onClick={() => setEntryEdit({ item: it, employee: selectedEmployee })}
+                                className="opacity-60 hover:opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity ml-1 p-1 rounded hover:bg-indigo-50 shrink-0"
+                                title={it.edited ? 'Revise the current adjustment' : 'Edit this entry'}
+                                data-testid={`edit-entry-${it.id}`}
+                              >
+                                <Pencil className="w-3.5 h-3.5 text-indigo-500" />
+                              </button>
+                            )}
                           </div>
-                        ))}
+                        );})}
                       </div>
                     )}
                   </div>
@@ -1585,30 +1611,48 @@ function LeaveAdjustDialog({ employee, onClose, onApplied, getAuthHeaders }) {
 // daily re-runs because it's anchored by (employee, ref_date, rule).
 // ---------------------------------------------------------------------------
 function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeaders }) {
-  const [newStars, setNewStars] = React.useState('0');
+  const originalStars = Number(item.original_stars ?? item.stars ?? 0);
+  const [newStars, setNewStars] = React.useState(String(item.stars ?? 0));
   const [note, setNote] = React.useState('');
   const [saving, setSaving] = React.useState(false);
-  const delta = Number(newStars || 0) - Number(item.stars || 0);
+  const revised = Number(newStars);
+  const delta = revised - originalStars;
+  const noteTrimmed = note.trim();
+  const identical = revised === originalStars;
+  const canSubmit = !saving && !identical && noteTrimmed.length > 0 && !isNaN(revised);
 
   const submit = async () => {
-    if (!note.trim()) return toast.error('Note is required');
-    if (newStars === '' || isNaN(Number(newStars))) return toast.error('Enter a valid new star value');
+    if (identical) return toast.error('Revised score must differ from the original.');
+    if (!noteTrimmed) return toast.error('Admin note is required.');
+    if (isNaN(revised)) return toast.error('Enter a valid revised score.');
+    // Confirmation before save — required per spec.
+    const original = originalStars > 0 ? `+${originalStars}` : `${originalStars}`;
+    const target = revised > 0 ? `+${revised}` : `${revised}`;
+    const confirmMsg = `You are changing this employee's score from ${original} to ${target}. This will recalculate the monthly total. Do you want to continue?`;
+    if (!window.confirm(confirmMsg)) return;
     setSaving(true);
     try {
       const r = await axios.post(`${API}/star-rewards/entry-override`, {
         employee_id: employee.id,
         ref_date: item.date,
         rule: item.rule,
-        target_stars: Number(item.stars || 0),
-        new_stars: Number(newStars),
+        target_stars: originalStars,
+        new_stars: revised,
         target_entry_id: item.id,
-        note: note.trim(),
+        note: noteTrimmed,
       }, { headers: getAuthHeaders() });
-      toast.success(`Entry overridden · Employee total: ${r.data.new_stars} stars`);
+      toast.success(`Score entry updated successfully · Employee total: ${r.data.new_stars} stars`);
       onApplied();
     } catch (e) {
-      toast.error(e?.response?.data?.detail || 'Override failed');
+      toast.error(e?.response?.data?.detail || 'Update failed');
     } finally { setSaving(false); }
+  };
+
+  const scoreBadge = (val) => {
+    const cls = val === 0 ? 'bg-slate-100 text-slate-600 border border-slate-300'
+      : val > 0 ? 'bg-emerald-100 text-emerald-700'
+      : 'bg-rose-100 text-rose-700';
+    return <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] ${cls}`}>{val > 0 ? '+' : ''}{val}</span>;
   };
 
   return (
@@ -1617,30 +1661,47 @@ function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeader
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Pencil className="w-5 h-5 text-indigo-500" />
-            Edit this entry
+            Edit score entry
           </DialogTitle>
         </DialogHeader>
 
-        {/* Target entry summary */}
-        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm">
-          <div className="flex items-center gap-2">
-            <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] ${item.stars > 0 ? 'bg-emerald-100 text-emerald-700' : item.stars < 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>
-              {item.stars > 0 ? '+' : ''}{item.stars}
-            </span>
-            <div className="font-semibold text-slate-800">{item.category}</div>
-            <span className="ml-auto text-[11px] text-slate-500 font-mono">{item.date}</span>
+        {/* Read-only entry context */}
+        <div className="space-y-2 text-sm">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Employee</div>
+              <div className="font-medium text-slate-800 mt-0.5">{employee.full_name || employee.name}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Entry Date</div>
+              <div className="font-mono text-slate-800 mt-0.5">{item.date}</div>
+            </div>
           </div>
-          <div className="text-[11px] text-slate-600 mt-1.5">{item.reason}</div>
+          <div className="grid grid-cols-[1fr_auto] gap-3">
+            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Category</div>
+              <div className="font-medium text-slate-800 mt-0.5">{item.category}</div>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200 min-w-[110px]">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Original Score</div>
+              <div className="mt-0.5">{scoreBadge(originalStars)}</div>
+            </div>
+          </div>
+          <div className="p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Original Reason</div>
+            <div className="text-[12px] text-slate-700 mt-0.5">{item.reason}</div>
+          </div>
         </div>
 
-        {/* New value input */}
+        {/* Revised score */}
         <div>
           <Label className="text-xs font-semibold text-slate-600">
-            New star value <span className="font-normal text-slate-400">(set 0 to neutralize this entry)</span>
+            Revised Score <span className="text-rose-500">*</span>
           </Label>
           <div className="mt-1.5 flex items-center gap-2 flex-wrap">
             <Input
               type="number"
+              min="-2" max="2" step="1"
               value={newStars}
               onChange={e => setNewStars(e.target.value)}
               className="rounded-lg w-24"
@@ -1658,19 +1719,26 @@ function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeader
                 </button>
               ))}
             </div>
-            <span className="text-[11px] text-slate-500 ml-2">
-              Compensation applied: <b className={delta > 0 ? 'text-emerald-600' : delta < 0 ? 'text-rose-600' : 'text-slate-600'}>{delta > 0 ? '+' : ''}{delta}</b>
-            </span>
+            {!identical && !isNaN(revised) && (
+              <span className="text-[11px] text-slate-500 ml-2">
+                Delta: <b className={delta > 0 ? 'text-emerald-600' : delta < 0 ? 'text-rose-600' : 'text-slate-600'}>{delta > 0 ? '+' : ''}{delta}</b>
+              </span>
+            )}
           </div>
+          {identical && (
+            <div className="text-[11px] text-amber-700 mt-1">Revised score must differ from the original.</div>
+          )}
         </div>
 
-        {/* Note */}
+        {/* Admin note */}
         <div>
-          <Label className="text-xs font-semibold text-slate-600">Note / Reason *</Label>
+          <Label className="text-xs font-semibold text-slate-600">
+            Admin Note / Edit Reason <span className="text-rose-500">*</span>
+          </Label>
           <textarea
             className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"
             rows={3}
-            placeholder="e.g. Sick leave was valid — supporting doctor's note received."
+            placeholder='e.g. "Leave notification verified and accepted as valid. Negative score neutralized."'
             value={note}
             onChange={e => setNote(e.target.value)}
             data-testid="entry-note"
@@ -1678,18 +1746,18 @@ function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeader
         </div>
 
         <div className="text-[11px] text-slate-500 italic p-2 rounded bg-slate-50 border border-slate-200">
-          A compensating <b>manual_adjustment</b> row is saved. Even when the daily auto-recompute reruns and re-creates the same auto entry, this override remains applied.
+          The original entry is preserved. A compensating <b>admin edit</b> is added and kept in the audit trail. Setting the score to <b>0</b> neutralises the entry without deleting it.
         </div>
 
         <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-slate-200">
-          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={saving} data-testid="entry-cancel-btn">Cancel</Button>
           <Button
             className="rounded-lg h-9 px-5 bg-indigo-500 hover:bg-indigo-600"
             onClick={submit}
-            disabled={saving}
+            disabled={!canSubmit}
             data-testid="entry-submit-btn"
           >
-            {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : 'Submit'}
+            {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : 'Save Changes'}
           </Button>
         </div>
       </DialogContent>

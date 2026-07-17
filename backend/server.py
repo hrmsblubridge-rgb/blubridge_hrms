@@ -9652,9 +9652,21 @@ async def star_auto_monthly(employee_id: str, current_user: dict = Depends(get_c
         {"employee_id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0}
     ).sort("ref_date", 1).to_list(2000)
 
+    # Group manual overrides with their target entries so the UI shows a
+    # single collapsed row per (ref_date, rule) with the "Admin edited"
+    # indicator instead of two separate rows.
+    override_by_key = {}
+    for r in rewards:
+        if r.get("source") == "manual_adjustment" and r.get("overrides_rule") is not None and r.get("ref_date"):
+            key = f"{r['ref_date']}|{r['overrides_rule']}"
+            override_by_key[key] = r
+
     from collections import defaultdict as _dd
     months = {}
     for r in rewards:
+        # Skip standalone override rows — they'll be attached to their target.
+        if r.get("source") == "manual_adjustment" and r.get("overrides_rule") is not None:
+            continue
         m = r.get("month") or (r.get("ref_date") or r.get("created_at", ""))[:7]
         if not m: continue
         bucket = months.setdefault(m, {
@@ -9663,25 +9675,70 @@ async def star_auto_monthly(employee_id: str, current_user: dict = Depends(get_c
             "categories": _dd(int), "items": [],
         })
         s = r.get("stars", 0) or 0
-        bucket["stars"] += s
+        # Check whether an override targets this row's (ref_date, rule)
+        ovr = override_by_key.get(f"{r.get('ref_date')}|{r.get('rule')}") if r.get("rule") else None
+        effective_stars = s + (ovr.get("stars", 0) if ovr else 0)
+        bucket["stars"] += effective_stars
         bucket["entries"] += 1
-        if s > 0: bucket["positive"] += s
-        else:     bucket["negative"] += s
+        if effective_stars > 0: bucket["positive"] += effective_stars
+        elif effective_stars < 0: bucket["negative"] += effective_stars
         if r.get("source") == "auto":
-            bucket["auto_stars"] += s
+            bucket["auto_stars"] += effective_stars
         else:
-            bucket["manual_stars"] += s
+            bucket["manual_stars"] += effective_stars
         cat = r.get("category") or ("Manual" if r.get("source") != "auto" else "Auto")
-        bucket["categories"][cat] += s
+        bucket["categories"][cat] += effective_stars
         bucket["items"].append({
             "id": r.get("id"),
             "date": r.get("ref_date") or (r.get("created_at", "")[:10]),
-            "stars": s,
+            "original_stars": s,
+            "stars": effective_stars,
             "reason": r.get("reason"),
             "category": cat,
             "rule": r.get("rule"),
             "source": r.get("source") or "manual",
+            "edited": bool(ovr),
+            "admin_note": ovr.get("note") if ovr else None,
+            "admin_edited_by": ovr.get("awarded_by") if ovr else None,
+            "admin_edited_at": ovr.get("created_at") if ovr else None,
         })
+
+    # Also surface any orphan overrides (ones whose target auto row no longer
+    # exists after a scheduler re-run — the override still needs to be visible).
+    accounted = set()
+    for m, b in months.items():
+        for it in b["items"]:
+            if it.get("edited") and it.get("date") and it.get("rule"):
+                accounted.add(f"{it['date']}|{it['rule']}")
+    for key, ovr in override_by_key.items():
+        if key not in accounted:
+            m = ovr.get("month") or (ovr.get("ref_date") or "")[:7]
+            if not m: continue
+            bucket = months.setdefault(m, {
+                "month": m, "stars": 0, "positive": 0, "negative": 0,
+                "auto_stars": 0, "manual_stars": 0, "entries": 0,
+                "categories": _dd(int), "items": [],
+            })
+            s = ovr.get("stars", 0) or 0
+            bucket["stars"] += s
+            bucket["entries"] += 1
+            if s > 0: bucket["positive"] += s
+            elif s < 0: bucket["negative"] += s
+            bucket["manual_stars"] += s
+            bucket["items"].append({
+                "id": ovr.get("id"),
+                "date": ovr.get("ref_date"),
+                "original_stars": ovr.get("overrides_target_stars", 0) or 0,
+                "stars": ovr.get("overrides_new_stars", s),
+                "reason": ovr.get("reason"),
+                "category": (ovr.get("overrides_rule") or "manual").replace("_"," ").title(),
+                "rule": ovr.get("overrides_rule"),
+                "source": "auto",  # display as auto-with-override
+                "edited": True,
+                "admin_note": ovr.get("note"),
+                "admin_edited_by": ovr.get("awarded_by"),
+                "admin_edited_at": ovr.get("created_at"),
+            })
 
     # Convert defaultdicts and sort items in each month by date
     ordered = []
