@@ -85,6 +85,7 @@ const StarReward = () => {
   const [schedulerStatus, setSchedulerStatus] = useState(null);
   const [editEmp, setEditEmp] = useState(null);
   const [leaveEditEmp, setLeaveEditEmp] = useState(null);
+  const [entryEdit, setEntryEdit] = useState(null);
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (addFormType === 'performance' || addFormType === 'learning') setWeeklyData(getWeeksForMonth(addFormMonth)); }, [addFormMonth, addFormType]);
@@ -294,8 +295,8 @@ const StarReward = () => {
                     {isOpen && m.items.length > 0 && (
                       <div className="border-t border-slate-200 divide-y divide-slate-100">
                         {m.items.map(it => (
-                          <div key={it.id} className="px-4 py-2.5 flex items-start gap-3 text-sm">
-                            <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] shrink-0 ${it.stars > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                          <div key={it.id} className="px-4 py-2.5 flex items-start gap-3 text-sm group">
+                            <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] shrink-0 ${it.stars > 0 ? 'bg-emerald-100 text-emerald-700' : it.stars < 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>
                               {it.stars > 0 ? '+' : ''}{it.stars}
                             </span>
                             <div className="flex-1 min-w-0">
@@ -303,6 +304,14 @@ const StarReward = () => {
                               <div className="text-[11px] text-slate-500 mt-0.5">{it.reason}</div>
                             </div>
                             <div className="text-[11px] text-slate-400 shrink-0 tabular-nums">{it.date}</div>
+                            <button
+                              onClick={() => setEntryEdit({ item: it, employee: selectedEmployee })}
+                              className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 p-1 rounded hover:bg-indigo-50"
+                              title="Edit this entry"
+                              data-testid={`edit-entry-${it.id}`}
+                            >
+                              <Pencil className="w-3.5 h-3.5 text-indigo-500" />
+                            </button>
                           </div>
                         ))}
                       </div>
@@ -815,6 +824,23 @@ const StarReward = () => {
           employee={leaveEditEmp}
           onClose={() => setLeaveEditEmp(null)}
           onApplied={() => fetchData()}
+          getAuthHeaders={getAuthHeaders}
+        />
+      )}
+      {entryEdit && (
+        <EntryOverrideDialog
+          item={entryEdit.item}
+          employee={entryEdit.employee}
+          onClose={() => setEntryEdit(null)}
+          onApplied={async () => {
+            setEntryEdit(null);
+            // Refresh the monthly view so the overridden entry reflects instantly
+            if (selectedEmployee) {
+              const r = await axios.get(`${API}/star-rewards/auto/monthly/${selectedEmployee.id}`, { headers: getAuthHeaders() }).catch(() => null);
+              if (r) setMonthlyView(r.data);
+            }
+            fetchData();
+          }}
           getAuthHeaders={getAuthHeaders}
         />
       )}
@@ -1544,6 +1570,127 @@ function LeaveAdjustDialog({ employee, onClose, onApplied, getAuthHeaders }) {
               {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : '3. Submit'}
             </Button>
           )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// EntryOverrideDialog — HR clicks the pencil on ONE line inside the monthly
+// breakdown to override that specific auto-generated star entry. E.g. a "-1
+// Compliance · Sick leave notified after 07:00 AM" auto row can be set to 0
+// with a note, marking the leave as actually valid. A compensating manual
+// row is persisted so that (target + compensation) = new value. Survives
+// daily re-runs because it's anchored by (employee, ref_date, rule).
+// ---------------------------------------------------------------------------
+function EntryOverrideDialog({ item, employee, onClose, onApplied, getAuthHeaders }) {
+  const [newStars, setNewStars] = React.useState('0');
+  const [note, setNote] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+  const delta = Number(newStars || 0) - Number(item.stars || 0);
+
+  const submit = async () => {
+    if (!note.trim()) return toast.error('Note is required');
+    if (newStars === '' || isNaN(Number(newStars))) return toast.error('Enter a valid new star value');
+    setSaving(true);
+    try {
+      const r = await axios.post(`${API}/star-rewards/entry-override`, {
+        employee_id: employee.id,
+        ref_date: item.date,
+        rule: item.rule,
+        target_stars: Number(item.stars || 0),
+        new_stars: Number(newStars),
+        target_entry_id: item.id,
+        note: note.trim(),
+      }, { headers: getAuthHeaders() });
+      toast.success(`Entry overridden · Employee total: ${r.data.new_stars} stars`);
+      onApplied();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Override failed');
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-lg" data-testid="entry-override-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Pencil className="w-5 h-5 text-indigo-500" />
+            Edit this entry
+          </DialogTitle>
+        </DialogHeader>
+
+        {/* Target entry summary */}
+        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-sm">
+          <div className="flex items-center gap-2">
+            <span className={`inline-block px-2 py-0.5 rounded font-bold text-[11px] ${item.stars > 0 ? 'bg-emerald-100 text-emerald-700' : item.stars < 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-700'}`}>
+              {item.stars > 0 ? '+' : ''}{item.stars}
+            </span>
+            <div className="font-semibold text-slate-800">{item.category}</div>
+            <span className="ml-auto text-[11px] text-slate-500 font-mono">{item.date}</span>
+          </div>
+          <div className="text-[11px] text-slate-600 mt-1.5">{item.reason}</div>
+        </div>
+
+        {/* New value input */}
+        <div>
+          <Label className="text-xs font-semibold text-slate-600">
+            New star value <span className="font-normal text-slate-400">(set 0 to neutralize this entry)</span>
+          </Label>
+          <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+            <Input
+              type="number"
+              value={newStars}
+              onChange={e => setNewStars(e.target.value)}
+              className="rounded-lg w-24"
+              data-testid="entry-new-stars"
+            />
+            <div className="flex gap-1">
+              {[-2, -1, 0, 1, 2].map(v => (
+                <button
+                  key={v}
+                  onClick={() => setNewStars(String(v))}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-semibold border transition ${Number(newStars) === v ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}
+                  data-testid={`entry-quick-${v}`}
+                >
+                  {v > 0 ? `+${v}` : v}
+                </button>
+              ))}
+            </div>
+            <span className="text-[11px] text-slate-500 ml-2">
+              Compensation applied: <b className={delta > 0 ? 'text-emerald-600' : delta < 0 ? 'text-rose-600' : 'text-slate-600'}>{delta > 0 ? '+' : ''}{delta}</b>
+            </span>
+          </div>
+        </div>
+
+        {/* Note */}
+        <div>
+          <Label className="text-xs font-semibold text-slate-600">Note / Reason *</Label>
+          <textarea
+            className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"
+            rows={3}
+            placeholder="e.g. Sick leave was valid — supporting doctor's note received."
+            value={note}
+            onChange={e => setNote(e.target.value)}
+            data-testid="entry-note"
+          />
+        </div>
+
+        <div className="text-[11px] text-slate-500 italic p-2 rounded bg-slate-50 border border-slate-200">
+          A compensating <b>manual_adjustment</b> row is saved. Even when the daily auto-recompute reruns and re-creates the same auto entry, this override remains applied.
+        </div>
+
+        <div className="flex flex-wrap justify-end gap-2 pt-2 border-t border-slate-200">
+          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={saving}>Cancel</Button>
+          <Button
+            className="rounded-lg h-9 px-5 bg-indigo-500 hover:bg-indigo-600"
+            onClick={submit}
+            disabled={saving}
+            data-testid="entry-submit-btn"
+          >
+            {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : 'Submit'}
+          </Button>
         </div>
       </DialogContent>
     </Dialog>

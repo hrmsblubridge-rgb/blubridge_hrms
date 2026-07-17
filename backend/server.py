@@ -9284,6 +9284,88 @@ async def adjust_star_for_leave(body: dict, current_user: dict = Depends(get_cur
     }
 
 
+@api_router.post("/star-rewards/entry-override")
+async def override_star_entry(body: dict, current_user: dict = Depends(get_current_user)):
+    """Override a single auto-generated star entry (or any prior entry) with
+    a new star value. Persists a compensating `manual_adjustment` row so that
+    (target_stars + compensation) = new_stars. Anchored by (employee_id,
+    ref_date, rule) so the override survives daily re-runs of the auto engine.
+
+    Body:
+      employee_id: str
+      ref_date: str (YYYY-MM-DD)
+      rule: str (optional — e.g. 'late_sick_notification')
+      target_stars: int (current stars of the entry being overridden)
+      new_stars: int (desired final stars for this specific entry)
+      target_entry_id: str (optional — for audit only)
+      note: str (required)
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    b = body or {}
+    emp_id = b.get("employee_id")
+    ref_date = b.get("ref_date")
+    rule = b.get("rule") or None
+    target = b.get("target_stars")
+    new_val = b.get("new_stars")
+    note = (b.get("note") or "").strip()
+    if not emp_id or not ref_date: raise HTTPException(status_code=400, detail="employee_id and ref_date required")
+    if not note: raise HTTPException(status_code=400, detail="Note is required")
+    try:
+        target = int(target); new_val = int(new_val)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="target_stars and new_stars must be integers")
+
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp: raise HTTPException(status_code=404, detail="Employee not found")
+
+    compensation = new_val - target  # add this to reach new_val net
+    current_month = ref_date[:7]
+    row = {
+        "id": str(uuid.uuid4()),
+        "employee_id": emp_id,
+        "stars": int(compensation),
+        "reason": (f"[Entry override · {current_user.get('name') or current_user.get('username')}] "
+                   f"{rule or 'entry'} on {ref_date}: {target:+d} → {new_val:+d} — {note}"),
+        "type": "adjustment",
+        "awarded_by": current_user["id"],
+        "month": current_month,
+        "ref_date": ref_date,
+        "rule": f"override:{rule or 'manual'}",
+        "source": "manual_adjustment",
+        "overrides_rule": rule,
+        "overrides_target_stars": target,
+        "overrides_new_stars": new_val,
+        "target_entry_id": b.get("target_entry_id"),
+        "note": note,
+        "created_at": datetime.now().isoformat(),
+    }
+    await db.star_rewards.insert_one(row.copy())
+
+    # Recompute totals from source-of-truth.
+    agg = await db.star_rewards.aggregate([
+        {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}}},
+        {"$group": {"_id": None, "stars": {"$sum": "$stars"},
+                    "flag_adj": {"$sum": "$flag_delta"},
+                    "unsafe_rows": {"$sum": {"$cond": [{"$eq": ["$type", "unsafe"]}, 1, 0]}}}}
+    ]).to_list(1)
+    stars_total = agg[0]["stars"] if agg else 0
+    unsafe_total = max(0, (agg[0]["unsafe_rows"] if agg else 0) + (agg[0].get("flag_adj", 0) if agg else 0))
+    await db.employees.update_one({"id": emp_id}, {"$set": {
+        "stars": stars_total, "unsafe_count": unsafe_total,
+    }})
+
+    await log_audit(current_user["id"], "override_star_entry", "star_reward", emp_id,
+                    f"date={ref_date} rule={rule} {target:+d}→{new_val:+d} note={note[:80]}")
+    return {
+        "message": "Entry override recorded",
+        "compensation": compensation,
+        "new_stars": stars_total,
+        "new_unsafe": unsafe_total,
+        "audit_row_id": row["id"],
+    }
+
+
 @api_router.post("/star-rewards/adjust")
 async def adjust_star_reward(body: dict, current_user: dict = Depends(get_current_user)):
     """HR manual override — increase / decrease / set-to-zero an employee's
