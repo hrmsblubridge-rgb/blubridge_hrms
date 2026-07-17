@@ -7344,7 +7344,12 @@ async def recompute_attendance_from_punches(
     if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN]:
         raise HTTPException(status_code=403, detail="Permission denied")
 
-    # Aggregate raw logs into (emp_id, date) -> [punch_24h, ...]
+    # Aggregate raw logs: gather ALL mapped punches per employee. We regroup
+    # by the *recomputed* effective date (from `recordTime`) so historical
+    # overnight punches that were stored under the calendar date get moved to
+    # the correct working day. This makes the recompute idempotent with the
+    # current `get_effective_attendance_date` cut-off (env
+    # CROSS_MIDNIGHT_THRESHOLD_MINUTES, default 05:00 IST).
     match_stage = {"logs.status": "mapped"}
     if employee_id:
         match_stage["logs.employee_id"] = employee_id
@@ -7353,7 +7358,7 @@ async def recompute_attendance_from_punches(
         {"$unwind": "$logs"},
         {"$match": match_stage},
         {"$group": {
-            "_id": {"employee_id": "$logs.employee_id", "date": "$logs.date"},
+            "_id": "$logs.employee_id",
             "punches": {"$push": "$logs.recordTime"},
         }},
     ]
@@ -7385,134 +7390,188 @@ async def recompute_attendance_from_punches(
     skipped_locked = 0
     no_change = 0
     examined = 0
+    cleared_orphans = 0
 
+    # Flatten from cursor into an in-memory mapping so we can iterate a second
+    # time to detect stale attendance rows that no longer have any raw punches
+    # matching them (i.e. their punches moved to the previous day).
+    per_emp_groups: dict = {}  # emp_id -> { date_str: [datetime, ...] }
     async for grp in cursor:
-        emp_id = grp["_id"]["employee_id"]
-        date_str = grp["_id"]["date"]
-        if from_date or to_date:
-            v = parse_ddmmyyyy(date_str)
-            if not (f_val <= v <= t_val):
+        emp_id = grp["_id"]
+        # Regroup by RECOMPUTED effective date so overnight punches move to
+        # the previous working day per the current cut-off rule.
+        by_date: dict = {}
+        for rt in grp.get("punches", []):
+            p = _parse(rt)
+            if not p:
                 continue
-        examined += 1
+            d = get_effective_attendance_date(p)
+            by_date.setdefault(d, []).append(p)
+        per_emp_groups[emp_id] = by_date
 
-        parsed = [p for p in (_parse(rt) for rt in grp.get("punches", [])) if p]
-        # Dedupe by minute (devices commonly re-sync the same punch many times).
-        unique = sorted({p.replace(second=0, microsecond=0) for p in parsed})
-        if not unique:
-            continue
-        in_dt = unique[0]
-        out_dt = unique[-1] if len(unique) > 1 else None
+    for emp_id, by_date in per_emp_groups.items():
+        for date_str, punches_dt in by_date.items():
+            if from_date or to_date:
+                v = parse_ddmmyyyy(date_str)
+                if not (f_val <= v <= t_val):
+                    continue
+            examined += 1
 
-        in_24h = in_dt.strftime("%H:%M")
-        in_12h = in_dt.strftime("%I:%M %p")
-        out_24h = out_dt.strftime("%H:%M") if out_dt else None
-        out_12h = out_dt.strftime("%I:%M %p") if out_dt else None
+            # Dedupe by minute (devices commonly re-sync the same punch many times).
+            unique = sorted({p.replace(second=0, microsecond=0) for p in punches_dt})
+            if not unique:
+                continue
+            in_dt = unique[0]
+            out_dt = unique[-1] if len(unique) > 1 else None
 
-        existing = await db.attendance.find_one(
-            {"employee_id": emp_id, "date": date_str},
-            {"_id": 0}
-        )
+            in_24h = in_dt.strftime("%H:%M")
+            in_12h = in_dt.strftime("%I:%M %p")
+            out_24h = out_dt.strftime("%H:%M") if out_dt else None
+            out_12h = out_dt.strftime("%I:%M %p") if out_dt else None
 
-        # Respect manual overrides / approved corrections
-        if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")):
-            skipped_locked += 1
-            continue
+            existing = await db.attendance.find_one(
+                {"employee_id": emp_id, "date": date_str},
+                {"_id": 0}
+            )
 
-        # No-op short-circuit
-        if existing and existing.get("check_in_24h") == in_24h and existing.get("check_out_24h") == out_24h:
-            no_change += 1
-            continue
+            # Respect manual overrides / approved corrections
+            if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")):
+                skipped_locked += 1
+                continue
 
-        # Compute total hours and status
-        total_hours_decimal = 0.0
-        total_hours_str = None
-        status = AttendanceStatus.LOGIN
-        is_lop = False
-        lop_reason = None
-        dynamic_expected_logout = None
+            # No-op short-circuit
+            if existing and existing.get("check_in_24h") == in_24h and existing.get("check_out_24h") == out_24h:
+                no_change += 1
+                continue
 
-        if emp_id not in emp_cache:
-            emp_cache[emp_id] = await db.employees.find_one({"id": emp_id}, {"_id": 0}) or {}
-        employee = emp_cache[emp_id]
-        shift_timings = get_shift_timings(employee) if employee else None
-
-        # Sunday handling: never LOP, mark "Sunday" / "Worked on Sunday"
-        if is_sunday_ddmmyyyy(date_str):
-            if in_24h and out_24h:
-                im = parse_time_24h_to_minutes(in_24h)
-                om = parse_time_24h_to_minutes(out_24h)
-                total_hours_decimal = round((om - im) / 60, 2) if om > im else round((24 * 60 - im + om) / 60, 2)
-                total_hours_str = calculate_total_hours_str(total_hours_decimal)
-            status = AttendanceStatus.WORKED_ON_SUNDAY if in_24h else AttendanceStatus.SUNDAY
+            # Compute total hours and status
+            total_hours_decimal = 0.0
+            total_hours_str = None
+            status = AttendanceStatus.LOGIN
             is_lop = False
             lop_reason = None
-        elif in_24h and out_24h:
-            in_mins = parse_time_24h_to_minutes(in_24h)
-            out_mins = parse_time_24h_to_minutes(out_24h)
-            if out_mins > in_mins:
-                total_hours_decimal = round((out_mins - in_mins) / 60, 2)
-            else:
-                total_hours_decimal = round((24 * 60 - in_mins + out_mins) / 60, 2)
-            total_hours_str = calculate_total_hours_str(total_hours_decimal)
-            status = AttendanceStatus.PRESENT
-            if shift_timings:
-                sr = calculate_attendance_status(in_24h, out_24h, shift_timings, attendance_date=date_str)
-                status = sr.get("status", status)
-                is_lop = sr.get("is_lop", False)
-                lop_reason = sr.get("lop_reason")
-                dynamic_expected_logout = sr.get("expected_logout")
-                if sr.get("total_hours_decimal"):
-                    total_hours_decimal = sr["total_hours_decimal"]
-                    total_hours_str = calculate_total_hours_str(total_hours_decimal)
-        elif in_24h and not out_24h:
-            if shift_timings:
-                req_h = shift_timings.get("total_hours", 8)
-                dynamic_expected_logout = add_hours_to_24h(in_24h, req_h)
-                expected_login = shift_timings.get("login_time")
-                if expected_login:
-                    em = parse_time_24h_to_minutes(expected_login)
-                    am = parse_time_24h_to_minutes(in_24h)
-                    if am > em:
-                        is_lop = True
-                        lop_reason = f"Late login by {am - em} minute(s). Expected: {expected_login}, Actual: {in_24h}"
-                        status = AttendanceStatus.LOSS_OF_PAY
+            dynamic_expected_logout = None
 
-        update_doc = {
-            "$set": {
-                "check_in": in_12h,
-                "check_in_24h": in_24h,
-                "check_out": out_12h,
-                "check_out_24h": out_24h,
-                "total_hours": total_hours_str,
-                "total_hours_decimal": total_hours_decimal,
-                "status": status,
-                "is_lop": is_lop,
-                "lop_reason": lop_reason,
-                "source": "biometric",
-                "expected_logout": dynamic_expected_logout if dynamic_expected_logout else (shift_timings.get("logout_time") if shift_timings else None),
-            },
-            "$setOnInsert": {
-                "id": str(uuid.uuid4()),
-                "employee_id": emp_id,
-                "emp_name": (employee or {}).get("full_name", ""),
-                "team": (employee or {}).get("team", ""),
-                "department": (employee or {}).get("department", ""),
-                "date": date_str,
-                "shift_type": (employee or {}).get("shift_type", "General"),
-                "expected_login": shift_timings.get("login_time") if shift_timings else None,
-                "created_at": get_ist_now().isoformat(),
+            if emp_id not in emp_cache:
+                emp_cache[emp_id] = await db.employees.find_one({"id": emp_id}, {"_id": 0}) or {}
+            employee = emp_cache[emp_id]
+            shift_timings = get_shift_timings(employee) if employee else None
+
+            # Sunday handling: never LOP, mark "Sunday" / "Worked on Sunday"
+            if is_sunday_ddmmyyyy(date_str):
+                if in_24h and out_24h:
+                    im = parse_time_24h_to_minutes(in_24h)
+                    om = parse_time_24h_to_minutes(out_24h)
+                    total_hours_decimal = round((om - im) / 60, 2) if om > im else round((24 * 60 - im + om) / 60, 2)
+                    total_hours_str = calculate_total_hours_str(total_hours_decimal)
+                status = AttendanceStatus.WORKED_ON_SUNDAY if in_24h else AttendanceStatus.SUNDAY
+                is_lop = False
+                lop_reason = None
+            elif in_24h and out_24h:
+                in_mins = parse_time_24h_to_minutes(in_24h)
+                out_mins = parse_time_24h_to_minutes(out_24h)
+                if out_mins > in_mins:
+                    total_hours_decimal = round((out_mins - in_mins) / 60, 2)
+                else:
+                    total_hours_decimal = round((24 * 60 - in_mins + out_mins) / 60, 2)
+                total_hours_str = calculate_total_hours_str(total_hours_decimal)
+                status = AttendanceStatus.PRESENT
+                if shift_timings:
+                    sr = calculate_attendance_status(in_24h, out_24h, shift_timings, attendance_date=date_str)
+                    status = sr.get("status", status)
+                    is_lop = sr.get("is_lop", False)
+                    lop_reason = sr.get("lop_reason")
+                    dynamic_expected_logout = sr.get("expected_logout")
+                    if sr.get("total_hours_decimal"):
+                        total_hours_decimal = sr["total_hours_decimal"]
+                        total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            elif in_24h and not out_24h:
+                if shift_timings:
+                    req_h = shift_timings.get("total_hours", 8)
+                    dynamic_expected_logout = add_hours_to_24h(in_24h, req_h)
+                    expected_login = shift_timings.get("login_time")
+                    if expected_login:
+                        em = parse_time_24h_to_minutes(expected_login)
+                        am = parse_time_24h_to_minutes(in_24h)
+                        if am > em:
+                            is_lop = True
+                            lop_reason = f"Late login by {am - em} minute(s). Expected: {expected_login}, Actual: {in_24h}"
+                            status = AttendanceStatus.LOSS_OF_PAY
+
+            update_doc = {
+                "$set": {
+                    "check_in": in_12h,
+                    "check_in_24h": in_24h,
+                    "check_out": out_12h,
+                    "check_out_24h": out_24h,
+                    "total_hours": total_hours_str,
+                    "total_hours_decimal": total_hours_decimal,
+                    "status": status,
+                    "is_lop": is_lop,
+                    "lop_reason": lop_reason,
+                    "source": "biometric",
+                    "expected_logout": dynamic_expected_logout if dynamic_expected_logout else (shift_timings.get("logout_time") if shift_timings else None),
+                },
+                "$setOnInsert": {
+                    "id": str(uuid.uuid4()),
+                    "employee_id": emp_id,
+                    "emp_name": (employee or {}).get("full_name", ""),
+                    "team": (employee or {}).get("team", ""),
+                    "department": (employee or {}).get("department", ""),
+                    "date": date_str,
+                    "shift_type": (employee or {}).get("shift_type", "General"),
+                    "expected_login": shift_timings.get("login_time") if shift_timings else None,
+                    "created_at": get_ist_now().isoformat(),
+                }
             }
-        }
-        await db.attendance.update_one(
-            {"employee_id": emp_id, "date": date_str},
-            update_doc,
-            upsert=True,
-        )
-        updated += 1
+            await db.attendance.update_one(
+                {"employee_id": emp_id, "date": date_str},
+                update_doc,
+                upsert=True,
+            )
+            updated += 1
+
+    # After regrouping, clear stale attendance rows whose punches all moved to
+    # the previous working day (i.e. the row no longer corresponds to any raw
+    # biometric punch). This prevents orphan/stale IN/OUT values.
+    # Only touch rows that were biometric-sourced and NOT manually locked.
+    for emp_id, by_date in per_emp_groups.items():
+        # Set of dates that DO have punches after regrouping
+        active_dates = set(by_date.keys())
+        # Scan existing attendance rows for this employee in the requested window
+        query = {"employee_id": emp_id, "source": "biometric",
+                 "is_manual_override": {"$ne": True},
+                 "is_approved_correction": {"$ne": True}}
+        async for row in db.attendance.find(query, {"_id": 0, "date": 1, "check_in_24h": 1, "check_out_24h": 1}):
+            d = row.get("date")
+            if not d:
+                continue
+            if from_date or to_date:
+                v = parse_ddmmyyyy(d)
+                if not (f_val <= v <= t_val):
+                    continue
+            if d in active_dates:
+                continue  # still has punches — handled by the loop above
+            # Orphan: was created from a mis-assigned overnight punch that has
+            # since moved to the previous day. Clear it back to a login-less
+            # row so the corrected day owns the data.
+            if row.get("check_in_24h") or row.get("check_out_24h"):
+                await db.attendance.update_one(
+                    {"employee_id": emp_id, "date": d},
+                    {"$set": {
+                        "check_in": None, "check_in_24h": None,
+                        "check_out": None, "check_out_24h": None,
+                        "total_hours": None, "total_hours_decimal": 0.0,
+                        "status": AttendanceStatus.ABSENT,
+                        "is_lop": True,
+                        "lop_reason": "Reconciled: overnight punch moved to previous working day.",
+                    }},
+                )
+                cleared_orphans += 1
 
     await log_audit(
         current_user["id"], "recompute_attendance_in_out", "attendance", None,
-        f"Recompute IN/OUT from punches: examined={examined}, updated={updated}, unchanged={no_change}, locked={skipped_locked}"
+        f"Recompute IN/OUT from punches: examined={examined}, updated={updated}, unchanged={no_change}, locked={skipped_locked}, orphans_cleared={cleared_orphans}"
     )
 
     return {
@@ -7520,6 +7579,7 @@ async def recompute_attendance_from_punches(
         "updated": updated,
         "unchanged": no_change,
         "skipped_locked": skipped_locked,
+        "orphans_cleared": cleared_orphans,
     }
 
 def classify_attendance_bucket(rec: dict) -> str:

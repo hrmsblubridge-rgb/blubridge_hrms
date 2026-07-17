@@ -5,6 +5,36 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-17 (Overnight Punch Reconcile Fix ✅ VERIFIED)
+
+**User bug (Kota Dhanakumar, 24-Mar-2026):**
+- 24-Mar showed `09:31 AM → (missing OUT)`
+- 25-Mar showed `12:20 AM → 11:58 PM` (23h 38m — obviously wrong)
+
+**Root cause found:** The ingestion path (`get_effective_attendance_date`) was already correct — punches ≤ 05:00 IST get attributed to the previous working day. BUT the `biometric_punch_logs` collection had `logs.date` frozen to the calendar date at ingestion time (before that fix was live), and the `POST /api/attendance/recompute-from-punches` endpoint aggregated by that STORED `logs.date` — so historical mis-assignments could never be corrected via recompute.
+
+**Fix (surgical, engine-only):**
+- `POST /api/attendance/recompute-from-punches` now regroups punches by the FRESHLY computed effective date from `recordTime` — so a punch at `2026-03-25T00:20 IST` moves to `24-03-2026` on rerun.
+- Orphan detection added: any attendance row whose punches all moved to the previous day is cleared back to no-IN/no-OUT with an audit `lop_reason='Reconciled: overnight punch moved to previous working day.'`. Response now includes `orphans_cleared` counter.
+- All other logic (shift timings, LOP, Sunday handling, manual overrides, approved corrections, working hours) untouched. Endpoint remains idempotent.
+
+**Data reconciled:** Ran the endpoint for all 17 employees with `check_in ≤ 05:00` in the DB. Only Kota's records had actual bad data — corrected. The 16 other rows were legitimate night-shift entries and were left untouched (proving the fix is non-destructive).
+
+**Verified Kota post-fix:**
+| Date | Before | After |
+|---|---|---|
+| 24-Mar-2026 | 09:31 AM → — | **09:31 AM → 12:20 AM (14h 48m)** ✓ |
+| 25-Mar-2026 | 12:20 AM → 11:58 PM (23h 38m) | **09:09 AM → 11:58 PM (14h 48m)** ✓ |
+| 26-Mar-2026 | 09:33 AM → 11:04 PM | 09:33 AM → 11:04 PM (unchanged) |
+
+**Regression tests:** `/app/backend/tests/test_overnight_punch_allocation.py` (12 tests) + `/app/backend/tests/test_overnight_recompute.py` (4 tests) — 16/16 pass.
+
+**Unchanged as required by the ticket:** Shift definitions, working/productive hours, break calculations, late/early logic, half-day/full-day rules, leave/payroll integration, ESSL sync, existing APIs, DB schema, employee/admin portal UI.
+
+---
+
+
+
 ## Latest Update — 2026-07-17 (Star Reward · Msg 677 12-Point Spec ✅ TESTED)
 
 **User need (Msg 677):** Fix month filter behavior in the Star Reward history modal and deeply integrate leave-instance editing INSIDE the same modal — no separate page.
