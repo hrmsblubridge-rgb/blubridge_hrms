@@ -3,7 +3,7 @@ import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
 import EmployeeAvatar from '../components/EmployeeAvatar';
-import { Download, Plus, Eye, ArrowLeft, Star, Users, Award, TrendingUp, Trophy, Sparkles, AlertTriangle, Zap, Loader2, CheckCircle2, Pencil } from 'lucide-react';
+import { Download, Plus, Eye, ArrowLeft, Star, Users, Award, TrendingUp, Trophy, Sparkles, AlertTriangle, Zap, Loader2, CheckCircle2, Pencil, CalendarClock } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/ui/date-picker';
@@ -84,6 +84,7 @@ const StarReward = () => {
   const [showBulkAuto, setShowBulkAuto] = useState(false);
   const [schedulerStatus, setSchedulerStatus] = useState(null);
   const [editEmp, setEditEmp] = useState(null);
+  const [leaveEditEmp, setLeaveEditEmp] = useState(null);
 
   useEffect(() => { fetchData(); }, []);
   useEffect(() => { if (addFormType === 'performance' || addFormType === 'learning') setWeeklyData(getWeeksForMonth(addFormMonth)); }, [addFormMonth, addFormType]);
@@ -677,6 +678,11 @@ const StarReward = () => {
                                   </Button>
                                 )}
                                 {canAddStars && (
+                                  <Button size="sm" variant="ghost" onClick={() => setLeaveEditEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`leave-adjust-${emp.id}`} title="Adjust stars for a leave instance">
+                                    <CalendarClock className="w-4 h-4 text-blue-500" />
+                                  </Button>
+                                )}
+                                {canAddStars && (
                                   <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`add-stars-${emp.id}`} title="Add manual reward">
                                     <Plus className="w-4 h-4 text-amber-500" />
                                   </Button>
@@ -801,6 +807,14 @@ const StarReward = () => {
           employee={editEmp}
           onClose={() => setEditEmp(null)}
           onApplied={() => { setEditEmp(null); fetchData(); }}
+          getAuthHeaders={getAuthHeaders}
+        />
+      )}
+      {leaveEditEmp && (
+        <LeaveAdjustDialog
+          employee={leaveEditEmp}
+          onClose={() => setLeaveEditEmp(null)}
+          onApplied={() => fetchData()}
           getAuthHeaders={getAuthHeaders}
         />
       )}
@@ -1273,6 +1287,261 @@ function BulkAutoStarDialog({ onClose, onApplied, getAuthHeaders }) {
           ) : (
             <Button className="rounded-lg h-9 px-5 bg-amber-500 hover:bg-amber-600" onClick={run} disabled={running} data-testid="bulk-run-btn">
               <Zap className="w-4 h-4 mr-1.5"/>{running ? 'Running…' : 'Run for All Employees'}
+            </Button>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Leave Adjust Dialog — HR picks a specific leave instance for the employee,
+// marks it Valid / Invalid, then increases / decreases / zeros the star (and
+// optionally flag) impact of that leave. Persisted as a `manual_adjustment`
+// row linked via `related_leave_id`, protected from the daily auto-recompute.
+// ---------------------------------------------------------------------------
+function LeaveAdjustDialog({ employee, onClose, onApplied, getAuthHeaders }) {
+  const [state, setState] = React.useState({ loading: true, leaves: [] });
+  const [selected, setSelected] = React.useState(null); // leave doc
+  const [validity, setValidity] = React.useState('valid');
+  const [starMode, setStarMode] = React.useState('decrease');
+  const [starValue, setStarValue] = React.useState('');
+  const [flagMode, setFlagMode] = React.useState('none');
+  const [flagValue, setFlagValue] = React.useState('');
+  const [note, setNote] = React.useState('');
+  const [saving, setSaving] = React.useState(false);
+
+  const load = React.useCallback(async () => {
+    setState({ loading: true, leaves: [] });
+    try {
+      const r = await axios.get(`${API}/star-rewards/leaves/${employee.id}`, { headers: getAuthHeaders() });
+      setState({ loading: false, leaves: r.data.leaves || [] });
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Failed to load leaves');
+      setState({ loading: false, leaves: [] });
+    }
+  }, [employee.id, getAuthHeaders]);
+  React.useEffect(() => { load(); }, [load]);
+
+  const pickLeave = (lv) => {
+    setSelected(lv);
+    setValidity(lv.current_validity || 'valid');
+    setStarMode('decrease');
+    setStarValue('');
+    setFlagMode('none');
+    setFlagValue('');
+    setNote('');
+  };
+
+  const submit = async () => {
+    if (!selected) return toast.error('Pick a leave first');
+    if ((starMode === 'increase' || starMode === 'decrease') && (!starValue || Number(starValue) <= 0))
+      return toast.error('Enter a positive star value');
+    if ((flagMode === 'increase' || flagMode === 'decrease') && (!flagValue || Number(flagValue) <= 0))
+      return toast.error('Enter a positive flag value');
+    if (!note.trim()) return toast.error('Note is required');
+    setSaving(true);
+    try {
+      const r = await axios.post(`${API}/star-rewards/leaves/adjust`, {
+        employee_id: employee.id,
+        leave_id: selected.id,
+        validity,
+        star_mode: starMode,
+        star_value: (starMode === 'set_zero' || starMode === 'none') ? 0 : Number(starValue),
+        flag_mode: flagMode,
+        flag_value: (flagMode === 'none') ? 0 : Number(flagValue),
+        note: note.trim(),
+      }, { headers: getAuthHeaders() });
+      toast.success(`Adjustment saved · Stars ${r.data.new_stars} · Flags ${r.data.new_unsafe}`);
+      setSelected(null);
+      await load();
+      onApplied();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || 'Failed to save');
+    } finally { setSaving(false); }
+  };
+
+  const ModePills = ({ mode, setMode, tPrefix, allowSetZero = true }) => (
+    <div className="flex gap-1.5 flex-wrap">
+      {[
+        { k: 'increase', label: 'Increase', cls: 'bg-emerald-500 hover:bg-emerald-600' },
+        { k: 'decrease', label: 'Decrease', cls: 'bg-rose-500 hover:bg-rose-600' },
+        ...(allowSetZero ? [{ k: 'set_zero', label: 'Set to 0', cls: 'bg-slate-500 hover:bg-slate-600' }] : []),
+        { k: 'none', label: 'No change', cls: 'bg-slate-300 hover:bg-slate-400 text-slate-700' },
+      ].map(m => (
+        <button key={m.k}
+          onClick={() => setMode(m.k)}
+          data-testid={`${tPrefix}-${m.k}`}
+          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold transition ${mode === m.k ? `${m.cls} text-white shadow-sm` : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto" data-testid="leave-adjust-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <CalendarClock className="w-5 h-5 text-blue-500" />
+            Leave-Based Star Adjustment · {employee.full_name || employee.name}
+          </DialogTitle>
+        </DialogHeader>
+
+        {!selected ? (
+          <div className="space-y-3">
+            <div className="text-sm text-slate-600">
+              Pick a leave instance to review. HR marks it as valid or invalid and adjusts the employee&apos;s stars accordingly.
+            </div>
+            {state.loading ? (
+              <div className="p-10 text-center text-slate-500"><Loader2 className="w-6 h-6 animate-spin inline mr-2"/>Loading leaves…</div>
+            ) : state.leaves.length === 0 ? (
+              <div className="p-10 text-center text-slate-500">No leaves on record.</div>
+            ) : (
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-[55vh] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 sticky top-0 z-10">
+                    <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500">
+                      <th className="px-3 py-2">Start</th>
+                      <th className="px-3 py-2">Type</th>
+                      <th className="px-3 py-2">Split</th>
+                      <th className="px-3 py-2">Duration</th>
+                      <th className="px-3 py-2">Status</th>
+                      <th className="px-3 py-2">Validity</th>
+                      <th className="px-3 py-2 text-center">Prior ★ Adj</th>
+                      <th className="px-3 py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {state.leaves.map(lv => (
+                      <tr key={lv.id} className="hover:bg-slate-50" data-testid={`leave-row-${lv.id}`}>
+                        <td className="px-3 py-2 font-mono text-[12px]">{lv.start_date}</td>
+                        <td className="px-3 py-2 text-[12px]">{lv.leave_type}</td>
+                        <td className="px-3 py-2 text-[12px]">{lv.leave_split}</td>
+                        <td className="px-3 py-2 text-[12px]">{lv.duration}</td>
+                        <td className="px-3 py-2 text-[12px] capitalize">{lv.status}</td>
+                        <td className="px-3 py-2 text-[12px]">
+                          {lv.current_validity ? (
+                            <span className={`px-2 py-0.5 rounded font-semibold text-[11px] ${lv.current_validity === 'valid' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{lv.current_validity}</span>
+                          ) : <span className="text-slate-400 text-[11px] italic">unset</span>}
+                        </td>
+                        <td className="px-3 py-2 text-center text-[12px]">
+                          {lv.net_adjusted_stars !== 0 ? (
+                            <span className={`font-bold ${lv.net_adjusted_stars > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{lv.net_adjusted_stars > 0 ? '+' : ''}{lv.net_adjusted_stars}</span>
+                          ) : <span className="text-slate-300">—</span>}
+                        </td>
+                        <td className="px-3 py-2 text-right">
+                          <Button size="sm" variant="outline" onClick={() => pickLeave(lv)} className="rounded-lg h-7 text-[11px]" data-testid={`pick-leave-${lv.id}`}>
+                            Select
+                          </Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {/* Selected leave summary */}
+            <div className="p-3 rounded-xl bg-blue-50 border border-blue-200 text-sm">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <div className="font-semibold text-slate-800">{selected.leave_type} · {selected.start_date}</div>
+                  <div className="text-[11px] text-slate-600 mt-0.5">{selected.leave_split} · {selected.duration} · Status: <b className="capitalize">{selected.status}</b></div>
+                  {selected.reason && <div className="text-[11px] text-slate-500 mt-1 italic">Reason: {selected.reason}</div>}
+                </div>
+                <Button size="sm" variant="ghost" className="rounded-lg text-[11px]" onClick={() => setSelected(null)} data-testid="back-to-leaves">
+                  <ArrowLeft className="w-3.5 h-3.5 mr-1"/>Back to list
+                </Button>
+              </div>
+            </div>
+
+            {/* Field 1: Validity */}
+            <div>
+              <Label className="text-xs font-semibold text-slate-600">1. Leave is</Label>
+              <div className="mt-1.5 flex gap-2">
+                <button
+                  onClick={() => setValidity('valid')}
+                  data-testid="validity-valid"
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold border-2 transition ${validity === 'valid' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                  <CheckCircle2 className="w-4 h-4 inline mr-1.5"/>Valid
+                </button>
+                <button
+                  onClick={() => setValidity('invalid')}
+                  data-testid="validity-invalid"
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-semibold border-2 transition ${validity === 'invalid' ? 'border-rose-500 bg-rose-50 text-rose-700' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}>
+                  <AlertTriangle className="w-4 h-4 inline mr-1.5"/>Invalid
+                </button>
+              </div>
+            </div>
+
+            {/* Field 2a: Star Value & mode */}
+            <div>
+              <Label className="text-xs font-semibold text-slate-600">2. Star Value</Label>
+              <div className="mt-1.5">
+                <ModePills mode={starMode} setMode={setStarMode} tPrefix="leave-star-mode" />
+              </div>
+              {(starMode === 'increase' || starMode === 'decrease') && (
+                <Input type="number" min="1" placeholder="Value (e.g. 2)" value={starValue} onChange={e => setStarValue(e.target.value)} className="mt-2 rounded-lg" data-testid="leave-star-value"/>
+              )}
+              {starMode === 'set_zero' && (
+                <div className="mt-1.5 text-[11px] text-slate-500 italic">Neutralizes prior star adjustments already applied to this specific leave ({selected.net_adjusted_stars > 0 ? '+' : ''}{selected.net_adjusted_stars || 0}).</div>
+              )}
+            </div>
+
+            {/* Field 2b: Flag (optional) */}
+            <div>
+              <Label className="text-xs font-semibold text-slate-600">Flag (Unsafe) — optional</Label>
+              <div className="mt-1.5">
+                <ModePills mode={flagMode} setMode={setFlagMode} tPrefix="leave-flag-mode" allowSetZero={false}/>
+              </div>
+              {(flagMode === 'increase' || flagMode === 'decrease') && (
+                <Input type="number" min="1" placeholder="Flag value" value={flagValue} onChange={e => setFlagValue(e.target.value)} className="mt-2 rounded-lg" data-testid="leave-flag-value"/>
+              )}
+            </div>
+
+            {/* Note */}
+            <div>
+              <Label className="text-xs font-semibold text-slate-600">Note / Reason *</Label>
+              <textarea
+                className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm"
+                rows={3}
+                placeholder="Explain the validity decision and adjustment. Visible in the audit trail."
+                value={note}
+                onChange={e => setNote(e.target.value)}
+                data-testid="leave-note"
+              />
+            </div>
+
+            {selected.prior_adjustments?.length > 0 && (
+              <div className="p-2 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
+                <b>Prior adjustments on this leave:</b>
+                <ul className="mt-1 space-y-0.5 list-disc list-inside">
+                  {selected.prior_adjustments.map(a => (
+                    <li key={a.id}>
+                      {a.stars > 0 ? '+' : ''}{a.stars} ★ · marked <b>{a.validity}</b> · {new Date(a.created_at).toLocaleString('en-IN')}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-wrap justify-end gap-2 pt-4 mt-4 -mx-6 -mb-6 px-6 py-4 border-t border-slate-200 sticky bottom-0 bg-white/95 backdrop-blur-sm rounded-b-lg shadow-[0_-4px_12px_-4px_rgba(15,23,42,0.08)]">
+          <Button variant="outline" className="rounded-lg h-9 px-4" onClick={onClose} disabled={saving}>Close</Button>
+          {selected && (
+            <Button
+              className="rounded-lg h-9 px-5 bg-blue-500 hover:bg-blue-600"
+              onClick={submit}
+              disabled={saving}
+              data-testid="leave-submit-btn"
+            >
+              {saving ? <><Loader2 className="w-4 h-4 mr-1.5 animate-spin"/>Saving…</> : '3. Submit'}
             </Button>
           )}
         </div>

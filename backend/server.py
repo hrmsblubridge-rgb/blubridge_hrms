@@ -9120,6 +9120,170 @@ async def get_star_history(employee_id: str, current_user: dict = Depends(get_cu
     return [serialize_doc(r) for r in rewards]
 
 
+@api_router.get("/star-rewards/leaves/{employee_id}")
+async def list_star_leaves(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """List an employee's leaves for HR to flag valid / invalid and adjust
+    stars per instance. Only leaves that could impact the star framework are
+    returned (approved OR rejected OR pending — since HR may need to reclassify).
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    leaves = await db.leaves.find({"employee_id": employee_id}, {"_id": 0}) \
+        .sort("start_date", -1).to_list(500)
+    # Attach any existing star adjustments already applied for each leave
+    adj_rows = await db.star_rewards.find({
+        "employee_id": employee_id,
+        "source": "manual_adjustment",
+        "related_leave_id": {"$exists": True, "$ne": None},
+    }, {"_id": 0}).to_list(2000)
+    by_leave = {}
+    for a in adj_rows:
+        by_leave.setdefault(a["related_leave_id"], []).append({
+            "id": a.get("id"), "stars": a.get("stars", 0),
+            "validity": a.get("leave_validity"),
+            "note": a.get("note"),
+            "created_at": a.get("created_at"),
+            "flag_delta": a.get("flag_delta", 0),
+        })
+    for lv in leaves:
+        lv["prior_adjustments"] = by_leave.get(lv.get("id"), [])
+        lv["net_adjusted_stars"] = sum(x["stars"] for x in lv["prior_adjustments"])
+        lv["current_validity"] = (lv["prior_adjustments"][0]["validity"]
+                                   if lv["prior_adjustments"] else None)
+    return {"employee": {"id": emp["id"], "full_name": emp.get("full_name"),
+                          "stars": emp.get("stars", 0), "unsafe_count": emp.get("unsafe_count", 0)},
+            "leaves": [serialize_doc(l) for l in leaves]}
+
+
+@api_router.post("/star-rewards/leaves/adjust")
+async def adjust_star_for_leave(body: dict, current_user: dict = Depends(get_current_user)):
+    """HR marks a specific leave as valid/invalid and adjusts the employee's
+    stars (and optionally flag count) accordingly. Persists ONE audit row
+    linked to `related_leave_id` and reflects new totals from source-of-truth.
+
+    Body:
+      employee_id: str
+      leave_id: str
+      validity: "valid" | "invalid"
+      star_mode: "increase" | "decrease" | "set_zero" | "none"
+      star_value: int   (ignored for set_zero/none)
+      flag_mode: "increase" | "decrease" | "none"  (optional; no set_zero here)
+      flag_value: int
+      note: str  (required)
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    b = body or {}
+    emp_id = b.get("employee_id"); leave_id = b.get("leave_id")
+    validity = b.get("validity"); note = (b.get("note") or "").strip()
+    if not emp_id or not leave_id: raise HTTPException(status_code=400, detail="employee_id and leave_id required")
+    if validity not in ("valid", "invalid"): raise HTTPException(status_code=400, detail="validity must be 'valid' or 'invalid'")
+    if not note: raise HTTPException(status_code=400, detail="Note is required")
+
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp: raise HTTPException(status_code=404, detail="Employee not found")
+    lv = await db.leaves.find_one({"id": leave_id, "employee_id": emp_id}, {"_id": 0})
+    if not lv: raise HTTPException(status_code=404, detail="Leave not found for this employee")
+
+    # ---- Compute star delta ------------------------------------------------
+    star_mode = b.get("star_mode", "none")
+    try: star_val = int(b.get("star_value") or 0)
+    except (ValueError, TypeError): star_val = 0
+    star_delta = 0
+    if star_mode == "increase":
+        if star_val <= 0: raise HTTPException(status_code=400, detail="Star increase value must be > 0")
+        star_delta = star_val
+    elif star_mode == "decrease":
+        if star_val <= 0: raise HTTPException(status_code=400, detail="Star decrease value must be > 0")
+        star_delta = -star_val
+    elif star_mode == "set_zero":
+        # Neutralize the net stars ALREADY applied to this specific leave.
+        prior = await db.star_rewards.aggregate([
+            {"$match": {"employee_id": emp_id, "related_leave_id": leave_id,
+                        "is_deleted": {"$ne": True}}},
+            {"$group": {"_id": None, "s": {"$sum": "$stars"}}},
+        ]).to_list(1)
+        prior_sum = prior[0]["s"] if prior else 0
+        star_delta = -prior_sum
+    elif star_mode != "none":
+        raise HTTPException(status_code=400, detail="Invalid star_mode")
+
+    # ---- Compute flag delta (optional) -------------------------------------
+    flag_mode = b.get("flag_mode", "none")
+    try: flag_val = int(b.get("flag_value") or 0)
+    except (ValueError, TypeError): flag_val = 0
+    flag_delta = 0
+    if flag_mode == "increase":
+        if flag_val <= 0: raise HTTPException(status_code=400, detail="Flag increase value must be > 0")
+        flag_delta = flag_val
+    elif flag_mode == "decrease":
+        if flag_val <= 0: raise HTTPException(status_code=400, detail="Flag decrease value must be > 0")
+        flag_delta = -flag_val
+    elif flag_mode != "none":
+        raise HTTPException(status_code=400, detail="Invalid flag_mode")
+
+    # ---- Persist adjustment row -------------------------------------------
+    current_month = get_ist_now().strftime("%Y-%m")
+    ref_date = lv.get("start_date") or get_ist_now().strftime("%Y-%m-%d")
+    row = {
+        "id": str(uuid.uuid4()),
+        "employee_id": emp_id,
+        "stars": int(star_delta),
+        "flag_delta": int(flag_delta),
+        "reason": (f"[Leave adjustment · {current_user.get('name') or current_user.get('username')}] "
+                   f"Leave {lv.get('leave_type')} {lv.get('start_date')} marked {validity.upper()}. "
+                   f"Star {star_mode}({star_delta:+d})"
+                   + (f" · Flag {flag_mode}({flag_delta:+d})" if flag_mode != 'none' else "")
+                   + f" — {note}"),
+        "type": "adjustment",
+        "awarded_by": current_user["id"],
+        "month": current_month,
+        "ref_date": ref_date,
+        "source": "manual_adjustment",
+        "related_leave_id": leave_id,
+        "leave_validity": validity,
+        "note": note,
+        "created_at": datetime.now().isoformat(),
+    }
+    await db.star_rewards.insert_one(row.copy())
+
+    # Also stamp the validity on the leave record for quick lookup.
+    await db.leaves.update_one({"id": leave_id}, {"$set": {
+        "star_validity": validity,
+        "star_validity_note": note,
+        "star_validity_updated_at": datetime.now().isoformat(),
+        "star_validity_updated_by": current_user["id"],
+    }})
+
+    # ---- Recompute totals -------------------------------------------------
+    agg = await db.star_rewards.aggregate([
+        {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}}},
+        {"$group": {"_id": None, "stars": {"$sum": "$stars"},
+                    "flag_adj": {"$sum": "$flag_delta"},
+                    "unsafe_rows": {"$sum": {"$cond": [{"$eq": ["$type", "unsafe"]}, 1, 0]}}}}
+    ]).to_list(1)
+    stars_total = agg[0]["stars"] if agg else 0
+    unsafe_from_rows = agg[0]["unsafe_rows"] if agg else 0
+    flag_adj = agg[0].get("flag_adj", 0) if agg else 0
+    unsafe_total = max(0, unsafe_from_rows + flag_adj)
+    await db.employees.update_one({"id": emp_id}, {"$set": {
+        "stars": stars_total, "unsafe_count": unsafe_total,
+    }})
+
+    await log_audit(current_user["id"], "adjust_star_for_leave", "star_reward", emp_id,
+                    f"leave={leave_id} validity={validity} star_delta={star_delta:+d} note={note[:80]}")
+    return {
+        "message": "Leave-based adjustment recorded",
+        "star_delta": star_delta, "flag_delta": flag_delta,
+        "new_stars": stars_total, "new_unsafe": unsafe_total,
+        "leave_validity": validity,
+        "audit_row_id": row["id"],
+    }
+
+
 @api_router.post("/star-rewards/adjust")
 async def adjust_star_reward(body: dict, current_user: dict = Depends(get_current_user)):
     """HR manual override — increase / decrease / set-to-zero an employee's
