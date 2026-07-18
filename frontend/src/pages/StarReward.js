@@ -763,11 +763,6 @@ const StarReward = () => {
                                   </Button>
                                 )}
                                 {canAddStars && (
-                                  <Button size="sm" variant="ghost" onClick={() => setEditEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`edit-stars-${emp.id}`} title="Edit stars / flags">
-                                    <Pencil className="w-4 h-4 text-indigo-500" />
-                                  </Button>
-                                )}
-                                {canAddStars && (
                                   <Button size="sm" variant="ghost" onClick={() => setLeaveEditEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`leave-adjust-${emp.id}`} title="Adjust stars for a leave instance">
                                     <CalendarClock className="w-4 h-4 text-blue-500" />
                                   </Button>
