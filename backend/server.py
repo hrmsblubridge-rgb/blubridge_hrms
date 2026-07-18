@@ -7162,65 +7162,65 @@ async def import_biometric_attendance(
     
     # Process grouped punches - atomic upsert per employee+date
     for (emp_id, date_str), data in grouped.items():
-        # Dedupe by minute — biometric devices commonly re-sync the same punch
-        # many times. Without dedupe a single physical punch can be incorrectly
-        # treated as both IN and OUT.
-        punches = sorted({p.replace(second=0, microsecond=0) for p in data["punches"]})
         employee = data["employee"]
         device_ip = data["ip"]
 
-        # Within a batch, the true chronological first punch is IN and the
-        # last is OUT (accounting for cross-midnight punches which may appear
-        # as small HH:MM numerically but are actually later in shift time).
-        in_time = punches[0]
-        out_time = punches[-1] if len(punches) > 1 else None
+        # SOURCE OF TRUTH: derive IN/OUT from ALL raw punches for
+        # (emp_id, effective_date=date_str) stored in `biometric_punch_logs`,
+        # not from this batch alone. Devices frequently deliver a day's
+        # punches across multiple 10-minute sync batches; a race in the
+        # per-batch merge could leave OUT missing. Pulling from the source
+        # of truth on every write guarantees the row is always consistent.
+        raw_pipeline = [
+            {"$unwind": "$logs"},
+            {"$match": {
+                "logs.employee_id": emp_id,
+                "logs.date": date_str,
+                "logs.status": "mapped",
+            }},
+            {"$group": {"_id": None, "punches": {"$push": "$logs.recordTime"}}},
+        ]
+        all_punches_dt = []
+        async for doc in db.biometric_punch_logs.aggregate(raw_pipeline, allowDiskUse=True):
+            for rt in doc.get("punches", []):
+                if not isinstance(rt, str):
+                    continue
+                try:
+                    dt_utc = datetime.fromisoformat(rt.replace("Z", "+00:00"))
+                    all_punches_dt.append(dt_utc.astimezone(IST))
+                except (ValueError, TypeError):
+                    continue
+
+        # Fallback: if no raw punches surfaced (shouldn't happen since we
+        # just inserted this batch), use the in-memory batch punches.
+        if not all_punches_dt:
+            all_punches_dt = data["punches"]
+
+        # Dedupe by minute — devices commonly re-sync the same punch many
+        # times. Without dedupe a single physical punch can be incorrectly
+        # counted as both IN and OUT.
+        unique = sorted({p.replace(second=0, microsecond=0) for p in all_punches_dt})
+        if not unique:
+            continue
+        in_time = unique[0]
+        out_time = unique[-1] if len(unique) > 1 else None
 
         in_24h = in_time.strftime("%H:%M")
         in_12h = in_time.strftime("%I:%M %p")
         out_24h = out_time.strftime("%H:%M") if out_time else None
         out_12h = out_time.strftime("%I:%M %p") if out_time else None
 
-        # Check existing record for this employee+date
+        # Respect manual overrides / approved corrections — never blow them
+        # away with an automatic biometric write.
         existing = await db.attendance.find_one(
             {"employee_id": emp_id, "date": date_str},
-            {"_id": 0, "check_in_24h": 1, "check_out_24h": 1}
+            {"_id": 0, "check_in_24h": 1, "check_out_24h": 1,
+             "is_manual_override": 1, "is_approved_correction": 1}
         )
-
-        # Merge with existing record using shift-aware offsets so that
-        # cross-midnight OUT punches (00:00-05:00) are correctly recognized
-        # as the latest point in the shift, not as the earliest IN.
-        if existing:
-            existing_in = existing.get("check_in_24h")
-            existing_out = existing.get("check_out_24h")
-
-            candidate_times = []
-            for t in (in_24h, out_24h, existing_in, existing_out):
-                if t:
-                    off = attendance_shift_offset(t)
-                    if off is not None:
-                        candidate_times.append((t, off))
-
-            if candidate_times:
-                # Deduplicate identical time strings (keep one entry per value)
-                seen = {}
-                for t, off in candidate_times:
-                    seen[t] = off
-                uniq = list(seen.items())
-                # IN = earliest offset; OUT = latest offset (only if distinct)
-                in_pick = min(uniq, key=lambda c: c[1])
-                out_pick = max(uniq, key=lambda c: c[1])
-                in_24h = in_pick[0]
-                out_24h = out_pick[0] if out_pick[0] != in_pick[0] else None
-                in_12h = None
-                out_12h = None
-
-        # Recalculate 12h from final 24h values
-        if in_24h and not in_12h:
-            t = datetime.strptime(in_24h, "%H:%M")
-            in_12h = t.strftime("%I:%M %p")
-        if out_24h and not out_12h:
-            t = datetime.strptime(out_24h, "%H:%M")
-            out_12h = t.strftime("%I:%M %p")
+        if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")):
+            # Skip biometric overwrite; the manual record wins.
+            processed += 1
+            continue
 
         # Calculate total hours and status
         total_hours_decimal = 0.0

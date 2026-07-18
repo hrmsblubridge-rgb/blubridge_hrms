@@ -5,6 +5,42 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-18 (Same-Day OUT Regression Fixed ✅ VERIFIED)
+
+**User bug:** Srinath Kamalakumar & Jona Delcy C A on 17-Jul-2026 showed valid same-day IN but OUT = "—" even though the biometric device had a valid OUT punch. Regression from the earlier overnight fix.
+
+### Root cause
+The ingestion path merged the current-batch punches with only the **existing attendance row's values**. When the biometric device delivered a day's IN punch and OUT punch in **separate 10-minute sync batches** (which is the norm), and something transiently prevented Batch B from merging correctly (race between `find_one` and `update_one` under bursty parallel batch processing), the OUT never made it into the attendance row. The batch-local merge had no way to self-heal because it never re-read from the source of truth.
+
+### Fix — engine only
+In `POST /api/attendance/import-biometric` (server.py ~L7163), replaced the fragile "batch + existing row" merge with a **source-of-truth re-derivation**: after inserting each incoming punch batch into `biometric_punch_logs`, IN/OUT for every affected `(employee, effective_date)` is derived from **ALL raw punches** in `biometric_punch_logs` (aggregation pipeline). This is idempotent, race-safe, and always consistent — even if batches arrive out of order or a batch is replayed.
+
+Added an explicit skip when the row has `is_manual_override` or `is_approved_correction` so manual data always wins over biometric.
+
+### Reconciliation
+Ran a one-time bulk sweep that re-derived IN/OUT from `biometric_punch_logs` for all biometric-sourced rows using **datetime sort** (not HH:MM string sort — that would break overnight rows). **129 rows corrected**, all overnight cases preserved:
+- Srinath 17-Jul: `09:41 → —` → `09:41 AM → 08:55 PM (11h 13m)` ✓
+- Jona 17-Jul: `09:10 → —` → `09:10 AM → 08:44 PM (11h 33m)` ✓
+- Kota 24-Mar (overnight, unchanged): `09:31 AM → 12:20 AM (14h 49m)` ✓
+
+### Untouched
+Shift definitions, working/productive/break hours, late/early/half-day/full-day rules, leave/payroll integration, ESSL sync API surface, DB schema, UI. Manual overrides & approved corrections continue to take precedence over biometric writes.
+
+### Regression tests
+`/app/backend/tests/test_same_day_out_persistence.py` — 9 tests covering:
+- 2-batch scenario (Srinath, Jona reproductions)
+- Late-night (22:15, 23:58) stays same-day
+- Overnight (00:40) still maps to previous day
+- Out-of-order batch delivery still pairs correctly
+- 10× duplicate-batch replay dedupes cleanly
+- Single-punch days do NOT duplicate IN as OUT
+
+**Total attendance-engine test suite: 25/25 pass** (9 same-day + 12 overnight allocation + 4 recompute).
+
+---
+
+
+
 ## Latest Update — 2026-07-17 (Overnight Punch Reconcile Fix ✅ VERIFIED)
 
 **User bug (Kota Dhanakumar, 24-Mar-2026):**
