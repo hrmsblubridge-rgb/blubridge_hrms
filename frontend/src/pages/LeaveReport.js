@@ -1,8 +1,8 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarDays, RotateCcw, FileText, Search, Loader2 } from 'lucide-react';
+import { CalendarDays, RotateCcw, FileText, Search, Loader2, Filter as FilterIcon } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/ui/date-picker';
@@ -15,11 +15,11 @@ import { formatDate } from '../lib/dateFormat';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
-const LEAVE_TYPES = ['All', 'Sick', 'Casual', 'Optional', 'Paid', 'Other'];
+// Canonical HRMS leave types (matches /pages/Leave.js). "All" is UI-only.
+const LEAVE_TYPES = ['All', 'Sick', 'Preplanned', 'Emergency', 'Paid', 'Optional'];
 const LEAVE_STATUSES = ['All', 'pending', 'approved', 'rejected', 'cancelled'];
 const PAGE_SIZE_OPTIONS = [30, 60, 100, 250, 500];
 
-// Quick date filters. Each returns [fromDate, toDate] in YYYY-MM-DD.
 const QUICK_FILTERS = [
   { key: 'today', label: 'Today', days: 0 },
   { key: 'yesterday', label: 'Yesterday', days: 1, single: true },
@@ -70,6 +70,17 @@ const applyQuickFilter = (key) => {
   return { fromDate: '', toDate: '' };
 };
 
+// Compute the Last-7-Days window used as the initial default state.
+const LAST_7 = applyQuickFilter('last7');
+const DEFAULT_FILTERS = {
+  fromDate: LAST_7.fromDate,
+  toDate: LAST_7.toDate,
+  search: '',
+  team: 'All',
+  leaveType: 'All',
+  status: 'All',
+};
+
 const StatusBadge = ({ status }) => {
   const map = {
     approved: 'bg-emerald-100 text-emerald-700 border-emerald-200',
@@ -112,25 +123,128 @@ const formatLeaveDate = (row) => {
   return `${formatDate(s)} – ${formatDate(e)}`;
 };
 
+// ---------------------------------------------------------------------------
+// Autocomplete used ONLY by the Leave Report search input. It fetches
+// Name/Email suggestions as the user types but does NOT filter the report
+// while typing (spec §3). The report is only re-fetched when either:
+//   (a) the user picks a suggestion, or
+//   (b) the user clicks the Filter button.
+// ---------------------------------------------------------------------------
+const NameEmailAutocomplete = ({ value, onChange, onSelect, onEnter }) => {
+  const { getAuthHeaders } = useAuth();
+  const [suggestions, setSuggestions] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const wrapperRef = useRef(null);
+  const debounceRef = useRef(null);
+
+  const fetchSuggestions = useCallback(async (q) => {
+    if (!q || q.trim().length < 1) {
+      setSuggestions([]); setOpen(false); return;
+    }
+    try {
+      setLoading(true);
+      const r = await axios.get(`${API}/employees/autocomplete`, {
+        headers: getAuthHeaders(),
+        params: { q: q.trim() },
+      });
+      setSuggestions(r.data || []);
+      setOpen(true);
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [getAuthHeaders]);
+
+  const handleInput = (e) => {
+    const v = e.target.value;
+    onChange(v);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchSuggestions(v), 300);
+  };
+
+  const pick = (emp) => {
+    setOpen(false);
+    setSuggestions([]);
+    onSelect(emp);
+  };
+
+  useEffect(() => {
+    const handler = (e) => {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  return (
+    <div className="relative" ref={wrapperRef}>
+      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+      <Input
+        value={value}
+        onChange={handleInput}
+        onFocus={() => { if (suggestions.length > 0) setOpen(true); }}
+        onKeyDown={(e) => { if (e.key === 'Enter') { setOpen(false); onEnter && onEnter(); } }}
+        placeholder="Search by name or email"
+        className="pl-8 rounded-lg"
+        data-testid="search-input"
+        autoComplete="off"
+      />
+      {open && (
+        <div
+          className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-[280px] overflow-y-auto"
+          data-testid="search-suggestions"
+        >
+          {loading ? (
+            <div className="px-4 py-3 text-sm text-slate-400">Searching…</div>
+          ) : suggestions.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-slate-400">No matches found</div>
+          ) : (
+            suggestions.map(emp => (
+              <button
+                key={emp.id}
+                type="button"
+                onClick={() => pick(emp)}
+                className="w-full text-left px-4 py-2.5 hover:bg-slate-50 flex flex-col border-b border-slate-100 last:border-0 transition-colors"
+                data-testid={`search-suggestion-${emp.id}`}
+              >
+                <span className="text-sm font-medium text-slate-800 truncate">{emp.full_name}</span>
+                <span className="text-xs text-slate-500 truncate">{emp.official_email || emp.emp_id}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ---------------------------------------------------------------------------
+
 export default function LeaveReport() {
   const { getAuthHeaders } = useAuth();
-  const [filters, setFilters] = useState({
-    fromDate: '',
-    toDate: '',
-    search: '',
-    team: 'All',
-    leaveType: 'All',
-    status: 'All',
-  });
+
+  // TWO filter states:
+  //   `draft`   — what the user is composing (does NOT trigger fetch).
+  //   `applied` — what's currently reflected in the table (DOES trigger fetch).
+  // Filter button copies draft → applied. Initial default = Last 7 Days.
+  const [draft, setDraft] = useState(DEFAULT_FILTERS);
+  const [applied, setApplied] = useState(DEFAULT_FILTERS);
+
+  // Two-part search state: `searchText` is what's typed; `searchLock` is the
+  // employee picked from autocomplete (used to submit an exact match).
+  const [searchText, setSearchText] = useState('');
+  // Which quick-pill is highlighted for the *draft* state (visual only).
+  const [activeQuick, setActiveQuick] = useState('last7');
+
   const [teams, setTeams] = useState([]);
   const [rows, setRows] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(30);
   const [loading, setLoading] = useState(false);
-  const [activeQuick, setActiveQuick] = useState('');
 
-  // Load teams once for the Team filter.
   useEffect(() => {
     axios.get(`${API}/teams`, { headers: getAuthHeaders() })
       .then(res => setTeams(Array.isArray(res.data) ? res.data : []))
@@ -140,20 +254,14 @@ export default function LeaveReport() {
   const fetchReport = useCallback(async () => {
     setLoading(true);
     try {
-      const params = {
-        page,
-        page_size: pageSize,
-      };
-      if (filters.fromDate) params.from_date = filters.fromDate;
-      if (filters.toDate) params.to_date = filters.toDate;
-      if (filters.search) params.search = filters.search;
-      if (filters.team && filters.team !== 'All') params.team = filters.team;
-      if (filters.leaveType && filters.leaveType !== 'All') params.leave_type = filters.leaveType;
-      if (filters.status && filters.status !== 'All') params.status = filters.status;
-      const res = await axios.get(`${API}/leaves/report`, {
-        params,
-        headers: getAuthHeaders(),
-      });
+      const params = { page, page_size: pageSize };
+      if (applied.fromDate) params.from_date = applied.fromDate;
+      if (applied.toDate) params.to_date = applied.toDate;
+      if (applied.search) params.search = applied.search;
+      if (applied.team && applied.team !== 'All') params.team = applied.team;
+      if (applied.leaveType && applied.leaveType !== 'All') params.leave_type = applied.leaveType;
+      if (applied.status && applied.status !== 'All') params.status = applied.status;
+      const res = await axios.get(`${API}/leaves/report`, { params, headers: getAuthHeaders() });
       setRows(res.data.items || []);
       setTotal(res.data.total || 0);
     } catch (e) {
@@ -163,28 +271,53 @@ export default function LeaveReport() {
     } finally {
       setLoading(false);
     }
-  }, [filters, page, pageSize, getAuthHeaders]);
+  }, [applied, page, pageSize, getAuthHeaders]);
 
-  useEffect(() => {
-    fetchReport();
-  }, [fetchReport]);
+  // Only re-fetch when `applied` filters or page/pageSize change.
+  useEffect(() => { fetchReport(); }, [fetchReport]);
 
-  const handleQuick = (key) => {
+  // Quick-pill click — updates DRAFT only. User must still press Filter to
+  // apply. Consistent with §2 "Changing any filter should not trigger data
+  // loading." The pill just fills in the date range.
+  const handleQuickPill = (key) => {
     const { fromDate, toDate } = applyQuickFilter(key);
-    setFilters(f => ({ ...f, fromDate, toDate }));
+    setDraft(d => ({ ...d, fromDate, toDate }));
     setActiveQuick(key);
+  };
+
+  // Filter button — copies draft to applied and resets pagination.
+  const handleApplyFilters = () => {
+    setApplied({ ...draft, search: searchText.trim() });
     setPage(1);
   };
 
+  // Reset — clears the DRAFT back to the Last-7-Days default. The applied
+  // state does not change until the user clicks Filter.
   const handleReset = () => {
-    setFilters({ fromDate: '', toDate: '', search: '', team: 'All', leaveType: 'All', status: 'All' });
-    setActiveQuick('');
+    setDraft(DEFAULT_FILTERS);
+    setSearchText('');
+    setActiveQuick('last7');
+  };
+
+  // Suggestion picked from autocomplete → apply immediately with that name
+  // as the exact search term (§3: filter after a suggestion is selected).
+  const handlePickEmployee = (emp) => {
+    const name = emp.full_name || '';
+    setSearchText(name);
+    setDraft(d => ({ ...d, search: name }));
+    setApplied(a => ({ ...a, search: name }));
     setPage(1);
   };
 
   const teamOptions = useMemo(() => (
     ['All', ...teams.map(t => t.name || t).filter(Boolean)]
   ), [teams]);
+
+  // Detect whether the draft differs from applied → highlights the Filter
+  // button so the admin knows a click is needed to see the new filter state.
+  const draftDirty = useMemo(() => (
+    JSON.stringify({ ...draft, search: searchText.trim() }) !== JSON.stringify(applied)
+  ), [draft, applied, searchText]);
 
   return (
     <div className="max-w-[1400px] mx-auto p-4 md:p-6 space-y-5" data-testid="leave-report-page">
@@ -210,8 +343,8 @@ export default function LeaveReport() {
           <div>
             <Label className="text-xs font-semibold text-slate-600">From Date</Label>
             <DatePicker
-              value={filters.fromDate}
-              onChange={(v) => { setFilters(f => ({ ...f, fromDate: v || '' })); setActiveQuick(''); setPage(1); }}
+              value={draft.fromDate}
+              onChange={(v) => { setDraft(d => ({ ...d, fromDate: v || '' })); setActiveQuick(''); }}
               placeholder="Pick from date"
               data-testid="from-date"
             />
@@ -219,28 +352,24 @@ export default function LeaveReport() {
           <div>
             <Label className="text-xs font-semibold text-slate-600">To Date</Label>
             <DatePicker
-              value={filters.toDate}
-              onChange={(v) => { setFilters(f => ({ ...f, toDate: v || '' })); setActiveQuick(''); setPage(1); }}
+              value={draft.toDate}
+              onChange={(v) => { setDraft(d => ({ ...d, toDate: v || '' })); setActiveQuick(''); }}
               placeholder="Pick to date"
               data-testid="to-date"
             />
           </div>
           <div>
             <Label className="text-xs font-semibold text-slate-600">Name / Email</Label>
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-              <Input
-                value={filters.search}
-                onChange={(e) => { setFilters(f => ({ ...f, search: e.target.value })); setPage(1); }}
-                placeholder="Search by name or email"
-                className="pl-8 rounded-lg"
-                data-testid="search-input"
-              />
-            </div>
+            <NameEmailAutocomplete
+              value={searchText}
+              onChange={setSearchText}
+              onSelect={handlePickEmployee}
+              onEnter={handleApplyFilters}
+            />
           </div>
           <div>
             <Label className="text-xs font-semibold text-slate-600">Team</Label>
-            <Select value={filters.team} onValueChange={(v) => { setFilters(f => ({ ...f, team: v })); setPage(1); }}>
+            <Select value={draft.team} onValueChange={(v) => setDraft(d => ({ ...d, team: v }))}>
               <SelectTrigger className="rounded-lg" data-testid="team-filter"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {teamOptions.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
@@ -249,7 +378,7 @@ export default function LeaveReport() {
           </div>
           <div>
             <Label className="text-xs font-semibold text-slate-600">Leave Type</Label>
-            <Select value={filters.leaveType} onValueChange={(v) => { setFilters(f => ({ ...f, leaveType: v })); setPage(1); }}>
+            <Select value={draft.leaveType} onValueChange={(v) => setDraft(d => ({ ...d, leaveType: v }))}>
               <SelectTrigger className="rounded-lg" data-testid="leave-type-filter"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {LEAVE_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
@@ -258,7 +387,7 @@ export default function LeaveReport() {
           </div>
           <div>
             <Label className="text-xs font-semibold text-slate-600">Leave Status</Label>
-            <Select value={filters.status} onValueChange={(v) => { setFilters(f => ({ ...f, status: v })); setPage(1); }}>
+            <Select value={draft.status} onValueChange={(v) => setDraft(d => ({ ...d, status: v }))}>
               <SelectTrigger className="rounded-lg" data-testid="status-filter"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {LEAVE_STATUSES.map(s => (
@@ -273,10 +402,17 @@ export default function LeaveReport() {
             <Button variant="outline" onClick={handleReset} className="rounded-lg" data-testid="reset-filters">
               <RotateCcw className="w-4 h-4 mr-1.5" /> Reset
             </Button>
+            <Button
+              onClick={handleApplyFilters}
+              className={`rounded-lg ${draftDirty ? 'bg-[#063c88] hover:bg-[#052d66] text-white' : 'bg-[#063c88]/80 hover:bg-[#063c88] text-white'}`}
+              data-testid="apply-filters"
+            >
+              <FilterIcon className="w-4 h-4 mr-1.5" /> Filter
+            </Button>
           </div>
         </div>
 
-        {/* Quick date filters */}
+        {/* Quick date filters — set draft dates; user still clicks Filter */}
         <div>
           <div className="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1.5">
             <CalendarDays className="w-3.5 h-3.5" /> Quick Date Filters
@@ -285,7 +421,7 @@ export default function LeaveReport() {
             {QUICK_FILTERS.map(q => (
               <button
                 key={q.key}
-                onClick={() => handleQuick(q.key)}
+                onClick={() => handleQuickPill(q.key)}
                 className={`px-3 py-1.5 rounded-full text-xs font-medium border transition ${
                   activeQuick === q.key
                     ? 'bg-[#063c88] text-white border-[#063c88]'
