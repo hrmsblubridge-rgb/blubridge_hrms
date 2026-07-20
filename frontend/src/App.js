@@ -11,6 +11,7 @@ import OnboardingCompletion from "./pages/OnboardingCompletion";
 import ProfileUploadRedeem from "./pages/ProfileUploadRedeem";
 import Attendance from "./pages/Attendance";
 import Leave from "./pages/Leave";
+import LeaveReport from "./pages/LeaveReport";
 import StarReward from "./pages/StarReward";
 import Team from "./pages/Team";
 import Reports from "./pages/Reports";
@@ -182,6 +183,7 @@ function App() {
           <Route path="/onboarding-completion" element={<AdminRoute><OnboardingCompletion /></AdminRoute>} />
           <Route path="/attendance" element={<AdminRoute><Attendance /></AdminRoute>} />
           <Route path="/leave" element={<AdminRoute><Leave /></AdminRoute>} />
+          <Route path="/leave-report" element={<AdminRoute><LeaveReport /></AdminRoute>} />
           <Route path="/star-reward" element={<AdminRoute><StarReward /></AdminRoute>} />
           <Route path="/team" element={<AdminRoute><Team /></AdminRoute>} />
           <Route path="/payroll" element={<AdminRoute><Payroll /></AdminRoute>} />

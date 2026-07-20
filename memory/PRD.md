@@ -5,6 +5,40 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-20 (Leave Management Report Module ✅ TESTED)
+
+**User requirement:** Admin-only Leave Management Report with filters, quick-date presets, server-side pagination, and page-size options.
+
+### Backend — new endpoint (server.py)
+`GET /api/leaves/report` — admin-only (`hr`/`system_admin`/`office_admin`).
+Query params: `from_date`, `to_date`, `search` (name **OR** email), `team`, `leave_type`, `status`, `page`, `page_size`.
+- Date filter uses overlap semantics: `start_date <= to_date AND end_date >= from_date` (so multi-day leaves that straddle the window are included).
+- `page_size` validated against `{30, 60, 100, 250, 500}` — anything else falls back to `30`.
+- Search matches `emp_name` regex OR employee's email (bulk-resolved to `employee_id`).
+- Response: `{items, total, page, page_size, total_pages}`. Each item is enriched with `email`.
+- Sort: newest-first (`start_date` desc, then `created_at` desc).
+- Zero writes, zero side effects on existing `/api/leaves` endpoint or other flows.
+
+### Frontend — new page `/leave-report` (LeaveReport.js)
+- Filters card: From Date, To Date (`DatePicker`), Name/Email search, Team, Leave Type, Leave Status. All filters wire into the same fetch and reset to page 1 on change.
+- Quick-date pills: **Today · Yesterday · Last 7 · 14 · 30 Days · 3 Months · 6 Months · 1 Year**. Active pill is highlighted; manual date-picker changes clear the active pill.
+- Reset button clears all filters back to defaults.
+- Table columns: Name (with email under it) · Team · Leave Date (single or range) · Leave Type · Leave Duration · Leave Status (color-coded pill) · Reason.
+- Reason column: truncates at 60 chars with `…`; click reveals a `Popover` with the full reason (scrollable up to 288 px tall).
+- Reuses existing `<Pagination>` component with page-size options `[30, 60, 100, 250, 500]`. Server-side, so no client-side clipping.
+- Wired into `App.js` (`<AdminRoute>`) and sidebar (`Layout.js` — `FileSpreadsheet` icon) — hidden from all employee layouts.
+
+### Testing
+- Backend: `/app/backend/tests/test_leaves_report.py` — 9 tests (shape, page-size validation, status/type/date/search filters, admin-only guard, page navigation non-overlap). **9/9 pass.**
+- Frontend: verified via screenshot — sidebar link visible, filters render, "Last 30 Days" pill retrieves 140 matches, popover on Reason opens correctly.
+
+### Untouched
+No existing leave endpoint, model, workflow, employee UI, payroll, holiday, LOP, or DB schema was changed. Additive-only.
+
+---
+
+
+
 ## Latest Update — 2026-07-18 (Same-Day OUT Regression Fixed ✅ VERIFIED)
 
 **User bug:** Srinath Kamalakumar & Jona Delcy C A on 17-Jul-2026 showed valid same-day IN but OUT = "—" even though the biometric device had a valid OUT punch. Regression from the earlier overnight fix.

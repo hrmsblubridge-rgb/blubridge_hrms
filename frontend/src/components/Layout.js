@@ -62,6 +62,7 @@ const allNavItems = [
   { path: '/operational-checklist', label: 'Operational Setup', icon: ClipboardList, roles: ['hr', 'office_admin'] },
   { path: '/attendance', label: 'Attendance', icon: CalendarCheck, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/leave', label: 'Leave', icon: CalendarDays, roles: ['hr', 'system_admin', 'office_admin'] },
+  { path: '/leave-report', label: 'Leave Report', icon: FileSpreadsheet, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/late-requests', label: 'Late Requests', icon: Clock, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/early-out-requests', label: 'Early Out', icon: LogOutIcon, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/missed-punches', label: 'Missed Punch', icon: Fingerprint, roles: ['hr', 'system_admin', 'office_admin'] },

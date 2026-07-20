@@ -8,6 +8,7 @@ import os
 import logging
 import asyncio
 import re
+import math
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
 from typing import List, Optional, Literal
@@ -7789,6 +7790,102 @@ async def get_attendance_stats(
     }
 
 # ============== LEAVE ROUTES ==============
+
+@api_router.get("/leaves/report")
+async def get_leaves_report(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    team: Optional[str] = None,
+    leave_type: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 30,
+    current_user: dict = Depends(get_current_user),
+):
+    """Admin-only Leave Management Report.
+
+    Returns a paginated list of leave records matching the filter criteria.
+    Read-only endpoint — no write operations, no side effects, no changes to
+    the existing `/api/leaves` behaviour.
+    """
+    # Admin-only guard. Employees and any non-admin roles are denied.
+    if current_user.get("role") not in ("hr", "system_admin", "office_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Validate page_size against the allowed set to keep DB load predictable.
+    allowed_sizes = {30, 60, 100, 250, 500}
+    if page_size not in allowed_sizes:
+        page_size = 30
+    if page < 1:
+        page = 1
+
+    q: dict = {}
+    if team and team != "All":
+        q["team"] = team
+    if leave_type and leave_type != "All":
+        q["leave_type"] = leave_type
+    if status and status != "All":
+        q["status"] = status
+    # Overlapping range filter: a leave row overlaps [from_date, to_date] when
+    # its start_date <= to_date AND end_date >= from_date. This correctly
+    # captures multi-day leaves that partially fall inside the window.
+    if from_date and to_date:
+        q["start_date"] = {"$lte": to_date}
+        q["end_date"] = {"$gte": from_date}
+    elif from_date:
+        q["end_date"] = {"$gte": from_date}
+    elif to_date:
+        q["start_date"] = {"$lte": to_date}
+
+    if search:
+        s = search.strip()
+        if s:
+            # Match against emp_name OR the linked employee's email. Since
+            # emp_name is already denormalised on the leave document, this
+            # covers the common case cheaply; email is an occasional lookup.
+            emails_cursor = db.employees.find(
+                {"email": {"$regex": s, "$options": "i"}, "is_deleted": {"$ne": True}},
+                {"_id": 0, "id": 1},
+            )
+            emp_ids = [e["id"] async for e in emails_cursor]
+            or_clauses = [{"emp_name": {"$regex": s, "$options": "i"}}]
+            if emp_ids:
+                or_clauses.append({"employee_id": {"$in": emp_ids}})
+            q["$or"] = or_clauses
+
+    total = await db.leaves.count_documents(q)
+
+    skip = (page - 1) * page_size
+    cursor = (
+        db.leaves.find(q, {"_id": 0})
+        .sort([("start_date", -1), ("created_at", -1)])
+        .skip(skip)
+        .limit(page_size)
+    )
+    rows = [serialize_doc(r) async for r in cursor]
+
+    # Enrich with employee email for the "Name / Email" column display.
+    emp_ids_needed = list({r.get("employee_id") for r in rows if r.get("employee_id")})
+    email_map: dict = {}
+    if emp_ids_needed:
+        async for e in db.employees.find(
+            {"id": {"$in": emp_ids_needed}},
+            {"_id": 0, "id": 1, "email": 1},
+        ):
+            email_map[e["id"]] = e.get("email")
+    for r in rows:
+        r["email"] = email_map.get(r.get("employee_id"))
+
+    total_pages = max(1, math.ceil(total / page_size)) if total else 1
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
 
 @api_router.get("/leaves")
 async def get_leaves(
