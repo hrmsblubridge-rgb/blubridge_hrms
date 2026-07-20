@@ -1,0 +1,29 @@
+{
+  "summary": "Re-verified Leave Management Report after handleQuickPill refinement. The fix successfully addresses the iteration_56 minor finding: quick-date pills now ONLY mutate the date window on `applied` and NO LONGER commit un-applied Team/Leave Type/Status draft selections. All 5 primary specs (§1-§5) verified working. Regression checks (employee 403, pagination, Reason popover) still intact. Zero ResizeObserver console errors during full session.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_57.json"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "handleQuickPill (LeaveReport.js L286-L301) is now correctly non-committing for draft manual filters. It updates only fromDate/toDate on `applied` via setApplied(a => ({ ...a, fromDate, toDate })). draft state is kept in sync for UI. Clean, minimal patch — LGTM.",
+    "draftDirty (L332) uses JSON.stringify which correctly detects any pending Team/Leave Type/Status/search changes and highlights the Filter button after a pill click — good UX signal to the user that additional filters are pending.",
+    "One tiny nit: handleQuickPill does not touch `search` on applied, so if a user has an outstanding search-lock in searchText that was previously applied it remains — this is correct behaviour. No action needed."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (regression 403 endpoint check passed)", "frontend": "100% (9/9 test assertions passed)"},
+  "test_credentials": "HR Admin: admin / HrAdmin786$ (PINNED). Employee (for 403 regression): user / pass123.",
+  "seed_data_creation": "None. Read-only testing on existing leave records.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 57 verified handleQuickPill refactor. Concrete evidence: TEST 1 - opened Leave Type dropdown → Sick (draft), clicked Last-30 pill; captured XHR '/api/leaves/report?page=1&page_size=30&from_date=2026-06-21&to_date=2026-07-20' (NO leave_type=Sick param), total=140 (matches unfiltered Last-30). TEST 2 - then clicked Filter; captured '/api/leaves/report?...&from_date=2026-06-21&to_date=2026-07-20&leave_type=Sick', total=61 (confirms draft was preserved and applied). TEST 3 - Team=Accounts draft + Today pill; captured URL has NO team= param. TEST 4 - Status=approved draft + Last-3-Months pill; URL has NO status=approved. TEST 5 - quick-all pill exists and clears from_date/to_date on click. TEST 6 - typing 'kav' → 1 autocomplete req, 0 report reqs. TEST 7 - 0 ResizeObserver console errors during full session. TEST 8 - Reset re-fetched Last-7-Days immediately, quick-last7 pill highlighted. Regression: employee GET /api/leaves/report → 403 (confirmed via curl).",
+  "rca_of_the_issue": "N/A — bug from iteration_56 is fixed. The fix moved setApplied from '{ ...nextDraft }' (which committed the entire draft) to 'a => ({ ...a, fromDate, toDate })' (which only touches the date window on top of already-applied filters). Verified by observing that leave_type/team/status query params are absent from /api/leaves/report after pill click when only draft values were changed."
+}

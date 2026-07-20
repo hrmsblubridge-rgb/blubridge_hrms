@@ -279,8 +279,10 @@ export default function LeaveReport() {
   useEffect(() => { fetchReport(); }, [fetchReport]);
 
   // Quick-pill click — quick date filters (§2) apply IMMEDIATELY without
-  // requiring the Filter button. Non-date filters keep the manual-apply
-  // behaviour. "All Records" clears the date window entirely.
+  // requiring the Filter button. They only touch the DATE window; any
+  // un-applied manual filter draft changes (Team, Leave Type, Status,
+  // typed-but-not-picked Name/Email) stay pending until the user presses
+  // Filter. "All Records" clears the date window entirely.
   const handleQuickPill = (key) => {
     let fromDate = '';
     let toDate = '';
@@ -289,11 +291,12 @@ export default function LeaveReport() {
       fromDate = w.fromDate;
       toDate = w.toDate;
     }
-    const nextDraft = { ...draft, fromDate, toDate };
-    setDraft(nextDraft);
+    // Sync the draft's date fields so the UI reflects the pill selection…
+    setDraft(d => ({ ...d, fromDate, toDate }));
     setActiveQuick(key);
-    // Immediately apply — do NOT require the Filter button (§2).
-    setApplied({ ...nextDraft, search: searchText.trim() });
+    // …but only apply the date window on top of the *currently applied*
+    // filters — never commit unrelated pending draft changes.
+    setApplied(a => ({ ...a, fromDate, toDate }));
     setPage(1);
   };
 
