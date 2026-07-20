@@ -29,6 +29,8 @@ const QUICK_FILTERS = [
   { key: 'last3m', label: 'Last 3 Months', months: 3 },
   { key: 'last6m', label: 'Last 6 Months', months: 6 },
   { key: 'last1y', label: 'Last 1 Year', years: 1 },
+  // "All Records" (§1) — clears the date window entirely.
+  { key: 'all', label: 'All Records', all: true },
 ];
 
 const toISODate = (d) => {
@@ -276,13 +278,23 @@ export default function LeaveReport() {
   // Only re-fetch when `applied` filters or page/pageSize change.
   useEffect(() => { fetchReport(); }, [fetchReport]);
 
-  // Quick-pill click — updates DRAFT only. User must still press Filter to
-  // apply. Consistent with §2 "Changing any filter should not trigger data
-  // loading." The pill just fills in the date range.
+  // Quick-pill click — quick date filters (§2) apply IMMEDIATELY without
+  // requiring the Filter button. Non-date filters keep the manual-apply
+  // behaviour. "All Records" clears the date window entirely.
   const handleQuickPill = (key) => {
-    const { fromDate, toDate } = applyQuickFilter(key);
-    setDraft(d => ({ ...d, fromDate, toDate }));
+    let fromDate = '';
+    let toDate = '';
+    if (key !== 'all') {
+      const w = applyQuickFilter(key);
+      fromDate = w.fromDate;
+      toDate = w.toDate;
+    }
+    const nextDraft = { ...draft, fromDate, toDate };
+    setDraft(nextDraft);
     setActiveQuick(key);
+    // Immediately apply — do NOT require the Filter button (§2).
+    setApplied({ ...nextDraft, search: searchText.trim() });
+    setPage(1);
   };
 
   // Filter button — copies draft to applied and resets pagination.
@@ -291,22 +303,21 @@ export default function LeaveReport() {
     setPage(1);
   };
 
-  // Reset — clears the DRAFT back to the Last-7-Days default. The applied
-  // state does not change until the user clicks Filter.
+  // Reset — restores defaults AND immediately reloads with Last-7-Days (§5).
   const handleReset = () => {
     setDraft(DEFAULT_FILTERS);
     setSearchText('');
     setActiveQuick('last7');
+    setApplied(DEFAULT_FILTERS);
+    setPage(1);
   };
 
-  // Suggestion picked from autocomplete → apply immediately with that name
-  // as the exact search term (§3: filter after a suggestion is selected).
+  // Autocomplete selection (§3) — populate the field ONLY. Do not fetch.
+  // The report is filtered only when the user clicks the Filter button.
   const handlePickEmployee = (emp) => {
     const name = emp.full_name || '';
     setSearchText(name);
     setDraft(d => ({ ...d, search: name }));
-    setApplied(a => ({ ...a, search: name }));
-    setPage(1);
   };
 
   const teamOptions = useMemo(() => (
