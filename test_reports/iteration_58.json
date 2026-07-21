@@ -1,0 +1,22 @@
+{
+  "summary": "Verified all 5 surgical corrections on Admin → Leave Management Report (/leave-report) as per iteration_58 spec. Every spec passed unambiguously via Playwright DOM assertions + XHR interception. No regressions detected — quick pills, All-Records pill, employee 403 all still intact, zero ResizeObserver errors, apply-leave dialog on /leave still functional.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/test_reports/iteration_58.json"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "date-picker.jsx L29-45 correctly adds `open`/`setOpen` state and calls `setOpen(false)` inside handleSelect after onChange — clean, idempotent, no side-effects for other consumers (verified apply-leave dialog on /leave still opens its calendar on click).",
+    "LeaveReport.js LEAVE_STATUSES = ['All','pending','approved','rejected'] (L22) — exactly 4 values, matches HRMS workflow. Cancelled/Withdrawn correctly removed.",
+    "NameEmailAutocomplete `onClear` (L198-214) only clears input+suggestions and calls parent onClear which updates draft.search='' but does NOT touch `applied` state — thus /api/leaves/report is not re-fetched (verified via XHR counter 2→2). Filter button click bumps applied → refetch (2→3). Behaviour matches §4 spec exactly.",
+    "Total Records bar (L481-490) is sandwiched between filters-card (L374) and report-table-card (L493) — DOM order verified programmatically via compareDocumentPosition.",
+    "From/To DatePicker min/max wiring at L383 (max=draft.toDate) and L393 (min=draft.fromDate) correctly propagates to date-picker.jsx L57-67, disabling out-of-range days via react-day-picker's `disabled` prop (day buttons receive HTML `disabled=true` attribute)."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A — frontend-only iteration; regression 403 endpoint check already verified in iteration_57", "frontend": "100% (all 5 primary specs + regression checks passed)"},
+  "test_credentials": "HR Admin: admin / HrAdmin786$ (PINNED, verified working). Employee 403 regression via iteration_57 curl.",
+  "seed_data_creation": "None — read-only tests on existing leave records.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 58 concrete evidence: §1 total-records-count=26 initial (Last-7-Days), Last-30 pill → 145 (auto-updates on filter change); DOM order filters-card→total-records-bar→report-table-card verified via compareDocumentPosition. §2 auto-close: From date picker rdp count 1 → 0 after selecting day 16 (From value='16-Jul-2026'); To picker 1 → 0 after selecting day 20 (To='20-Jul-2026'). §3 To-cal (min=15-Jul-2026): days 1,5,10,14 disabled=True; days 15,16,20,21,22,25,30,31 disabled=False. From-cal (max=21-Jul-2026): days 1,5,10,15,20,21 disabled=False; days 22,25,30,31 disabled=True. §4 clear icon: appears with 'Kav', still visible after picking suggestion, click clears input to '' with /api/leaves/report XHR count 2→2 (NO refetch), suggestions dropdown stays closed; subsequent Filter click bumps XHRs 2→3 (proper refetch). §5 status dropdown exact options ['All','Pending','Approved','Rejected'] — no Cancelled/Withdrawn; URL after Approved+Filter = /api/leaves/report?...&from_date=2026-07-15&to_date=2026-07-21&status=approved; 23/23 visible rows have Leave Status='Approved'. REG: 'quick-all' pill exists; 0 ResizeObserver console errors; apply-leave dialog on /leave opens cleanly and its date picker button (Pick a date) is clickable and does not trigger any cascade issues. Note the react-day-picker v8 shadcn calendar uses `button.rdp-button` (NOT `button.rdp-day`) — future scripts should query `.rdp button` + text content and check native `disabled` attribute; classes `day-outside` mean adjacent-month days.",
+  "rca_of_the_issue": "N/A — all 5 corrections verified working. No new bugs, no regressions. The date-picker.jsx `open` state + `setOpen(false)` inside handleSelect is a global change but was verified benign: (a) the apply-leave dialog on /leave still renders correctly, (b) React-day-picker's `disabled` prop was already wired via the `dayDisabled` useMemo → shadcn Calendar → DayPicker."
+}

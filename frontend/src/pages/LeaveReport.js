@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { CalendarDays, RotateCcw, FileText, Search, Loader2, Filter as FilterIcon } from 'lucide-react';
+import { CalendarDays, RotateCcw, FileText, Search, Loader2, Filter as FilterIcon, X } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/ui/date-picker';
@@ -17,7 +17,9 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 // Canonical HRMS leave types (matches /pages/Leave.js). "All" is UI-only.
 const LEAVE_TYPES = ['All', 'Sick', 'Preplanned', 'Emergency', 'Paid', 'Optional'];
-const LEAVE_STATUSES = ['All', 'pending', 'approved', 'rejected', 'cancelled'];
+// Canonical HRMS leave statuses — matches the workflow states used by
+// /pages/Leave.js and the /api/leaves domain. No "cancelled"/"withdrawn".
+const LEAVE_STATUSES = ['All', 'pending', 'approved', 'rejected'];
 const PAGE_SIZE_OPTIONS = [30, 60, 100, 250, 500];
 
 const QUICK_FILTERS = [
@@ -132,7 +134,7 @@ const formatLeaveDate = (row) => {
 //   (a) the user picks a suggestion, or
 //   (b) the user clicks the Filter button.
 // ---------------------------------------------------------------------------
-const NameEmailAutocomplete = ({ value, onChange, onSelect, onEnter }) => {
+const NameEmailAutocomplete = ({ value, onChange, onSelect, onEnter, onClear }) => {
   const { getAuthHeaders } = useAuth();
   const [suggestions, setSuggestions] = useState([]);
   const [open, setOpen] = useState(false);
@@ -189,10 +191,27 @@ const NameEmailAutocomplete = ({ value, onChange, onSelect, onEnter }) => {
         onFocus={() => { if (suggestions.length > 0) setOpen(true); }}
         onKeyDown={(e) => { if (e.key === 'Enter') { setOpen(false); onEnter && onEnter(); } }}
         placeholder="Search by name or email"
-        className="pl-8 rounded-lg"
+        className="pl-8 pr-9 rounded-lg"
         data-testid="search-input"
         autoComplete="off"
       />
+      {value && (
+        <button
+          type="button"
+          onClick={() => {
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+            setOpen(false);
+            setSuggestions([]);
+            onClear && onClear();
+          }}
+          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded-full hover:bg-slate-100 transition"
+          data-testid="search-clear"
+          aria-label="Clear name/email"
+          title="Clear"
+        >
+          <X className="w-3.5 h-3.5 text-slate-500" />
+        </button>
+      )}
       {open && (
         <div
           className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-[280px] overflow-y-auto"
@@ -361,6 +380,7 @@ export default function LeaveReport() {
               onChange={(v) => { setDraft(d => ({ ...d, fromDate: v || '' })); setActiveQuick(''); }}
               placeholder="Pick from date"
               data-testid="from-date"
+              max={draft.toDate || undefined}
             />
           </div>
           <div>
@@ -370,6 +390,7 @@ export default function LeaveReport() {
               onChange={(v) => { setDraft(d => ({ ...d, toDate: v || '' })); setActiveQuick(''); }}
               placeholder="Pick to date"
               data-testid="to-date"
+              min={draft.fromDate || undefined}
             />
           </div>
           <div>
@@ -379,6 +400,12 @@ export default function LeaveReport() {
               onChange={setSearchText}
               onSelect={handlePickEmployee}
               onEnter={handleApplyFilters}
+              onClear={() => {
+                // §4: Clearing only clears the input; existing filter-button
+                // behaviour still applies. Do NOT auto-refetch.
+                setSearchText('');
+                setDraft(d => ({ ...d, search: '' }));
+              }}
             />
           </div>
           <div>
@@ -448,6 +475,18 @@ export default function LeaveReport() {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* Total Records — §1: sits between filters and the records table */}
+      <div className="flex items-center justify-between px-1" data-testid="total-records-bar">
+        <div className="text-sm text-slate-700">
+          Total Records: <span className="font-semibold text-slate-900" data-testid="total-records-count">{total.toLocaleString()}</span>
+        </div>
+        {loading && (
+          <div className="text-xs text-slate-400 flex items-center gap-1.5">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Refreshing…
+          </div>
+        )}
       </div>
 
       {/* Table */}

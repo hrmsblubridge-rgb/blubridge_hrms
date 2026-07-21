@@ -26,6 +26,7 @@ function parseLocalDate(v) {
 
 function DatePicker({ value, onChange, className, placeholder = "Pick a date", disabled = false, min, max, "data-testid": dataTestId }) {
   const [date, setDate] = React.useState(parseLocalDate(value));
+  const [open, setOpen] = React.useState(false);
 
   React.useEffect(() => {
     setDate(parseLocalDate(value));
@@ -37,6 +38,9 @@ function DatePicker({ value, onChange, className, placeholder = "Pick a date", d
       // Format as YYYY-MM-DD for input compatibility
       const formattedDate = format(selectedDate, "yyyy-MM-dd");
       onChange(formattedDate);
+      // Auto-close the calendar popover after a date is selected so the user
+      // doesn't need to click outside. Consistent with common HRMS UX.
+      setOpen(false);
     }
   };
 
@@ -63,7 +67,7 @@ function DatePicker({ value, onChange, className, placeholder = "Pick a date", d
   }, [minDate, maxDate]);
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button
           type="button"
