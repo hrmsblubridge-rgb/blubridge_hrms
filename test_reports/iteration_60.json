@@ -1,0 +1,37 @@
+{
+  "summary": "Iteration 60 CRITICAL FIX RE-VERIFIED. Both server.py code paths (fresh-create @ L5346 and reactivate-deleted @ L5236) now correctly persist office_location. Backend pytest suite is 13/13 PASS including the newly-added reactivate-branch test. Migration invariants intact: 53 active Besant Nagar - Chennai, exactly 1 Inactive 'Sathish E' with blank office_location, zero active employees with blank office_location. Frontend Add + Edit dialogs both show red asterisk, dropdown has ONLY ['Besant Nagar - Chennai', 'Mandaveli - Chennai'] (NO Unassigned), Edit dialog pre-selects the persisted value. Partial PUT (without office_location key) correctly preserves the existing value. Regression clean — no new console errors on Employees page, filters/list still load.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_office_location_required.py",
+    "/app/test_reports/pytest/iter60_office_location.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py L5346: FIX CONFIRMED — Employee(...) constructor now includes `office_location=data.office_location`. Fresh-create path verified via pytest test_create_with_valid_office_location_succeeds (POST → GET returns 'Besant Nagar - Chennai').",
+    "server.py L5236: FIX CONFIRMED — reactivate-deleted update_data dict now includes `\"office_location\": data.office_location`. Verified via new test_reactivate_persists_new_office_location: created employee with 'Besant Nagar - Chennai', flipped is_deleted=True in Mongo, POSTed with same email + 'Mandaveli - Chennai', GET returned 'Mandaveli - Chennai'.",
+    "server.py L5490-5492: update_employee validation correctly rejects only explicit blank/whitespace office_location. Partial PUT without the key preserves existing value (verified via live call on employee 72bcb11b - OL stayed 'Mandaveli - Chennai').",
+    "Employees.js L1555 (Add) & L1782 (Edit): both dialogs render `Office Location <span class='text-red-500'>*</span>` — verified via live DOM inspection. Both share data-testid='office-location-select'. Dropdown options fetched from SSOT /api/settings/office-locations return exactly ['Besant Nagar - Chennai', 'Mandaveli - Chennai'] — 'Unassigned' string does not appear in either dropdown.",
+    "Note: the reactivate branch (server.py L5205-5319) is essentially dead code in typical UX flow because the DELETE /api/employees/{id} endpoint (L5571) performs a soft deactivate (sets employee_status=Inactive) — NOT is_deleted=True. Only permanent/force-delete-then-recreate scenarios would hit that branch. Fix is still correct and defensive."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_office_location_required.py (added TestReactivateBranchOfficeLocation class — 1 new test, 13 total)"
+  ],
+  "success_rate": {
+    "backend": "13/13 (100%) — all iteration-59 tests + new reactivate-branch test pass",
+    "frontend": "100% — asterisk + no-Unassigned + edit-dialog pre-selection + list-load verified"
+  },
+  "test_credentials": "HR Admin: admin / HrAdmin786$ (PINNED, verified via localhost:8001 — preview URL works too but ~40s login latency due to bcrypt)",
+  "seed_data_creation": "None retained — each test suite run creates 1-2 TEST employees and cleans them up (soft-delete). One test uses direct Mongo update to flip is_deleted=True (documented in test docstring). DB state restored after run.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Both server.py branches for office_location persistence are now correct. Test suite at /app/backend/tests/test_office_location_required.py (13/13). NOTE: reactivate branch test uses pymongo directly to set is_deleted=True since regular DELETE endpoint uses soft-deactivate (employee_status=Inactive, is_deleted remains False). The reactivate branch is only reachable via a manual is_deleted=True state — worth noting to main agent if they wish to add an actual endpoint that sets is_deleted=True.",
+  "rca_of_the_issue": "RESOLVED. The iter59 defect ('POST /api/employees drops office_location') is fixed at both L5346 (fresh-create Employee(...) constructor) and L5236 (reactivate update_data dict). Confirmed via automated pytest that POST with office_location='Besant Nagar - Chennai' followed by GET returns 'Besant Nagar - Chennai' (previously returned '')."
+}

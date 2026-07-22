@@ -5233,6 +5233,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
             "login_enabled": data.login_enabled,
             "custom_employee_id": data.custom_employee_id,
             "biometric_id": data.biometric_id,
+            "office_location": data.office_location,
             "updated_at": get_ist_now().isoformat()
         }
         # If the picked shift_type matches a Settings shift, expand all derived fields
@@ -5341,7 +5342,8 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         attendance_tracking_enabled=data.attendance_tracking_enabled,
         user_role=data.user_role,
         login_enabled=data.login_enabled,
-        biometric_id=data.biometric_id
+        biometric_id=data.biometric_id,
+        office_location=data.office_location
     )
     
     doc = employee.model_dump()

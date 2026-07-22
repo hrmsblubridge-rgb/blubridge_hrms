@@ -178,6 +178,83 @@ class TestCreateUpdateHappyPath:
         assert r.status_code in (200, 204), f"Delete failed: {r.status_code} {r.text}"
 
 
+# ---------- Reactivate-deleted branch verification (iter60 fix) ----------
+
+class TestReactivateBranchOfficeLocation:
+    """
+    Verify that POST /api/employees using an email whose previous record is
+    soft-deleted takes the 'existing_deleted' branch AND correctly persists
+    the office_location value from the new request (not the stale/default).
+    """
+
+    def test_reactivate_persists_new_office_location(self, headers):
+        """
+        The reactivate branch is entered only when a record with the same email
+        exists and has `is_deleted: True`. The DELETE endpoint does soft
+        deactivate (employee_status=Inactive) but does NOT set is_deleted.
+        To exercise the reactivate branch we flip is_deleted=True directly
+        in Mongo, then POST with the same email.
+        """
+        import os
+        from pymongo import MongoClient
+        mongo_url = os.environ.get("MONGO_URL") or \
+            open("/app/backend/.env").read().split('MONGO_URL="')[1].split('"')[0]
+        db_name = os.environ.get("DB_NAME") or \
+            open("/app/backend/.env").read().split('DB_NAME="')[1].split('"')[0]
+        client = MongoClient(mongo_url)
+        db = client[db_name]
+
+        suffix = uuid.uuid4().hex[:6]
+        payload = _base_payload(suffix)
+        payload["office_location"] = "Besant Nagar - Chennai"
+
+        # Step 1 — create fresh employee
+        r = requests.post(f"{BASE_URL}/api/employees",
+                          json=payload, headers=headers, timeout=180)
+        assert r.status_code in (200, 201), f"Create failed: {r.status_code} {r.text}"
+        emp = r.json().get("employee") or r.json()
+        emp_id = emp.get("id") or r.json().get("id")
+        assert emp_id, f"No id in create response: {r.json()}"
+
+        # Step 2 — flip is_deleted=True directly in Mongo to simulate the
+        #          state the reactivate branch expects.
+        upd = db.employees.update_one(
+            {"id": emp_id},
+            {"$set": {"is_deleted": True,
+                      "deleted_at": "2025-01-01T00:00:00",
+                      "office_location": "STALE_VALUE"}},
+        )
+        assert upd.modified_count == 1
+
+        # Step 3 — POST with SAME email + DIFFERENT office_location →
+        #          should hit the reactivate branch (L5205-5238)
+        new_payload = _base_payload(suffix)  # same email/custom_id
+        new_payload["office_location"] = "Mandaveli - Chennai"
+        r2 = requests.post(f"{BASE_URL}/api/employees",
+                           json=new_payload, headers=headers, timeout=180)
+        assert r2.status_code in (200, 201), f"Reactivate failed: {r2.status_code} {r2.text}"
+        body2 = r2.json()
+        # Reactivate path returns the employee dict directly
+        rehired_id = body2.get("id") or (body2.get("employee") or {}).get("id")
+        assert rehired_id, f"No id in reactivate response: {body2}"
+        assert rehired_id == emp_id, "Reactivate should reuse the same employee id"
+
+        # Step 4 — GET verify office_location matches the NEW payload
+        g = requests.get(f"{BASE_URL}/api/employees/{rehired_id}",
+                         headers=headers, timeout=180)
+        assert g.status_code == 200
+        fetched = g.json()
+        assert fetched.get("office_location") == "Mandaveli - Chennai", (
+            f"Reactivate branch did NOT persist new office_location. "
+            f"Expected 'Mandaveli - Chennai', got: {fetched.get('office_location')!r}"
+        )
+        assert (fetched.get("is_deleted") or False) is False, "Should be reactivated"
+
+        # Cleanup
+        requests.delete(f"{BASE_URL}/api/employees/{rehired_id}",
+                        headers=headers, timeout=180)
+
+
 # ---------- Historical migration verification ----------
 
 class TestMigrationInvariants:
