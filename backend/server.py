@@ -5146,7 +5146,11 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
 async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
-    
+
+    # Office Location is a required field on the Employee form.
+    if not (data.office_location and str(data.office_location).strip()):
+        raise HTTPException(status_code=400, detail="Office Location is required")
+
     # Case-insensitive duplicate guards (Email + Biometric ID)
     email_norm = (data.official_email or "").strip()
     bio_norm = (data.biometric_id or "").strip() if data.biometric_id else ""
@@ -5482,7 +5486,11 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
     existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
     if not existing:
         raise HTTPException(status_code=404, detail="Employee not found")
-    
+
+    # Office Location is a required field. Reject explicit blanking on update.
+    if data.office_location is not None and not str(data.office_location).strip():
+        raise HTTPException(status_code=400, detail="Office Location is required")
+
     # Check for duplicate email if changing (case-insensitive)
     if data.official_email and (data.official_email or "").strip().lower() != (existing.get("official_email") or "").strip().lower():
         dup = await db.employees.find_one({

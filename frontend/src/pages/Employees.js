@@ -927,6 +927,7 @@ const Employees = () => {
     if (!form.designation.trim()) { toast.error('Designation is required'); return false; }
     if (!form.custom_employee_id.trim()) { toast.error('Employee ID is required'); return false; }
     if (!form.biometric_id.trim()) { toast.error('Biometric ID is required'); return false; }
+    if (!form.office_location || !form.office_location.trim()) { toast.error('Office Location is required'); return false; }
     // Paid-Leave Confirmation Date: required + valid for leave-eligible types.
     if (form.employment_type !== 'Intern') {
       if (!form.confirmation_date) { toast.error('Confirmation Date is required for leave-eligible employment types'); return false; }
@@ -1551,11 +1552,10 @@ const Employees = () => {
                     </Select>
                   </div>
                   <div>
-                    <Label className="text-sm font-medium text-slate-700">Office Location</Label>
-                    <Select value={form.office_location || '__none__'} onValueChange={(val) => setForm(prev => ({ ...prev, office_location: val === '__none__' ? '' : val }))}>
+                    <Label className="text-sm font-medium text-slate-700">Office Location <span className="text-red-500">*</span></Label>
+                    <Select value={form.office_location || ''} onValueChange={(val) => setForm(prev => ({ ...prev, office_location: val }))}>
                       <SelectTrigger className="mt-1.5 rounded-lg" data-testid="office-location-select"><SelectValue placeholder="Select Office Location" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__none__">Unassigned</SelectItem>
                         {officeLocations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
@@ -1779,11 +1779,10 @@ const Employees = () => {
                     </Select>
                   </div>
                   <div>
-                    <Label className="text-sm font-medium text-slate-700">Office Location</Label>
-                    <Select value={form.office_location || '__none__'} onValueChange={(val) => setForm(prev => ({ ...prev, office_location: val === '__none__' ? '' : val }))}>
+                    <Label className="text-sm font-medium text-slate-700">Office Location <span className="text-red-500">*</span></Label>
+                    <Select value={form.office_location || ''} onValueChange={(val) => setForm(prev => ({ ...prev, office_location: val }))}>
                       <SelectTrigger className="mt-1.5 rounded-lg" data-testid="office-location-select"><SelectValue placeholder="Select Office Location" /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="__none__">Unassigned</SelectItem>
                         {officeLocations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
                       </SelectContent>
                     </Select>
