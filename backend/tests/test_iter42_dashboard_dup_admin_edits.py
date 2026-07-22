@@ -23,7 +23,7 @@ BASE_URL = (os.environ.get("REACT_APP_BACKEND_URL") or _load_frontend_env() or "
 assert BASE_URL, "REACT_APP_BACKEND_URL must be configured in frontend/.env"
 API = f"{BASE_URL}/api"
 
-HR_USER = {"username": "admin", "password": "pass123"}
+HR_USER = {"username": "admin", "password": "HrAdmin786$"}
 EMP_USER = {"username": "kasper", "password": "pass123"}
 
 
@@ -156,6 +156,7 @@ class TestEmployeeDuplicateGuards:
             "date_of_joining": "2026-01-01",
             "gender": "Male",
             "marital_status": "Single",
+            "office_location": "Besant Nagar - Chennai",
         }
         r = requests.post(f"{API}/employees", headers=hr_headers, json=payload, timeout=30)
         assert r.status_code in (200, 201), f"Create failed: {r.status_code} {r.text}"
@@ -178,6 +179,7 @@ class TestEmployeeDuplicateGuards:
             "date_of_joining": "2026-01-01",
             "gender": "Male",
             "marital_status": "Single",
+            "office_location": "Besant Nagar - Chennai",
         }
         r = requests.post(f"{API}/employees", headers=hr_headers, json=payload, timeout=30)
         assert r.status_code == 400, f"expected 400, got {r.status_code}: {r.text}"
@@ -197,6 +199,7 @@ class TestEmployeeDuplicateGuards:
             "date_of_joining": "2026-01-01",
             "gender": "Male",
             "marital_status": "Single",
+            "office_location": "Besant Nagar - Chennai",
         }
         r = requests.post(f"{API}/employees", headers=hr_headers, json=payload, timeout=30)
         assert r.status_code == 400, f"case-insensitive duplicate email should be rejected: {r.status_code} {r.text}"
@@ -217,6 +220,7 @@ class TestEmployeeDuplicateGuards:
             "date_of_joining": "2026-01-01",
             "gender": "Male",
             "marital_status": "Single",
+            "office_location": "Besant Nagar - Chennai",
         }
         r = requests.post(f"{API}/employees", headers=hr_headers, json=payload, timeout=30)
         assert r.status_code == 400, f"case-insensitive duplicate biometric should be rejected: {r.status_code} {r.text}"

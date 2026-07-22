@@ -2247,3 +2247,14 @@ Auto-created on employee creation + backfilled for existing employees on startup
     - Empty CC shows `—`, matching design system.
   - **Verified live**: set/replace/dedupe (case-insensitive) works; invalid `bad-email` returns 400; empty list clears; non-admin gets 403; existing cron flow with no CC unchanged.
   - **No** changes to schedules, primary recipient, dedup, audit-log structure. Backward-compatible — empty `cc_emails` ⇒ behaves identically to pre-CC system. Lint clean.
+
+- **2026-07-22** Attendance Report Historical Employee Count Fix (date-aware employment rule applied consistently everywhere).
+  - **Rule**: employee counted on a date iff `date_of_joining ≤ date ≤ last working day` (`last_day_payable`, fallback `inactive_date`); no exit date recorded → treated as still employed. Applies to Inactive AND Resigned. Never filter by CURRENT status.
+  - **New shared helpers** in `server.py`: `_employment_window(emp)` + `_employed_on_date(emp, d_int)` (defined next to `_normalize_date_to_int`).
+  - **Surfaces fixed**:
+    1. `/api/reports/attendance/export` (XLSX pivot): employees included when employment window overlaps the report window; per-date cells BEFORE joining / AFTER exit are blank with status `-` (previously showed "Not Login" forever, and Resigned employees were mishandled).
+    2. `/api/reports/office-attendance`: inactive employee with NO exit date is now treated as still employed (previously excluded entirely).
+    3. `/api/attendance` gap-fill stubs: Resigned employees (not just "Inactive") now stop generating Absent stubs after last working day; `last_day_payable` used with `inactive_date` fallback.
+    4. `/api/attendance/stats` (dashboard tiles): `total_employees`/`not_logged` now computed from the employed-in-window cohort instead of currently-Active only → historical windows produce immutable counts even after resignations.
+  - **Tests**: new `/app/backend/tests/test_historical_employee_counts.py` (5 tests, all pass). Regression: 31 related tests pass (office report, counters, dashboard buckets/drilldown, workforce stats, custom range, duplicates, widgets, deactivation).
+  - **Also fixed stale test fixtures** in `test_iter42_dashboard_dup_admin_edits.py`: HR password updated to pinned `HrAdmin786$`, employee-create payload now includes required `office_location`.

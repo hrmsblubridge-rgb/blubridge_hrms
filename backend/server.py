@@ -6828,7 +6828,7 @@ async def get_attendance(
                 emp_query,
                 {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1,
                  "shift_type": 1, "date_of_joining": 1, "employee_status": 1,
-                 "inactive_date": 1, "attendance_tracking_enabled": 1}
+                 "inactive_date": 1, "last_day_payable": 1, "attendance_tracking_enabled": 1}
             ).to_list(5000)
 
             existing_keys = {(a.get("employee_id"), a.get("date")) for a in attendance}
@@ -6859,13 +6859,15 @@ async def get_attendance(
                 if emp.get("attendance_tracking_enabled") is False:
                     continue
                 doj = parse_doj(emp.get("date_of_joining"))
-                inactive = parse_doj(emp.get("inactive_date")) if emp.get("employee_status") == "Inactive" else None
+                last_day = None
+                if emp.get("employee_status") != EmployeeStatus.ACTIVE:
+                    last_day = parse_doj(emp.get("last_day_payable")) or parse_doj(emp.get("inactive_date"))
                 cur = f_d
                 while cur <= t_d:
                     if doj and cur < doj:
                         cur += timedelta(days=1)
                         continue
-                    if inactive and cur > inactive:
+                    if last_day and cur > last_day:
                         cur += timedelta(days=1)
                         continue
                     key = (emp["id"], to_ddmmyyyy(cur))
@@ -7713,19 +7715,17 @@ async def get_attendance_stats(
 
     # Run all top-level queries CONCURRENTLY (was previously sequential ~1-2s
     # round-trips on Atlas).
-    total_employees_task = db.employees.count_documents({
-        "employee_status": EmployeeStatus.ACTIVE,
-        "is_deleted": {"$ne": True},
-        "attendance_tracking_enabled": True
-    })
-    active_emps_task = db.employees.find(
+    # Date-aware employment cohort: include anyone employed during the query
+    # window (DOJ ≤ window end AND exit ≥ window start), regardless of their
+    # CURRENT Active/Inactive status — historical counts stay immutable.
+    emps_task = db.employees.find(
         {
-            "employee_status": EmployeeStatus.ACTIVE,
             "is_deleted": {"$ne": True},
             "attendance_tracking_enabled": True,
         },
-        {"_id": 0, "id": 1},
-    ).to_list(5000)
+        {"_id": 0, "id": 1, "employee_status": 1, "date_of_joining": 1,
+         "inactive_date": 1, "last_day_payable": 1},
+    ).to_list(10000)
     if att_query is not None:
         filtered_task = db.attendance.find(att_query, {"_id": 0}).to_list(50000)
     else:
@@ -7746,9 +7746,24 @@ async def get_attendance_stats(
             return []
         leaves_task = _empty_list2()
 
-    total_employees, active_tracking_emps, filtered, leave_docs = await asyncio.gather(
-        total_employees_task, active_emps_task, filtered_task, leaves_task
+    all_emps, filtered, leave_docs = await asyncio.gather(
+        emps_task, filtered_task, leaves_task
     )
+
+    # Cohort of employees employed during [q_from, q_to]
+    win_from = _normalize_date_to_int(q_from) or 0
+    win_to = _normalize_date_to_int(q_to) or 99999999
+
+    def _in_window(emp):
+        doj_int, last_int = _employment_window(emp)
+        if doj_int is not None and doj_int > win_to:
+            return False
+        if last_int is not None and last_int < win_from:
+            return False
+        return True
+
+    cohort_ids = {e["id"] for e in all_emps if _in_window(e)}
+    total_employees = len(cohort_ids)
 
     # Strict mutually-exclusive bucketing — single source of truth.
     # The frontend tile clicks fetch the same records and apply the same
@@ -7778,9 +7793,9 @@ async def get_attendance_stats(
 
     # "Leaves / No Login" count — MUST equal the size of /dashboard/leave-list
     # so the tile number and the table row count always line up.
-    active_ids = {e["id"] for e in active_tracking_emps}
-    # Restrict "with IN" to the active+tracking cohort (employees_with_in can
-    # include inactive employees whose attendance records still live on).
+    active_ids = cohort_ids
+    # Restrict "with IN" to the employed-in-window cohort (employees_with_in can
+    # include employees whose attendance records fall outside their employment).
     active_with_in = employees_with_in & active_ids
     on_leave_ids = {lv.get("employee_id") for lv in leave_docs if lv.get("employee_id")} & active_ids
 
@@ -10473,6 +10488,27 @@ def _normalize_date_to_int(ds: Optional[str]) -> Optional[int]:
     return None
 
 
+def _employment_window(emp) -> tuple:
+    """(doj_int, last_int) for an employee. last_int is None when the employee
+    is Active or has no recorded exit date (treated as still employed)."""
+    doj_int = _normalize_date_to_int(emp.get("date_of_joining"))
+    last_int = None
+    if emp.get("employee_status") != EmployeeStatus.ACTIVE:
+        last_int = (_normalize_date_to_int(emp.get("last_day_payable"))
+                    or _normalize_date_to_int(emp.get("inactive_date")))
+    return doj_int, last_int
+
+
+def _employed_on_date(emp, d_int: int) -> bool:
+    """True if the employee was employed on the given YYYYMMDD int date."""
+    doj_int, last_int = _employment_window(emp)
+    if doj_int is not None and d_int < doj_int:
+        return False
+    if last_int is not None and d_int > last_int:
+        return False
+    return True
+
+
 @api_router.get("/reports/attendance")
 async def get_attendance_report(
     from_date: str,
@@ -10557,16 +10593,14 @@ async def export_attendance_report(
     ).to_list(5000)
 
     def _is_employee_in_range(emp):
-        # Active employees: always include
-        if emp.get("employee_status") != "Inactive":
-            return True
-        # Inactive employees: include only if their last working day is on/after report start
-        last_day_raw = emp.get("last_day_payable") or emp.get("inactive_date")
-        last_day_int = _normalize_date_to_int(last_day_raw)
-        if last_day_int is None:
-            # No reliable exit date — fall back to including (data integrity safety)
-            return True
-        return last_day_int >= f_int
+        # Date-aware employment overlap: exclude only when the employee's
+        # employment window does not intersect the report window at all.
+        doj_int, last_int = _employment_window(emp)
+        if doj_int is not None and doj_int > t_int:
+            return False   # joined after the report window
+        if last_int is not None and last_int < f_int:
+            return False   # exited before the report window
+        return True
 
     employees = [e for e in employees if _is_employee_in_range(e)]
     employees.sort(key=lambda e: (e.get("full_name") or "").lower())
@@ -10601,10 +10635,14 @@ async def export_attendance_report(
     PER_DATE_COLS = len(SUB_HEADERS)
     FIXED_COLS = 4
 
-    def cells_for_day(emp_id: str, d):
+    def cells_for_day(emp: dict, d):
         """Return a 6-tuple (in, out, late, early, hours, status) for one day."""
+        d_int = d.year * 10000 + d.month * 100 + d.day
+        if not _employed_on_date(emp, d_int):
+            # Before joining / after last working day — not employed that day.
+            return ("", "", "", "", "", "-")
         date_dd = d.strftime("%d-%m-%Y")
-        rec = att_map.get((emp_id, date_dd))
+        rec = att_map.get((emp["id"], date_dd))
         is_sun = d.weekday() == 6
         if not rec or not (rec.get("check_in") or rec.get("check_in_24h")):
             status_text = "Sunday (Not Login)" if is_sun else "Not Login"
@@ -10674,7 +10712,7 @@ async def export_attendance_report(
         ws.cell(row=row, column=4, value=emp.get("department") or "").border = border
         for d_idx, d in enumerate(date_list):
             start_col = FIXED_COLS + 1 + d_idx * PER_DATE_COLS
-            vals = cells_for_day(emp["id"], d)
+            vals = cells_for_day(emp, d)
             in_val, out_val, late_val, early_val, _hours_val, _status_val = vals
             is_late = late_val == "Yes"
             is_early = early_val == "Yes"
@@ -10859,9 +10897,9 @@ async def _build_office_attendance_rows(from_date: str, to_date: str):
     )
     employees = await emp_cursor.to_list(20000)
     for emp in employees:
-        emp["_doj_int"] = _normalize_date_to_int(emp.get("date_of_joining"))
-        last_day = emp.get("last_day_payable") or emp.get("inactive_date")
-        emp["_last_int"] = _normalize_date_to_int(last_day)
+        doj_int, last_int = _employment_window(emp)
+        emp["_doj_int"] = doj_int
+        emp["_last_int"] = last_int
         raw_office = (emp.get("office_location") or "").strip()
         emp["_office_key"] = _norm_office(raw_office) if raw_office else UNASSIGNED_KEY
 
@@ -10923,12 +10961,9 @@ async def _build_office_attendance_rows(from_date: str, to_date: str):
             doj_int = emp["_doj_int"]
             if doj_int is not None and doj_int > d_int:
                 continue   # not yet joined on this date
-            status = emp.get("employee_status")
             last_int = emp["_last_int"]
-            if status != EmployeeStatus.ACTIVE:
-                # Inactive/Resigned: include only if they were still employed on this date
-                if last_int is None or last_int < d_int:
-                    continue
+            if last_int is not None and last_int < d_int:
+                continue   # exited before this date (no exit date = still employed)
             office_key = emp["_office_key"]
             b = bucket.setdefault(office_key, {"total": 0, "present": 0, "on_leave": 0})
             b["total"] += 1
