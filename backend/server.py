@@ -7729,6 +7729,27 @@ def is_late_login_record(rec: dict) -> bool:
     return False
 
 
+def is_early_out_record(rec: dict) -> bool:
+    """Secondary overlay flag — true when the employee logged OUT without
+    completing required working hours. A purely-late LOP (full hours worked)
+    is NOT an early out, but late + short-hours IS. Overlays on top of the
+    Completed bucket so the same employee shows under BOTH tiles."""
+    if not rec:
+        return False
+    has_in = bool(rec.get("check_in") or rec.get("check_in_24h"))
+    has_out = bool(rec.get("check_out") or rec.get("check_out_24h"))
+    if not (has_in and has_out):
+        return False
+    status = (rec.get("status") or "").strip()
+    flagged = status in (AttendanceStatus.EARLY_OUT, AttendanceStatus.LOSS_OF_PAY) or bool(rec.get("is_lop"))
+    if not flagged:
+        return False
+    reason = (rec.get("lop_reason") or "").lower()
+    if is_late_login_record(rec) and not ("short" in reason or "early out" in reason):
+        return False
+    return True
+
+
 @api_router.get("/attendance/stats")
 async def get_attendance_stats(
     date: Optional[str] = None, 
@@ -7895,12 +7916,14 @@ async def get_attendance_stats(
         if bucket == "logged_in":
             logged_in += 1
             employees_with_in.add(a.get("employee_id"))
-        elif bucket == "completed":
+        elif bucket in ("completed", "early_out"):
+            # Completed = EVERYONE who logged out (full hours or not).
+            # Early Out overlays on top via is_early_out_record — the same
+            # employee appears under BOTH tiles (user rule, 2026-07-23).
             completed += 1
             employees_with_in.add(a.get("employee_id"))
-        elif bucket == "early_out":
+        if is_early_out_record(a):
             early_out += 1
-            employees_with_in.add(a.get("employee_id"))
         if is_late_login_record(a):
             late_login += 1
         if a.get("is_lop"):

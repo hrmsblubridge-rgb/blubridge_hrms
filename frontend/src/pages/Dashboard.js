@@ -68,9 +68,10 @@ const StatCard = ({ title, value, icon: Icon, trend, trendValue, color, onClick,
 );
 
 // Attendance Status Card
-const AttendanceStatusCard = ({ title, value, color, isActive, onClick, icon: Icon }) => (
+const AttendanceStatusCard = ({ title, value, color, isActive, onClick, icon: Icon, statusKey }) => (
   <button
     onClick={onClick}
+    data-testid={`dashboard-att-tile-${statusKey}`}
     className={`
       w-full p-4 rounded-xl border-2 transition-all duration-200 text-left
       ${isActive 
@@ -311,28 +312,27 @@ const Dashboard = () => {
       const fromDate = appliedFilters.fromDate ? formatDateForAPI(appliedFilters.fromDate) : today;
       const toDate = appliedFilters.toDate ? formatDateForAPI(appliedFilters.toDate) : today;
       
-      // Strict mutually-exclusive client-side classification — MUST mirror
-      // backend `classify_attendance_bucket` in server.py so dashboard tiles
-      // and the records table always line up.
-      //
-      // IMPORTANT: a LOP record whose root cause is "Late Login" must NOT
-      // be classified as Early Out — late employees who complete their full
-      // hours are picked up by `isLateLogin` only. This prevents the same
-      // employee from appearing under both Late Login and Early Out tabs.
+      // Classification mirrors backend `get_attendance_stats` (user rule,
+      // 2026-07-23): Completed = EVERYONE who logged out; Early Out is an
+      // OVERLAY for short-hours days — the same employee appears under BOTH
+      // Completed and Early Out. A purely-late LOP (full hours worked) is
+      // NOT an early out, but late + short-hours IS.
       const hasIn = (r) => Boolean(r.check_in || r.check_in_24h);
       const hasOut = (r) => Boolean(r.check_out || r.check_out_24h);
       const isLateLogin = (r) =>
         r.status === 'Late Login' ||
         (r.lop_reason || '').toLowerCase().includes('late login');
       const isShortDay = (r) => {
-        // Late-login records are LOP=true but should NOT count as early-out.
-        if (isLateLogin(r)) return false;
-        return r.status === 'Early Out' || r.status === 'Loss of Pay' || r.is_lop === true;
+        const flagged = r.status === 'Early Out' || r.status === 'Loss of Pay' || r.is_lop === true;
+        if (!flagged) return false;
+        const reason = (r.lop_reason || '').toLowerCase();
+        if (isLateLogin(r) && !(reason.includes('short') || reason.includes('early out'))) return false;
+        return true;
       };
 
       const STATUS_PREDICATE = {
         logged_in: (r) => hasIn(r) && !hasOut(r),
-        logout: (r) => hasIn(r) && hasOut(r) && !isShortDay(r),
+        logout: (r) => hasIn(r) && hasOut(r),
         early_out: (r) => hasIn(r) && hasOut(r) && isShortDay(r),
         late_login: (r) => isLateLogin(r),
       };
@@ -674,6 +674,7 @@ const Dashboard = () => {
           {attendanceStatuses.map((status, index) => (
             <AttendanceStatusCard 
               key={status.key}
+              statusKey={status.key}
               title={status.label}
               value={status.value}
               color={status.color}

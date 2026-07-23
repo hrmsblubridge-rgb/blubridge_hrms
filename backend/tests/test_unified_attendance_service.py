@@ -308,10 +308,16 @@ async def test_live_counts_align_dashboard_attendance_reports():
             return (r.get("status") == "Late Login" or
                     "late login" in (r.get("lop_reason") or "").lower())
         def is_short(r):
-            if is_late(r):
+            # Product rule 2026-07-23: a late-login LOP counts as early out
+            # when it is ALSO short-hours; purely-late (full hours) does not.
+            flagged = (r.get("status") in ("Early Out", "Loss of Pay")
+                       or r.get("is_lop"))
+            if not flagged:
                 return False
-            return (r.get("status") in ("Early Out", "Loss of Pay")
-                    or r.get("is_lop"))
+            reason = (r.get("lop_reason") or "").lower()
+            if is_late(r) and not ("short" in reason or "early out" in reason):
+                return False
+            return True
 
         for src, label in ((att, "attendance"), (rep, "reports")):
             logged_in = sum(1 for r in src if has_in(r) and not has_out(r))

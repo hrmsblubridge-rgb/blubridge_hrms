@@ -2377,3 +2377,8 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - LEARNING: parallel search_replace batches on Attendance.js corrupted the file tail ("ault Attendance;") and silently dropped 2 edits — edit this file SEQUENTIALLY.
 
 - **2026-07-23** Early Out refinement: late-login LOPs that are ALSO short-hours now count as Early Out (lop_reason contains "short"/"early out"). Purely-late-but-full-hours still excluded. Verified live: Vedanth Reddy ("Late login by 4 min and short by 176 min") now shows in Early Out card (1) and its popup.
+
+- **2026-07-23** Dashboard Early Out / Completed tiles aligned with Attendance module (VERIFIED LIVE + tests).
+  - Backend `get_attendance_stats`: new `is_early_out_record()` overlay helper (in+out, Early Out/LOP flagged, excludes purely-late-full-hours). Completed (`logout`) now counts EVERYONE with in+out; Early Out is an OVERLAY — the same employee appears under BOTH Completed and Early Out (explicit user rule).
+  - Frontend `Dashboard.js` STATUS_PREDICATE mirrors this: logout = hasIn && hasOut; early_out = short-hours overlay. Added `data-testid="dashboard-att-tile-{key}"` on tiles.
+  - Verified live: tiles 6/43/1/3/8; Early Out details = Vedanth Reddy; Completed details = Vedanth + Nandhitha + Dinesh (Vedanth in both). pytest test_unified_attendance_service.py updated to new rule — 22/22 pass.
