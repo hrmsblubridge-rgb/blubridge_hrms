@@ -2369,3 +2369,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Logged In = valid Check-In AND no Check-Out yet (still inside), unique by employee.
   - Logged Out = valid Check-Out, unique. Late Login & Absent unchanged.
   - Live values today: 46 / 44 / 2 / 8 / 5 — matches user's expected 46=44+2. Modals match card counts exactly.
+
+- **2026-07-23** Attendance: 6th "Early Out" card added (clickable, VERIFIED).
+  - Early Out = valid Check-In AND Check-Out but required working hours NOT completed (status 'Early Out'/'Loss of Pay' or is_lop), EXCLUDING late-login LOPs — mirrors backend classify_attendance_bucket. Unique by employee; orange TimerOff icon; grid now xl:grid-cols-6.
+  - Modal detail popup same as other cards; sticky header overlap fix retained.
+  - Verified: predicate catches 24 real short-hours LOPs across 01–22 Jul (e.g. "Early out / short hours by 524 minute(s)"); today correctly 0. Cards live: 46/43/3/0/8/5.
+  - LEARNING: parallel search_replace batches on Attendance.js corrupted the file tail ("ault Attendance;") and silently dropped 2 edits — edit this file SEQUENTIALLY.

@@ -15,6 +15,7 @@ import {
   Clock,
   LogIn,
   LogOut as LogOutIcon,
+  TimerOff,
   AlertCircle,
   Eye,
   BarChart3
@@ -255,6 +256,13 @@ const Attendance = () => {
   const hasValidCheckOut = (a) => Boolean(a.check_out || a.check_out_24h);
   // Logged In = checked in but NOT yet checked out (still inside).
   const isLoggedInRow = (a) => hasValidCheckIn(a) && !hasValidCheckOut(a);
+  // Early Out = checked in AND out but did NOT complete required working
+  // hours (Early Out / LOP status), excluding late-login LOPs (mirrors
+  // backend classify_attendance_bucket).
+  const isEarlyOutRow = (a) =>
+    hasValidCheckIn(a) && hasValidCheckOut(a) &&
+    (a.status === 'Early Out' || a.status === 'Loss of Pay' || a.is_lop) &&
+    !isLateLoginRow(a);
   const isAbsentRow = (a) => {
     // Late-login LOPs belong in Late Login, NOT Absent
     if (isLateLoginLop(a)) return false;
@@ -275,6 +283,7 @@ const Attendance = () => {
     present: dedupeByEmployee(sortedAttendance.filter(isPresentRow)),
     login: dedupeByEmployee(sortedAttendance.filter(isLoggedInRow)),
     loggedOut: dedupeByEmployee(sortedAttendance.filter(hasValidCheckOut)),
+    earlyOut: dedupeByEmployee(sortedAttendance.filter(isEarlyOutRow)),
     late: dedupeByEmployee(sortedAttendance.filter(isLateLoginRow)),
     absent: sortedAttendance.filter(isAbsentRow),
   };
@@ -282,6 +291,7 @@ const Attendance = () => {
     present: cardRows.present.length,
     login: cardRows.login.length,
     loggedOut: cardRows.loggedOut.length,
+    earlyOut: cardRows.earlyOut.length,
     late: cardRows.late.length,
     absent: cardRows.absent.length,
   };
@@ -290,6 +300,7 @@ const Attendance = () => {
     present: { title: 'Present', color: 'emerald' },
     login: { title: 'Logged In', color: 'blue' },
     loggedOut: { title: 'Logged Out', color: 'violet' },
+    earlyOut: { title: 'Early Out', color: 'orange' },
     late: { title: 'Late Login', color: 'amber' },
     absent: { title: 'Absent', color: 'red' },
   };
@@ -320,11 +331,12 @@ const Attendance = () => {
       </div>
 
       {/* Quick Stats — every card is clickable and opens its detail list */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
         {[
           { key: 'present', label: 'Present', value: stats.present, icon: CalendarCheck, iconBg: 'bg-emerald-100', iconColor: 'text-emerald-600' },
           { key: 'login', label: 'Logged In', value: stats.login, icon: LogIn, iconBg: 'bg-blue-100', iconColor: 'text-blue-600' },
           { key: 'loggedOut', label: 'Logged Out', value: stats.loggedOut, icon: LogOutIcon, iconBg: 'bg-violet-100', iconColor: 'text-violet-600' },
+          { key: 'earlyOut', label: 'Early Out', value: stats.earlyOut, icon: TimerOff, iconBg: 'bg-orange-100', iconColor: 'text-orange-600' },
           { key: 'late', label: 'Late Login', value: stats.late, icon: Clock, iconBg: 'bg-amber-100', iconColor: 'text-amber-600' },
           { key: 'absent', label: 'Absent', value: stats.absent, icon: AlertCircle, iconBg: 'bg-red-100', iconColor: 'text-red-600' },
         ].map((stat) => (
