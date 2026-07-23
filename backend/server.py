@@ -7939,10 +7939,15 @@ async def get_attendance_stats(
     # Only include leave for employees who were employed on some overlapping
     # day within the window (per-date eligibility already trims non-employed
     # ranges; here we exclude leaves entirely outside their employment).
+    # RULE (user, 2026-07-23): an employee who actually CHECKED IN is counted
+    # under Completed/Logged-In — NEVER under Leaves/No Login, even if an
+    # approved leave overlaps the window.
     on_leave_ids: set = set()
     for lv in leave_docs:
         emp_id = lv.get("employee_id")
         if not emp_id or emp_id not in active_ids:
+            continue
+        if emp_id in active_with_in:
             continue
         emp = emp_map.get(emp_id)
         s_int = _normalize_date_to_int(lv.get("start_date"))
@@ -10612,14 +10617,18 @@ async def get_dashboard_leave_list(
             leave_by_emp[emp_id] = lv
 
     # --- Build response ---------------------------------------------------------
-    # Priority 1: on leave (regardless of attendance punch — a leave always wins
-    # for dashboard display purposes). Priority 2: no attendance + no leave.
+    # RULE (user, 2026-07-23): an employee with a valid check-in belongs under
+    # Completed / Logged-In ONLY — never in Leaves/No Login, even when an
+    # approved leave overlaps the window. Kept in lock-step with
+    # get_attendance_stats so the tile count == this list length.
     result = []
 
-    # 1) Employees on leave for the window
+    # 1) Employees on leave for the window (who did NOT actually work)
     for emp in all_employees:
         lv = leave_by_emp.get(emp["id"])
         if not lv:
+            continue
+        if emp["id"] in logged_ids:
             continue
         # Display leave date in DD-MM-YYYY for UI consistency
         try:

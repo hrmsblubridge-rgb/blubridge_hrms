@@ -2388,3 +2388,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - NEW (user rule): Attendance % = Present / Total Employees × 100; On Leave/Absent/Holiday/Weekly Off never counted as Present; 0.00% when total=0; always 2 decimals with % symbol.
   - `server.py` `_build_office_attendance_rows` pct calc + XLSX export `:.2f%`; `Reports.js` display uses `.toFixed(2)`.
   - Verified live: 01-Jun 47/43/4 → 91.49%, 02-Jun 47/46/1 → 97.87% (exact user examples). test_office_attendance_report.py 10/10 pass. No other counts/filters/UI touched. (Attendance % is only displayed in this report — Dashboard/Attendance modules show counts, not %.)
+
+- **2026-07-23** Leaves/No Login excludes employees who actually worked (VERIFIED LIVE + tests).
+  - RULE: an employee with a valid Check-In belongs under Completed/Logged-In ONLY — never in Leaves/No Login, even if an approved leave overlaps the window.
+  - `get_attendance_stats`: on_leave_ids now skips ids in active_with_in. `/dashboard/leave-list` section 1 skips logged_ids. Both stay in lock-step (tile == list length).
+  - Verified: 27-06 Leaves/No Login 10→9, Harshitha P (leave but worked) removed from list, remains in Completed (42). Today tile 4 == 4 records. Tests: unified 22/22 + historical counts 5/5 pass.
+  - CLEANUP: hard-deleted leftover soft-deleted "HistCount-Test-Office" test location that was breaking test re-runs (per Test Data Cleanup rule).
