@@ -6863,6 +6863,22 @@ async def get_attendance(
                 except Exception:
                     return None
 
+            # Pre-fetch approved leaves for the window so gap-fill Absent
+            # stubs correctly downgrade to "Leave" (not Absent) for employees
+            # on approved leave for that day.
+            approved_lv_docs = await db.leaves.find(
+                {"status": {"$in": ["approved", "Approved", "APPROVED"]}},
+                {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1}
+            ).to_list(20000)
+            leave_ranges: dict = {}
+            for lv in approved_lv_docs:
+                eid = lv.get("employee_id")
+                s_int = _normalize_date_to_int(lv.get("start_date"))
+                e_int = _normalize_date_to_int(lv.get("end_date")) or s_int
+                if not eid or s_int is None:
+                    continue
+                leave_ranges.setdefault(eid, []).append((s_int, e_int))
+
             stubs = []
             for emp in employees_for_fill:
                 if emp.get("attendance_tracking_enabled") is False:
@@ -6872,6 +6888,7 @@ async def get_attendance(
                 if emp.get("employee_status") != EmployeeStatus.ACTIVE:
                     last_day = parse_doj(emp.get("last_day_payable")) or parse_doj(emp.get("inactive_date"))
                 cur = f_d
+                emp_leaves = leave_ranges.get(emp["id"], ())
                 while cur <= t_d:
                     if doj and cur < doj:
                         cur += timedelta(days=1)
@@ -6881,8 +6898,15 @@ async def get_attendance(
                         continue
                     key = (emp["id"], to_ddmmyyyy(cur))
                     if key not in existing_keys:
-                        # Sundays are non-working — mark as "Sunday", never Absent.
-                        stub_status = AttendanceStatus.SUNDAY if cur.weekday() == 6 else AttendanceStatus.ABSENT
+                        # Order: Sunday (non-working) > Leave (approved) > Absent.
+                        d_int_cur = cur.year * 10000 + cur.month * 100 + cur.day
+                        on_leave = any(s <= d_int_cur <= e for s, e in emp_leaves)
+                        if cur.weekday() == 6:
+                            stub_status = AttendanceStatus.SUNDAY
+                        elif on_leave:
+                            stub_status = AttendanceStatus.LEAVE
+                        else:
+                            stub_status = AttendanceStatus.ABSENT
                         stubs.append({
                             "id": f"stub-{emp['id']}-{to_ddmmyyyy(cur)}",
                             "employee_id": emp["id"],
@@ -6942,6 +6966,49 @@ async def get_attendance(
                     a["team"] = m["team"]
                 if m.get("department"):
                     a["department"] = m["department"]
+
+    # UNIFIED ATTENDANCE PIPELINE — apply the same eligibility + missed-punch
+    # overlay + Completed-hours enforcement used by Dashboard & Reports so all
+    # three modules ALWAYS return the same employees and counts for a date.
+    emp_map = await _load_employees_map(only_tracking=True)
+    win_lo_int = parse_ddmmyyyy(from_date) if from_date else 0
+    win_hi_int = parse_ddmmyyyy(to_date) if to_date else 99999999
+    mp_map = await _load_approved_missed_punches(win_lo_int, win_hi_int)
+    attendance = await _apply_attendance_normalizations(
+        attendance, emp_map, mp_map, enforce_dept_hours=True
+    )
+
+    # Materialize approved missed-punches that have no attendance row yet, so
+    # the grid, dashboard drill-downs and reports all see the same rows.
+    if from_date and to_date:
+        existing_keys = {(a.get("employee_id"), a.get("date")) for a in attendance}
+        for (emp_id, date_ddmmyyyy), mp in mp_map.items():
+            if (emp_id, date_ddmmyyyy) in existing_keys:
+                continue
+            emp = emp_map.get(emp_id)
+            if not emp:
+                continue
+            d_int = _normalize_date_to_int(date_ddmmyyyy)
+            if d_int is None or not (win_lo_int <= d_int <= win_hi_int):
+                continue
+            if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+                continue
+            # Respect employee-name / team / dept / status filters that may
+            # have been used to narrow the query.
+            if employee_name and employee_name.strip().lower() not in (emp.get("full_name") or "").lower():
+                continue
+            if team and team != "All" and emp.get("team") != team:
+                continue
+            if department and department != "All" and emp.get("department") != department:
+                continue
+            if designation and designation != "All" and emp.get("designation") != designation:
+                continue
+            stub = _build_missed_punch_stub(mp, emp)
+            _enforce_completed_hours_threshold(stub, emp_map)
+            if status and status != "All" and stub.get("status") != status:
+                continue
+            attendance.append(stub)
+        attendance.sort(key=date_sort_key, reverse=True)
 
     return [serialize_doc(a) for a in attendance]
 
@@ -7730,11 +7797,13 @@ async def get_attendance_stats(
     emps_task = db.employees.find(
         {
             "is_deleted": {"$ne": True},
-            "attendance_tracking_enabled": True,
+            "attendance_tracking_enabled": {"$ne": False},
         },
-        {"_id": 0, "id": 1, "employee_status": 1, "date_of_joining": 1,
-         "inactive_date": 1, "last_day_payable": 1},
-    ).to_list(10000)
+        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1,
+         "shift_type": 1, "employee_status": 1, "date_of_joining": 1,
+         "inactive_date": 1, "last_day_payable": 1,
+         "attendance_tracking_enabled": 1},
+    ).to_list(20000)
     if att_query is not None:
         filtered_task = db.attendance.find(att_query, {"_id": 0}).to_list(50000)
     else:
@@ -7744,11 +7813,11 @@ async def get_attendance_stats(
     if ymd_from and ymd_to:
         leaves_task = db.leaves.find(
             {
-                "status": {"$in": ["approved", "pending"]},
+                "status": {"$in": ["approved", "Approved", "APPROVED"]},
                 "start_date": {"$lte": ymd_to},
                 "end_date": {"$gte": ymd_from},
             },
-            {"_id": 0, "employee_id": 1},
+            {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1},
         ).to_list(5000)
     else:
         async def _empty_list2():
@@ -7763,8 +7832,18 @@ async def get_attendance_stats(
     win_from = _normalize_date_to_int(q_from) or 0
     win_to = _normalize_date_to_int(q_to) or 99999999
 
+    # Build eligibility-aware employee map (needed by the shared normalization
+    # pipeline). Same source of truth as /api/attendance and /api/reports/*.
+    emp_map: dict = {}
+    for e in all_emps:
+        doj_int, last_int = _employment_window(e)
+        e["_doj_int"] = doj_int
+        e["_last_int"] = last_int
+        emp_map[e["id"]] = e
+
     def _in_window(emp):
-        doj_int, last_int = _employment_window(emp)
+        doj_int = emp.get("_doj_int")
+        last_int = emp.get("_last_int")
         if doj_int is not None and doj_int > win_to:
             return False
         if last_int is not None and last_int < win_from:
@@ -7772,6 +7851,30 @@ async def get_attendance_stats(
         return True
 
     cohort_ids = {e["id"] for e in all_emps if _in_window(e)}
+
+    # Approved missed-punch overlay + eligibility filter + dept-hours
+    # enforcement — single pipeline shared with /api/attendance & Reports.
+    mp_map = await _load_approved_missed_punches(win_from, win_to)
+    filtered = await _apply_attendance_normalizations(filtered, emp_map, mp_map, enforce_dept_hours=True)
+
+    # Add synthetic rows for approved missed-punch requests on dates that
+    # have NO stored attendance row (so counts reflect the merged reality).
+    existing_keys = {(r.get("employee_id"), r.get("date")) for r in filtered}
+    for (emp_id, date_ddmmyyyy), mp in mp_map.items():
+        if (emp_id, date_ddmmyyyy) in existing_keys:
+            continue
+        emp = emp_map.get(emp_id)
+        if not emp:
+            continue
+        d_int = _normalize_date_to_int(date_ddmmyyyy)
+        if d_int is None:
+            continue
+        if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+            continue
+        stub = _build_missed_punch_stub(mp, emp)
+        _enforce_completed_hours_threshold(stub, emp_map)
+        filtered.append(stub)
+
     total_employees = len(cohort_ids)
 
     # Strict mutually-exclusive bucketing — single source of truth.
@@ -7806,16 +7909,45 @@ async def get_attendance_stats(
     # Restrict "with IN" to the employed-in-window cohort (employees_with_in can
     # include employees whose attendance records fall outside their employment).
     active_with_in = employees_with_in & active_ids
-    on_leave_ids = {lv.get("employee_id") for lv in leave_docs if lv.get("employee_id")} & active_ids
 
-    no_in_ids = active_ids - active_with_in
-    # Union: employees on leave OR with no IN punch
-    not_logged = len(on_leave_ids | no_in_ids)
+    # Only include leave for employees who were employed on some overlapping
+    # day within the window (per-date eligibility already trims non-employed
+    # ranges; here we exclude leaves entirely outside their employment).
+    on_leave_ids: set = set()
+    for lv in leave_docs:
+        emp_id = lv.get("employee_id")
+        if not emp_id or emp_id not in active_ids:
+            continue
+        emp = emp_map.get(emp_id)
+        s_int = _normalize_date_to_int(lv.get("start_date"))
+        e_int = _normalize_date_to_int(lv.get("end_date") or lv.get("start_date"))
+        if s_int is None:
+            continue
+        e_int = e_int if e_int is not None else s_int
+        # Any overlapping day within the window that the employee was employed on.
+        overlap_lo = max(s_int, win_from)
+        overlap_hi = min(e_int, win_to)
+        if overlap_lo > overlap_hi:
+            continue
+        # Check at least one day where the employee was employed.
+        if emp and (_employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), overlap_lo)
+                    or _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), overlap_hi)):
+            on_leave_ids.add(emp_id)
+
+    # Split buckets per spec: Leave (approved leave), No Login (no valid punch
+    # AND no approved leave). No Login must NEVER include ineligible employees.
+    no_in_ids = active_ids - active_with_in - on_leave_ids
+    leave_count = len(on_leave_ids)
+    no_login_count = len(no_in_ids)
+    # Legacy combined key kept for backward-compat with existing frontend.
+    not_logged = leave_count + no_login_count
 
     return {
         "total_employees": total_employees,
         "logged_in": logged_in,
         "not_logged": not_logged,
+        "leave": leave_count,
+        "no_login": no_login_count,
         "early_out": early_out,
         "late_login": late_login,
         "logout": completed,  # frontend "Completed" tile reads `logout`
@@ -10364,10 +10496,9 @@ async def get_dashboard_leave_list(
     # are answered by different collections and don't depend on each other,
     # so we can fire them in parallel and cut ~2×240ms of Atlas latency.
     emp_task = db.employees.find({
-        "employee_status": EmployeeStatus.ACTIVE,
         "is_deleted": {"$ne": True},
-        "attendance_tracking_enabled": True
-    }, {"_id": 0}).to_list(1000)
+        "attendance_tracking_enabled": {"$ne": False},
+    }, {"_id": 0}).to_list(20000)
 
     # Attendance dates are DD-MM-YYYY; enumerate to leverage the date index.
     if from_date and to_date:
@@ -10405,7 +10536,7 @@ async def get_dashboard_leave_list(
 
     leave_task = db.leaves.find(
         {
-            "status": {"$in": ["approved", "pending"]},
+            "status": {"$in": ["approved", "Approved", "APPROVED"]},
             "start_date": {"$lte": ymd_to},
             "end_date": {"$gte": ymd_from},
         },
@@ -10414,7 +10545,34 @@ async def get_dashboard_leave_list(
 
     all_employees, logged_records, leave_docs = await asyncio.gather(emp_task, att_task, leave_task)
 
-    logged_ids = {a["employee_id"] for a in logged_records}
+    # Per-date eligibility — every employee is checked against their DOJ /
+    # relieving date on the SPECIFIC calendar date. Employees not employed on
+    # any day of the window are removed before further processing.
+    win_lo_int = _normalize_date_to_int(from_date or query_date) or 0
+    win_hi_int = _normalize_date_to_int(to_date or query_date) or win_lo_int or 99999999
+    eligible_employees = []
+    for e in all_employees:
+        doj_int, last_int = _employment_window(e)
+        # Overlaps window?
+        if doj_int is not None and doj_int > win_hi_int:
+            continue
+        if last_int is not None and last_int < win_lo_int:
+            continue
+        e["_doj_int"] = doj_int
+        e["_last_int"] = last_int
+        eligible_employees.append(e)
+    all_employees = eligible_employees
+
+    logged_ids = {a["employee_id"] for a in logged_records
+                  if (a.get("check_in") or a.get("check_in_24h"))}
+
+    # Approved missed-punches also mean the employee HAS a valid login for
+    # that date — merge them into the logged_ids set so they don't get
+    # incorrectly classified as No Login.
+    mp_map_leave = await _load_approved_missed_punches(win_lo_int, win_hi_int)
+    for (emp_id, _date), mp in mp_map_leave.items():
+        if (mp.get("punch_type") in ("Check-in", "Both")) and mp.get("check_in_time"):
+            logged_ids.add(emp_id)
 
     # Index best leave per employee (approved wins over pending)
     leave_by_emp: dict = {}
@@ -10518,6 +10676,317 @@ def _employed_on_date(emp, d_int: int) -> bool:
     return True
 
 
+# ============================================================================
+# UNIFIED ATTENDANCE SERVICE (single source of truth for Dashboard, Attendance,
+# Reports). Enforces:
+#   1. Employee eligibility per selected date (Joining Date ≤ date ≤ Relieving)
+#   2. Approved missed-punch / punch-correction merge (belt-and-braces overlay
+#      for approved requests whose async apply hasn't yet propagated).
+#   3. Department full-day threshold for the "Completed" bucket.
+#      (Research 11h, Business&Product 10h, Support 9h — from
+#      DEPARTMENT_WORK_HOURS.)
+#   4. Same normalized records feed Dashboard tiles, Attendance grid, Reports.
+# ============================================================================
+
+
+def _employed_on_date_int(doj_int: Optional[int], last_int: Optional[int], d_int: int) -> bool:
+    """Cheap version of ``_employed_on_date`` that avoids re-parsing the
+    employee's dates for every row. Used by the hot-path filters below."""
+    if doj_int is not None and d_int < doj_int:
+        return False
+    if last_int is not None and d_int > last_int:
+        return False
+    return True
+
+
+def _dept_full_hours_threshold(department: Optional[str]) -> Optional[float]:
+    """Full-day working-hours threshold for the department (payroll SSOT).
+    Returns None for unknown departments (Completed then depends only on the
+    stored status, preserving legacy behaviour for exotic departments)."""
+    if not department:
+        return None
+    cfg = DEPARTMENT_WORK_HOURS.get(department)
+    if not cfg:
+        return None
+    try:
+        return float(cfg.get("full", 0)) or None
+    except (TypeError, ValueError):
+        return None
+
+
+async def _load_employees_map(only_tracking: bool = True) -> dict:
+    """Return {employee_id: employee_doc} for eligibility checks. Includes
+    resigned/inactive employees so historical counts (before their relieving
+    date) still include them. Excludes soft-deleted employees."""
+    q: dict = {"is_deleted": {"$ne": True}}
+    if only_tracking:
+        q["attendance_tracking_enabled"] = {"$ne": False}
+    projection = {
+        "_id": 0, "id": 1, "full_name": 1, "emp_id": 1, "team": 1,
+        "department": 1, "designation": 1, "office_location": 1,
+        "shift_type": 1, "employee_status": 1, "date_of_joining": 1,
+        "inactive_date": 1, "last_day_payable": 1,
+        "attendance_tracking_enabled": 1,
+    }
+    docs = await db.employees.find(q, projection).to_list(20000)
+    out = {}
+    for e in docs:
+        doj_int, last_int = _employment_window(e)
+        e["_doj_int"] = doj_int
+        e["_last_int"] = last_int
+        out[e["id"]] = e
+    return out
+
+
+def _is_row_eligible(rec: dict, emp_map: dict) -> bool:
+    """True iff the employee referenced by an attendance row was employed on
+    that row's calendar date (single source of truth for Dashboard / Attendance
+    / Reports). Rows whose employee has been hard-deleted or whose date fails
+    to parse are dropped (they cannot be legitimately displayed)."""
+    emp = emp_map.get(rec.get("employee_id"))
+    if not emp:
+        return False
+    d_int = _normalize_date_to_int(rec.get("date"))
+    if d_int is None:
+        return False
+    return _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int)
+
+
+def _apply_eligibility_filter(records: list, emp_map: dict) -> list:
+    """Drop attendance rows for employees who were NOT employed on the row's
+    calendar date (Joining Date ≤ date AND (Relieving Date empty OR ≥ date))."""
+    return [r for r in records if _is_row_eligible(r, emp_map)]
+
+
+def _enforce_completed_hours_threshold(rec: dict, emp_map: dict) -> None:
+    """Adjust the stored status of an attendance row so the Dashboard tile
+    definition of "Completed" matches the department full-day threshold. Rows
+    that fall short of the threshold get flagged as short-hours (LOP) so
+    ``classify_attendance_bucket`` re-buckets them from 'completed' → 'early_out'.
+
+    Mutates the record in place. Only fires when BOTH punches are present and
+    the total hours are known to be below the threshold. Never touches a row
+    whose stored status is already LOP/LATE_LOGIN or a valid Sunday state."""
+    if not rec:
+        return
+    has_in = bool(rec.get("check_in") or rec.get("check_in_24h"))
+    has_out = bool(rec.get("check_out") or rec.get("check_out_24h"))
+    if not (has_in and has_out):
+        return
+    status = (rec.get("status") or "").strip()
+    if status in (AttendanceStatus.LOSS_OF_PAY, AttendanceStatus.LATE_LOGIN,
+                  AttendanceStatus.SUNDAY, AttendanceStatus.WORKED_ON_SUNDAY):
+        return
+    emp = emp_map.get(rec.get("employee_id"))
+    threshold = _dept_full_hours_threshold((emp or {}).get("department") or rec.get("department"))
+    if threshold is None:
+        return
+    hrs = rec.get("total_hours_decimal")
+    if hrs is None:
+        # Derive from HH:MM string if numeric field is missing.
+        c_in = rec.get("check_in_24h")
+        c_out = rec.get("check_out_24h")
+        try:
+            in_m = parse_time_24h_to_minutes(c_in) if c_in else None
+            out_m = parse_time_24h_to_minutes(c_out) if c_out else None
+            if in_m is not None and out_m is not None:
+                total_m = out_m - in_m if out_m >= in_m else (24 * 60 - in_m + out_m)
+                hrs = total_m / 60.0
+        except Exception:
+            hrs = None
+    if hrs is None:
+        return
+    if float(hrs) + 1e-6 < threshold:
+        # Downgrade to short-day so the strict "Completed" bucket excludes it.
+        rec["status"] = AttendanceStatus.LOSS_OF_PAY
+        rec["is_lop"] = True
+        rec["lop_reason"] = (rec.get("lop_reason")
+                             or f"Short of dept full-day threshold "
+                                f"({hrs:.2f}h < {threshold}h)")
+
+
+async def _load_approved_missed_punches(f_int: Optional[int],
+                                        t_int: Optional[int]) -> dict:
+    """Return {(employee_id, date_ddmmyyyy): missed_punch_doc} for approved
+    missed-punch / punch-correction requests overlapping the date window. This
+    is the belt-and-braces overlay for approved requests whose async apply may
+    not yet have propagated into ``db.attendance``.
+    Pending / rejected / cancelled requests are excluded."""
+    q: dict = {"status": {"$in": ["approved", "Approved", "APPROVED"]}}
+    # Push date filter to Mongo where possible — requests store the date as
+    # either DD-MM-YYYY or YYYY-MM-DD; enumerate both forms for the window
+    # so the query hits the indexed field.
+    if f_int is not None and t_int is not None and (t_int - f_int) < 3660000:  # ~1 year sanity
+        try:
+            f_d = datetime.strptime(str(f_int), "%Y%m%d").date()
+            t_d = datetime.strptime(str(t_int), "%Y%m%d").date()
+            date_forms = []
+            cur = f_d
+            while cur <= t_d and len(date_forms) < 500:
+                date_forms.append(cur.strftime("%d-%m-%Y"))
+                date_forms.append(cur.strftime("%Y-%m-%d"))
+                cur += timedelta(days=1)
+            q["date"] = {"$in": date_forms}
+        except (ValueError, TypeError):
+            pass
+    docs = await db.missed_punches.find(q, {"_id": 0}).to_list(20000)
+    out = {}
+    for d in docs:
+        raw = d.get("date") or ""
+        # Normalize date to DD-MM-YYYY (attendance canonical) — requests may
+        # be stored as YYYY-MM-DD from the HTML date input.
+        try:
+            if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+                ddmmyyyy = datetime.strptime(raw, "%Y-%m-%d").strftime("%d-%m-%Y")
+            else:
+                ddmmyyyy = raw
+        except Exception:
+            ddmmyyyy = raw
+        d_int = _normalize_date_to_int(ddmmyyyy)
+        if d_int is None:
+            continue
+        if (f_int is not None and d_int < f_int) or (t_int is not None and d_int > t_int):
+            continue
+        key = (d.get("employee_id"), ddmmyyyy)
+        out[key] = d
+    return out
+
+
+def _extract_24h(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if "T" in s:
+        s = s.split("T")[-1]
+    try:
+        return datetime.strptime(s[:5], "%H:%M").strftime("%H:%M")
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s, "%I:%M %p").strftime("%H:%M")
+    except ValueError:
+        return None
+
+
+def _to_12h(t24: Optional[str]) -> Optional[str]:
+    if not t24:
+        return None
+    try:
+        return datetime.strptime(t24, "%H:%M").strftime("%I:%M %p")
+    except ValueError:
+        return None
+
+
+def _overlay_missed_punch(rec: dict, mp: dict) -> None:
+    """Merge an approved missed-punch onto an attendance row (in place) — hard
+    replace on the punch-type-targeted field(s), then recompute status/hours
+    via the existing shift engine. Belt-and-braces: safe to call even when
+    ``_update_attendance_from_missed_punch`` already ran (idempotent)."""
+    punch_type = (mp.get("punch_type") or "").strip()
+    new_in = _extract_24h(mp.get("check_in_time")) if punch_type in ("Check-in", "Both") else None
+    new_out = _extract_24h(mp.get("check_out_time")) if punch_type in ("Check-out", "Both") else None
+    if new_in:
+        rec["check_in_24h"] = new_in
+        rec["check_in"] = _to_12h(new_in)
+    if new_out:
+        rec["check_out_24h"] = new_out
+        rec["check_out"] = _to_12h(new_out)
+    rec["source"] = "corrected"
+    rec["missed_punch_corrected"] = True
+    # Recompute total_hours + status if both punches are now present.
+    c_in = rec.get("check_in_24h")
+    c_out = rec.get("check_out_24h")
+    if c_in and c_out:
+        try:
+            in_m = parse_time_24h_to_minutes(c_in)
+            out_m = parse_time_24h_to_minutes(c_out)
+            total_m = out_m - in_m if out_m >= in_m else (24 * 60 - in_m + out_m)
+            rec["total_hours_decimal"] = round(total_m / 60.0, 2)
+            rec["total_hours"] = calculate_total_hours_str(rec["total_hours_decimal"])
+        except Exception:
+            pass
+        # Best-effort status flip: has both punches → treat as Present unless
+        # existing status is already a stricter classification. The dept-hours
+        # enforcement (called AFTER overlay) will downgrade to LOP if needed.
+        if rec.get("status") in (AttendanceStatus.NOT_LOGGED,
+                                 AttendanceStatus.ABSENT, None, ""):
+            rec["status"] = AttendanceStatus.PRESENT
+            rec["is_lop"] = False
+            rec["lop_reason"] = None
+    elif c_in and not c_out:
+        if rec.get("status") in (AttendanceStatus.NOT_LOGGED,
+                                 AttendanceStatus.ABSENT, None, ""):
+            rec["status"] = AttendanceStatus.LOGIN
+            rec["is_lop"] = False
+
+
+async def _apply_attendance_normalizations(records: list,
+                                           emp_map: dict,
+                                           mp_map: Optional[dict] = None,
+                                           enforce_dept_hours: bool = True) -> list:
+    """Central pipeline used by Dashboard / Attendance / Reports:
+
+      1. Eligibility filter (drop rows for employees not employed on that date).
+      2. Merge approved missed-punch overlays (idempotent belt-and-braces).
+      3. Live-enrich team/department from Employee Master.
+      4. Enforce Completed-hours threshold per department.
+
+    ``records`` are mutated / filtered in place; a NEW list is returned."""
+    keep: list = []
+    for r in records:
+        if not _is_row_eligible(r, emp_map):
+            continue
+        emp = emp_map.get(r.get("employee_id")) or {}
+        # Live-enrich (Attendance grid already does this — safe here too).
+        if emp.get("team"):
+            r["team"] = emp["team"]
+        if emp.get("department"):
+            r["department"] = emp["department"]
+        if mp_map:
+            key = (r.get("employee_id"), r.get("date"))
+            mp = mp_map.get(key)
+            if mp:
+                _overlay_missed_punch(r, mp)
+        if enforce_dept_hours:
+            _enforce_completed_hours_threshold(r, emp_map)
+        keep.append(r)
+    return keep
+
+
+def _build_missed_punch_stub(mp: dict, emp: dict) -> dict:
+    """Materialize an attendance-shaped record from an approved missed-punch
+    for a (employee, date) that has NO existing attendance row. Used so the
+    request-driven attendance surfaces on the Attendance grid and drives the
+    Dashboard buckets even when biometric data never arrived."""
+    date_ddmmyyyy = None
+    raw = mp.get("date") or ""
+    try:
+        if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+            date_ddmmyyyy = datetime.strptime(raw, "%Y-%m-%d").strftime("%d-%m-%Y")
+        else:
+            date_ddmmyyyy = raw
+    except Exception:
+        date_ddmmyyyy = raw
+    rec = {
+        "id": f"mp-stub-{mp.get('id', '')}",
+        "employee_id": emp.get("id"),
+        "emp_name": emp.get("full_name", ""),
+        "team": emp.get("team", ""),
+        "department": emp.get("department", ""),
+        "date": date_ddmmyyyy,
+        "check_in": None, "check_in_24h": None,
+        "check_out": None, "check_out_24h": None,
+        "total_hours": None, "total_hours_decimal": None,
+        "status": AttendanceStatus.NOT_LOGGED,
+        "is_lop": False, "lop_reason": None,
+        "shift_type": emp.get("shift_type", "General"),
+        "source": "corrected", "missed_punch_corrected": True,
+        "_synthetic": True,
+    }
+    _overlay_missed_punch(rec, mp)
+    return rec
+
+
 @api_router.get("/reports/attendance")
 async def get_attendance_report(
     from_date: str,
@@ -10550,6 +11019,118 @@ async def get_attendance_report(
         lo = f_int if f_int is not None else 0
         hi = t_int if t_int is not None else 99999999
         records = [r for r in records if (lambda v: v is not None and lo <= v <= hi)(_normalize_date_to_int(r.get("date")))]
+
+    # UNIFIED PIPELINE — same eligibility + missed-punch overlay as Dashboard
+    # & Attendance module. Ensures Reports counts / employee lists match.
+    emp_map = await _load_employees_map(only_tracking=True)
+    mp_map = await _load_approved_missed_punches(f_int, t_int)
+    records = await _apply_attendance_normalizations(
+        records, emp_map, mp_map, enforce_dept_hours=True
+    )
+
+    # Materialize approved missed-punch requests without an attendance row so
+    # the report matches the Attendance module / Dashboard.
+    if f_int is not None and t_int is not None:
+        existing_keys = {(r.get("employee_id"), r.get("date")) for r in records}
+        for (emp_id, date_ddmmyyyy), mp in mp_map.items():
+            if (emp_id, date_ddmmyyyy) in existing_keys:
+                continue
+            emp = emp_map.get(emp_id)
+            if not emp:
+                continue
+            d_int = _normalize_date_to_int(date_ddmmyyyy)
+            if d_int is None or not (f_int <= d_int <= t_int):
+                continue
+            if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+                continue
+            if team and team != "All" and emp.get("team") != team:
+                continue
+            if department and department != "All" and emp.get("department") != department:
+                continue
+            if employee_name and employee_name.strip() and \
+                    employee_name.strip().lower() not in (emp.get("full_name") or "").lower():
+                continue
+            stub = _build_missed_punch_stub(mp, emp)
+            _enforce_completed_hours_threshold(stub, emp_map)
+            if status and status != "All" and stub.get("status") != status:
+                continue
+            records.append(stub)
+
+    # Gap-fill "Absent" / "Sunday" rows for eligible employees who have no
+    # attendance record and no approved missed-punch on the given date. This
+    # ensures Reports counts match the Attendance grid & Dashboard No-Login
+    # bucket for the same date/filters.
+    if f_int is not None and t_int is not None and (not status or status in ("All", "", "Absent")):
+        try:
+            _f_d = datetime.strptime(from_date.split("T")[0].replace("/", "-"),
+                                     "%Y-%m-%d" if len(from_date.split("-")[0]) == 4 else "%d-%m-%Y").date()
+            _t_d = datetime.strptime(to_date.split("T")[0].replace("/", "-"),
+                                     "%Y-%m-%d" if len(to_date.split("-")[0]) == 4 else "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            _f_d = _t_d = None
+        if _f_d and _t_d and _f_d <= _t_d and (_t_d - _f_d).days <= 366:
+            existing_keys = {(r.get("employee_id"), r.get("date")) for r in records}
+            # Cache leaves for the window (approved only) so "No Login" excludes
+            # employees on approved leave (which is the "Leave" bucket).
+            approved_leaves = await db.leaves.find(
+                {"status": {"$in": ["approved", "Approved", "APPROVED"]}},
+                {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1},
+            ).to_list(20000)
+            leave_ranges: dict = {}
+            for lv in approved_leaves:
+                eid = lv.get("employee_id")
+                s_int = _normalize_date_to_int(lv.get("start_date"))
+                e_int = _normalize_date_to_int(lv.get("end_date")) or s_int
+                if not eid or s_int is None:
+                    continue
+                leave_ranges.setdefault(eid, []).append((s_int, e_int))
+            for emp_id, emp in emp_map.items():
+                # Apply Employee-level filters (team/department/name) — status
+                # already handled at the record level.
+                if team and team != "All" and emp.get("team") != team:
+                    continue
+                if department and department != "All" and emp.get("department") != department:
+                    continue
+                if employee_name and employee_name.strip() and \
+                        employee_name.strip().lower() not in (emp.get("full_name") or "").lower():
+                    continue
+                cur = _f_d
+                while cur <= _t_d:
+                    d_int = cur.year * 10000 + cur.month * 100 + cur.day
+                    if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+                        cur += timedelta(days=1)
+                        continue
+                    date_dd = cur.strftime("%d-%m-%Y")
+                    if (emp_id, date_dd) in existing_keys:
+                        cur += timedelta(days=1)
+                        continue
+                    # On approved leave for this day?
+                    on_leave = False
+                    for s_int, e_int in leave_ranges.get(emp_id, ()):
+                        if s_int <= d_int <= e_int:
+                            on_leave = True
+                            break
+                    stub_status = AttendanceStatus.SUNDAY if cur.weekday() == 6 else \
+                                  (AttendanceStatus.LEAVE if on_leave else AttendanceStatus.ABSENT)
+                    if status == "Absent" and stub_status != AttendanceStatus.ABSENT:
+                        cur += timedelta(days=1)
+                        continue
+                    records.append({
+                        "id": f"stub-{emp_id}-{date_dd}",
+                        "employee_id": emp_id,
+                        "emp_name": emp.get("full_name", ""),
+                        "team": emp.get("team", ""),
+                        "department": emp.get("department", ""),
+                        "date": date_dd,
+                        "check_in": None, "check_in_24h": None,
+                        "check_out": None, "check_out_24h": None,
+                        "total_hours": None, "total_hours_decimal": None,
+                        "status": stub_status,
+                        "is_lop": False, "lop_reason": None,
+                        "shift_type": emp.get("shift_type", "General"),
+                        "_synthetic": True,
+                    })
+                    cur += timedelta(days=1)
 
     # Stable sort by date asc for predictable export order
     records.sort(key=lambda r: _normalize_date_to_int(r.get("date")) or 0)
@@ -10620,12 +11201,41 @@ async def export_attendance_report(
         att_query["status"] = status
     att_records = await db.attendance.find(att_query, {"_id": 0}).to_list(50000)
 
+    # UNIFIED pipeline — apply eligibility + missed-punch overlay + dept-hours
+    # enforcement so the exported report matches the on-screen counts.
+    emp_map_full = {e["id"]: {**e,
+                              "_doj_int": _employment_window(e)[0],
+                              "_last_int": _employment_window(e)[1]}
+                    for e in employees}
+    mp_map = await _load_approved_missed_punches(f_int, t_int)
+    att_records = await _apply_attendance_normalizations(
+        att_records, emp_map_full, mp_map, enforce_dept_hours=True
+    )
+
     att_map = {}
     for r in att_records:
         v = _normalize_date_to_int(r.get("date"))
         if v is None or not (f_int <= v <= t_int):
             continue
         att_map[(r["employee_id"], r["date"])] = r
+
+    # Materialize approved missed-punches without an attendance row.
+    for (emp_id, date_ddmmyyyy), mp in mp_map.items():
+        if (emp_id, date_ddmmyyyy) in att_map:
+            continue
+        emp = emp_map_full.get(emp_id)
+        if not emp:
+            continue
+        d_int = _normalize_date_to_int(date_ddmmyyyy)
+        if d_int is None or not (f_int <= d_int <= t_int):
+            continue
+        if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+            continue
+        stub = _build_missed_punch_stub(mp, emp)
+        _enforce_completed_hours_threshold(stub, emp_map_full)
+        if status and status != "All" and stub.get("status") != status:
+            continue
+        att_map[(emp_id, date_ddmmyyyy)] = stub
 
     # Build the date list (inclusive)
     def _parse(ds):
