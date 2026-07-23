@@ -205,6 +205,14 @@ const Attendance = () => {
 
   const { sortedRows: sortedAttendance, sortField, sortDir: sortOrder, toggleSort: handleSort } = useTableSort(attendance);
 
+  // Pagination computed values
+  const totalRecords = sortedAttendance.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / rowsPerPage));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const startIndex = (safeCurrentPage - 1) * rowsPerPage;
+  const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
+  const paginatedAttendance = sortedAttendance.slice(startIndex, endIndex);
+
   const getStatusBadge = (status, isLop) => {
     if (isLop || status === 'Loss of Pay') return 'badge-error font-bold';
     const styles = {
@@ -227,52 +235,24 @@ const Attendance = () => {
   //   • LATE LOGIN  – arrived late; includes late-login LOPs from the engine
   //   • ABSENT      – truly non-working day: Absent / Not Logged / On Leave
   //
-  // Rule (per user): Late-login employees ARE Present (they just came late) —
-  // so they show up in BOTH the Present count and the separate Late Login
-  // count. The Late Login card is a secondary tag view, not a mutually
-  // exclusive bucket.
+  // NOTE: late-login LOPs do NOT fall into Absent — they belong in Late Login.
+  // Same applies for early-out LOPs (kept out of Absent; surfaced by the
+  // row badge separately). This keeps the four counters mutually exclusive
+  // and aligned with the row-level status the admin actually sees.
   const isLateLoginLop = (a) => a.is_lop && (a.lop_reason || '').toLowerCase().includes('late login');
-  const isLatePredicate = (a) => a.status === 'Late Login' || isLateLoginLop(a);
-  // "Present" = actually attended today — Present / Completed / Late Login.
-  // Excludes early-out LOPs (those are short-day, not full Present).
-  const isPresentPredicate = (a) => {
-    if (isLatePredicate(a)) return true;
-    return (a.status === 'Present' || a.status === 'Completed') && !a.is_lop;
-  };
-  const isLoggedInPredicate = (a) => a.status === 'Login';
-  const isAbsentPredicate = (a) => {
-    if (isLateLoginLop(a)) return false;
-    const s = a.status || '';
-    return s === 'Absent' || s === 'Not Logged' || s.includes('Leave');
-  };
   const stats = {
-    present: sortedAttendance.filter(isPresentPredicate).length,
-    login: sortedAttendance.filter(isLoggedInPredicate).length,
-    late: sortedAttendance.filter(isLatePredicate).length,
-    absent: sortedAttendance.filter(isAbsentPredicate).length,
+    present: sortedAttendance.filter(a =>
+      (a.status === 'Present' || a.status === 'Completed') && !a.is_lop
+    ).length,
+    login: sortedAttendance.filter(a => a.status === 'Login').length,
+    late: sortedAttendance.filter(a => a.status === 'Late Login' || isLateLoginLop(a)).length,
+    absent: sortedAttendance.filter(a => {
+      // Late-login LOPs belong in Late Login, NOT Absent
+      if (isLateLoginLop(a)) return false;
+      const s = a.status || '';
+      return s === 'Absent' || s === 'Not Logged' || s.includes('Leave');
+    }).length,
   };
-
-  // Click-through filter for the 4 quick-stat cards. Setting this narrows the
-  // table (below) to the same predicate used for the count.
-  const activeCardFilter = filters.cardFilter || 'All';
-  const cardPredicate = {
-    Present: isPresentPredicate,
-    'Logged In': isLoggedInPredicate,
-    'Late Login': isLatePredicate,
-    Absent: isAbsentPredicate,
-  }[activeCardFilter];
-  const visibleAttendance = cardPredicate
-    ? sortedAttendance.filter(cardPredicate)
-    : sortedAttendance;
-
-  // Pagination computed values — run against the *visible* set so the card
-  // filter narrows the table + preserves the paging control state.
-  const totalRecords = visibleAttendance.length;
-  const totalPages = Math.max(1, Math.ceil(totalRecords / rowsPerPage));
-  const safeCurrentPage = Math.min(currentPage, totalPages);
-  const startIndex = (safeCurrentPage - 1) * rowsPerPage;
-  const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
-  const paginatedAttendance = visibleAttendance.slice(startIndex, endIndex);
 
   // Handle employee click to show leave detail
   const handleEmployeeClick = (record) => {
@@ -299,41 +279,24 @@ const Attendance = () => {
         </div>
       </div>
 
-      {/* Quick Stats — clickable cards filter the table below to the same
-          predicate used for the count. Click a second time to clear. */}
+      {/* Quick Stats */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Present', value: stats.present, icon: LogOutIcon, color: 'emerald' },
           { label: 'Logged In', value: stats.login, icon: LogIn, color: 'blue' },
           { label: 'Late Login', value: stats.late, icon: Clock, color: 'amber' },
           { label: 'Absent', value: stats.absent, icon: AlertCircle, color: 'red' },
-        ].map((stat, i) => {
-          const isActive = activeCardFilter === stat.label;
-          return (
-            <button
-              key={i}
-              type="button"
-              onClick={() => setFilters({
-                ...filters,
-                cardFilter: isActive ? 'All' : stat.label,
-              })}
-              data-testid={`att-card-${stat.label.toLowerCase().replace(' ', '-')}`}
-              aria-pressed={isActive}
-              className={`card-flat p-4 flex items-center gap-4 text-left transition-all hover:-translate-y-0.5 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-${stat.color}-500 ${isActive ? `ring-2 ring-${stat.color}-500 shadow-md` : ''}`}
-            >
-              <div className={`w-10 h-10 rounded-xl bg-${stat.color}-100 flex items-center justify-center`}>
-                <stat.icon className={`w-5 h-5 text-${stat.color}-600`} />
-              </div>
-              <div className="flex-1">
-                <p className="text-2xl font-bold text-slate-900 number-display">{stat.value}</p>
-                <p className="text-xs text-slate-500">{stat.label}</p>
-              </div>
-              {isActive && (
-                <span className="text-[10px] text-slate-400 uppercase tracking-wide">filtered</span>
-              )}
-            </button>
-          );
-        })}
+        ].map((stat, i) => (
+          <div key={i} className="card-flat p-4 flex items-center gap-4">
+            <div className={`w-10 h-10 rounded-xl bg-${stat.color}-100 flex items-center justify-center`}>
+              <stat.icon className={`w-5 h-5 text-${stat.color}-600`} />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-slate-900 number-display">{stat.value}</p>
+              <p className="text-xs text-slate-500">{stat.label}</p>
+            </div>
+          </div>
+        ))}
       </div>
 
       {/* Filters */}
