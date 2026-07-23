@@ -2375,3 +2375,5 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Modal detail popup same as other cards; sticky header overlap fix retained.
   - Verified: predicate catches 24 real short-hours LOPs across 01–22 Jul (e.g. "Early out / short hours by 524 minute(s)"); today correctly 0. Cards live: 46/43/3/0/8/5.
   - LEARNING: parallel search_replace batches on Attendance.js corrupted the file tail ("ault Attendance;") and silently dropped 2 edits — edit this file SEQUENTIALLY.
+
+- **2026-07-23** Early Out refinement: late-login LOPs that are ALSO short-hours now count as Early Out (lop_reason contains "short"/"early out"). Purely-late-but-full-hours still excluded. Verified live: Vedanth Reddy ("Late login by 4 min and short by 176 min") now shows in Early Out card (1) and its popup.

@@ -257,12 +257,16 @@ const Attendance = () => {
   // Logged In = checked in but NOT yet checked out (still inside).
   const isLoggedInRow = (a) => hasValidCheckIn(a) && !hasValidCheckOut(a);
   // Early Out = checked in AND out but did NOT complete required working
-  // hours (Early Out / LOP status), excluding late-login LOPs (mirrors
-  // backend classify_attendance_bucket).
+  // hours. Late-login LOPs are excluded ONLY when purely late (full hours
+  // worked) — a late arriver who is ALSO short-hours IS an Early Out.
+  const isShortHoursLop = (a) => {
+    const r = (a.lop_reason || '').toLowerCase();
+    return r.includes('short') || r.includes('early out');
+  };
   const isEarlyOutRow = (a) =>
     hasValidCheckIn(a) && hasValidCheckOut(a) &&
     (a.status === 'Early Out' || a.status === 'Loss of Pay' || a.is_lop) &&
-    !isLateLoginRow(a);
+    (!isLateLoginRow(a) || isShortHoursLop(a));
   const isAbsentRow = (a) => {
     // Late-login LOPs belong in Late Login, NOT Absent
     if (isLateLoginLop(a)) return false;
