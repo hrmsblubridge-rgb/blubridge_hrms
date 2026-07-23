@@ -5,6 +5,42 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## ⚠️ MANDATORY RULE — Test Data Cleanup (established 2026-07-23)
+
+**User directive:** "Hereafter if gonna be creating the Test User, Once testing is done properly remove."
+
+Every test employee, department, team, office-location, or any other seed row created for
+Pytest fixtures, curl smoke tests, testing-agent runs, or manual QA MUST be deleted from
+the database as part of the same session that created it. Zero test rows may remain in
+the production Mongo collections after the task is finished.
+
+### Enforcement checklist (run before `finish` on any task that touched seed data)
+1. Employees named `^TEST `, `^ELIG`, `Shift Test`, `__HIST_`, `Fixture`, `Dummy`, `Seed`, `Demo` — hard-delete.
+2. Departments / Teams / Office-Locations named `SSOT-`, `Test_`, `OL-TEST-`, `WS-TEST-`, `OffAtt-`, `HistCount-`, `Renamed-`, `OLD-` — hard-delete.
+3. Cascade delete: `attendance`, `leaves`, `missed_punches`, `users`, `onboarding_documents`, `operational_checklists`, `audit_logs`, `warnings` for those employee_ids.
+4. Verify: `curl /api/employees?search=TEST` returns 0 rows.
+5. Verify: `curl /api/settings/office-locations` returns ONLY production locations (currently: `Mandaveli - Chennai`, `Besant Nagar - Chennai`).
+
+### Recommended teardown snippet (Pytest fixtures MUST use this or equivalent)
+```python
+async for tmp_id in created_employee_ids:
+    for coll, key in [
+        ("employees", "id"), ("attendance", "employee_id"),
+        ("leaves", "employee_id"), ("missed_punches", "employee_id"),
+        ("users", "employee_id"), ("onboarding_documents", "employee_id"),
+        ("operational_checklists", "employee_id"), ("audit_logs", "employee_id"),
+        ("warnings", "employee_id"),
+    ]:
+        await db[coll].delete_many({key: tmp_id})
+```
+
+### Historical scrub (2026-07-23)
+- Purged 30 test employees: `TEST OL Emp`, `TEST User`, `TEST Rel`, `TEST Dup`, `TEST FJ`, `Shift Test User`, `ELIG Test`, `ELIG FT`, `__HIST_NOEXIT__`, `__HIST_EXPORT__`, `__HIST_RESIGNED__`, `__HIST_STATS__`.
+- Purged 32 test office-locations, 10 test departments, 5 test teams.
+- Final: 123 real employees, 2 real locations (Mandaveli, Besant Nagar).
+
+
+
 ## Latest Update — 2026-07-23 (Unified Attendance Service — Dashboard = Attendance = Reports ✅ TESTED)
 
 **User requirement:** Dashboard, Attendance Module, and Reports Module must show IDENTICAL counts and employee lists for all 6 attendance categories (Logged In, Leave, No Login, Completed, Late Login, Early Out) using the same employee-eligibility rule based on Joining Date and Relieving Date, plus approved Missed-Punch and Punch-Correction requests merged in.
