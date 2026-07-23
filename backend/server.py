@@ -11633,13 +11633,10 @@ async def _build_office_attendance_rows(from_date: str, to_date: str):
                 absent = 0
             else:
                 absent = max(0, total - present - on_leave)
-            # Attendance % = present / (total - on_leave) on working days, 0
-            # on holiday/Sunday rows (no denominator that makes sense).
-            if is_holiday or is_sunday:
-                pct = 0.0
-            else:
-                denom = max(1, total - on_leave)
-                pct = round((present / denom) * 100, 2)
+            # Attendance % = Present / Total Employees × 100 (STRICT user rule
+            # 2026-07-23). On-leave employees are NEVER counted as present and
+            # NEVER removed from the denominator. 0.00 when total is 0.
+            pct = round((present / total) * 100, 2) if total else 0.0
             rows.append({
                 "date_iso": d.isoformat(),
                 "date_display": d.strftime("%d-%b-%Y"),
@@ -11723,7 +11720,7 @@ async def export_office_attendance_report(
             r["on_leave"],
             "Yes" if r["holiday"] else "",
             "Yes" if r["weekly_off"] else "",
-            f'{r["attendance_pct"]}%' if not (r["holiday"] or r["weekly_off"]) else "",
+            f'{r["attendance_pct"]:.2f}%' if not (r["holiday"] or r["weekly_off"]) else "",
         ]
         for col_idx, val in enumerate(values, 1):
             cell = ws.cell(row=r_idx, column=col_idx, value=val)

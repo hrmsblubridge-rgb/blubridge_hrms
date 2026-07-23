@@ -409,7 +409,7 @@ const Reports = () => {
                       <td className="text-center text-emerald-700 font-medium">{record.present}</td>
                       <td className="text-center text-rose-700 font-medium">{record.absent}</td>
                       <td className="text-center text-slate-600">{record.on_leave}</td>
-                      <td className="text-center">{(record.holiday || record.weekly_off) ? <Badge className="bg-slate-100 text-slate-500 border-0">{record.holiday ? 'Holiday' : 'Weekly Off'}</Badge> : `${record.attendance_pct}%`}</td>
+                      <td className="text-center">{(record.holiday || record.weekly_off) ? <Badge className="bg-slate-100 text-slate-500 border-0">{record.holiday ? 'Holiday' : 'Weekly Off'}</Badge> : `${Number(record.attendance_pct || 0).toFixed(2)}%`}</td>
                     </tr>
                   ))
                 ) : (

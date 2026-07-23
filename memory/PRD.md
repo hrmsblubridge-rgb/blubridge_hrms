@@ -2382,3 +2382,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Backend `get_attendance_stats`: new `is_early_out_record()` overlay helper (in+out, Early Out/LOP flagged, excludes purely-late-full-hours). Completed (`logout`) now counts EVERYONE with in+out; Early Out is an OVERLAY — the same employee appears under BOTH Completed and Early Out (explicit user rule).
   - Frontend `Dashboard.js` STATUS_PREDICATE mirrors this: logout = hasIn && hasOut; early_out = short-hours overlay. Added `data-testid="dashboard-att-tile-{key}"` on tiles.
   - Verified live: tiles 6/43/1/3/8; Early Out details = Vedanth Reddy; Completed details = Vedanth + Nandhitha + Dinesh (Vedanth in both). pytest test_unified_attendance_service.py updated to new rule — 22/22 pass.
+
+- **2026-07-23** Office Attendance Report — Attendance % formula corrected (VERIFIED LIVE + tests).
+  - OLD (wrong): pct = present / (total − on_leave) → showed 100% when people were on leave.
+  - NEW (user rule): Attendance % = Present / Total Employees × 100; On Leave/Absent/Holiday/Weekly Off never counted as Present; 0.00% when total=0; always 2 decimals with % symbol.
+  - `server.py` `_build_office_attendance_rows` pct calc + XLSX export `:.2f%`; `Reports.js` display uses `.toFixed(2)`.
+  - Verified live: 01-Jun 47/43/4 → 91.49%, 02-Jun 47/46/1 → 97.87% (exact user examples). test_office_attendance_report.py 10/10 pass. No other counts/filters/UI touched. (Attendance % is only displayed in this report — Dashboard/Attendance modules show counts, not %.)
