@@ -360,14 +360,14 @@ const Attendance = () => {
               <p className="text-center py-8 text-slate-500 text-sm">No records</p>
             ) : (
               <table className="w-full text-sm">
-                <thead className="sticky top-0 bg-white">
+                <thead>
                   <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-                    <th className="py-2 pr-3 font-semibold">Employee</th>
-                    <th className="py-2 pr-3 font-semibold">Team</th>
-                    <th className="py-2 pr-3 font-semibold">Date</th>
-                    <th className="py-2 pr-3 font-semibold">In</th>
-                    <th className="py-2 pr-3 font-semibold">Out</th>
-                    <th className="py-2 font-semibold">Status</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Employee</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Team</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Date</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">In</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Out</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Status</th>
                   </tr>
                 </thead>
                 <tbody>
