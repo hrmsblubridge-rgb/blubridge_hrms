@@ -12334,12 +12334,35 @@ async def get_onboarding_list(
         async for o in db.onboarding.find({"employee_id": {"$in": emp_ids}}, {"_id": 0}):
             onb_map[o["employee_id"]] = o
 
+    # Derived date fallbacks — most records never went through the employee's
+    # explicit "Submit onboarding" step (HR uploads/verifies directly), so
+    # `submitted_at` is null. Fall back to document timestamps:
+    #   Submitted → latest document uploaded_at
+    #   Approved  → onboarding.approved_at → reviewed_at → latest verified_at
+    doc_dates = {}
+    if emp_ids:
+        async for d in db.onboarding_documents.find(
+            {"employee_id": {"$in": emp_ids}},
+            {"_id": 0, "employee_id": 1, "uploaded_at": 1, "verified_at": 1},
+        ):
+            entry = doc_dates.setdefault(d["employee_id"], {"uploaded": None, "verified": None})
+            up = d.get("uploaded_at")
+            if up and (entry["uploaded"] is None or up > entry["uploaded"]):
+                entry["uploaded"] = up
+            vr = d.get("verified_at")
+            if vr and (entry["verified"] is None or vr > entry["verified"]):
+                entry["verified"] = vr
+
     results = []
     for e in employees:
         onb = onb_map.get(e["id"]) or {}
         verification_status = onb.get("status", OnboardingStatus.NOT_STARTED)
         if status and status != "All" and verification_status != status:
             continue
+        dd = doc_dates.get(e["id"], {})
+        approved_at = None
+        if verification_status == OnboardingStatus.APPROVED:
+            approved_at = onb.get("approved_at") or onb.get("reviewed_at") or dd.get("verified")
         results.append({
             "id": onb.get("id", e["id"]),
             "employee_id": e["id"],
@@ -12351,7 +12374,8 @@ async def get_onboarding_list(
             "employment_type": e.get("employment_type"),
             "employee_status": e.get("employee_status"),   # LIVE from Employee Module
             "status": verification_status,                 # verification status
-            "submitted_at": onb.get("submitted_at"),
+            "submitted_at": onb.get("submitted_at") or dd.get("uploaded"),
+            "approved_at": approved_at,
             "created_at": onb.get("created_at") or e.get("created_at"),
         })
     return results

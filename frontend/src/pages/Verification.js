@@ -506,6 +506,7 @@ const Verification = () => {
                   <TableHead>Employee Status</TableHead>
                   <TableHead>Verification</TableHead>
                   <TableHead>Submitted</TableHead>
+                  <TableHead>Approved</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -539,8 +540,13 @@ const Verification = () => {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <p className="text-sm text-slate-600">
+                        <p className="text-sm text-slate-600" data-testid={`submitted-date-${record.employee_id}`}>
                           {record.submitted_at ? formatDate(record.submitted_at) : '-'}
+                        </p>
+                      </TableCell>
+                      <TableCell>
+                        <p className="text-sm text-slate-600" data-testid={`approved-date-${record.employee_id}`}>
+                          {record.approved_at ? formatDate(record.approved_at) : '-'}
                         </p>
                       </TableCell>
                       <TableCell className="text-right">
