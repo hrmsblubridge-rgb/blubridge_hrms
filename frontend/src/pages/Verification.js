@@ -91,7 +91,7 @@ const Verification = () => {
   const [searchTerm, setSearchTerm] = useState('');
   // APPLIED filters — only updated when the Filter button is clicked.
   // First load defaults to Active employees only.
-  const [applied, setApplied] = useState({ status: 'All', employeeStatus: 'Active', department: 'All', search: '' });
+  const [applied, setApplied] = useState({ status: 'All', employeeStatus: 'Active', department: 'All', search: '', rejectedDocs: false });
   
   // Review Modal
   const [selectedEmployee, setSelectedEmployee] = useState(null);
@@ -118,7 +118,14 @@ const Verification = () => {
       employeeStatus: employeeStatusFilter,
       department: departmentFilter,
       search: searchTerm.trim(),
+      rejectedDocs: false,
     });
+  };
+
+  // Stat-card drill-down: clicking a card filters the Onboarding Queue below.
+  const filterFromCard = (status, rejectedDocs = false) => {
+    setStatusFilter(status);
+    setApplied((p) => ({ ...p, status, rejectedDocs }));
   };
 
   const fetchData = async () => {
@@ -130,7 +137,8 @@ const Verification = () => {
             status: applied.status !== 'All' ? applied.status : undefined,
             employee_status: applied.employeeStatus !== 'All' ? applied.employeeStatus : undefined,
             department: applied.department !== 'All' ? applied.department : undefined,
-            search: applied.search || undefined
+            search: applied.search || undefined,
+            rejected_docs: applied.rejectedDocs || undefined
           },
           headers: { Authorization: `Bearer ${token}` }
         }),
@@ -347,14 +355,14 @@ const Verification = () => {
     <div className="space-y-6" data-testid="verification-page">
       {/* Stats Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Card className="bg-[#fffdf7] border-0 shadow-sm">
+        <Card className="bg-[#fffdf7] border-0 shadow-sm cursor-pointer transition-shadow hover:shadow-md" onClick={() => filterFromCard('All')} data-testid="card-total-employees">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-slate-500">Total Employees</p>
                 <p className="text-2xl font-bold text-slate-900">{stats?.total_employees || 0}</p>
-                <p className="text-xs text-slate-500 mt-1">
-                  {stats?.completion_rate || 0}% completion rate
+                <p className="text-xs text-blue-600 mt-1">
+                  {stats?.completion_rate || 0}% completion · View all →
                 </p>
               </div>
               <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
@@ -364,14 +372,14 @@ const Verification = () => {
           </CardContent>
         </Card>
 
-        <Card className="bg-[#fffdf7] border-0 shadow-sm">
+        <Card className="bg-[#fffdf7] border-0 shadow-sm cursor-pointer transition-shadow hover:shadow-md" onClick={() => filterFromCard('under_review')} data-testid="card-pending-verifications">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-slate-500">Pending Verifications</p>
                 <p className="text-2xl font-bold text-amber-600">{stats?.under_review || 0}</p>
                 <button 
-                  onClick={() => { setStatusFilter('under_review'); setApplied((p) => ({ ...p, status: 'under_review' })); }}
+                  onClick={() => filterFromCard('under_review')}
                   className="text-xs text-blue-600 hover:underline mt-1"
                 >
                   Review now →
@@ -384,14 +392,14 @@ const Verification = () => {
           </CardContent>
         </Card>
 
-        <Card className="bg-[#fffdf7] border-0 shadow-sm">
+        <Card className="bg-[#fffdf7] border-0 shadow-sm cursor-pointer transition-shadow hover:shadow-md" onClick={() => filterFromCard('All', true)} data-testid="card-rejected-documents">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-slate-500">Rejected Documents</p>
                 <p className="text-2xl font-bold text-red-600">{stats?.rejected_documents || 0}</p>
-                <p className="text-xs text-slate-500 mt-1">
-                  Require employee re-upload
+                <p className="text-xs text-blue-600 mt-1">
+                  Require re-upload · View →
                 </p>
               </div>
               <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
@@ -401,14 +409,14 @@ const Verification = () => {
           </CardContent>
         </Card>
 
-        <Card className="bg-[#fffdf7] border-0 shadow-sm">
+        <Card className="bg-[#fffdf7] border-0 shadow-sm cursor-pointer transition-shadow hover:shadow-md" onClick={() => filterFromCard('approved')} data-testid="card-completed">
           <CardContent className="p-4">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-xs text-slate-500">Completed</p>
                 <p className="text-2xl font-bold text-emerald-600">{stats?.approved || 0}</p>
-                <p className="text-xs text-slate-500 mt-1">
-                  Onboarding complete
+                <p className="text-xs text-blue-600 mt-1">
+                  Onboarding complete · View →
                 </p>
               </div>
               <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center">
@@ -482,7 +490,18 @@ const Verification = () => {
       {/* Onboarding List */}
       <Card className="bg-[#fffdf7] border-0 shadow-sm">
         <CardHeader>
-          <CardTitle className="text-lg">Onboarding Queue</CardTitle>
+          <CardTitle className="text-lg flex items-center gap-2">
+            Onboarding Queue
+            {applied.rejectedDocs && (
+              <Badge
+                className="bg-red-100 text-red-700 cursor-pointer hover:bg-red-200"
+                onClick={() => setApplied((p) => ({ ...p, rejectedDocs: false }))}
+                data-testid="rejected-docs-chip"
+              >
+                Rejected documents only ✕
+              </Badge>
+            )}
+          </CardTitle>
           <CardDescription>
             Review and verify employee documents
           </CardDescription>

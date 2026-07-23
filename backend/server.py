@@ -12298,6 +12298,7 @@ async def get_onboarding_list(
     department: Optional[str] = None,
     search: Optional[str] = None,
     employee_status: Optional[str] = None,   # NEW: Employee Module status (Active/Inactive/Resigned)
+    rejected_docs: Optional[bool] = None,    # only employees with ≥1 rejected onboarding document
     current_user: dict = Depends(get_current_user)
 ):
     """Verification queue — a TRUE REFLECTION of the Employee Module.
@@ -12322,6 +12323,13 @@ async def get_onboarding_list(
             {"full_name": {"$regex": search, "$options": "i"}},
             {"emp_id": {"$regex": search, "$options": "i"}},
         ]
+    if rejected_docs:
+        # "Rejected Documents" card drill-down: only employees who currently
+        # have at least one rejected onboarding document.
+        rej_ids = await db.onboarding_documents.distinct(
+            "employee_id", {"status": DocumentStatus.REJECTED}
+        )
+        emp_query["id"] = {"$in": rej_ids or []}
 
     employees = await db.employees.find(emp_query, {
         "_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1,
