@@ -2363,3 +2363,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - All 5 summary cards clickable → shadcn Dialog with detail list (Employee/avatar, Team, Date, In, Out, Status badge). Detail lists deduped by employee_id where the card counts unique employees, so modal row count ALWAYS equals card value.
   - data-testids: `attendance-card-{present|login|loggedOut|late|absent}`, `attendance-card-detail-modal`, `attendance-card-detail-title`, `card-detail-row-{i}`.
   - Verified live on 27-Jun-2026: cards 41/1/42/8/9; Present modal 41 rows, Absent modal 9 rows, Logged Out modal 42 rows (the 1 Login-status employee has an out-punch in data, so 42 is correct).
+
+- **2026-07-23** Attendance cards final logic (user-confirmed math, VERIFIED LIVE on today 23-Jul-2026):
+  - Present = ALL unique employees with a valid Check-In (includes still-logged-in). Present = Logged In + Logged Out.
+  - Logged In = valid Check-In AND no Check-Out yet (still inside), unique by employee.
+  - Logged Out = valid Check-Out, unique. Late Login & Absent unchanged.
+  - Live values today: 46 / 44 / 2 / 8 / 5 — matches user's expected 46=44+2. Modals match card counts exactly.

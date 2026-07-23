@@ -249,8 +249,12 @@ const Attendance = () => {
   // Missed-Punch / Punch-Request that supplied the Check-In (the unified
   // service already merges those onto check_in / check_in_24h before the
   // row reaches the client).
-  const isPresentRow = (a) => hasValidCheckIn(a) && a.status !== 'Login';
+  // Present = EVERY unique employee with a valid Check-In, including those
+  // still logged in (Present = Logged In + Logged Out).
+  const isPresentRow = (a) => hasValidCheckIn(a);
   const hasValidCheckOut = (a) => Boolean(a.check_out || a.check_out_24h);
+  // Logged In = checked in but NOT yet checked out (still inside).
+  const isLoggedInRow = (a) => hasValidCheckIn(a) && !hasValidCheckOut(a);
   const isAbsentRow = (a) => {
     // Late-login LOPs belong in Late Login, NOT Absent
     if (isLateLoginLop(a)) return false;
@@ -269,7 +273,7 @@ const Attendance = () => {
   };
   const cardRows = {
     present: dedupeByEmployee(sortedAttendance.filter(isPresentRow)),
-    login: sortedAttendance.filter((a) => a.status === 'Login'),
+    login: dedupeByEmployee(sortedAttendance.filter(isLoggedInRow)),
     loggedOut: dedupeByEmployee(sortedAttendance.filter(hasValidCheckOut)),
     late: dedupeByEmployee(sortedAttendance.filter(isLateLoginRow)),
     absent: sortedAttendance.filter(isAbsentRow),
