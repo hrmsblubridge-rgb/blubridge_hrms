@@ -2352,3 +2352,8 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - **Clickable cards**: all 4 stat cards filter the queue below — Total Employees (All), Pending Verifications (under_review), Rejected Documents (NEW `rejected_docs=true` param on /onboarding/list: employees with ≥1 rejected doc, respects the Active default), Completed (approved). Dismissible "Rejected documents only ✕" chip on the queue header. Filter button clears the rejectedDocs card filter.
   - **Rejected Documents count**: confirmed correct — counts ACTIVE employees only (2: Rishi S Nayak Education, Rishikkanth R Voter ID; other 5 rejected docs belong to Inactive employees). User chose to keep this logic.
   - **Verified live**: card clicks yield 51/1/2/49 rows matching card values; screenshots + API checks pass.
+
+- **2026-07-23** Attendance summary cards — Present includes Late Login (VERIFIED LIVE).
+  - Rule (user): Present = every unique eligible employee with a valid Check-In excluding currently-Logged-In rows. Late Login stays a separate indicator card. Absent comes from backend gap-fill stubs (eligible cohort minus checked-in minus leave).
+  - `Attendance.js`: Present counted by unique `employee_id` over rows with `check_in`/`check_in_24h` and status ≠ 'Login'; late-login LOPs count in Late Login (never Absent).
+  - Verified in live UI for 27-Jun-2026: Present=41 (33 on-time + 8 late), Logged In=1, Late Login=8, Absent=9 — exact match with user's expected math. Today's view also consistent (9/37/8/5).
