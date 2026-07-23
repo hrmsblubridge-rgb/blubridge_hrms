@@ -235,18 +235,31 @@ const Attendance = () => {
   //   • LATE LOGIN  – arrived late; includes late-login LOPs from the engine
   //   • ABSENT      – truly non-working day: Absent / Not Logged / On Leave
   //
-  // NOTE: late-login LOPs do NOT fall into Absent — they belong in Late Login.
-  // Same applies for early-out LOPs (kept out of Absent; surfaced by the
-  // row badge separately). This keeps the four counters mutually exclusive
-  // and aligned with the row-level status the admin actually sees.
+  // Rule (per user, 2026-07-23): Late-Login employees ARE Present — they came
+  // in for the day, just late. So they must be included in the "Present"
+  // count AND continue to show in the separate "Late Login" secondary card.
+  // Present is counted by UNIQUE employee_id (not row count) so that a
+  // multi-date range doesn't inflate the tile.
   const isLateLoginLop = (a) => a.is_lop && (a.lop_reason || '').toLowerCase().includes('late login');
+  const isLateLoginRow = (a) => a.status === 'Late Login' || isLateLoginLop(a);
+  const hasValidCheckIn = (a) => Boolean(a.check_in || a.check_in_24h);
+  // "Present" = every eligible employee with a valid final Check-In. This
+  // covers on-time login, Late Login, Completed, plus any approved
+  // Missed-Punch / Punch-Request that supplied the Check-In (the unified
+  // service already merges those onto check_in / check_in_24h before the
+  // row reaches the client).
+  const isPresentRow = (a) => hasValidCheckIn(a) && a.status !== 'Login';
+  const uniquePresentIds = new Set(
+    sortedAttendance.filter(isPresentRow).map((a) => a.employee_id).filter(Boolean)
+  );
+  const uniqueLateIds = new Set(
+    sortedAttendance.filter(isLateLoginRow).map((a) => a.employee_id).filter(Boolean)
+  );
   const stats = {
-    present: sortedAttendance.filter(a =>
-      (a.status === 'Present' || a.status === 'Completed') && !a.is_lop
-    ).length,
-    login: sortedAttendance.filter(a => a.status === 'Login').length,
-    late: sortedAttendance.filter(a => a.status === 'Late Login' || isLateLoginLop(a)).length,
-    absent: sortedAttendance.filter(a => {
+    present: uniquePresentIds.size,
+    login: sortedAttendance.filter((a) => a.status === 'Login').length,
+    late: uniqueLateIds.size,
+    absent: sortedAttendance.filter((a) => {
       // Late-login LOPs belong in Late Login, NOT Absent
       if (isLateLoginLop(a)) return false;
       const s = a.status || '';
