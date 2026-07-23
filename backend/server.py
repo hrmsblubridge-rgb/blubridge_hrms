@@ -4327,6 +4327,7 @@ async def get_employees(
     employment_type: Optional[str] = None,
     tier_level: Optional[str] = None,
     work_location: Optional[str] = None,
+    office_location: Optional[str] = None,
     inactive_type: Optional[str] = None,
     search: Optional[str] = None,
     include_deleted: bool = False,
@@ -4357,6 +4358,8 @@ async def get_employees(
         query["tier_level"] = tier_level
     if work_location and work_location != "All":
         query["work_location"] = work_location
+    if office_location and office_location != "All":
+        query["office_location"] = office_location
     if inactive_type and inactive_type != "All":
         query["inactive_type"] = inactive_type
     if search:

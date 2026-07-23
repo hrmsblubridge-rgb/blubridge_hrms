@@ -150,7 +150,8 @@ const Employees = () => {
     status: 'Active',
     employment_type: 'All',
     tier_level: 'All',
-    work_location: 'All'
+    work_location: 'All',
+    office_location: 'All'
   });
   
   const [showAddSheet, setShowAddSheet] = useState(false);
@@ -309,6 +310,7 @@ const Employees = () => {
         ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
         ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
         ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
+        ...(filters.office_location !== 'All' && { office_location: filters.office_location }),
         ...(!searchActive && inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
       };
 
@@ -342,11 +344,11 @@ const Employees = () => {
 
   useEffect(() => { fetchConfig(); }, [fetchConfig]);
   useEffect(() => { fetchSettingsShifts(); }, [fetchSettingsShifts]);
-  useEffect(() => { fetchData(); }, [pagination.page, pagination.limit, filters.department, filters.team, filters.designation, filters.status, inactiveTypeFilter]);
+  useEffect(() => { fetchData(); }, [pagination.page, pagination.limit, filters.department, filters.team, filters.designation, filters.status, filters.office_location, inactiveTypeFilter]);
 
   const handleSearch = () => { setPagination(prev => ({ ...prev, page: 1 })); fetchData(); };
   const handleReset = () => {
-    setFilters({ search: '', department: 'All', team: 'All', designation: 'All', status: 'All', employment_type: 'All', tier_level: 'All', work_location: 'All' });
+    setFilters({ search: '', department: 'All', team: 'All', designation: 'All', status: 'All', employment_type: 'All', tier_level: 'All', work_location: 'All', office_location: 'All' });
     setPagination(prev => ({ ...prev, page: 1 }));
   };
 
@@ -1010,6 +1012,7 @@ const Employees = () => {
         ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
         ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
         ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
+        ...(filters.office_location !== 'All' && { office_location: filters.office_location }),
         ...(!searchActive && inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
       };
       const response = await axios.get(`${API}/employees/export`, {
@@ -1268,6 +1271,21 @@ const Employees = () => {
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
                 {config.employeeStatuses.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Location</Label>
+            <Select value={filters.office_location} onValueChange={(v) => setFilters({ ...filters, office_location: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-office-location"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {(officeLocations || [])
+                  .map(o => (typeof o === 'string' ? o : o?.name))
+                  .filter(n => n && !/test|hist|renamed/i.test(n))
+                  .filter((v, i, arr) => arr.indexOf(v) === i)
+                  .sort()
+                  .map(name => <SelectItem key={name} value={name} data-testid={`filter-office-location-${name}`}>{name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
