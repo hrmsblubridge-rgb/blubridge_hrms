@@ -8,7 +8,7 @@ import pytest
 import requests
 import os
 
-BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', '').rstrip('/')
+BASE_URL = os.environ.get('REACT_APP_BACKEND_URL', 'http://localhost:8001').rstrip('/')
 
 class TestAuth:
     """Authentication tests"""
@@ -18,7 +18,7 @@ class TestAuth:
         """Get admin authentication token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "admin"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200, f"Admin login failed: {response.text}"
         data = response.json()
@@ -29,13 +29,13 @@ class TestAuth:
         """Test admin login works"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "admin"
+            "password": "HrAdmin786$"
         })
         assert response.status_code == 200
         data = response.json()
         assert "token" in data
         assert "user" in data
-        assert data["user"]["role"] in ["super_admin", "admin", "hr_manager"]
+        assert data["user"]["role"] in ["super_admin", "admin", "hr_manager", "hr"]
         print(f"Admin login successful - Role: {data['user']['role']}")
 
 
@@ -47,7 +47,7 @@ class TestOnboardingStats:
         """Get admin authentication token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "admin"
+            "password": "HrAdmin786$"
         })
         return response.json()["token"]
     
@@ -81,7 +81,7 @@ class TestOnboardingList:
         """Get admin authentication token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "admin"
+            "password": "HrAdmin786$"
         })
         return response.json()["token"]
     
@@ -127,7 +127,7 @@ class TestTickets:
         """Get admin authentication token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "admin"
+            "password": "HrAdmin786$"
         })
         return response.json()["token"]
     
@@ -229,7 +229,7 @@ class TestAuditLogs:
         """Get admin authentication token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "admin"
+            "password": "HrAdmin786$"
         })
         return response.json()["token"]
     
@@ -304,7 +304,7 @@ class TestOnboardingEmployeeDetails:
         """Get admin authentication token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "admin"
+            "password": "HrAdmin786$"
         })
         return response.json()["token"]
     
@@ -357,7 +357,7 @@ class TestDepartmentAPI:
         """Get admin authentication token"""
         response = requests.post(f"{BASE_URL}/api/auth/login", json={
             "username": "admin",
-            "password": "admin"
+            "password": "HrAdmin786$"
         })
         return response.json()["token"]
     

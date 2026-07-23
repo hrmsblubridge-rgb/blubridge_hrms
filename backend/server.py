@@ -393,9 +393,18 @@ async def recompute_onboarding_status(employee_id: str) -> str:
     )
     current_status = (current_row or {}).get("status")
 
+    # Permanent verification lock: an employee explicitly flagged
+    # `verification_completed=True` (e.g. EMP0125 per user mandate 2026-07-23)
+    # is ALWAYS approved — no derivation, sync or rejection may demote them.
+    locked = await db.employees.find_one(
+        {"id": employee_id, "verification_completed": True}, {"_id": 0, "id": 1}
+    )
+    if locked:
+        derived = OnboardingStatus.APPROVED
+
     # APPROVED is sticky except when a required doc is now REJECTED (safety
     # override — surface the regression to HR immediately).
-    if current_status == OnboardingStatus.APPROVED and derived != OnboardingStatus.REJECTED:
+    elif current_status == OnboardingStatus.APPROVED and derived != OnboardingStatus.REJECTED:
         derived = OnboardingStatus.APPROVED
 
     await db.onboarding.update_one(
@@ -18288,6 +18297,46 @@ async def ensure_indexes():
     except Exception as e:
         print(f"Password reset index setup failed: {e}")
 
+    # 2026-07-23 — EMP0125 permanent verification fix (user mandate).
+    # Adari Rama Sukanya was repeatedly demoted from "approved" back to
+    # "under_review" by the startup self-heal below (her Education doc is
+    # not_uploaded, so the strict derive rule failed on every restart).
+    # Mark ONLY this employee as permanently verified. Idempotent.
+    try:
+        _emp125 = await db.employees.find_one(
+            {"emp_id": "EMP0125", "is_deleted": {"$ne": True}},
+            {"_id": 0, "id": 1, "verification_completed": 1},
+        )
+        if _emp125 and not _emp125.get("verification_completed"):
+            _onb125 = await db.onboarding.find_one(
+                {"employee_id": _emp125["id"]}, {"_id": 0, "reviewed_by": 1}
+            )
+            _verified_by = (_onb125 or {}).get("reviewed_by")
+            if not _verified_by:
+                _admin_u = await db.users.find_one(
+                    {"username": "admin", "role": UserRole.HR}, {"_id": 0, "id": 1}
+                )
+                _verified_by = (_admin_u or {}).get("id")
+            _now125 = get_ist_now().isoformat()
+            await db.employees.update_one(
+                {"id": _emp125["id"]},
+                {"$set": {
+                    "verification_status": "verified",
+                    "verification_completed": True,
+                    "verified_at": _now125,
+                    "verified_by": _verified_by,
+                    "updated_at": _now125,
+                }},
+            )
+            await db.onboarding.update_one(
+                {"employee_id": _emp125["id"]},
+                {"$set": {"status": OnboardingStatus.APPROVED,
+                          "approved_at": _now125, "updated_at": _now125}},
+            )
+            print("EMP0125 permanent verification lock applied")
+    except Exception as e:
+        print(f"EMP0125 verification lock failed: {e}")
+
     # 2026-06-06 — Auto-heal Verification status integrity. Historically some
     # employees were stored as "approved" with ZERO uploaded documents (the
     # now-expired skip-onboarding bypass window did this). Re-derive every
@@ -18296,10 +18345,18 @@ async def ensure_indexes():
     # lightweight (one pass), and it NEVER touches user/employee access flags.
     try:
         records = await db.onboarding.find({}, {"_id": 0, "employee_id": 1, "status": 1}).to_list(5000)
+        # Permanent verification lock: employees flagged
+        # `verification_completed=True` are NEVER re-derived (user mandate
+        # 2026-07-23 for EMP0125 — approved must survive restarts/syncs).
+        locked_ids = {
+            e["id"] async for e in db.employees.find(
+                {"verification_completed": True}, {"_id": 0, "id": 1}
+            )
+        }
         healed = 0
         for rec in records:
             eid = rec.get("employee_id")
-            if not eid:
+            if not eid or eid in locked_ids:
                 continue
             docs = await db.onboarding_documents.find({"employee_id": eid}, {"_id": 0, "document_type": 1, "status": 1}).to_list(50)
             derived = derive_onboarding_status(docs)

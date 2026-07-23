@@ -2258,3 +2258,12 @@ Auto-created on employee creation + backfilled for existing employees on startup
     4. `/api/attendance/stats` (dashboard tiles): `total_employees`/`not_logged` now computed from the employed-in-window cohort instead of currently-Active only → historical windows produce immutable counts even after resignations.
   - **Tests**: new `/app/backend/tests/test_historical_employee_counts.py` (5 tests, all pass). Regression: 31 related tests pass (office report, counters, dashboard buckets/drilldown, workforce stats, custom range, duplicates, widgets, deactivation).
   - **Also fixed stale test fixtures** in `test_iter42_dashboard_dup_admin_edits.py`: HR password updated to pinned `HrAdmin786$`, employee-create payload now includes required `office_location`.
+
+- **2026-07-23** EMP0125 (Adari Rama Sukanya) permanent verification fix.
+  - **Root cause**: the startup Verification self-heal (2026-06-06 block) re-derived onboarding status STRICTLY from documents on every backend restart. Her required Education doc is `not_uploaded`, so each restart demoted her `approved` → `under_review` (explains "reappears after 20-30 min" = pod restarts). The doc-sync path already had sticky-APPROVED; the self-heal did not.
+  - **Fix (scoped to EMP0125 per user mandate)**:
+    1. Idempotent startup migration sets on her employee record: `verification_status="verified"`, `verification_completed=true`, `verified_at`, `verified_by` (=HR admin who approved, from onboarding.reviewed_by) and forces `onboarding.status="approved"`.
+    2. Startup self-heal now SKIPS any employee with `verification_completed=true` (only EMP0125 has this flag — no other employee's behaviour changes).
+    3. `recompute_onboarding_status` treats `verification_completed=true` as an absolute lock → always APPROVED, even document rejection cannot demote.
+  - **Tests**: new `/app/backend/tests/test_emp0125_verification_lock.py` (3 tests pass: DB flags, recompute cannot demote, absent from pending views). Verified across 2 full backend restarts + live UI screenshot (Pending count 2→1, badge "Approved").
+  - **Stale test fixtures repaired** (pre-existing failures): `test_onboarding_tickets_audit.py` (password `admin`→pinned `HrAdmin786$`, role list + BASE_URL fallback to localhost:8001), `test_verification_status_logic.py` strict-derive assertion relaxed to match sticky-APPROVED product rule (only REJECTED invalidates).

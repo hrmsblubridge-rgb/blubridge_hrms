@@ -111,7 +111,10 @@ def test_no_approved_employee_has_zero_verified_docs(admin_token):
         docs = detail.get("documents", [])
         verified = [d for d in docs if d.get("status") == "verified"]
         assert verified, f"{rec.get('emp_name')} approved with no verified docs"
-        assert derive_onboarding_status(docs) == "approved"
+        # Sticky-APPROVED (2026-07-15) + permanent verification lock
+        # (2026-07-23, EMP0125): an HR-approved employee may still have
+        # pending docs; only a REJECTED required doc invalidates approval.
+        assert derive_onboarding_status(docs) != "rejected"
 
 
 def test_stats_consistent_with_list(admin_token):
