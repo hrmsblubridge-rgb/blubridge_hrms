@@ -2357,3 +2357,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Rule (user): Present = every unique eligible employee with a valid Check-In excluding currently-Logged-In rows. Late Login stays a separate indicator card. Absent comes from backend gap-fill stubs (eligible cohort minus checked-in minus leave).
   - `Attendance.js`: Present counted by unique `employee_id` over rows with `check_in`/`check_in_24h` and status ≠ 'Login'; late-login LOPs count in Late Login (never Absent).
   - Verified in live UI for 27-Jun-2026: Present=41 (33 on-time + 8 late), Logged In=1, Late Login=8, Absent=9 — exact match with user's expected math. Today's view also consistent (9/37/8/5).
+
+- **2026-07-23** Attendance module: 5th "Logged Out" card + all cards clickable (VERIFIED LIVE).
+  - New card: Logged Out = unique employees with a valid check-out (`check_out`/`check_out_24h`), violet icon. Grid now `lg:grid-cols-5`.
+  - All 5 summary cards clickable → shadcn Dialog with detail list (Employee/avatar, Team, Date, In, Out, Status badge). Detail lists deduped by employee_id where the card counts unique employees, so modal row count ALWAYS equals card value.
+  - data-testids: `attendance-card-{present|login|loggedOut|late|absent}`, `attendance-card-detail-modal`, `attendance-card-detail-title`, `card-detail-row-{i}`.
+  - Verified live on 27-Jun-2026: cards 41/1/42/8/9; Present modal 41 rows, Absent modal 9 rows, Logged Out modal 42 rows (the 1 Login-status employee has an out-punch in data, so 42 is correct).

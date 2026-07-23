@@ -24,6 +24,7 @@ import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Badge } from '../components/ui/badge';
 import { DatePicker } from '../components/ui/date-picker';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import EmployeeLeaveDetail from '../components/EmployeeLeaveDetail';
 import { PageSizeSelector } from '../components/PageSizeSelector';
 
@@ -249,22 +250,44 @@ const Attendance = () => {
   // service already merges those onto check_in / check_in_24h before the
   // row reaches the client).
   const isPresentRow = (a) => hasValidCheckIn(a) && a.status !== 'Login';
-  const uniquePresentIds = new Set(
-    sortedAttendance.filter(isPresentRow).map((a) => a.employee_id).filter(Boolean)
-  );
-  const uniqueLateIds = new Set(
-    sortedAttendance.filter(isLateLoginRow).map((a) => a.employee_id).filter(Boolean)
-  );
+  const hasValidCheckOut = (a) => Boolean(a.check_out || a.check_out_24h);
+  const isAbsentRow = (a) => {
+    // Late-login LOPs belong in Late Login, NOT Absent
+    if (isLateLoginLop(a)) return false;
+    const s = a.status || '';
+    return s === 'Absent' || s === 'Not Logged' || s.includes('Leave');
+  };
+  // Keep ONE row per employee so detail lists always match the unique counts.
+  const dedupeByEmployee = (rows) => {
+    const seen = new Set();
+    return rows.filter((a) => {
+      const id = a.employee_id;
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  };
+  const cardRows = {
+    present: dedupeByEmployee(sortedAttendance.filter(isPresentRow)),
+    login: sortedAttendance.filter((a) => a.status === 'Login'),
+    loggedOut: dedupeByEmployee(sortedAttendance.filter(hasValidCheckOut)),
+    late: dedupeByEmployee(sortedAttendance.filter(isLateLoginRow)),
+    absent: sortedAttendance.filter(isAbsentRow),
+  };
   const stats = {
-    present: uniquePresentIds.size,
-    login: sortedAttendance.filter((a) => a.status === 'Login').length,
-    late: uniqueLateIds.size,
-    absent: sortedAttendance.filter((a) => {
-      // Late-login LOPs belong in Late Login, NOT Absent
-      if (isLateLoginLop(a)) return false;
-      const s = a.status || '';
-      return s === 'Absent' || s === 'Not Logged' || s.includes('Leave');
-    }).length,
+    present: cardRows.present.length,
+    login: cardRows.login.length,
+    loggedOut: cardRows.loggedOut.length,
+    late: cardRows.late.length,
+    absent: cardRows.absent.length,
+  };
+  const [detailCard, setDetailCard] = useState(null);
+  const CARD_META = {
+    present: { title: 'Present', color: 'emerald' },
+    login: { title: 'Logged In', color: 'blue' },
+    loggedOut: { title: 'Logged Out', color: 'violet' },
+    late: { title: 'Late Login', color: 'amber' },
+    absent: { title: 'Absent', color: 'red' },
   };
 
   // Handle employee click to show leave detail
@@ -292,25 +315,83 @@ const Attendance = () => {
         </div>
       </div>
 
-      {/* Quick Stats */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Quick Stats — every card is clickable and opens its detail list */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {[
-          { label: 'Present', value: stats.present, icon: LogOutIcon, color: 'emerald' },
-          { label: 'Logged In', value: stats.login, icon: LogIn, color: 'blue' },
-          { label: 'Late Login', value: stats.late, icon: Clock, color: 'amber' },
-          { label: 'Absent', value: stats.absent, icon: AlertCircle, color: 'red' },
-        ].map((stat, i) => (
-          <div key={i} className="card-flat p-4 flex items-center gap-4">
-            <div className={`w-10 h-10 rounded-xl bg-${stat.color}-100 flex items-center justify-center`}>
-              <stat.icon className={`w-5 h-5 text-${stat.color}-600`} />
+          { key: 'present', label: 'Present', value: stats.present, icon: CalendarCheck, iconBg: 'bg-emerald-100', iconColor: 'text-emerald-600' },
+          { key: 'login', label: 'Logged In', value: stats.login, icon: LogIn, iconBg: 'bg-blue-100', iconColor: 'text-blue-600' },
+          { key: 'loggedOut', label: 'Logged Out', value: stats.loggedOut, icon: LogOutIcon, iconBg: 'bg-violet-100', iconColor: 'text-violet-600' },
+          { key: 'late', label: 'Late Login', value: stats.late, icon: Clock, iconBg: 'bg-amber-100', iconColor: 'text-amber-600' },
+          { key: 'absent', label: 'Absent', value: stats.absent, icon: AlertCircle, iconBg: 'bg-red-100', iconColor: 'text-red-600' },
+        ].map((stat) => (
+          <button
+            key={stat.key}
+            type="button"
+            onClick={() => setDetailCard(stat.key)}
+            className="card-flat p-4 flex items-center gap-4 text-left cursor-pointer transition-shadow hover:shadow-md hover:border-[#063c88]/30 focus:outline-none focus:ring-2 focus:ring-[#063c88]/30"
+            data-testid={`attendance-card-${stat.key}`}
+            title={`View ${stat.label} details`}
+          >
+            <div className={`w-10 h-10 rounded-xl ${stat.iconBg} flex items-center justify-center shrink-0`}>
+              <stat.icon className={`w-5 h-5 ${stat.iconColor}`} />
             </div>
             <div>
               <p className="text-2xl font-bold text-slate-900 number-display">{stat.value}</p>
               <p className="text-xs text-slate-500">{stat.label}</p>
             </div>
-          </div>
+          </button>
         ))}
       </div>
+
+      {/* Card detail modal */}
+      <Dialog open={!!detailCard} onOpenChange={(open) => !open && setDetailCard(null)}>
+        <DialogContent className="max-w-3xl" data-testid="attendance-card-detail-modal">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2" data-testid="attendance-card-detail-title">
+              {detailCard && CARD_META[detailCard].title} — {detailCard ? cardRows[detailCard].length : 0} employee{detailCard && cardRows[detailCard].length !== 1 ? 's' : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto">
+            {detailCard && cardRows[detailCard].length === 0 ? (
+              <p className="text-center py-8 text-slate-500 text-sm">No records</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-white">
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="py-2 pr-3 font-semibold">Employee</th>
+                    <th className="py-2 pr-3 font-semibold">Team</th>
+                    <th className="py-2 pr-3 font-semibold">Date</th>
+                    <th className="py-2 pr-3 font-semibold">In</th>
+                    <th className="py-2 pr-3 font-semibold">Out</th>
+                    <th className="py-2 font-semibold">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailCard && cardRows[detailCard].map((r, i) => (
+                    <tr key={r.id || i} className="border-b border-slate-100" data-testid={`card-detail-row-${i}`}>
+                      <td className="py-2 pr-3">
+                        <div className="flex items-center gap-2">
+                          <EmployeeAvatar employeeId={r.employee_id} name={r.emp_name} size="sm" shape="circle" />
+                          <span className="font-medium text-slate-900">{r.emp_name}</span>
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3 text-slate-600">{r.team || '-'}</td>
+                      <td className="py-2 pr-3 text-slate-600 whitespace-nowrap">{formatDate(r.date)}</td>
+                      <td className="py-2 pr-3 text-slate-900 whitespace-nowrap">{r.check_in || '-'}</td>
+                      <td className="py-2 pr-3 text-slate-900 whitespace-nowrap">{r.check_out || '-'}</td>
+                      <td className="py-2">
+                        <Badge className={`${getStatusBadge(r.status, r.is_lop)} w-fit`}>
+                          {r.is_lop ? 'Loss of Pay' : r.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Filters */}
       <div className="card-flat p-6">
