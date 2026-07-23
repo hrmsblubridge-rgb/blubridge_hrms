@@ -5,6 +5,49 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## Latest Update — 2026-07-23 (Unified Attendance Service — Dashboard = Attendance = Reports ✅ TESTED)
+
+**User requirement:** Dashboard, Attendance Module, and Reports Module must show IDENTICAL counts and employee lists for all 6 attendance categories (Logged In, Leave, No Login, Completed, Late Login, Early Out) using the same employee-eligibility rule based on Joining Date and Relieving Date, plus approved Missed-Punch and Punch-Correction requests merged in.
+
+### Backend — new unified helpers (`/app/backend/server.py`, lines ~10520-10740)
+- `_employed_on_date_int(doj_int, last_int, d_int)` — cheap per-record eligibility check.
+- `_dept_full_hours_threshold(department)` — reads from `DEPARTMENT_WORK_HOURS` (Research 11h · B&P 10h · Support 9h) — no hardcoding.
+- `_load_employees_map(only_tracking=True)` — one-shot Mongo pull with pre-computed `_doj_int` / `_last_int` per employee.
+- `_apply_eligibility_filter(records, emp_map)` — drops attendance rows for employees NOT employed on that row's calendar date.
+- `_load_approved_missed_punches(f_int, t_int)` — `{(emp_id, date_ddmmyyyy): mp_doc}` keyed map of APPROVED requests only.
+- `_overlay_missed_punch(rec, mp)` — hard-replace overlay: Check-in / Check-out / Both, recomputes hours + status; idempotent with the existing `_update_attendance_from_missed_punch` apply pipeline.
+- `_enforce_completed_hours_threshold(rec, emp_map)` — downgrades short-hours rows to LOP so the Completed bucket only accepts employees who met the department full-day threshold. Never touches Late Login / Sunday states.
+- `_build_missed_punch_stub(mp, emp)` — materialises an approved missed-punch as a full attendance-shaped row when NO attendance record exists for that (employee, date).
+- `_apply_attendance_normalizations(records, emp_map, mp_map, enforce_dept_hours)` — the single pipeline used by all three endpoints.
+
+### Endpoints refactored to the unified pipeline
+- `GET /api/dashboard/stats` — cohort filtered by employment window, per-row eligibility, missed-punch overlay + stubs. New response fields: `leave` and `no_login` (split); `not_logged` kept for backward compat.
+- `GET /api/dashboard/leave-list` — per-day employment window filter; approved missed-punches count as valid login.
+- `GET /api/attendance` — unified filter + overlay + stubs; gap-fill Absent stubs now downgrade to `Leave` for approved-leave days.
+- `GET /api/reports/attendance` — same pipeline PLUS Absent/Sunday/Leave gap-fill so its counts match Dashboard/Attendance.
+- `GET /api/reports/attendance/export` (XLSX) — same pipeline for the exported spreadsheet.
+
+### Business rules enforced (per user confirmation)
+- Employee eligible on a date iff `Joining Date ≤ date AND (Relieving Date null OR Relieving Date ≥ date)`.
+- Relieving Date is treated as the final working date (INCLUDED).
+- Only APPROVED missed-punches / punch-corrections affect counts; Pending / Rejected / Cancelled ignored.
+- Completed requires `total_hours_decimal ≥ dept.full_hours` (Research 11h · B&P 10h · Support 9h).
+- Late Login remains a SECONDARY flag on top of Logged In / Completed (not mutually exclusive).
+- Approved leaves counted separately from No Login.
+- Timezone: `Asia/Kolkata` throughout (already the app default).
+
+### Test coverage
+- `/app/backend/tests/test_unified_attendance_service.py` — 22 tests (spec examples June 27/28/29 + dept-hours + overlay + live smoke).
+- `/app/backend/tests/test_unified_dashboard_attendance_reports_alignment.py` — 19 tests (Dashboard vs Attendance vs Reports employee-ID alignment for all four spec dates + relieving/joining eligibility).
+- **Testing Agent (iteration_61): 63/64 backend tests PASS (98.4%)** — the one failure is a pre-existing `HistCount-Test-Office` stale-seed cleanup issue unrelated to this iteration.
+- Dashboard `total_employees == Attendance rows == Reports rows == 66` for all tested dates.
+
+### Not modified (out of scope)
+- Frontend Dashboard.js tile layout (backend now exposes `leave` and `no_login` separately if UI wants to split them later).
+- `POST /api/employees` currently ignores `last_day_payable` on create — flagged for future add.
+
+
+
 ## Latest Update — 2026-07-20 (Leave Management Report Module ✅ TESTED)
 
 **User requirement:** Admin-only Leave Management Report with filters, quick-date presets, server-side pagination, and page-size options.
