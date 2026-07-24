@@ -7147,6 +7147,47 @@ async def check_out(employee_id: str, current_user: dict = Depends(get_current_u
 # ============== BIOMETRIC ATTENDANCE IMPORT ==============
 
 @api_router.post("/attendance/import-biometric")
+def _single_punch_is_checkout(punch_dt: datetime, date_str: str,
+                              shift_timings: Optional[dict]) -> bool:
+    """Shift-aware classification for a day with EXACTLY ONE punch.
+
+    Returns True when the punch falls in the ENDING portion of the employee's
+    RESOLVED shift window → treat it as the Check-OUT (Check-In stays missing).
+    Returns False when it belongs to the beginning portion → existing
+    behaviour (punch = Check-In) is preserved.
+
+    Rules:
+      • No hard-coded wall-clock cut-off — the boundary is the midpoint of
+        [shift start, shift start + required hours], so extended/long shifts
+        and night shifts classify correctly (a 22:00 punch is an IN for a
+        22:00-start night shift but an OUT for a 10:00-start day shift).
+      • Overnight aware — punch minutes are computed RELATIVE to the resolved
+        attendance date (a 01:00 punch already attributed to the previous
+        working day by get_effective_attendance_date gets +1440).
+      • When the shift cannot be resolved, do NOT guess: return False and
+        keep the legacy behaviour unchanged.
+    Internal helper only — never persisted, never exposed as a status.
+    """
+    if not shift_timings or not shift_timings.get("login_time"):
+        return False
+    try:
+        start_m = parse_time_24h_to_minutes(shift_timings["login_time"])
+        req_h = float(shift_timings.get("total_hours") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if start_m is None or req_h <= 0:
+        return False
+    end_m = start_m + int(round(req_h * 60))  # may exceed 1440 (overnight)
+    try:
+        att_d = datetime.strptime(date_str, "%d-%m-%Y").date()
+    except (ValueError, TypeError):
+        return False
+    day_offset = (punch_dt.date() - att_d).days
+    punch_m = day_offset * 1440 + punch_dt.hour * 60 + punch_dt.minute
+    midpoint = start_m + (end_m - start_m) / 2.0
+    return punch_m >= midpoint
+
+
 async def import_biometric_attendance(
     records: list = Body(...),
     current_user: dict = Depends(get_current_user)
@@ -7294,11 +7335,18 @@ async def import_biometric_attendance(
         unique = sorted({p.replace(second=0, microsecond=0) for p in all_punches_dt})
         if not unique:
             continue
-        in_time = unique[0]
-        out_time = unique[-1] if len(unique) > 1 else None
+        shift_timings = get_shift_timings(employee)
+        if len(unique) == 1 and _single_punch_is_checkout(unique[0], date_str, shift_timings):
+            # Single punch in the ENDING portion of the resolved shift window:
+            # it is the Check-OUT — never fabricate a Check-In from it.
+            in_time = None
+            out_time = unique[0]
+        else:
+            in_time = unique[0]
+            out_time = unique[-1] if len(unique) > 1 else None
 
-        in_24h = in_time.strftime("%H:%M")
-        in_12h = in_time.strftime("%I:%M %p")
+        in_24h = in_time.strftime("%H:%M") if in_time else None
+        in_12h = in_time.strftime("%I:%M %p") if in_time else None
         out_24h = out_time.strftime("%H:%M") if out_time else None
         out_12h = out_time.strftime("%I:%M %p") if out_time else None
 
@@ -7307,9 +7355,11 @@ async def import_biometric_attendance(
         existing = await db.attendance.find_one(
             {"employee_id": emp_id, "date": date_str},
             {"_id": 0, "check_in_24h": 1, "check_out_24h": 1,
-             "is_manual_override": 1, "is_approved_correction": 1}
+             "is_manual_override": 1, "is_approved_correction": 1,
+             "missed_punch_corrected": 1}
         )
-        if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")):
+        if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")
+                         or existing.get("missed_punch_corrected")):
             # Skip biometric overwrite; the manual record wins.
             processed += 1
             continue
@@ -7321,8 +7371,6 @@ async def import_biometric_attendance(
         is_lop = False
         lop_reason = None
         dynamic_expected_logout = None
-
-        shift_timings = get_shift_timings(employee)
 
         # Sunday handling
         if is_sunday_ddmmyyyy(date_str):
@@ -7368,6 +7416,13 @@ async def import_biometric_attendance(
                         is_lop = True
                         lop_reason = f"Late login by {late_mins} minute(s). Expected: {expected_login}, Actual: {in_24h}"
                         status = AttendanceStatus.LOSS_OF_PAY
+        elif out_24h and not in_24h:
+            # OUT-only single-punch day — no valid login exists. Never Late
+            # Login, never hours, never Completed from this punch. Uses the
+            # EXISTING "Not Logged" status (no new status introduced).
+            status = AttendanceStatus.NOT_LOGGED
+            is_lop = False
+            lop_reason = None
         
         # Atomic upsert: update_one with upsert=True prevents duplicates
         update_doc = {
@@ -7513,11 +7568,21 @@ async def recompute_attendance_from_punches(
             unique = sorted({p.replace(second=0, microsecond=0) for p in punches_dt})
             if not unique:
                 continue
-            in_dt = unique[0]
-            out_dt = unique[-1] if len(unique) > 1 else None
+            if emp_id not in emp_cache:
+                emp_cache[emp_id] = await db.employees.find_one({"id": emp_id}, {"_id": 0}) or {}
+            employee = emp_cache[emp_id]
+            shift_timings = get_shift_timings(employee) if employee else None
+            if len(unique) == 1 and _single_punch_is_checkout(unique[0], date_str, shift_timings):
+                # Shift-aware single-punch rule: an ending-portion punch is
+                # the Check-OUT — never fabricate a Check-In from it.
+                in_dt = None
+                out_dt = unique[0]
+            else:
+                in_dt = unique[0]
+                out_dt = unique[-1] if len(unique) > 1 else None
 
-            in_24h = in_dt.strftime("%H:%M")
-            in_12h = in_dt.strftime("%I:%M %p")
+            in_24h = in_dt.strftime("%H:%M") if in_dt else None
+            in_12h = in_dt.strftime("%I:%M %p") if in_dt else None
             out_24h = out_dt.strftime("%H:%M") if out_dt else None
             out_12h = out_dt.strftime("%I:%M %p") if out_dt else None
 
@@ -7527,7 +7592,8 @@ async def recompute_attendance_from_punches(
             )
 
             # Respect manual overrides / approved corrections
-            if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")):
+            if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")
+                             or existing.get("missed_punch_corrected")):
                 skipped_locked += 1
                 continue
 
@@ -7543,11 +7609,6 @@ async def recompute_attendance_from_punches(
             is_lop = False
             lop_reason = None
             dynamic_expected_logout = None
-
-            if emp_id not in emp_cache:
-                emp_cache[emp_id] = await db.employees.find_one({"id": emp_id}, {"_id": 0}) or {}
-            employee = emp_cache[emp_id]
-            shift_timings = get_shift_timings(employee) if employee else None
 
             # Sunday handling: never LOP, mark "Sunday" / "Worked on Sunday"
             if is_sunday_ddmmyyyy(date_str):
@@ -7589,6 +7650,11 @@ async def recompute_attendance_from_punches(
                             is_lop = True
                             lop_reason = f"Late login by {am - em} minute(s). Expected: {expected_login}, Actual: {in_24h}"
                             status = AttendanceStatus.LOSS_OF_PAY
+            elif out_24h and not in_24h:
+                # OUT-only single-punch day — no valid login (existing status).
+                status = AttendanceStatus.NOT_LOGGED
+                is_lop = False
+                lop_reason = None
 
             update_doc = {
                 "$set": {
@@ -10944,7 +11010,8 @@ def _overlay_missed_punch(rec: dict, mp: dict) -> None:
         # existing status is already a stricter classification. The dept-hours
         # enforcement (called AFTER overlay) will downgrade to LOP if needed.
         if rec.get("status") in (AttendanceStatus.NOT_LOGGED,
-                                 AttendanceStatus.ABSENT, None, ""):
+                                 AttendanceStatus.ABSENT,
+                                 AttendanceStatus.LOGIN, None, ""):
             rec["status"] = AttendanceStatus.PRESENT
             rec["is_lop"] = False
             rec["lop_reason"] = None
@@ -17593,6 +17660,7 @@ async def _update_attendance_from_missed_punch(rec):
         "total_hours": total_hours_str,
         "source": "corrected",
         "missed_punch_corrected": True,
+        "is_approved_correction": True,
         "missed_punch_request_id": request_id,
         "missed_punch_corrected_at": get_ist_now().isoformat(),
         "missed_punch_corrected_by": rec.get("approved_by"),
@@ -17770,6 +17838,46 @@ async def create_missed_punch(data: MissedPunchCreate, current_user: dict = Depe
         await _update_attendance_from_missed_punch(doc)
     
     return serialize_doc(doc)
+
+@api_router.get("/missed-punches/{request_id}/approval-preview")
+async def missed_punch_approval_preview(request_id: str, current_user: dict = Depends(get_current_user)):
+    """Backend-validated data for the admin approval confirmation dialog.
+    Returns the request's employee/date/type/requested times PLUS the current
+    attendance in/out so the UI can show correction messages accurately."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    date_ddmmyyyy = str(rec.get("date") or "")
+    if len(date_ddmmyyyy) == 10 and date_ddmmyyyy[4] == "-" and date_ddmmyyyy[7] == "-":
+        try:
+            date_ddmmyyyy = datetime.strptime(date_ddmmyyyy, "%Y-%m-%d").strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+    att, emp = await asyncio.gather(
+        db.attendance.find_one({"employee_id": rec.get("employee_id"), "date": date_ddmmyyyy},
+                               {"_id": 0, "check_in": 1, "check_out": 1}),
+        db.employees.find_one({"id": rec.get("employee_id")}, {"_id": 0, "full_name": 1}),
+    )
+    punch_type = (rec.get("punch_type") or "").strip()
+
+    def _fmt(raw):
+        t = _extract_24h(raw)
+        return _to_12h(t) if t else None
+
+    return {
+        "request_id": rec.get("id"),
+        "employee_name": (emp or {}).get("full_name") or rec.get("emp_name") or "",
+        "date": date_ddmmyyyy,
+        "punch_type": punch_type,
+        "request_status": rec.get("status"),
+        "requested_check_in": _fmt(rec.get("check_in_time")) if punch_type in ("Check-in", "Both") else None,
+        "requested_check_out": _fmt(rec.get("check_out_time")) if punch_type in ("Check-out", "Both") else None,
+        "existing_check_in": (att or {}).get("check_in"),
+        "existing_check_out": (att or {}).get("check_out"),
+    }
+
 
 @api_router.put("/missed-punches/{request_id}/approve")
 async def approve_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):

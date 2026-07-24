@@ -29,6 +29,8 @@ const AdminMissedPunch = () => {
   const [employees, setEmployees] = useState([]);
   const [showApply, setShowApply] = useState(false);
   const [showApprove, setShowApprove] = useState(false);
+  const [approvePreview, setApprovePreview] = useState(null);
+  const [approving, setApproving] = useState(false);
   const [showReject, setShowReject] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState({ date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '' });
@@ -176,14 +178,46 @@ const AdminMissedPunch = () => {
     window.URL.revokeObjectURL(url);
   };
 
+  const openApprove = async () => {
+    setApprovePreview(null);
+    setShowApprove(true);
+    try {
+      const resp = await axios.get(`${API}/missed-punches/${selected.id}/approval-preview`, { headers: getAuthHeaders() });
+      setApprovePreview(resp.data);
+    } catch (err) {
+      // Fall back to the request row already loaded — dialog still works.
+      setApprovePreview({
+        employee_name: selected.emp_name,
+        date: selected.date,
+        punch_type: selected.punch_type,
+        requested_check_in: selected.punch_type !== 'Check-out' ? formatTime(selected.check_in_time) : null,
+        requested_check_out: selected.punch_type !== 'Check-in' ? formatTime(selected.check_out_time) : null,
+        existing_check_in: null,
+        existing_check_out: null,
+      });
+    }
+  };
+
   const handleApprove = async () => {
+    if (approving) return;
+    setApproving(true);
     try {
       await axios.put(`${API}/missed-punches/${selected.id}/approve`, {}, { headers: getAuthHeaders() });
-      toast.success('Approved! Attendance updated.');
+      const p = approvePreview || {};
+      const d = formatDate(p.date || selected.date);
+      if (p.punch_type === 'Check-in') {
+        toast.success(`Missed Punch request approved successfully. ${p.requested_check_in} has been applied as the employee's In-Time for ${d}.`);
+      } else if (p.punch_type === 'Check-out') {
+        toast.success(`Missed Punch request approved successfully. ${p.requested_check_out} has been applied as the employee's Out-Time for ${d}.`);
+      } else {
+        toast.success(`Missed Punch request approved successfully. The approved In-Time and Out-Time have been applied to the employee's attendance for ${d}.`);
+      }
       setShowApprove(false);
       setSelected(null);
+      setApprovePreview(null);
       fetchData();
     } catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
+    finally { setApproving(false); }
   };
 
   const handleReject = async () => {
@@ -438,7 +472,7 @@ const AdminMissedPunch = () => {
                 <div><p className="text-xs text-slate-500">Reason</p><p className="text-sm bg-slate-50 p-3 rounded-xl">{selected.reason}</p></div>
               </div>
             {selected.status === 'pending' && isHR && <div className="flex gap-3 pt-4">
-              <Button onClick={() => setShowApprove(true)} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg" data-testid="approve-btn"><Check className="w-4 h-4 mr-2" /> Approve</Button>
+              <Button onClick={openApprove} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg" data-testid="approve-btn"><Check className="w-4 h-4 mr-2" /> Approve</Button>
               <Button onClick={() => setShowReject(true)} className="flex-1 bg-red-500 hover:bg-red-600 text-white rounded-lg" data-testid="reject-btn"><X className="w-4 h-4 mr-2" /> Reject</Button>
             </div>}
             </>
@@ -516,14 +550,61 @@ const AdminMissedPunch = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Approve Confirmation */}
-      <Dialog open={showApprove} onOpenChange={setShowApprove}>
-        <DialogContent className="sm:max-w-sm" data-testid="approve-dialog">
-          <DialogHeader><DialogTitle>Approve Missed Punch</DialogTitle></DialogHeader>
-          <p className="text-sm text-slate-600">Approving will update the attendance record. Continue?</p>
+      {/* Approve Confirmation — dynamic, backend-validated preview */}
+      <Dialog open={showApprove} onOpenChange={(o) => { if (!approving) { setShowApprove(o); if (!o) setApprovePreview(null); } }}>
+        <DialogContent className="sm:max-w-md" data-testid="approve-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              {approvePreview && (
+                (approvePreview.punch_type === 'Check-in' && approvePreview.existing_check_in) ||
+                (approvePreview.punch_type === 'Check-out' && approvePreview.existing_check_out) ||
+                (approvePreview.punch_type === 'Both' && (approvePreview.existing_check_in || approvePreview.existing_check_out))
+              ) ? 'Confirm Punch-Time Correction' : 'Confirm Missed Punch Approval'}
+            </DialogTitle>
+          </DialogHeader>
+          {!approvePreview ? (
+            <p className="text-sm text-slate-500 py-4 text-center">Loading request details…</p>
+          ) : (
+            <div className="space-y-3 text-sm" data-testid="approve-preview">
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 rounded-xl p-3">
+                <div><p className="text-xs text-slate-500">Employee</p><p className="font-medium">{approvePreview.employee_name}</p></div>
+                <div><p className="text-xs text-slate-500">Attendance Date</p><p className="font-medium">{formatDate(approvePreview.date)}</p></div>
+                {approvePreview.requested_check_in && approvePreview.existing_check_in && (
+                  <div><p className="text-xs text-slate-500">Existing In-Time</p><p className="font-medium">{approvePreview.existing_check_in}</p></div>
+                )}
+                {approvePreview.requested_check_in && (
+                  <div><p className="text-xs text-slate-500">Approved In-Time</p><p className="font-medium text-emerald-700">{approvePreview.requested_check_in}</p></div>
+                )}
+                {approvePreview.requested_check_out && approvePreview.existing_check_out && (
+                  <div><p className="text-xs text-slate-500">Existing Out-Time</p><p className="font-medium">{approvePreview.existing_check_out}</p></div>
+                )}
+                {approvePreview.requested_check_out && (
+                  <div><p className="text-xs text-slate-500">Approved Out-Time</p><p className="font-medium text-emerald-700">{approvePreview.requested_check_out}</p></div>
+                )}
+              </div>
+              <p className="text-slate-600">
+                {approvePreview.punch_type === 'Check-in' && (
+                  approvePreview.existing_check_in
+                    ? <>By approving this request, the requested In-Time will replace the existing In-Time for {formatDate(approvePreview.date)}. Attendance will be recalculated using the approved value.</>
+                    : <>By approving this request, {approvePreview.requested_check_in} will be treated as the employee's final In-Time for {formatDate(approvePreview.date)}. The existing Out-Time, if available, will be retained, and attendance will be recalculated using the approved In-Time.</>
+                )}
+                {approvePreview.punch_type === 'Check-out' && (
+                  approvePreview.existing_check_out
+                    ? <>By approving this request, the requested Out-Time will replace the existing Out-Time for {formatDate(approvePreview.date)}. Attendance will be recalculated using the approved value.</>
+                    : <>By approving this request, {approvePreview.requested_check_out} will be treated as the employee's final Out-Time for {formatDate(approvePreview.date)}. The existing In-Time, if available, will be retained, and attendance will be recalculated using the approved Out-Time.</>
+                )}
+                {approvePreview.punch_type === 'Both' && (
+                  <>By approving this request, the above In-Time and Out-Time will become the final attendance timings for {formatDate(approvePreview.date)}. These approved values will be used for attendance calculation instead of the current calculated In-Time and Out-Time for that day.</>
+                )}
+              </p>
+              <p className="text-slate-800 font-medium">Do you want to continue?</p>
+            </div>
+          )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowApprove(false)}>Cancel</Button>
-            <Button onClick={handleApprove} className="bg-emerald-500 hover:bg-emerald-600 text-white" data-testid="confirm-approve">Approve</Button>
+            <Button variant="outline" onClick={() => { setShowApprove(false); setApprovePreview(null); }} disabled={approving} data-testid="cancel-approve">Cancel</Button>
+            <Button onClick={handleApprove} className="bg-emerald-500 hover:bg-emerald-600 text-white" disabled={approving || !approvePreview} data-testid="confirm-approve">
+              {approving ? 'Approving…' : 'Confirm Approval'}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
