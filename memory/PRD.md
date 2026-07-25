@@ -2409,3 +2409,8 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Fix: moved decorator back onto the endpoint. Verified via curl: punch array accepted again (totalRecords:1, unmapped test id, nothing persisted).
   - Client retries automatically from its queue — pending punches will flow in on next sync cycle.
   - LEARNING: when inserting a helper "before function X", NEVER anchor on the `async def` line alone — anchor must include the route decorator, else the decorator binds to the inserted helper.
+
+- **2026-07-25** Deep-check of missing punches (server side VERIFIED healthy).
+  - Facts: 24-07 morning punches synced OK (74 punches → 45 rows, status Login). Endpoint broke 24-07 ~10:17 IST (decorator bug, fixed 25-07 ~12:30 IST). Office client's last attempt was 25-07 12:22 IST (before the fix) → "Upload stopped. Remaining kept in queue" (85 punches = 24-07 evening + 25-07 morning).
+  - Server verified working via external curl (200, punch accepted). Client did NOT auto-retry within ~10 min — the on-prem Node sync client (BLUBRIDGE-048, biometricSync.js) halts after failure and must be restarted. Client also logged a SEPARATE local crash: RangeError ERR_OUT_OF_RANGE (Buffer offset) at 21:38 — client-side device-read bug, script not in this repo.
+  - ACTION FOR USER: restart biometricSync on the office machine; queue will flush and 24/25-07 attendance will populate.
