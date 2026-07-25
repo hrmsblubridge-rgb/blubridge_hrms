@@ -2403,3 +2403,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   5. NEW `GET /api/missed-punches/{id}/approval-preview` (backend-validated employee/date/type/requested + existing times). AdminMissedPunch.js: confirmation dialog with 4 dynamic variants (In-only / Out-only / Both / correction shows existing vs requested), Cancel keeps status, Confirm disabled while processing, dynamic success toasts per type.
   6. TESTS: new tests/test_single_punch_classification.py 11/11 (incl. night-shift 22:00=IN, overnight 04:00=OUT, overlay idempotency). Regression: unified 22/22, office report 10/10, historical 5/5. UI approval flow verified live (dialog → confirm → attendance 09:55 AM/10:00 PM Present is_approved_correction=True) with full snapshot/restore cleanup.
   - CLEANUP done: leftover test locations (OffAtt/HistCount/WS-Test/DUPE) + `__OAR_TEST__` employee purged — these had been breaking pytest re-runs via the office-location safe-delete gate.
+
+- **2026-07-25** CRITICAL HOTFIX: biometric upload broken by 2026-07-24 edit (VERIFIED).
+  - Root cause: `_single_punch_is_checkout` helper was inserted BETWEEN `@api_router.post("/attendance/import-biometric")` and `import_biometric_attendance`, so the decorator bound to the helper → every sync upload got pydantic `dict_type` 422 → client kept 85 punches queued (yesterday evening + today morning missing).
+  - Fix: moved decorator back onto the endpoint. Verified via curl: punch array accepted again (totalRecords:1, unmapped test id, nothing persisted).
+  - Client retries automatically from its queue — pending punches will flow in on next sync cycle.
+  - LEARNING: when inserting a helper "before function X", NEVER anchor on the `async def` line alone — anchor must include the route decorator, else the decorator binds to the inserted helper.

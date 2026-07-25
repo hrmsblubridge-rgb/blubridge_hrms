@@ -7146,7 +7146,6 @@ async def check_out(employee_id: str, current_user: dict = Depends(get_current_u
 
 # ============== BIOMETRIC ATTENDANCE IMPORT ==============
 
-@api_router.post("/attendance/import-biometric")
 def _single_punch_is_checkout(punch_dt: datetime, date_str: str,
                               shift_timings: Optional[dict]) -> bool:
     """Shift-aware classification for a day with EXACTLY ONE punch.
@@ -7188,6 +7187,7 @@ def _single_punch_is_checkout(punch_dt: datetime, date_str: str,
     return punch_m >= midpoint
 
 
+@api_router.post("/attendance/import-biometric")
 async def import_biometric_attendance(
     records: list = Body(...),
     current_user: dict = Depends(get_current_user)
