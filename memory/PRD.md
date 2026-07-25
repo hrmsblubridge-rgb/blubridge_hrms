@@ -2414,3 +2414,10 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Facts: 24-07 morning punches synced OK (74 punches → 45 rows, status Login). Endpoint broke 24-07 ~10:17 IST (decorator bug, fixed 25-07 ~12:30 IST). Office client's last attempt was 25-07 12:22 IST (before the fix) → "Upload stopped. Remaining kept in queue" (85 punches = 24-07 evening + 25-07 morning).
   - Server verified working via external curl (200, punch accepted). Client did NOT auto-retry within ~10 min — the on-prem Node sync client (BLUBRIDGE-048, biometricSync.js) halts after failure and must be restarted. Client also logged a SEPARATE local crash: RangeError ERR_OUT_OF_RANGE (Buffer offset) at 21:38 — client-side device-read bug, script not in this repo.
   - ACTION FOR USER: restart biometricSync on the office machine; queue will flush and 24/25-07 attendance will populate.
+
+- **2026-07-25** Backward-compatibility verification of /api/attendance/import-biometric (VERIFIED, no code change needed — regression already fixed 25-07 ~12:30 IST).
+  - OpenAPI confirmed: query params = [] and body schema = top-level array (original contract; `records: list = Body(...)`). punch_dt/date_str are internal-only again.
+  - Acceptance tests run with temp employee (BCTEST, cascade-cleaned): TEST1 single-punch array 200; TEST2/3 mixed 15/16-Jul dates resolved per punch; TEST4 post-midnight 03:30 IST punch attributed to previous working day (300-min threshold intact); TEST5 duplicate retry → no dup rows, same times. Response shape unchanged (totalRecords/processed/skipped/unmapped).
+  - Missed-punch engine untouched; single-punch tests 11/11 pass.
+  - Cleanup: BCTEST employee+rows+punch logs deleted; also purged 6 old BFTEST/TEST-MP leftover punch-log docs.
+  - PENDING (user side): office Node sync client is still halted ("Upload stopped") — must be restarted on BLUBRIDGE-048 to flush its 85-punch queue (24-07 evening + 25-07 morning).
