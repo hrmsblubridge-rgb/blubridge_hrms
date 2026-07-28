@@ -557,14 +557,54 @@ const Employees = () => {
         } catch (compErr) {
           console.warn('PDF compression failed, will attempt raw upload:', compErr);
         }
-        // Even after compression, if it's still over Cloudinary's cap, fail
-        // fast with a clear message instead of watching Cloudinary reject it.
+        // Even after client compression, if it's still over Cloudinary's cap,
+        // fall back to SERVER-SIDE compression (PyMuPDF) — the browser
+        // compressor can fail in production builds. The original file is
+        // streamed to the backend in small base64 chunks (ingress-safe),
+        // compressed below 10 MB there and uploaded to Cloudinary directly.
         if (uploadFile.size > CLOUDINARY_LIMIT) {
-          toast.error(
-            `Could not shrink the PDF below 10 MB (final: ${(uploadFile.size / 1024 / 1024).toFixed(1)} MB). ` +
-            `Please compress it externally or upgrade the Cloudinary plan.`
-          );
-          return;
+          setUploadPhase('compressing');
+          setUploadProgress(0);
+          try {
+            const uploadId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-fallback`);
+            const CHUNK = 3 * 1024 * 1024; // 3 MB raw → ~4 MB base64 JSON
+            const buf = await uploadFile.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            const totalChunks = Math.ceil(bytes.length / CHUNK);
+            for (let i = 0; i < totalChunks; i++) {
+              const slice = bytes.subarray(i * CHUNK, Math.min((i + 1) * CHUNK, bytes.length));
+              let bin = '';
+              for (let j = 0; j < slice.length; j += 0x8000) {
+                bin += String.fromCharCode.apply(null, slice.subarray(j, j + 0x8000));
+              }
+              await axios.post(`${API}/documents/compress-upload/chunk`, {
+                upload_id: uploadId, chunk_index: i, data: btoa(bin),
+              }, { headers: getAuthHeaders(), timeout: 60000 });
+              setUploadProgress(Math.round(((i + 1) / totalChunks) * 60));
+            }
+            const finishResp = await axios.post(`${API}/documents/compress-upload/finish`, {
+              upload_id: uploadId, file_name: uploadFile.name,
+            }, { headers: getAuthHeaders(), timeout: 180000 });
+            const { secure_url, public_id, original_bytes, final_bytes } = finishResp.data;
+            setUploadProgress(100);
+            toast.success(
+              `Compressed on server: ${(original_bytes / 1024 / 1024).toFixed(1)} MB → ${(final_bytes / 1024 / 1024).toFixed(1)} MB`
+            );
+            await axios.post(`${API}/employees/${selectedEmployee.id}/documents`, {
+              file_url: secure_url,
+              file_name: uploadFile.name,
+              file_type: 'application/pdf',
+              file_public_id: public_id,
+              document_type: 'offer_letter',
+            }, { headers: getAuthHeaders(), timeout: 60000 });
+            toast.success('Offer letter uploaded successfully');
+            await fetchDocuments(selectedEmployee.id);
+            return;
+          } catch (srvErr) {
+            const msg = srvErr?.response?.data?.detail || srvErr?.message || 'Server compression failed';
+            toast.error(`Could not compress the PDF: ${msg}`);
+            return;
+          }
         }
       } else if (!/\.pdf$/i.test(file.name) && file.size > CLOUDINARY_LIMIT) {
         // DOC/DOCX can't be compressed in-browser meaningfully. Ask the user.

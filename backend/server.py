@@ -8,6 +8,7 @@ import os
 import logging
 import asyncio
 import re
+import base64
 import math
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict, EmailStr
@@ -3375,6 +3376,137 @@ async def delete_cloudinary_asset(
         return {"success": True, "result": result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== SERVER-SIDE PDF COMPRESS + UPLOAD (fallback) ==============
+# The browser compressor (frontend/src/lib/pdfCompressor.js) can fail in
+# production builds (pdf.js worker loading) or on unusual PDFs. This chunked
+# fallback lets the frontend stream the ORIGINAL oversized PDF to the backend,
+# which rasterise-recompresses it with PyMuPDF below Cloudinary's 10 MB
+# free-plan cap and uploads it server-side. Chunks are base64 JSON (≤4 MB)
+# so Kubernetes ingress body limits are never hit.
+
+_PDF_COMPRESS_TMP = "/tmp/pdf_compress"
+_UUID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
+
+
+def _compress_pdf_bytes(data: bytes, target_bytes: int) -> bytes:
+    """Rasterise-recompress a PDF below target_bytes (best effort).
+    Walks a DPI/JPEG-quality ladder; returns the smallest output produced."""
+    import fitz
+    presets = [(150, 80), (120, 70), (100, 60), (85, 50), (72, 40)]
+    src = fitz.open(stream=data, filetype="pdf")
+    best = None
+    try:
+        for dpi, quality in presets:
+            out = fitz.open()
+            for page in src:
+                pix = page.get_pixmap(dpi=dpi)
+                img = pix.tobytes("jpeg", jpg_quality=quality)
+                rect = page.rect
+                new_page = out.new_page(width=rect.width, height=rect.height)
+                new_page.insert_image(rect, stream=img)
+            buf = out.tobytes(deflate=True, garbage=3)
+            out.close()
+            if best is None or len(buf) < len(best):
+                best = buf
+            if len(buf) <= target_bytes:
+                break
+    finally:
+        src.close()
+    return best
+
+
+@api_router.post("/documents/compress-upload/chunk")
+async def pdf_compress_upload_chunk(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Receive one base64 chunk of an oversized PDF (appended in order)."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    upload_id = str(payload.get("upload_id") or "")
+    if not _UUID_RE.match(upload_id):
+        raise HTTPException(status_code=400, detail="Invalid upload_id")
+    try:
+        chunk = base64.b64decode(payload.get("data") or "")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid chunk data")
+    if not chunk:
+        raise HTTPException(status_code=400, detail="Empty chunk")
+    os.makedirs(_PDF_COMPRESS_TMP, exist_ok=True)
+    path = os.path.join(_PDF_COMPRESS_TMP, f"{upload_id}.part")
+    if int(payload.get("chunk_index") or 0) == 0 and os.path.exists(path):
+        os.remove(path)  # idempotent restart of the same upload
+    with open(path, "ab") as f:
+        f.write(chunk)
+    size = os.path.getsize(path)
+    if size > 30 * 1024 * 1024:
+        os.remove(path)
+        raise HTTPException(status_code=413, detail="File exceeds 30 MB limit")
+    return {"received": len(chunk), "total_bytes": size}
+
+
+@api_router.post("/documents/compress-upload/finish")
+async def pdf_compress_upload_finish(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Assemble chunks → compress below 10 MB → upload to Cloudinary."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    upload_id = str(payload.get("upload_id") or "")
+    if not _UUID_RE.match(upload_id):
+        raise HTTPException(status_code=400, detail="Invalid upload_id")
+    path = os.path.join(_PDF_COMPRESS_TMP, f"{upload_id}.part")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Upload not found — send chunks first")
+    with open(path, "rb") as f:
+        data = f.read()
+    os.remove(path)
+    if not data.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="File is not a valid PDF")
+
+    target = 9 * 1024 * 1024        # 9 MB → headroom below the 10 MB cap
+    hard_cap = 10 * 1024 * 1024
+    original_bytes = len(data)
+    try:
+        compressed = await asyncio.to_thread(_compress_pdf_bytes, data, target)
+    except Exception as e:
+        logger.warning(f"Server PDF compression failed for {upload_id}: {e}")
+        raise HTTPException(status_code=422, detail=f"PDF compression failed: {e}")
+    if not compressed or len(compressed) > hard_cap:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not compress the PDF below 10 MB "
+                   f"(best: {len(compressed or b'') / 1024 / 1024:.1f} MB)."
+        )
+
+    file_name = str(payload.get("file_name") or "document.pdf")
+    safe_base = re.sub(r"[^A-Za-z0-9_-]+", "_", file_name.rsplit(".", 1)[0])[:80] or "document"
+    try:
+        result = await asyncio.to_thread(
+            cloudinary.uploader.upload,
+            io.BytesIO(compressed),
+            resource_type="auto",
+            folder="blubridge/documents",
+            public_id=f"{safe_base}_{upload_id[:8]}",
+            type="upload",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Cloudinary upload failed: {e}")
+
+    logger.info(
+        f"Server-side PDF compress+upload: {file_name} "
+        f"{original_bytes/1024/1024:.1f}MB -> {len(compressed)/1024/1024:.1f}MB "
+        f"public_id={result.get('public_id')}"
+    )
+    return {
+        "secure_url": result.get("secure_url"),
+        "public_id": result.get("public_id"),
+        "original_bytes": original_bytes,
+        "final_bytes": len(compressed),
+    }
 
 
 # ============== SECURE DOCUMENT VIEWING ==============

@@ -2421,3 +2421,10 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Missed-punch engine untouched; single-punch tests 11/11 pass.
   - Cleanup: BCTEST employee+rows+punch logs deleted; also purged 6 old BFTEST/TEST-MP leftover punch-log docs.
   - PENDING (user side): office Node sync client is still halted ("Upload stopped") — must be restarted on BLUBRIDGE-048 to flush its 85-punch queue (24-07 evening + 25-07 morning).
+
+- **2026-07-25/28** Offer-letter PDF >10MB: server-side compression fallback (VERIFIED end-to-end).
+  - Problem: on deployed app, browser compressor (pdfCompressor.js) can fail silently (pdf.js worker load in prod builds) → raw 17.4MB hits Cloudinary 10MB free cap → hard error toast.
+  - NEW backend: `POST /api/documents/compress-upload/chunk` (base64 3MB chunks → /tmp/pdf_compress/{uuid}.part, 30MB cap, HR-only, uuid-validated) + `POST /api/documents/compress-upload/finish` (assemble → `_compress_pdf_bytes` PyMuPDF DPI/quality ladder 150/80→72/40 → below 9MB → cloudinary.uploader.upload server-side → returns secure_url/public_id). Added `import base64`.
+  - Frontend `Employees.js` handleUploadOfferLetter: the old dead-end error is replaced — if still >10MB after client compression, streams file to backend chunks, saves doc with file_public_id, refreshes via fetchDocuments.
+  - TESTED: generated 18.8MB noise-scan PDF → chunked upload → compressed to 5.22MB → Cloudinary 200 → asset then deleted (cleanup). Frontend compiles; Employees page smoke OK.
+  - NOTE: user saw the bug on DEPLOYED blubrg.com — requires REDEPLOY to take effect.
