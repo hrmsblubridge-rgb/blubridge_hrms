@@ -1,0 +1,16 @@
+{
+  "iteration": 62,
+  "date": "2026-07-29",
+  "feature": "Payroll Payable Days cutoff (current month = up to today IST, previous month = full, future month = 0)",
+  "test_suite": "/app/backend/tests/test_payroll_payable_days_cutoff.py",
+  "result": "7/7 PASSED",
+  "cases": [
+    "Current month 2026-07: active zero-LOP employee payable = 29 (working 25 + weekoff 4), future 30/31-07 rows status NA with 0 values",
+    "Previous month 2026-06: full month payable = 30",
+    "Future month 2026-08: all employees payable/working/weekoff = 0",
+    "Harshitha P July regression: lop 2.5, payable 8.5 (single-day relieving LOP rule intact)",
+    "Formula payable = working + weekoff + oh - lop holds across sample; extra_pay stays separate"
+  ],
+  "notes": "Read-only suite (no DB writes). Run with PAYROLL_TEST_URL=http://127.0.0.1:8001 (localhost resolves IPv6; uvicorn binds IPv4). Earlier error runs were backend hot-reload restarts, not failures. Public preview URL was intermittently 502 (Cloudflare/ingress), unrelated to code.",
+  "success_rate": {"backend": "100%", "frontend": "N/A"}
+}

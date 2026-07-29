@@ -2825,17 +2825,16 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
             continue
 
         # --- Future dates ---
+        # CUTOFF RULE (user spec 2026-07-29): days after TODAY (IST) are never
+        # eligible — they must not contribute to Working Days, Weekoff Pay or
+        # Payable Days. For a future month every day lands here → payable 0.
         if is_future:
             if is_sun:
                 detail["status"] = "Su"
-                weekoff_pay += 1
-                detail["weekoff_value"] = 1
             elif is_hol:
                 detail["status"] = "H"
-                # Holidays do NOT contribute to weekoff — only extra_pay if worked
             else:
                 detail["status"] = "NA"
-                working_days += 1
             attendance_details.append(detail)
             continue
 
@@ -3122,7 +3121,8 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     # out of sync with the per-day statuses (no stale accumulators).
     working_days = sum(
         1 for d in attendance_details
-        if (not d["is_sunday"]) and (not d["is_holiday"]) and d["status"] not in ("BLANK", "R")
+        if (not d["is_sunday"]) and (not d["is_holiday"])
+        and d["status"] not in ("BLANK", "R", "NA")  # "NA" = future (after today) — not eligible
     )
     weekoff_pay = sum(d.get("weekoff_value", 0) or 0 for d in attendance_details)
     extra_pay = sum(d.get("extra_value", 0) or 0 for d in attendance_details)
