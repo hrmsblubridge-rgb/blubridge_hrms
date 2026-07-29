@@ -2198,7 +2198,7 @@ def calculate_total_hours_str(total_hours_decimal: float) -> str:
 DEPARTMENT_WORK_HOURS = {
     "Research Unit": {"full": 11, "half": 5},
     "Business & Product": {"full": 10, "half": 5},
-    "Support Staff": {"full": 9, "half": 4.5},
+    "Support Staff": {"full": 9, "half": 5},
 }
 
 def _parse_date_flex(date_str):

@@ -2444,3 +2444,5 @@ RULE: never run payroll test files that seed employees without verified cleanup
   - SECTION 5A/5B (Sunday/Holiday) now: only-in XOR only-out → status "MP" (no extra pay until approved missed punch completes it); ≥full → FD (+1 extra); ≥half → HD (+0.5); else WO. weekoff_value=1 always preserved on Sundays. Extra Pay remains a separate column — NOT added to final_payable_days (formula unchanged: working + weekoff + oh − lop).
   - Verified: Sanjay extra_pay 1→1.5, 19-07 HD, 12-07 FD; Kota 11.2h FD; Rishi 7.83h HD; Vedanth 4.98h stays WO; Kota 12-07 single-punch MP; June=30/Aug=0/July-cutoff regressions intact.
   - Also this session: Payable Days cutoff (7/7 pass, iteration_62.json) + payroll grid confirmed via /api/payroll.
+
+- **2026-07-29** HD threshold unified: Support Staff half 4.5→5 — ALL departments now half-day = 5 hours (full thresholds untouched: 11/10/9). Regression suite test_payroll_sunday_hd_fd.py 15/15 pass. No other modules touched.

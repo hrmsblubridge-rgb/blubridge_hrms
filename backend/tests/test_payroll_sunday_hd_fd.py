@@ -12,7 +12,7 @@ Rules under test (bug fix — Jan 2026 iteration 63):
 Dept thresholds (full/half):
   Research Unit       : 11 / 5   (half was 6 previously; fixed to 5)
   Business & Product  : 10 / 5
-  Support Staff       :  9 / 4.5
+  Support Staff       :  9 / 5
 
 Mandatory: Sanjay Krishna MV (EMP0022), Research Unit.
   - 19-07-2026 (Sun) 5h 1m worked -> HD, extra 0.5, weekoff_value 1
