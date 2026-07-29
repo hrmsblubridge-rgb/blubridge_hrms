@@ -2434,3 +2434,7 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Root cause of Harshitha 11-Jul showing 2.0 LOP: SECTION 8 (relieved + last_day_payable=false) ADDED +1 on top of the row's own A=1 LOP. Fixed: `d["lop_value"] = max(existing, 1)` (top-up, never stack).
   - Verified: Harshitha July LOP 3.5 → 2.5 (0.5+0.5+0.5+1), payable 7.5 → 8.5. Cross-checked May/Jun/Jul payroll for ALL inactive employees — every relieving-day LOP row is exactly 1, none stacked.
   - Note: several payroll pytest files have PRE-EXISTING infra issues (missing BASE_URL env / asyncio loop fixture) — unrelated to this change; verified via live /api/payroll instead.
+RULE: never run payroll test files that seed employees without verified cleanup
+
+- **2026-07-29** INCIDENT + CLEANUP: running tests/test_payroll_display_rule.py & test_payroll_approval_lop.py seeded 15 employees ("Display Rule Test" x6, "Approval LOP Test" x9) then crashed at fixture setup (event-loop infra bug) WITHOUT cleanup — user saw them in Payroll. All 15 hard-deleted with cascade; sweep confirms 0 test-named employees remain (132 real).
+  - STRICT RULE REINFORCED: NEVER run seed-style test files unless their cleanup is verified to run even on fixture failure. Prefer live API checks for payroll verification.
