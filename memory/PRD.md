@@ -2438,3 +2438,9 @@ RULE: never run payroll test files that seed employees without verified cleanup
 
 - **2026-07-29** INCIDENT + CLEANUP: running tests/test_payroll_display_rule.py & test_payroll_approval_lop.py seeded 15 employees ("Display Rule Test" x6, "Approval LOP Test" x9) then crashed at fixture setup (event-loop infra bug) WITHOUT cleanup — user saw them in Payroll. All 15 hard-deleted with cascade; sweep confirms 0 test-named employees remain (132 real).
   - STRICT RULE REINFORCED: NEVER run seed-style test files unless their cleanup is verified to run even on fixture failure. Prefer live API checks for payroll verification.
+
+- **2026-07-29** Week-off worked days: WO→HD/FD fix + MP for incomplete punches (TESTED by testing_agent, 15/15 pass — iteration_63.json).
+  - Root cause: Research Unit half-day threshold was 6h; Sanjay's 5h 1m Sunday work fell below → WO. User chose option (a): Research Unit half 6→5 in DEPARTMENT_WORK_HOURS (also makes weekday ≥5h short days half-LOP for RU). Full thresholds unchanged (11/10/9).
+  - SECTION 5A/5B (Sunday/Holiday) now: only-in XOR only-out → status "MP" (no extra pay until approved missed punch completes it); ≥full → FD (+1 extra); ≥half → HD (+0.5); else WO. weekoff_value=1 always preserved on Sundays. Extra Pay remains a separate column — NOT added to final_payable_days (formula unchanged: working + weekoff + oh − lop).
+  - Verified: Sanjay extra_pay 1→1.5, 19-07 HD, 12-07 FD; Kota 11.2h FD; Rishi 7.83h HD; Vedanth 4.98h stays WO; Kota 12-07 single-punch MP; June=30/Aug=0/July-cutoff regressions intact.
+  - Also this session: Payable Days cutoff (7/7 pass, iteration_62.json) + payroll grid confirmed via /api/payroll.
