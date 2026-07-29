@@ -3108,7 +3108,11 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
         rel_dd = f"{relieving_date.day:02d}-{relieving_date.month:02d}-{relieving_date.year}"
         for d in attendance_details:
             if d["date"] == rel_dd and d["status"] not in ("BLANK", "R"):
-                d["lop_value"] = (d.get("lop_value", 0) or 0) + 1
+                # SINGLE-DAY RULE (user, 2026-07-29): the relieving day can
+                # never cost more than ONE day of LOP in total — whether the
+                # employee never came, or came and left early. Top the row UP
+                # to 1 instead of stacking on any LOP it already carries.
+                d["lop_value"] = max(d.get("lop_value", 0) or 0, 1)
                 d["is_lop"] = True
                 break
 

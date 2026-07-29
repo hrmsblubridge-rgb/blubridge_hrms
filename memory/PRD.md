@@ -2428,3 +2428,9 @@ Auto-created on employee creation + backfilled for existing employees on startup
   - Frontend `Employees.js` handleUploadOfferLetter: the old dead-end error is replaced — if still >10MB after client compression, streams file to backend chunks, saves doc with file_public_id, refreshes via fetchDocuments.
   - TESTED: generated 18.8MB noise-scan PDF → chunked upload → compressed to 5.22MB → Cloudinary 200 → asset then deleted (cleanup). Frontend compiles; Employees page smoke OK.
   - NOTE: user saw the bug on DEPLOYED blubrg.com — requires REDEPLOY to take effect.
+
+- **2026-07-29** Payroll SINGLE-DAY LOP rule for relieving day (VERIFIED LIVE).
+  - User rule: the relieving day can never cost more than ONE day LOP total — whether the employee never came, or came and left early.
+  - Root cause of Harshitha 11-Jul showing 2.0 LOP: SECTION 8 (relieved + last_day_payable=false) ADDED +1 on top of the row's own A=1 LOP. Fixed: `d["lop_value"] = max(existing, 1)` (top-up, never stack).
+  - Verified: Harshitha July LOP 3.5 → 2.5 (0.5+0.5+0.5+1), payable 7.5 → 8.5. Cross-checked May/Jun/Jul payroll for ALL inactive employees — every relieving-day LOP row is exactly 1, none stacked.
+  - Note: several payroll pytest files have PRE-EXISTING infra issues (missing BASE_URL env / asyncio loop fixture) — unrelated to this change; verified via live /api/payroll instead.
