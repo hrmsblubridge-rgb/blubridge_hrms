@@ -2196,7 +2196,7 @@ def calculate_total_hours_str(total_hours_decimal: float) -> str:
 # ============== DEPARTMENT WORK HOURS (PAYROLL ENGINE) ==============
 
 DEPARTMENT_WORK_HOURS = {
-    "Research Unit": {"full": 11, "half": 6},
+    "Research Unit": {"full": 11, "half": 5},
     "Business & Product": {"full": 10, "half": 5},
     "Support Staff": {"full": 9, "half": 4.5},
 }
@@ -2878,8 +2878,14 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 detail["check_in"] = att.get("check_in")
                 detail["check_out"] = att.get("check_out")
                 detail["total_hours"] = att.get("total_hours")
+                has_in = bool(att.get("check_in") or att.get("check_in_24h"))
+                has_out = bool(att.get("check_out") or att.get("check_out_24h"))
                 hw = _calc_hours_worked(att)
-                if hw >= full_hours:
+                if has_in != has_out:
+                    # Incomplete punch on a week-off — no extra pay until an
+                    # approved missed-punch correction completes the record.
+                    detail["status"] = "MP"
+                elif hw >= full_hours:
                     detail["status"] = "FD"  # Full Day extra work on Week-Off
                     extra_pay += 1
                     detail["extra_value"] = 1
@@ -2902,8 +2908,12 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 detail["check_in"] = att.get("check_in")
                 detail["check_out"] = att.get("check_out")
                 detail["total_hours"] = att.get("total_hours")
+                has_in = bool(att.get("check_in") or att.get("check_in_24h"))
+                has_out = bool(att.get("check_out") or att.get("check_out_24h"))
                 hw = _calc_hours_worked(att)
-                if hw >= full_hours:
+                if has_in != has_out:
+                    detail["status"] = "MP"
+                elif hw >= full_hours:
                     detail["status"] = "FD"  # Full Day extra work on Holiday
                     extra_pay += 1
                     detail["extra_value"] = 1
