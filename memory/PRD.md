@@ -2446,3 +2446,5 @@ RULE: never run payroll test files that seed employees without verified cleanup
   - Also this session: Payable Days cutoff (7/7 pass, iteration_62.json) + payroll grid confirmed via /api/payroll.
 
 - **2026-07-29** HD threshold unified: Support Staff half 4.5→5 — ALL departments now half-day = 5 hours (full thresholds untouched: 11/10/9). Regression suite test_payroll_sunday_hd_fd.py 15/15 pass. No other modules touched.
+
+- **2026-08-08** Policy Module: Sick Leave email intimation time 7:00 AM → 9:00 AM. Updated seed texts in server.py (3 spots) AND the 3 live 'policies' DB docs (nested content dict, recursive replace). UI verified — no 7:00 AM remains. NOTE: star_reward_automation.py 'late_sick_notification' penalty still enforces 07:00 cutoff (cd.hour >= 7) — flagged to user, not changed (scope-limited request).

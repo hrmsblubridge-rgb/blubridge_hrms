@@ -675,7 +675,7 @@ COMPANY_POLICIES = [
                         "headers": ["Leave Type", "Intimation Window", "Documentation", "Notes"],
                         "rows": [
                             ["Emergency Leave (Half / Full Day)", "Intimation must be provided no later than 9:30 AM.", "Supporting documents/evidence mandatory wherever applicable", "Only for unforeseen, urgent, or unavoidable situations"],
-                            ["Sick Leave (Half / Full Day)", "Before 7:00 AM", "Medical documentation is mandatory only when Sick Leave is availed for two (2) or more consecutive days. For Sick Leave of less than two days, documentation is generally not required unless specifically requested by management or HR.", "Employees required to submit medical documentation should ensure that the certificate or supporting documents are authentic, clearly indicate the period of illness, and are submitted promptly to facilitate timely verification and approval."],
+                            ["Sick Leave (Half / Full Day)", "Before 9:00 AM", "Medical documentation is mandatory only when Sick Leave is availed for two (2) or more consecutive days. For Sick Leave of less than two days, documentation is generally not required unless specifically requested by management or HR.", "Employees required to submit medical documentation should ensure that the certificate or supporting documents are authentic, clearly indicate the period of illness, and are submitted promptly to facilitate timely verification and approval."],
                             ["Pre-Planned Leave (Half / Full Day)", "Minimum of 4 days in advance", "Formal application required", "Subject to managerial approval"],
                             ["Late Coming (LC)", "Before 10:00 AM (max 10:30 AM)", "Communication must include reason for delay & expected arrival time", "Repeated instances reviewed under performance & discipline policies"]
                         ]
@@ -869,7 +869,7 @@ COMPANY_POLICIES = [
                     "title": "4. Leave Policy",
                     "items": [
                         "Emergency Leave (Half/Full Day) — for unforeseen or urgent situations. Must inform via email between 9:45 AM – 10:00 AM. Supporting documents are mandatory.",
-                        "Sick Leave (Half/Full Day) — Email intimation required before 7:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
+                        "Sick Leave (Half/Full Day) — Email intimation required before 9:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
                         "Pre-Planned Leave (Half/Full Day) — Must be applied at least 4 days in advance.",
                         "Late Coming (LC) — Must inform before 10:00 AM (latest by 10:30 AM); should include expected arrival time.",
                         "Half Day Criteria — Minimum 5 hours of productive work.",
@@ -952,7 +952,7 @@ COMPANY_POLICIES = [
                     "title": "4. Leave Policy",
                     "items": [
                         "Emergency Leave (Half/Full Day) — for unforeseen or urgent situations. Must inform via email between 9:45 AM – 10:00 AM. Supporting documents are mandatory.",
-                        "Sick Leave (Half/Full Day) — Email intimation required before 7:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
+                        "Sick Leave (Half/Full Day) — Email intimation required before 9:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
                         "Pre-Planned Leave (Half/Full Day) — Must be applied at least 4 days in advance.",
                         "Late Coming (LC) — Must inform before 10:00 AM (latest by 10:30 AM); should include expected arrival time.",
                         "Half Day Criteria — Minimum 5 hours of productive work.",
