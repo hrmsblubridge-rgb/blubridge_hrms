@@ -987,9 +987,9 @@ COMPANY_POLICIES = [
     },
     {
         "id": "policy_research_star",
-        "name": "Research Unit \u2013 Attendance, Leave, Research & Star Reward Policy",
+        "name": "Star Reward Policy",
         "category": "Research",
-        "version": "2026.6",
+        "version": "2026.7",
         "effective_date": "2025-10-23",
         "applicable_to": "Research Unit",
         "content": {
