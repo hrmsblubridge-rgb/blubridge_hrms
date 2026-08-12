@@ -989,7 +989,7 @@ COMPANY_POLICIES = [
         "id": "policy_research_star",
         "name": "Research Unit \u2013 Attendance, Leave, Research & Star Reward Policy",
         "category": "Research",
-        "version": "2026.5",
+        "version": "2026.6",
         "effective_date": "2025-10-23",
         "applicable_to": "Research Unit",
         "content": {
@@ -1065,7 +1065,8 @@ COMPANY_POLICIES = [
                     "table": {
                         "headers": ["Stars", "Category", "Reward", "Action"],
                         "rows": [
-                            ["22+", "Research Champion", "\u20b910,000", "Champion Performer"],
+                            ["25+", "Research Premier", "\u20b911,000", "Research Premier Performer"],
+                            ["22-24", "Research Champion", "\u20b99,000", "Champion Performer"],
                             ["19-21", "Research Outstanding", "\u20b97,000", "Outstanding Performer"],
                             ["16-18", "Research Excellence", "\u20b95,000", "Top Performer"],
                             ["9\u201315", "Research Elite", "\u20b93,000", "Consistent Excellence"],

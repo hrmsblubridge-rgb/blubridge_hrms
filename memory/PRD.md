@@ -2461,3 +2461,5 @@ RULE: never run payroll test files that seed employees without verified cleanup
   - LEARNING (again): parallel search_replace on server.py silently dropped 1 of 3 edits; also hot-reload can seed a mid-edit version — always bump policy version AFTER content edits and verify DB. EDIT server.py SEQUENTIALLY.
 
 - **2026-08-12** 4A Remarks corrected (v2026.5): row1 'Research consistency', row2 'High-quality execution'; rows 3-6 unchanged. DB verified all 6 remarks match DOCX. Nothing else touched.
+
+- **2026-08-12** Section 5 table updated (v2026.6): new 25+ Research Premier ₹11,000 row; 22-24 Research Champion now ₹9,000; other 7 rows unchanged. DB verified all 9 rows. Nothing else touched.
