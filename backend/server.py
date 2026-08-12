@@ -989,11 +989,11 @@ COMPANY_POLICIES = [
         "id": "policy_research_star",
         "name": "Research Unit \u2013 Attendance, Leave, Research & Star Reward Policy",
         "category": "Research",
-        "version": "2026.1",
+        "version": "2026.4",
         "effective_date": "2025-10-23",
         "applicable_to": "Research Unit",
         "content": {
-            "overview": "Effective from 23rd October 2025. This policy defines the attendance, leave, and performance framework for the Research Unit. It establishes a culture of discipline, accountability, and recognition while maintaining flexibility, research autonomy, and a commitment to continuous learning.",
+            "overview": "Effective from 23nd October 2025",
             "sections": [
                 {
                     "title": "1. Introduction",
@@ -1028,7 +1028,7 @@ COMPANY_POLICIES = [
                         "headers": ["Category", "Event", "Star Effect", "Frequency", "Remarks"],
                         "rows": [
                             ["Attendance", "Full 26/26 presence", "+2", "Monthly", ""],
-                            ["Research consistency", "Consistent submission of quality deliverables reviewed positively", "+1", "Weekly", ""],
+                            ["Performance", "Consistent submission of quality deliverables reviewed positively", "+1", "Weekly", "Research consistency"],
                             ["Innovation", "Novel contribution improving research or workflow", "+3", "Monthly", "Recognizes creativity"],
                             ["Learning", "Completion of assigned learning modules / reports", "+1", "Weekly", "Encourages upskilling"],
                             ["Attendance", "10+ hours average research engagement", "+1", "Weekly", "Research Excellence Bonus"],
@@ -1050,11 +1050,10 @@ COMPANY_POLICIES = [
                             ["No Show / Unreachable", "Unavailable by 10:30 AM without notice", "Unsafe Flag (\u22123 Stars)", "Per Instance", "Immediate HR review"],
                             ["Unsafe Conduct", "Violation of discipline, ethics, or disruptive behavior", "Unsafe Flag (\u22124 Stars)", "Instant", "Management Review"]
                         ]
-                    },
-                    "footer": "Escalation Logic:"
+                    }
                 },
                 {
-                    "title": "Escalation Logic",
+                    "title": "Escalation Logic:",
                     "items": [
                         "Two Unsafe Flags in two months \u2192 HR Counselling",
                         "Three Unsafe Flags in a quarter \u2192 Formal Warning",
@@ -1064,16 +1063,16 @@ COMPANY_POLICIES = [
                 {
                     "title": "5. Monthly Rating & Rewards",
                     "table": {
-                        "headers": ["Stars Category", "Reward Action"],
+                        "headers": ["Stars", "Category", "Reward", "Action"],
                         "rows": [
-                            ["22+", "Research Champion \u20b9 10,000"],
-                            ["19\u201321", "Research Outstanding \u20b9 7,000"],
-                            ["16\u201318", "Research Excellence \u20b95,000"],
-                            ["9\u201315", "Research Elite \u20b93,000"],
-                            ["6\u20138", "Research Consistent \u20b92,000"],
-                            ["4\u20135", "Satisfactory \u20b91,000"],
-                            ["1\u20133", "Needs Improvement Counselling"],
-                            ["\u22640", "Unsafe Behavior None"]
+                            ["22+", "Research Champion", "\u20b910,000", "Champion Performer"],
+                            ["19-21", "Research Outstanding", "\u20b97,000", "Outstanding Performer"],
+                            ["16-18", "Research Excellence", "\u20b95,000", "Top Performer"],
+                            ["9\u201315", "Research Elite", "\u20b93,000", "Consistent Excellence"],
+                            ["6\u20138", "Research Consistent", "\u20b92,000", "Reliable Contributor"],
+                            ["4\u20135", "Satisfactory", "\u20b91,000", "Needs Improvement"],
+                            ["1\u20133", "Needs Improvement", "Counselling", "Performance Mentoring"],
+                            ["\u22640", "Unsafe Behavior", "None", "Disciplinary Review"]
                         ]
                     }
                 },
