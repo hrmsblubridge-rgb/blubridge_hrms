@@ -2459,3 +2459,5 @@ RULE: never run payroll test files that seed employees without verified cleanup
   - 4A row 2: Category "Performance", remark "Research consistency". 4B footer removed; "Escalation Logic:" is its own section with 3 bullets right after the 4B table.
   - Structure verified: 3=4x5, 4A=5x6, 4B=5x8, 5=4x8, 6A=3x4, 6B=3x5 tables. Access control & inactivity timeout untouched.
   - LEARNING (again): parallel search_replace on server.py silently dropped 1 of 3 edits; also hot-reload can seed a mid-edit version — always bump policy version AFTER content edits and verify DB. EDIT server.py SEQUENTIALLY.
+
+- **2026-08-12** 4A Remarks corrected (v2026.5): row1 'Research consistency', row2 'High-quality execution'; rows 3-6 unchanged. DB verified all 6 remarks match DOCX. Nothing else touched.

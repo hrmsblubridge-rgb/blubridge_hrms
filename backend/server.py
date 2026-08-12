@@ -989,7 +989,7 @@ COMPANY_POLICIES = [
         "id": "policy_research_star",
         "name": "Research Unit \u2013 Attendance, Leave, Research & Star Reward Policy",
         "category": "Research",
-        "version": "2026.4",
+        "version": "2026.5",
         "effective_date": "2025-10-23",
         "applicable_to": "Research Unit",
         "content": {
@@ -1027,8 +1027,8 @@ COMPANY_POLICIES = [
                     "table": {
                         "headers": ["Category", "Event", "Star Effect", "Frequency", "Remarks"],
                         "rows": [
-                            ["Attendance", "Full 26/26 presence", "+2", "Monthly", ""],
-                            ["Performance", "Consistent submission of quality deliverables reviewed positively", "+1", "Weekly", "Research consistency"],
+                            ["Attendance", "Full 26/26 presence", "+2", "Monthly", "Research consistency"],
+                            ["Performance", "Consistent submission of quality deliverables reviewed positively", "+1", "Weekly", "High-quality execution"],
                             ["Innovation", "Novel contribution improving research or workflow", "+3", "Monthly", "Recognizes creativity"],
                             ["Learning", "Completion of assigned learning modules / reports", "+1", "Weekly", "Encourages upskilling"],
                             ["Attendance", "10+ hours average research engagement", "+1", "Weekly", "Research Excellence Bonus"],
