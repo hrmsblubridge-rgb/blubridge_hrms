@@ -26,6 +26,10 @@ const ONBOARDING_ENABLED = false;
 // ============================================================================
 export const TOKEN_KEY = 'blubridge_token';
 export const REFRESH_TOKEN_KEY = 'blubridge_refresh_token';
+// 30-minute inactivity timeout — timestamp shared via localStorage so ALL
+// tabs of the same logged-in session share one activity clock.
+export const LAST_ACTIVITY_KEY = 'blubridge_last_activity';
+export const INACTIVITY_LIMIT_MS = 30 * 60 * 1000;
 
 // Bare client (NO interceptors) for refresh/logout calls — avoids loops.
 const bareAxios = axios.create();
@@ -129,6 +133,21 @@ export const AuthProvider = ({ children }) => {
     const initAuth = async () => {
       const savedToken = localStorage.getItem(TOKEN_KEY);
       if (savedToken) {
+        // INACTIVITY GUARD (page refresh / reopened tab): a session idle for
+        // more than 30 minutes must NOT be silently resumed or refreshed.
+        const last = parseInt(localStorage.getItem(LAST_ACTIVITY_KEY) || '0', 10);
+        if (last && Date.now() - last > INACTIVITY_LIMIT_MS) {
+          try {
+            await bareAxios.post(`${API}/auth/logout`, {}, {
+              headers: { Authorization: `Bearer ${savedToken}` },
+            });
+          } catch (_) { /* best-effort revoke */ }
+          clearStoredAuth();
+          localStorage.removeItem(LAST_ACTIVITY_KEY);
+          setToken(null);
+          setLoading(false);
+          return;
+        }
         try {
           // The response interceptor transparently refreshes an expired
           // access token here, so a returning user stays signed in.
@@ -182,10 +201,45 @@ export const AuthProvider = ({ children }) => {
       // Best-effort — even if the network call fails we clear local state.
     }
     clearStoredAuth();
+    localStorage.removeItem(LAST_ACTIVITY_KEY);
     setToken(null);
     setUser(null);
     setAvatarMap({});
   };
+
+  // ===== 30-MINUTE INACTIVITY TIMEOUT =====
+  // Sits ON TOP of the existing JWT auth: uses the existing logout() flow
+  // (server-side revoke + local cleanup) when the shared activity clock in
+  // localStorage exceeds 30 minutes. Works across tabs of the same session.
+  useEffect(() => {
+    if (!user) return undefined;
+    localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
+    let lastWrite = Date.now();
+    const isExpired = () => {
+      const last = parseInt(localStorage.getItem(LAST_ACTIVITY_KEY) || '0', 10);
+      return !!last && Date.now() - last > INACTIVITY_LIMIT_MS;
+    };
+    const expire = () => {
+      // Existing logout process — revokes the session server-side and clears
+      // auth state; route guards then redirect to the login page.
+      logout();
+    };
+    const onActivity = () => {
+      if (isExpired()) { expire(); return; }
+      const now = Date.now();
+      if (now - lastWrite > 5000) {  // throttle localStorage writes
+        lastWrite = now;
+        localStorage.setItem(LAST_ACTIVITY_KEY, String(now));
+      }
+    };
+    const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
+    events.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
+    const watchdog = setInterval(() => { if (isExpired()) expire(); }, 30000);
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, onActivity));
+      clearInterval(watchdog);
+    };
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateUser = useCallback((updates) => {
     setUser(prev => {

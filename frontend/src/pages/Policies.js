@@ -18,6 +18,7 @@ const POLICY_THEME = {
   policy_leave:           { icon: Calendar,    accent: '#0ea5e9', tint: 'sky',     label: 'HR' },
   policy_it:              { icon: Laptop,      accent: '#6366f1', tint: 'indigo',  label: 'Company-wide' },
   policy_research:        { icon: FlaskConical, accent: '#10b981', tint: 'emerald', label: 'Research' },
+  policy_research_star:   { icon: FlaskConical, accent: '#8b5cf6', tint: 'violet',  label: 'Research' },
   policy_research_hr:     { icon: FlaskConical, accent: '#0d9488', tint: 'teal',    label: 'Research' },
   policy_support_hr:      { icon: Users,       accent: '#f59e0b', tint: 'amber',   label: 'Support' },
   policy_admin_induction: { icon: Building2,   accent: '#ec4899', tint: 'pink',    label: 'Admin' },

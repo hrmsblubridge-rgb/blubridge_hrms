@@ -984,6 +984,135 @@ COMPANY_POLICIES = [
                 }
             ]
         }
+    },
+    {
+        "id": "policy_research_star",
+        "name": "Research Unit \u2013 Attendance, Leave, Research & Star Reward Policy",
+        "category": "Research",
+        "version": "2026.1",
+        "effective_date": "2025-10-23",
+        "applicable_to": "Research Unit",
+        "content": {
+            "overview": "Effective from 23rd October 2025. This policy defines the attendance, leave, and performance framework for the Research Unit. It establishes a culture of discipline, accountability, and recognition while maintaining flexibility, research autonomy, and a commitment to continuous learning.",
+            "sections": [
+                {
+                    "title": "1. Introduction",
+                    "text": "This policy defines the attendance, leave, and performance framework for the Research Unit. It establishes a culture of discipline, accountability, and recognition while maintaining flexibility, research autonomy, and a commitment to continuous learning."
+                },
+                {
+                    "title": "2. Working Hours & Research Discipline",
+                    "text": "Researchers are expected to dedicate a minimum of 9.5 hours daily to active research or learning activities, within a total office presence of 11 hours. Breaks are flexible but must not reduce active engagement below the 9.5-hour threshold. This structure ensures consistent engagement, deep work, and scientific rigor.",
+                    "footer": "Note: Researchers maintaining an average of 10+ hours of active research/learning per day are recognized for exceptional commitment. Any consistent shortfall below the expected threshold will impact star retention and reward eligibility."
+                },
+                {
+                    "title": "3. Leave Notification Rules",
+                    "text": "All leave or late-entry requests must be submitted through HRMS and accompanied by an email to the Super team lead, with CC to team members, HR & Management. Failure to follow both steps will be treated as Uninformed Leave.",
+                    "table": {
+                        "headers": ["Type", "Notification Time", "Proof / Documentation", "Remarks"],
+                        "rows": [
+                            ["Pre-Planned Leave", "Minimum 4 days before leave date", "HRMS entry + Email justification", "Unannounced leave auto-flagged"],
+                            ["Sick Leave", "Before 7:00 AM, same day", "Doctor's note if >2 days", "Late notification auto-deducts stars"],
+                            ["Emergency Leave", "Must inform before 9:00 AM (shift start)", "Valid proof (medical, family emergency, etc.) within 24 hours", "More than 2 per month \u2192 Unsafe Flag"],
+                            ["Late Entry Request", "Must inform before 9:30 AM with estimated arrival", "HRMS update + Email justification to HR Team", "More than 3 late entries per month \u2192 \u22121 Star deduction"],
+                            ["No Show / Unreachable", "Not acceptable", "Not acceptable", "Immediate Unsafe \u2013 Commitment flag; triggers HR review"]
+                        ]
+                    }
+                },
+                {
+                    "title": "4. Star & Attendance Credit System",
+                    "text": "The Blubridge Research Star Framework (BRSF) evaluates performance via punctuality, consistency, innovation, learning, and contribution. Stars are automatically calculated based on attendance, performance, and learning metrics."
+                },
+                {
+                    "title": "4A. Positive Star Metrics",
+                    "table": {
+                        "headers": ["Category", "Event", "Star Effect", "Frequency", "Remarks"],
+                        "rows": [
+                            ["Attendance", "Full 26/26 presence", "+2", "Monthly", ""],
+                            ["Research consistency", "Consistent submission of quality deliverables reviewed positively", "+1", "Weekly", ""],
+                            ["Innovation", "Novel contribution improving research or workflow", "+3", "Monthly", "Recognizes creativity"],
+                            ["Learning", "Completion of assigned learning modules / reports", "+1", "Weekly", "Encourages upskilling"],
+                            ["Attendance", "10+ hours average research engagement", "+1", "Weekly", "Research Excellence Bonus"],
+                            ["Extra Effort", "Worked on Sunday/festival (voluntary)", "+1", "Per Day", "Recognizes dedication"]
+                        ]
+                    }
+                },
+                {
+                    "title": "4B. Negative Star Metrics & Enforcement Triggers",
+                    "table": {
+                        "headers": ["Category / Behavior", "Trigger / Violation", "Star Effect / Flag", "Frequency", "Remarks / System Action"],
+                        "rows": [
+                            ["Invalid Leave Request", "Leave applied late, missing HRMS entry, or no prior email notification", "\u22121 Star", "Per Instance", "Procedural non-compliance"],
+                            ["Emergency Leave Violation", "Emergency leave taken without valid proof or justification within 24 hours", "\u22122 Stars", "Per Instance", "Misuse or unverifiable emergency"],
+                            ["Frequent Emergencies", "More than 2 emergency or late-entry cases per month", "Unsafe Flag (\u22123 Stars)", "Monthly", "Indicates irregular pattern"],
+                            ["Short Research Duration", "Average <9.5 hrs active engagement (without valid reason)", "\u22121 Star", "Weekly", "Partial effort or disengagement"],
+                            ["No Proof / Verification", "Leave claimed, but requested supporting proof not submitted", "\u22123 Star", "Per Instance", "Documentation failure"],
+                            ["Frequent Absences", "More than 4 absences/month", "Unsafe Flag (\u22123 Stars)", "Monthly", "Commitment issue"],
+                            ["No Show / Unreachable", "Unavailable by 10:30 AM without notice", "Unsafe Flag (\u22123 Stars)", "Per Instance", "Immediate HR review"],
+                            ["Unsafe Conduct", "Violation of discipline, ethics, or disruptive behavior", "Unsafe Flag (\u22124 Stars)", "Instant", "Management Review"]
+                        ]
+                    },
+                    "footer": "Escalation Logic:"
+                },
+                {
+                    "title": "Escalation Logic",
+                    "items": [
+                        "Two Unsafe Flags in two months \u2192 HR Counselling",
+                        "Three Unsafe Flags in a quarter \u2192 Formal Warning",
+                        "Four Unsafe Flags in four months \u2192 Management Review / Assessment"
+                    ]
+                },
+                {
+                    "title": "5. Monthly Rating & Rewards",
+                    "table": {
+                        "headers": ["Stars Category", "Reward Action"],
+                        "rows": [
+                            ["22+", "Research Champion \u20b9 10,000"],
+                            ["19\u201321", "Research Outstanding \u20b9 7,000"],
+                            ["16\u201318", "Research Excellence \u20b95,000"],
+                            ["9\u201315", "Research Elite \u20b93,000"],
+                            ["6\u20138", "Research Consistent \u20b92,000"],
+                            ["4\u20135", "Satisfactory \u20b91,000"],
+                            ["1\u20133", "Needs Improvement Counselling"],
+                            ["\u22640", "Unsafe Behavior None"]
+                        ]
+                    }
+                },
+                {
+                    "title": "6. Recognition Framework",
+                    "text": "Blubridge rewards both individual and team performance through recognition programs. The Recognition Framework complements the star system by rewarding exceptional learning, innovation, and collaboration."
+                },
+                {
+                    "title": "6A. Individual Recognition",
+                    "table": {
+                        "headers": ["Award Title", "Eligibility Criteria (Linked to Stars)", "Reward / Recognition (Voucher/Coupons)"],
+                        "rows": [
+                            ["Research Excellence Award", "Star Score \u2265 16 + proven innovation contribution", "\u20b95,000 + Certificate"],
+                            ["Research Commitment Award", "26/26 presence with \u22659.5 hrs average research daily", "\u20b92,000 + Certificate"],
+                            ["Learning Champion", "Completion of all learning modules + consistent participation", "\u20b92,000 + Certificate"],
+                            ["Recovery Award", "Improved from Unsafe (\u22640) to Elite (\u226512) within 60 days", "\u20b92,000 + Certificate"]
+                        ]
+                    }
+                },
+                {
+                    "title": "6B. Team Recognition & Rewards",
+                    "table": {
+                        "headers": ["Recognition Type", "Team Criteria", "Reward / Funding Value"],
+                        "rows": [
+                            ["Team Excellence Award", "Highest average team star score (monthly)", "Team Lunch (\u20b95,000)"],
+                            ["Research Cohesion Award", "Zero Unsafe Flags in a quarter", "Team Outing (\u20b910,000)"],
+                            ["Research Exposure Award", "Elite-level average stars (\u22659) for 6 months", "Travel Funding (\u20b925,000)"],
+                            ["Collaboration Award", "Joint completion of research milestones", "Lunch/Dinner (\u20b93,000 per team)"],
+                            ["Research Publish (Team)", "Exceptional research impact / Publications", "Cash Prize for the Team"]
+                        ]
+                    }
+                },
+                {
+                    "title": "7. Declaration",
+                    "text": "This system is designed to reward consistency, not control. Each researcher is accountable for maintaining discipline and research rigor. By acknowledging this policy, employees agree to uphold the standards that define Blubridge's culture of research excellence.",
+                    "footer": "Note: A physical copy of this policy will also be circulated for employee acknowledgment and signature."
+                }
+            ]
+        }
     }
 ]
 
@@ -15204,6 +15333,7 @@ async def get_my_documents(current_user: dict = Depends(get_current_user)):
 DEPARTMENT_RESTRICTED_POLICIES = {
     "policy_research": {"Research Unit"},
     "policy_research_hr": {"Research Unit"},
+    "policy_research_star": {"Research Unit"},
     "policy_support_hr": {"Support Staff"},
 }
 

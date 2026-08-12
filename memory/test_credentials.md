@@ -73,3 +73,9 @@ Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "
 - JWT secret: `JWT_SECRET` in backend/.env (required, no fallback).
 - Frontend stores `blubridge_token` + `blubridge_refresh_token` in localStorage; axios interceptor auto-refreshes on 401 once and retries.
 - NOTE for testing agents: tokens issued BEFORE 2026-07-09 are invalid (new secret + new claims) — always login fresh.
+
+## Credential drift note (2026-08-12)
+- madhan.s / Vigil@123 → INVALID (drifted again)
+- spartasolace1 / spar@1230 → INVALID
+- admin / HrAdmin786$ → WORKING
+- user / pass123 → WORKING (Rishi S Nayak, Business & Product)
