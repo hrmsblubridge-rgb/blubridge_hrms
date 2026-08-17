@@ -2467,3 +2467,5 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - **2026-08-12** Policy title renamed to 'Star Reward Policy' (v2026.7) — single 'name' field drives both the list card and expanded header; verified live in both spots. Everything else (badge, date, icon, content, access) untouched.
 
 - **2026-08-12** 6A rewards: removed '+ Certificate' from all 4 rows (v2026.8) — now ₹5,000 / ₹2,000 / ₹2,000 / ₹2,000. DB verified, no other cell touched.
+
+- **2026-08-12** 6A (v2026.9): removed 'Research Excellence Award' row; 'Research Commitment Award' reward ₹2,000→₹4,000. Table now 3 rows, DB verified.
