@@ -2465,3 +2465,5 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - **2026-08-12** Section 5 table updated (v2026.6): new 25+ Research Premier ₹11,000 row; 22-24 Research Champion now ₹9,000; other 7 rows unchanged. DB verified all 9 rows. Nothing else touched.
 
 - **2026-08-12** Policy title renamed to 'Star Reward Policy' (v2026.7) — single 'name' field drives both the list card and expanded header; verified live in both spots. Everything else (badge, date, icon, content, access) untouched.
+
+- **2026-08-12** 6A rewards: removed '+ Certificate' from all 4 rows (v2026.8) — now ₹5,000 / ₹2,000 / ₹2,000 / ₹2,000. DB verified, no other cell touched.

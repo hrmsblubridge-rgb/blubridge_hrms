@@ -989,7 +989,7 @@ COMPANY_POLICIES = [
         "id": "policy_research_star",
         "name": "Star Reward Policy",
         "category": "Research",
-        "version": "2026.7",
+        "version": "2026.8",
         "effective_date": "2025-10-23",
         "applicable_to": "Research Unit",
         "content": {
@@ -1086,10 +1086,10 @@ COMPANY_POLICIES = [
                     "table": {
                         "headers": ["Award Title", "Eligibility Criteria (Linked to Stars)", "Reward / Recognition (Voucher/Coupons)"],
                         "rows": [
-                            ["Research Excellence Award", "Star Score \u2265 16 + proven innovation contribution", "\u20b95,000 + Certificate"],
-                            ["Research Commitment Award", "26/26 presence with \u22659.5 hrs average research daily", "\u20b92,000 + Certificate"],
-                            ["Learning Champion", "Completion of all learning modules + consistent participation", "\u20b92,000 + Certificate"],
-                            ["Recovery Award", "Improved from Unsafe (\u22640) to Elite (\u226512) within 60 days", "\u20b92,000 + Certificate"]
+                            ["Research Excellence Award", "Star Score \u2265 16 + proven innovation contribution", "\u20b95,000"],
+                            ["Research Commitment Award", "26/26 presence with \u22659.5 hrs average research daily", "\u20b92,000"],
+                            ["Learning Champion", "Completion of all learning modules + consistent participation", "\u20b92,000"],
+                            ["Recovery Award", "Improved from Unsafe (\u22640) to Elite (\u226512) within 60 days", "\u20b92,000"]
                         ]
                     }
                 },
