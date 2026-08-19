@@ -5,6 +5,23 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-19 (later) — Payslip Category Grouping + Cap + PF/Gratuity formulas
+- **User requirement:** Payslip components must display grouped by category (Base Components (A), Basket of Allowances (B), Retirement Benefits (C)) with subtotals; PF Company Contribution must compute as `min(12% × Basic, ₹1,800)`; Gratuity must compute as fixed ₹793 pro-rated by `(payable_days / cal_days)`.
+- **Backend (`backend/payslip_module.py`):**
+  - `_validate_components` — now accepts `category` (string) and `max_amount` (nullable number ≥ 0) on every component.
+  - `compute_payslip` — applies `max_amount` as a cap on the FULL-MONTH value BEFORE proration; emits `category`, `max_amount`, `capped` flag and `calc_base` in every output line.
+- **Frontend (`Payslips.js`):**
+  - Template editor: added **Category** dropdown (3 fixed options + None) and **Max Amount ₹ (optional cap)** input on every component row.
+  - `CalcBreakdown` preview: components are now GROUPED under category headers with per-category subtotals (both Full-Month & This-Month columns). Capped rows display a small "· capped" amber marker. Basis label now shows the actual `calc_base` (e.g. "12% of Basic") and cap value if present.
+- **Frontend (`EmployeePayslips.js`):** dialog table now also renders category groups + subtotals for the employee view.
+- **DB migration — AI Research template rebuilt to match the screenshot spec:**
+  - Base (A): Basic 37.5%, HRA 18.75%.
+  - Basket (B): LTA ₹935 (fixed), Phone 2.5%, Bonus 3.75%, Stay ₹5,000 (fixed), Special ₹6,762 (fixed), Food 2.75%, Other Allowance (Payroll Extra Pay).
+  - Retirement (C): PF = 12% of **Basic**, `max_amount=₹1,800`, `include_in_gross=true`; Gratuity = fixed ₹793, `include_in_gross=true`.
+- **Verified live via `/api/payslips/calculate` for Navin Kumar V (Feb 2026, 27/28 payable):** Base (A) ₹23,866.07 + Basket (B) ₹16,062.11 + Retirement (C) ₹2,500.39 = Gross **₹42,428.57** (= 44,000 × 27/28 exact), Deductions ₹2,500.39, Net Pay **₹39,928.18**. PF row correctly capped: full-month ₹1,800 (formula would give 1,980), this-month ₹1,735.71. Gratuity: full-month ₹793, this-month ₹764.68 (= 793 × 27/28). ✅
+
+
+
 ## 🆕 2026-08-19 — Payslip "Include in Gross" (CTC-line) toggle
 - **Bug reported:** Screenshot showed PF Company Contribution & Gratuity being displayed as negative in "This Month" column AND also included in Total Deductions → visually looked like a double-deduction, and the actual Net Pay (₹38,816.80) excluded these CTC components entirely.
 - **Fix (Option B — per-component toggle):**

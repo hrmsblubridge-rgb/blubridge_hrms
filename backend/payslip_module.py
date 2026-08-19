@@ -51,6 +51,8 @@ def _validate_components(components):
                 raise HTTPException(status_code=400, detail=f"Percentage must be 0-100 for {c.get('name')}")
         if ct == "fixed" and float(c.get("fixed_amount") or 0) < 0:
             raise HTTPException(status_code=400, detail=f"Negative amount not allowed for {c.get('name')}")
+        if c.get("max_amount") not in (None, "", 0) and float(c.get("max_amount") or 0) < 0:
+            raise HTTPException(status_code=400, detail=f"max_amount cannot be negative for {c.get('name')}")
         o = int(c.get("display_order") or 0)
         if o in orders:
             raise HTTPException(status_code=400, detail=f"Duplicate display_order {o}")
@@ -59,6 +61,7 @@ def _validate_components(components):
         c.setdefault("active", True)
         c.setdefault("include_in_gross", c["operation"] == "add")
         c.setdefault("include_in_net", True)
+        c.setdefault("category", "")
 
 
 @api_router.post("/payslips/templates")
@@ -252,6 +255,17 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
             monthly_amt = per_day * float(extra_pay_days or 0)
         else:
             monthly_amt = 0.0
+        # Apply optional cap on the FULL-MONTH value (e.g. PF Employer capped at ₹1,800/month)
+        cap_raw = c.get("max_amount")
+        capped = False
+        if cap_raw not in (None, "", 0):
+            try:
+                cap_val = float(cap_raw)
+                if cap_val > 0 and monthly_amt > cap_val:
+                    monthly_amt = cap_val
+                    capped = True
+            except (TypeError, ValueError):
+                pass
         if ct == "payroll_extra_pay":
             amount = monthly_amt  # already day-based, never prorated again
         else:
@@ -272,9 +286,13 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
             deductions += amount
         lines.append({"name": c["name"], "component_type": c["component_type"], "operation": c["operation"],
                       "calc_type": ct, "percentage_value": c.get("percentage_value"),
+                      "calc_base": c.get("calc_base"),
                       "monthly_amount": round(monthly_amt, 2), "amount": amount,
                       "proratable": c.get("proratable", True),
-                      "include_in_gross": bool(include_gross)})
+                      "include_in_gross": bool(include_gross),
+                      "category": c.get("category") or "",
+                      "max_amount": float(cap_raw) if cap_raw not in (None, "", 0) else None,
+                      "capped": capped})
     other_allowance = round(per_day * float(extra_pay_days or 0), 2)
     has_extra_component = any(l["calc_type"] == "payroll_extra_pay" for l in lines)
     if not has_extra_component and other_allowance:

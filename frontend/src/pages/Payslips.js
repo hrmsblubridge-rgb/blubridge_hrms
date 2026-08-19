@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -17,68 +17,104 @@ const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFract
 const emptyComponent = (order) => ({
   name: '', component_type: 'earning', operation: 'add', calc_type: 'percentage',
   percentage_value: '', fixed_amount: '', calc_base: 'monthly_pay',
-  proratable: true, active: true, include_in_gross: true, display_order: order,
+  proratable: true, active: true, include_in_gross: true,
+  category: '', max_amount: '', display_order: order,
 });
 
 const CALC_LABEL = { percentage: '% of Base', fixed: 'Fixed Amount', payroll_extra_pay: 'Extra Pay (Payroll)' };
+const CATEGORIES = ['Base Components (A)', 'Basket of Allowances (B)', 'Retirement Benefits (C)'];
 
 // ---------- Shared calculation breakdown ----------
-export const CalcBreakdown = ({ calc }) => (
-  <div className="space-y-4" data-testid="calc-breakdown">
-    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
-      {[['Month', calc.month], ['Calendar Days', calc.calendar_days], ['Payable Days', calc.payable_days], ['Extra Pay Days', calc.extra_pay_days], ['Per-Day Salary', inr(calc.per_day_salary)]].map(([l, v]) => (
-        <div key={l} className="bg-slate-50 rounded-lg p-3">
-          <div className="text-xs text-slate-400">{l}</div>
-          <div className="font-semibold text-slate-800">{v}</div>
-        </div>
-      ))}
-    </div>
-    <table className="w-full text-sm">
-      <thead className="text-xs text-slate-500 uppercase border-b">
-        <tr><th className="text-left py-2">Component</th><th className="text-left py-2">Basis</th><th className="text-right py-2">Full Month</th><th className="text-right py-2">This Month</th></tr>
-      </thead>
-      <tbody>
-        {calc.components.map((c, i) => (
-          <tr key={i} className="border-b border-slate-100">
-            <td className="py-2 font-medium">
-              {c.name}
-              {c.operation === 'deduct' && (
-                <span className="ml-1 text-[10px] uppercase tracking-wide text-slate-400">
-                  {c.include_in_gross ? '(CTC · deducted)' : '(deduction)'}
-                </span>
-              )}
-            </td>
-            <td className="py-2 text-xs text-slate-500">{c.calc_type === 'percentage' ? `${c.percentage_value}% of base` : CALC_LABEL[c.calc_type]}{c.proratable === false ? ' · not prorated' : ''}</td>
-            <td className="py-2 text-right">{inr(c.monthly_amount)}</td>
-            <td className="py-2 text-right font-medium text-slate-800">{inr(c.amount)}</td>
-          </tr>
+export const CalcBreakdown = ({ calc }) => {
+  // Group components by category, preserving display order within each group
+  const grouped = {};
+  const groupOrder = [];
+  (calc.components || []).forEach((c) => {
+    const cat = c.category || 'Uncategorized';
+    if (!grouped[cat]) { grouped[cat] = []; groupOrder.push(cat); }
+    grouped[cat].push(c);
+  });
+  const catSubtotal = (rows) => rows.reduce((acc, r) => acc + (Number(r.amount) || 0), 0);
+  const catMonthlySubtotal = (rows) => rows.reduce((acc, r) => acc + (Number(r.monthly_amount) || 0), 0);
+
+  return (
+    <div className="space-y-4" data-testid="calc-breakdown">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
+        {[['Month', calc.month], ['Calendar Days', calc.calendar_days], ['Payable Days', calc.payable_days], ['Extra Pay Days', calc.extra_pay_days], ['Per-Day Salary', inr(calc.per_day_salary)]].map(([l, v]) => (
+          <div key={l} className="bg-slate-50 rounded-lg p-3">
+            <div className="text-xs text-slate-400">{l}</div>
+            <div className="font-semibold text-slate-800">{v}</div>
+          </div>
         ))}
-        {calc.other_allowance > 0 && (
-          <tr className="border-b border-slate-100">
-            <td className="py-2 font-medium">Other Allowance (Extra Pay)</td>
-            <td className="py-2 text-xs text-slate-500">{calc.extra_pay_days} day(s) × per-day</td>
-            <td className="py-2 text-right">—</td>
-            <td className="py-2 text-right font-medium">{inr(calc.other_allowance)}</td>
+      </div>
+      <table className="w-full text-sm">
+        <thead className="text-xs text-slate-500 uppercase border-b">
+          <tr><th className="text-left py-2">Component</th><th className="text-left py-2">Basis</th><th className="text-right py-2">Full Month</th><th className="text-right py-2">This Month</th></tr>
+        </thead>
+        <tbody>
+          {groupOrder.map((cat) => (
+            <Fragment key={`grp-${cat}`}>
+              <tr className="bg-slate-50">
+                <td colSpan="4" className="py-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500" data-testid={`group-header-${cat}`}>{cat}</td>
+              </tr>
+              {grouped[cat].map((c, i) => (
+                <tr key={`${cat}-${i}`} className="border-b border-slate-100">
+                  <td className="py-2 pl-3 font-medium">
+                    {c.name}
+                    {c.operation === 'deduct' && (
+                      <span className="ml-1 text-[10px] uppercase tracking-wide text-slate-400">
+                        {c.include_in_gross ? '(CTC · deducted)' : '(deduction)'}
+                      </span>
+                    )}
+                    {c.capped && (
+                      <span className="ml-1 text-[10px] uppercase tracking-wide text-amber-600" title={`Capped at ${inr(c.max_amount)}`}>· capped</span>
+                    )}
+                  </td>
+                  <td className="py-2 text-xs text-slate-500">
+                    {c.calc_type === 'percentage'
+                      ? `${c.percentage_value}% of ${c.calc_base && c.calc_base !== 'monthly_pay' ? c.calc_base : 'base'}`
+                      : CALC_LABEL[c.calc_type]}
+                    {c.max_amount ? ` · cap ${inr(c.max_amount)}` : ''}
+                    {c.proratable === false ? ' · not prorated' : ''}
+                  </td>
+                  <td className="py-2 text-right">{inr(c.monthly_amount)}</td>
+                  <td className="py-2 text-right font-medium text-slate-800">{inr(c.amount)}</td>
+                </tr>
+              ))}
+              <tr className="border-b bg-slate-50/60">
+                <td colSpan="2" className="py-1.5 pl-3 text-xs text-slate-500 font-semibold">Subtotal · {cat}</td>
+                <td className="py-1.5 text-right text-xs font-semibold text-slate-600">{inr(catMonthlySubtotal(grouped[cat]))}</td>
+                <td className="py-1.5 text-right text-xs font-semibold text-slate-700" data-testid={`group-subtotal-${cat}`}>{inr(catSubtotal(grouped[cat]))}</td>
+              </tr>
+            </Fragment>
+          ))}
+          {calc.other_allowance > 0 && (
+            <tr className="border-b border-slate-100">
+              <td className="py-2 font-medium">Other Allowance (Extra Pay)</td>
+              <td className="py-2 text-xs text-slate-500">{calc.extra_pay_days} day(s) × per-day</td>
+              <td className="py-2 text-right">—</td>
+              <td className="py-2 text-right font-medium">{inr(calc.other_allowance)}</td>
+            </tr>
+          )}
+        </tbody>
+        <tfoot>
+          <tr className="text-sm">
+            <td colSpan="3" className="py-2 text-right text-slate-500">Gross Earnings</td>
+            <td className="py-2 text-right font-semibold" data-testid="preview-gross">{inr(calc.gross_earnings)}</td>
           </tr>
-        )}
-      </tbody>
-      <tfoot>
-        <tr className="text-sm">
-          <td colSpan="3" className="py-2 text-right text-slate-500">Gross Earnings</td>
-          <td className="py-2 text-right font-semibold" data-testid="preview-gross">{inr(calc.gross_earnings)}</td>
-        </tr>
-        <tr className="text-sm">
-          <td colSpan="3" className="py-2 text-right text-slate-500">Total Deductions</td>
-          <td className="py-2 text-right font-semibold text-red-600" data-testid="preview-deductions">−{inr(calc.total_deductions)}</td>
-        </tr>
-        <tr className="text-base border-t">
-          <td colSpan="3" className="py-3 text-right font-semibold">NET PAY</td>
-          <td className="py-3 text-right font-bold text-emerald-700" data-testid="preview-net">{inr(calc.net_pay)}</td>
-        </tr>
-      </tfoot>
-    </table>
-  </div>
-);
+          <tr className="text-sm">
+            <td colSpan="3" className="py-2 text-right text-slate-500">Total Deductions</td>
+            <td className="py-2 text-right font-semibold text-red-600" data-testid="preview-deductions">−{inr(calc.total_deductions)}</td>
+          </tr>
+          <tr className="text-base border-t">
+            <td colSpan="3" className="py-3 text-right font-semibold">NET PAY</td>
+            <td className="py-3 text-right font-bold text-emerald-700" data-testid="preview-net">{inr(calc.net_pay)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+};
 
 // ---------- Template form ----------
 const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
@@ -110,6 +146,8 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
         percentage_value: c.calc_type === 'percentage' ? Number(c.percentage_value || 0) : null,
         fixed_amount: c.calc_type === 'fixed' ? Number(c.fixed_amount || 0) : null,
         calc_base: c.calc_type === 'percentage' ? (c.calc_base || 'monthly_pay') : null,
+        max_amount: (c.max_amount === '' || c.max_amount == null) ? null : Number(c.max_amount),
+        category: c.category || '',
       })),
     };
     setSaving(true);
@@ -163,6 +201,16 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
                 <Input data-testid={`component-name-${i}`} value={c.name} onChange={(e) => setComp(i, { name: e.target.value })} placeholder="e.g. Basic" />
               </div>
               <div>
+                <label className="text-xs text-slate-500">Category</label>
+                <Select value={c.category || '__none__'} onValueChange={(v) => setComp(i, { category: v === '__none__' ? '' : v })}>
+                  <SelectTrigger data-testid={`component-category-${i}`}><SelectValue placeholder="—" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">— None —</SelectItem>
+                    {CATEGORIES.map((cat) => (<SelectItem key={cat} value={cat}>{cat}</SelectItem>))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
                 <label className="text-xs text-slate-500">Type</label>
                 <Select value={c.component_type} onValueChange={(v) => setComp(i, { component_type: v })}>
                   <SelectTrigger data-testid={`component-type-${i}`}><SelectValue /></SelectTrigger>
@@ -193,6 +241,12 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
                 <div>
                   <label className="text-xs text-slate-500">Amount ₹</label>
                   <Input data-testid={`component-fixed-${i}`} type="number" min="0" value={c.fixed_amount ?? ''} onChange={(e) => setComp(i, { fixed_amount: e.target.value })} />
+                </div>
+              )}
+              {c.calc_type !== 'payroll_extra_pay' && (
+                <div>
+                  <label className="text-xs text-slate-500" title="Optional monthly cap. Full-month value never exceeds this (e.g. PF Employer capped at 1800).">Max Amount ₹ <span className="text-slate-300">(optional cap)</span></label>
+                  <Input data-testid={`component-max-${i}`} type="number" min="0" value={c.max_amount ?? ''} onChange={(e) => setComp(i, { max_amount: e.target.value })} placeholder="e.g. 1800" />
                 </div>
               )}
             </div>

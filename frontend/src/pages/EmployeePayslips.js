@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -99,19 +99,38 @@ export default function EmployeePayslips() {
                   <tr><th className="text-left py-2">Component</th><th className="text-right py-2">Amount</th></tr>
                 </thead>
                 <tbody>
-                  {viewSlip.calc?.components.map((c, i) => (
-                    <tr key={i} className="border-b border-slate-100">
-                      <td className="py-2">
-                        {c.name}
-                        {c.operation === 'deduct' && (
-                          <span className="ml-1 text-[10px] uppercase tracking-wide text-slate-400">
-                            {c.include_in_gross ? '(CTC · deducted)' : '(deduction)'}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2 text-right font-medium">{inr(c.amount)}</td>
-                    </tr>
-                  ))}
+                  {(() => {
+                    const grouped = {};
+                    const order = [];
+                    (viewSlip.calc?.components || []).forEach((c) => {
+                      const cat = c.category || 'Uncategorized';
+                      if (!grouped[cat]) { grouped[cat] = []; order.push(cat); }
+                      grouped[cat].push(c);
+                    });
+                    const sub = (rows) => rows.reduce((a, r) => a + (Number(r.amount) || 0), 0);
+                    return order.map((cat) => (
+                      <Fragment key={cat}>
+                        <tr className="bg-slate-50"><td colSpan="2" className="py-1.5 px-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{cat}</td></tr>
+                        {grouped[cat].map((c, i) => (
+                          <tr key={`${cat}-${i}`} className="border-b border-slate-100">
+                            <td className="py-2 pl-3">
+                              {c.name}
+                              {c.operation === 'deduct' && (
+                                <span className="ml-1 text-[10px] uppercase tracking-wide text-slate-400">
+                                  {c.include_in_gross ? '(CTC · deducted)' : '(deduction)'}
+                                </span>
+                              )}
+                              {c.capped && (
+                                <span className="ml-1 text-[10px] uppercase tracking-wide text-amber-600">· capped</span>
+                              )}
+                            </td>
+                            <td className="py-2 text-right font-medium">{inr(c.amount)}</td>
+                          </tr>
+                        ))}
+                        <tr className="border-b bg-slate-50/60"><td className="py-1.5 pl-3 text-xs text-slate-500 font-semibold">Subtotal · {cat}</td><td className="py-1.5 text-right text-xs font-semibold text-slate-700">{inr(sub(grouped[cat]))}</td></tr>
+                      </Fragment>
+                    ));
+                  })()}
                   {viewSlip.calc?.other_allowance > 0 && (
                     <tr className="border-b border-slate-100"><td className="py-2">Other Allowance (Extra Pay)</td><td className="py-2 text-right font-medium">{inr(viewSlip.calc.other_allowance)}</td></tr>
                   )}
