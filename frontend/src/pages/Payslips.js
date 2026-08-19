@@ -64,12 +64,9 @@ export const CalcBreakdown = ({ calc }) => {
                         {c.include_in_gross ? '(CTC · deducted)' : '(deduction)'}
                       </span>
                     )}
-                    {c.capped && (
-                      <span className="ml-1 text-[10px] uppercase tracking-wide text-amber-600" title="Capped at ₹1,800 monthly">· capped</span>
-                    )}
-                    {Math.abs(Number(c.redistribution_adjustment || 0)) > 0.01 && (
-                      <span className="ml-1 text-[10px] uppercase tracking-wide text-emerald-600" title={`Reconciled ${Number(c.redistribution_adjustment) >= 0 ? '+' : ''}${inr(c.redistribution_adjustment)} from PF cap / Gratuity proration`}>
-                        · reconciled {Number(c.redistribution_adjustment) >= 0 ? '+' : ''}{inr(c.redistribution_adjustment)}
+                    {c.capped && c.deduct_amount != null && c.deduct_amount !== c.amount && (
+                      <span className="ml-1 text-[10px] uppercase tracking-wide text-amber-600" title={`Statutory monthly cap: ₹${Number(c.deduct_amount).toLocaleString('en-IN')} is deducted regardless of payable-day proration on CTC line.`}>
+                        · deducted {inr(c.deduct_amount)} (cap)
                       </span>
                     )}
                   </td>

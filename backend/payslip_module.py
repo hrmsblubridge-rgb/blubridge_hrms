@@ -344,42 +344,14 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
     gratuity_payable = gratuity_full * ratio
     gratuity_diff = gratuity_full - gratuity_payable
 
-    # ---- Pass 4: Reconcile full-month salary structure to Monthly Pay ----
-    # The "structure" (what the user sees in the Monthly column, after PF cap + Gratuity proration)
-    # must equal Monthly Pay. Any difference is redistributed to flex allowances.
-    #
-    # struct_total_before_redist = Basic + HRA + Flex_baseline + PF_final + Gratuity_payable
-    # Payroll-extra-pay component is excluded (it lives on top of Monthly Pay).
-    non_extra_baseline = sum(
-        v for n, v in baseline.items()
-        if next((cc.get("calc_type") for cc in active if cc["name"] == n), None) != "payroll_extra_pay"
-    )
-    struct_total_before = non_extra_baseline + pf_final + gratuity_payable
-    redistribute_amount = round(float(monthly_pay) - struct_total_before, 4)
-
-    # ---- Pass 5: Redistribute proportionally across flex allowances ----
+    # ---- Pass 4: NO structural redistribution ----
+    # Excel model (source of truth): Net = MP × ratio + Extra Pay − PF_capped − Gratuity_prorated.
+    # PF is a MONTHLY statutory obligation (cap ₹1,800) that does NOT prorate down as-is when
+    # Basic × 12% ≥ ₹1,800 — the employee "loses" the (PF_cap − PF_prorated) portion of their
+    # take-home for the days they were absent. Flex allowances are NOT redistributed.
+    redistribute_amount = 0.0
     flex_names = [n for n in baseline.keys() if _is_flex(n)]
-    flex_weights = {n: baseline[n] for n in flex_names}
-    flex_total = sum(flex_weights.values())
-    special_name = next((n for n in flex_names if _is_special(n)), None)
     adjustments = {n: 0.0 for n in flex_names}
-    if abs(redistribute_amount) > 0.001 and flex_total > 0.001:
-        running = 0.0
-        for n in flex_names:
-            if n == special_name:
-                continue
-            share = round(redistribute_amount * flex_weights[n] / flex_total, 2)
-            adjustments[n] = share
-            running += share
-        # Special Allowance takes the rounding balance
-        if special_name is not None:
-            adjustments[special_name] = round(redistribute_amount - running, 2)
-        else:
-            # No Special found — dump remainder onto the last flex row
-            if flex_names:
-                adjustments[flex_names[-1]] = round(adjustments[flex_names[-1]] + (redistribute_amount - running), 2)
-    for n in flex_names:
-        baseline[n] = round(baseline[n] + adjustments[n], 2)
 
     # ---- Pass 6: Emit line items with THIS-MONTH prorated amounts ----
     lines = []
@@ -390,16 +362,19 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
         ct = c.get("calc_type")
         proratable = c.get("proratable", True)
         auto_note = None
+        deduct_amount = None
         if _is_pf(name):
-            # PF is a MONTHLY statutory cap (₹1,800) — never re-prorate after capping.
-            # Formula for this-month: min(Basic_this_month × 12%, ₹1,800).
+            # CTC contribution: pf_final × ratio (uniform proration of the capped monthly value).
+            # Deduction: min(Basic_this × 12%, ₹1,800) — statutory MONTHLY cap; not further prorated.
             monthly_amt = pf_final
             basic_this = round(basic_full * ratio, 2)
             pf_this_raw = basic_this * 0.12
-            amount = round(min(pf_this_raw, PF_CAP_MONTHLY), 2)
+            pf_this_deduct = round(min(pf_this_raw, PF_CAP_MONTHLY), 2)
+            amount = round(pf_final * ratio if proratable else pf_final, 2)  # CTC line value
+            deduct_amount = pf_this_deduct  # actual deduction (monthly cap)
             pf_this_capped = pf_this_raw > PF_CAP_MONTHLY
             if pf_this_capped:
-                auto_note = f"12% of Basic ₹{basic_this:,.2f} = ₹{round(pf_this_raw,2):,.2f}, capped at ₹{PF_CAP_MONTHLY:,.0f}"
+                auto_note = f"12% of Basic ₹{basic_this:,.2f} = ₹{round(pf_this_raw,2):,.2f}, deducted ₹{PF_CAP_MONTHLY:,.0f} (statutory monthly cap)"
             else:
                 auto_note = f"12% of Basic ₹{basic_this:,.2f} = ₹{round(pf_this_raw,2):,.2f}"
         elif _is_gratuity(name):
@@ -419,7 +394,8 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
         if include_gross:
             gross += amount
         if operation == "deduct":
-            deductions += amount
+            # Use deduct_amount override when set (e.g. PF statutory monthly cap that overrides the prorated CTC line)
+            deductions += (deduct_amount if deduct_amount is not None else amount)
         lines.append({
             "name": name,
             "component_type": c.get("component_type"),
@@ -429,6 +405,7 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
             "calc_base": c.get("calc_base"),
             "monthly_amount": round(monthly_amt, 2),
             "amount": amount,
+            "deduct_amount": deduct_amount,
             "proratable": proratable,
             "include_in_gross": bool(include_gross),
             "category": _infer_category(name),
@@ -443,12 +420,12 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
         gross += other_allowance
     net = round(gross - deductions, 2)
 
-    # Final reconciliation sanity — hybrid structure (Basic + HRA + FlexNew + PF_final + Gratuity_payable)
-    # MUST equal Monthly Pay (±₹0.01). Payroll extra pay lives on top of Monthly Pay so exclude it.
+    # Final reconciliation sanity — full-month CTC structure (Basic + HRA + Flex_baseline + PF_final + Gratuity_full)
+    # should equal Monthly Pay (±₹1 tolerance for percentage rounding). No redistribution.
     full_month_structure_total = round(
         sum(v for n, v in baseline.items()
             if next((cc.get("calc_type") for cc in active if cc["name"] == n), None) != "payroll_extra_pay")
-        + pf_final + gratuity_payable,
+        + pf_final + gratuity_full,
         2,
     )
 
@@ -469,7 +446,7 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
             "gratuity_diff": round(gratuity_diff, 2),
             "redistributed_amount": round(redistribute_amount, 2),
             "full_month_structure_total": full_month_structure_total,
-            "matches_monthly_pay": abs(full_month_structure_total - monthly_pay) < 0.02,
+            "matches_monthly_pay": abs(full_month_structure_total - monthly_pay) < 1.0,
         },
     }
 

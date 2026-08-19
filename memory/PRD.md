@@ -5,6 +5,23 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-19 (v5) — Payslip Excel Alignment: PF Cap Shortfall + No Redistribution
+- **Bug reported (Excel comparison):** For KOTA DHANAKUMAR, July 2026 (Cal 31, Payable 29, Extra 1.5, MP ₹44,000), Excel Total Payable = ₹40,748.00 but system showed ₹40,913.34 (₹165.31 higher).
+- **Root causes:**
+  1. My system was **redistributing** the ₹28-52 gratuity_diff back into flex allowances, inflating them by ~₹50 full-month (~₹47 this-month).
+  2. PF this-month was displayed as ₹1,800 on BOTH the CTC gross line AND the deduction line, so the PF-cap shortfall (₹1,800 vs prorated ₹1,683.87) never reduced Net Pay.
+- **Fix (`backend/payslip_module.py`):**
+  1. **Removed all redistribution** — flex allowances stay at their template values, uniformly prorated by `payable / calendar_days`.
+  2. **PF CTC line (`amount`)** = `pf_final × ratio` = uniform proration of the ₹1,800 cap (this-month ₹1,683.87 for 29/31).
+  3. **PF Deduction (`deduct_amount`)** = `min(Basic_this × 12%, ₹1,800)` = statutory monthly cap (₹1,800). This is what's actually subtracted from Net Pay.
+  4. Deductions accumulator now uses `deduct_amount` when present, `amount` otherwise.
+  5. Auto-note now reads: "12% of Basic ₹15,435.48 = ₹1,852.26, deducted ₹1,800 (statutory monthly cap)".
+- **Frontend (`Payslips.js`):** PF row now shows amber "· deducted ₹1,800 (cap)" annotation when the deduction differs from the prorated CTC value, exposing the ₹116.13 statutory shortfall transparently.
+- **Verified live** (Navin Kumar V API call, Jul 2026, 29/31, extra 1.5): **Gross ₹43,290.69, Deductions ₹2,540.90, Net Pay ₹40,749.79** ✅ (matches Excel ₹40,748 with ₹1.76 delta from percentage rounding — template has Special = 15.37% instead of fixed ₹6,762). Sum this-month components = ₹41,161.66 ≈ MP × 29/31 = ₹41,161.29. Full-month structure = ₹44,000.40 (matches_monthly_pay=True with ₹1 tolerance).
+- **Edge cases still correct:** For light-LOP months where `Basic × ratio × 12% < ₹1,800`, no cap shortfall — PF this-month deduction equals the CTC value.
+
+
+
 ## 🆕 2026-08-19 (v4) — PF This-Month formula corrected (Indian statutory rule)
 - **Bug reported:** Payslip screenshot for July 2026 (Basic This Month ₹15,435.48, 29/31 payable, 1.5 extra pay) showed PF This Month = ₹1,683.87. Correct per Indian EPFO rule: `min(Basic_this_month × 12%, ₹1,800)` = `min(₹1,852.26, ₹1,800)` = **₹1,800**.
 - **Root cause:** After capping the FULL-MONTH PF at ₹1,800, the display value was being re-prorated by `payable/cal_days` (₹1,800 × 29/31 = ₹1,683.87). The ₹1,800 cap is a MONTHLY statutory ceiling, not a pro-ratable amount.
