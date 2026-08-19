@@ -41,6 +41,26 @@ async for tmp_id in created_employee_ids:
 
 
 
+## Latest Update — 2026-08-19 (Payslip Generation Module — Phases 1 + 2 ✅ TESTED 25/25)
+
+**User requirement:** Complete Payslip Module for Employees & Interns. Phase 1: Admin template management (CRUD), dynamic salary components (Earning/Deduction, Fixed/Percentage/Extra-Pay, ADD/DEDUCT, proratable), employee/intern template assignment (per-employee Monthly Pay + effective dates, single AND bulk). Phase 2: monthly generation using Payroll's Total Payable Days & Extra Pay, admin confirm/finalize workflow, employee visibility (confirmed AND today >= 5th of following month, IST), My Payslips view + PDF download (BluBridge format), admin history + monthly snapshots.
+
+### Backend (`/app/backend/payslip_module.py`, wired into server.py; PDF in `/app/backend/payslip_pdf.py`)
+- Collections: `payslip_templates`, `payslip_assignments`, `payslips` (monthly snapshots), `payslip_audit`.
+- Templates: `POST/GET/PUT/DELETE /api/payslips/templates` — component validation (name, earning/deduction, add/deduct, percentage 0-100, unique display_order); soft delete blocked (409) while actively assigned; duplicate name 409.
+- Components: calc_type `percentage` (calc_base = monthly_pay OR an earlier component → chaining, e.g. HRA = 40% of Basic), `fixed`, `payroll_extra_pay` (per-day × extra_pay days, never prorated twice). `proratable` flag prorates by payable_days/calendar_days.
+- Assignments: `POST /api/payslips/assignments` (single), `POST /api/payslips/assignments/bulk` (one template → many employees, per-employee monthly_pay), reassignment closes old row (effective_to), `GET .../{employee_id}/history`. Employee vs Intern from existing `employment_type` field.
+- Engine: `compute_payslip()` — per_day = monthly_pay/calendar_days; ratio = payable_days/calendar_days; other_allowance (extra pay fallback) included in gross when no explicit Extra-Pay component. Preview: `POST /api/payslips/calculate` uses live `calculate_payroll_for_employee` (final_payable_days, extra_pay).
+- Phase 2: `POST /api/payslips/generate {month}` (drafts, snapshot of employee+calc+payroll_meta; regeneration NEVER overwrites confirmed), `GET /api/payslips/generated?month=`, `POST /{id}/confirm`, `/{id}/unconfirm`, `/confirm-all`, `DELETE /{id}` (draft only, confirmed 409), `GET /api/payslips/my` (employee, confirmed + today>=5th of following month IST), `GET /{id}/pdf` (reportlab BluBridge layout, employee limited to own published slips; amount-in-words Indian system).
+- RBAC: all admin endpoints HR-only (`_hr_only`); employee 403 everywhere except /my and own published PDF.
+
+### Frontend
+- Admin: `/payslips` page (`pages/Payslips.js`), sidebar item "Payslips" (hr). 4 tabs: Templates (dialog builder with dynamic component rows), Assignments (search/dept/type filters, single + bulk assign with per-employee pay), Monthly Payslips (MonthPicker, Generate/Regenerate, Confirm All, per-row confirm/revert/view breakdown/PDF/delete-draft, Draft/Confirmed badges), Calculation Preview (CalcBreakdown component).
+- Employee: `/employee/payslips` "My Payslips" (`pages/EmployeePayslips.js`), card grid with net pay, breakdown dialog, PDF download; publish-rule note shown.
+
+### Testing
+- Testing agent iteration_64: **backend 25/25 PASS, frontend all flows PASS**. Regression suite `/app/backend/tests/test_payslip_module.py` (reusable). Post-fix rerun: 25/25. All test data purged (all 4 payslip collections = 0 rows after run).
+
 ## Latest Update — 2026-07-23 (Unified Attendance Service — Dashboard = Attendance = Reports ✅ TESTED)
 
 **User requirement:** Dashboard, Attendance Module, and Reports Module must show IDENTICAL counts and employee lists for all 6 attendance categories (Logged In, Leave, No Login, Completed, Late Login, Early Out) using the same employee-eligibility rule based on Joining Date and Relieving Date, plus approved Missed-Punch and Punch-Correction requests merged in.

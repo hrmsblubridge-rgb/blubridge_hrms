@@ -38,7 +38,8 @@ import {
   AlertTriangle,
   Shield,
   HelpCircle,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Receipt
 } from 'lucide-react';
 import { Button } from './ui/button';
 import EmployeeAvatar from './EmployeeAvatar';
@@ -74,6 +75,7 @@ const allNavItems = [
   { path: '/star-reward', label: 'Star Reward', icon: Star, roles: ['hr'] },
   { path: '/team', label: 'Team', icon: Users, roles: ['hr'] },
   { path: '/payroll', label: 'Payroll', icon: Wallet, roles: ['hr'] },
+  { path: '/payslips', label: 'Payslips', icon: Receipt, roles: ['hr'] },
   { path: '/issue-tickets', label: 'Issue Tickets', icon: MessageSquarePlus, roles: ['hr'] },
   { path: '/reports', label: 'Reports', icon: FileText, roles: ['hr', 'office_admin'] },
   { path: '/role-management', label: 'Role Management', icon: Shield, roles: ['hr', 'system_admin'] },

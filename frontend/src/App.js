@@ -16,6 +16,8 @@ import StarReward from "./pages/StarReward";
 import Team from "./pages/Team";
 import Reports from "./pages/Reports";
 import Payroll from "./pages/Payroll";
+import Payslips from "./pages/Payslips";
+import EmployeePayslips from "./pages/EmployeePayslips";
 import Holidays from "./pages/Holidays";
 import Policies from "./pages/Policies";
 import AdminProfile from "./pages/AdminProfile";
@@ -187,6 +189,7 @@ function App() {
           <Route path="/star-reward" element={<AdminRoute><StarReward /></AdminRoute>} />
           <Route path="/team" element={<AdminRoute><Team /></AdminRoute>} />
           <Route path="/payroll" element={<AdminRoute><Payroll /></AdminRoute>} />
+          <Route path="/payslips" element={<AdminRoute><Payslips /></AdminRoute>} />
           <Route path="/reports" element={<AdminRoute><Reports /></AdminRoute>} />
           <Route path="/holidays" element={<AdminRoute><Holidays /></AdminRoute>} />
           <Route path="/policies" element={<AdminRoute><Policies /></AdminRoute>} />
@@ -222,6 +225,7 @@ function App() {
               the employee dashboard. */}
           <Route path="/employee/rewards" element={<Navigate to="/employee/dashboard" replace />} />
           <Route path="/employee/salary" element={<EmployeeRoute><EmployeeSalary /></EmployeeRoute>} />
+          <Route path="/employee/payslips" element={<EmployeeRoute><EmployeePayslips /></EmployeeRoute>} />
           <Route path="/employee/late-request" element={<EmployeeRoute><EmployeeLateRequest /></EmployeeRoute>} />
           <Route path="/employee/early-out" element={<EmployeeRoute><EmployeeEarlyOut /></EmployeeRoute>} />
           <Route path="/employee/missed-punch" element={<EmployeeRoute><EmployeeMissedPunch /></EmployeeRoute>} />

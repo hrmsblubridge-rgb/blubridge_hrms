@@ -19062,6 +19062,12 @@ try:
 except Exception as _e:
     print(f"Warning module load failed: {_e}")
 
+# Payslip module — templates, assignments, calculation engine
+try:
+    import payslip_module  # noqa: F401  (registers routes via api_router import)
+except Exception as _e:
+    print(f"Payslip module load failed: {_e}")
+
 app.include_router(api_router)
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,8 @@ import {
   FileSpreadsheet,
   ShieldAlert,
   AlertTriangle,
-  Star
+  Star,
+  Receipt,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import EmployeeAvatar from './EmployeeAvatar';
@@ -48,6 +49,7 @@ const navItems = [
   { path: '/employee/early-out', label: 'Early Out', icon: LogOutIcon },
   { path: '/employee/missed-punch', label: 'Missed Punch', icon: Fingerprint },
   { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper },
+  { path: '/employee/payslips', label: 'My Payslips', icon: Receipt },
   { path: '/employee/policies', label: 'Policies', icon: BookOpen },
   { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap },
   { path: '/employee/documents', label: 'My Documents', icon: FileText },
