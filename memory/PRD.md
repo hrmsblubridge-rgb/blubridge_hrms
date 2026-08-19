@@ -5,6 +5,15 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-19 (v4) — PF This-Month formula corrected (Indian statutory rule)
+- **Bug reported:** Payslip screenshot for July 2026 (Basic This Month ₹15,435.48, 29/31 payable, 1.5 extra pay) showed PF This Month = ₹1,683.87. Correct per Indian EPFO rule: `min(Basic_this_month × 12%, ₹1,800)` = `min(₹1,852.26, ₹1,800)` = **₹1,800**.
+- **Root cause:** After capping the FULL-MONTH PF at ₹1,800, the display value was being re-prorated by `payable/cal_days` (₹1,800 × 29/31 = ₹1,683.87). The ₹1,800 cap is a MONTHLY statutory ceiling, not a pro-ratable amount.
+- **Fix (`backend/payslip_module.py::compute_payslip`):** PF this-month is now computed as `min(Basic_this_month × 12%, ₹1,800)` where `Basic_this_month = Basic_full × ratio`. Auto-note updated to display the actual paid-Basic figure that drove the calc.
+- **Verified live for July 2026 (Cal:31, Payable:29, Extra:1.5, MP:44,000):** PF This Month = ₹1,800.00 (auto-note: "12% of Basic ₹15,435.48 = ₹1,852.26, capped at ₹1,800"). Gratuity This Month = ₹740.90 (unchanged, formula (792/31)×29 already correct). Full-month structure = ₹44,000.00 (matches_monthly_pay=True). **Net Pay = ₹40,913.34** (unchanged from before-fix Net because PF appears on both Gross-as-CTC and Deductions, so the ₹116.13 correction cancels out in Net).
+- **Edge cases handled:** If `Basic × ratio × 12%` falls BELOW ₹1,800 (low basic or heavy LOP month), no cap is applied — PF this-month = actual 12% of paid Basic.
+
+
+
 ## 🆕 2026-08-19 (v3) — Automatic PF/Gratuity Reconciliation Algorithm
 - **Requirement:** Remove the manual Category dropdown and generic Max Amount UI. Implement PF cap and Gratuity proration as built-in behaviour with automatic redistribution of any excess/loss into the 6 flexible allowance components, so the full-month salary structure always reconciles to the employee's configured Monthly Pay (₹44,000).
 - **Backend (`payslip_module.py::compute_payslip` — full rewrite of engine):**

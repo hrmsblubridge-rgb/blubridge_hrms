@@ -391,12 +391,17 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
         proratable = c.get("proratable", True)
         auto_note = None
         if _is_pf(name):
+            # PF is a MONTHLY statutory cap (₹1,800) — never re-prorate after capping.
+            # Formula for this-month: min(Basic_this_month × 12%, ₹1,800).
             monthly_amt = pf_final
-            amount = round(pf_final * ratio if proratable else pf_final, 2)
-            if pf_diff > 0.01:
-                auto_note = f"12% of Basic ₹{round(basic_full,2):,.2f} = ₹{round(pf_raw,2):,.2f}, capped at ₹{PF_CAP_MONTHLY:,.0f}"
+            basic_this = round(basic_full * ratio, 2)
+            pf_this_raw = basic_this * 0.12
+            amount = round(min(pf_this_raw, PF_CAP_MONTHLY), 2)
+            pf_this_capped = pf_this_raw > PF_CAP_MONTHLY
+            if pf_this_capped:
+                auto_note = f"12% of Basic ₹{basic_this:,.2f} = ₹{round(pf_this_raw,2):,.2f}, capped at ₹{PF_CAP_MONTHLY:,.0f}"
             else:
-                auto_note = f"12% of Basic ₹{round(basic_full,2):,.2f}"
+                auto_note = f"12% of Basic ₹{basic_this:,.2f} = ₹{round(pf_this_raw,2):,.2f}"
         elif _is_gratuity(name):
             monthly_amt = gratuity_full
             amount = round(gratuity_payable, 2)
