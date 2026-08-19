@@ -101,8 +101,15 @@ export default function EmployeePayslips() {
                 <tbody>
                   {viewSlip.calc?.components.map((c, i) => (
                     <tr key={i} className="border-b border-slate-100">
-                      <td className="py-2">{c.name}</td>
-                      <td className={`py-2 text-right font-medium ${c.operation === 'deduct' ? 'text-red-600' : ''}`}>{c.operation === 'deduct' ? '−' : ''}{inr(c.amount)}</td>
+                      <td className="py-2">
+                        {c.name}
+                        {c.operation === 'deduct' && (
+                          <span className="ml-1 text-[10px] uppercase tracking-wide text-slate-400">
+                            {c.include_in_gross ? '(CTC · deducted)' : '(deduction)'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 text-right font-medium">{inr(c.amount)}</td>
                     </tr>
                   ))}
                   {viewSlip.calc?.other_allowance > 0 && (

@@ -258,14 +258,23 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
             amount = monthly_amt * ratio if c.get("proratable", True) else monthly_amt
         amount = round(amount, 2)
         resolved[c["name"]] = {"monthly": monthly_amt, "amount": amount}
-        if c.get("operation") == "add":
+        # include_in_gross defaults to (operation == 'add') so behaviour stays
+        # backward-compatible; setting it True on a deduction (e.g. PF Employer
+        # Contribution, Gratuity) makes it a CTC line — added to Gross AND
+        # subtracted in Total Deductions so it cancels out (standard India
+        # payslip format).
+        include_gross = c.get("include_in_gross")
+        if include_gross is None:
+            include_gross = c.get("operation") == "add"
+        if include_gross:
             gross += amount
-        else:
+        if c.get("operation") == "deduct":
             deductions += amount
         lines.append({"name": c["name"], "component_type": c["component_type"], "operation": c["operation"],
                       "calc_type": ct, "percentage_value": c.get("percentage_value"),
                       "monthly_amount": round(monthly_amt, 2), "amount": amount,
-                      "proratable": c.get("proratable", True)})
+                      "proratable": c.get("proratable", True),
+                      "include_in_gross": bool(include_gross)})
     other_allowance = round(per_day * float(extra_pay_days or 0), 2)
     has_extra_component = any(l["calc_type"] == "payroll_extra_pay" for l in lines)
     if not has_extra_component and other_allowance:

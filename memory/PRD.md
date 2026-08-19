@@ -5,6 +5,20 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-19 — Payslip "Include in Gross" (CTC-line) toggle
+- **Bug reported:** Screenshot showed PF Company Contribution & Gratuity being displayed as negative in "This Month" column AND also included in Total Deductions → visually looked like a double-deduction, and the actual Net Pay (₹38,816.80) excluded these CTC components entirely.
+- **Fix (Option B — per-component toggle):**
+  - `backend/payslip_module.py::compute_payslip` — replaced binary `operation == add` gross-add rule with `include_in_gross` flag. Defaults preserve backward compatibility (earnings → in gross, deductions → not in gross). Deductions with `include_in_gross=True` are added to Gross AND subtracted in Total Deductions (standard India CTC format — cancels out in Net).
+  - `frontend/src/pages/Payslips.js` — Template editor now shows an **"Include in Gross (CTC line)"** checkbox on every DEDUCTION row (hidden for earnings which are always in gross). Preview breakdown table now shows every component as positive (no red minus in the row); deductions only show as negative in the "Total Deductions" totals row. Row label shows small subtitle "(CTC · deducted)" or "(deduction)" for clarity.
+  - `frontend/src/pages/EmployeePayslips.js` — Same positive-amount display + CTC/deduction subtitle in employee dialog view.
+  - `backend/payslip_pdf.py` — unchanged (already used separate Earnings/Deductions columns).
+- **DB migration (one-off):** Flipped `include_in_gross=True` on "PF - Company's Contribution" and "Gratuity" rows inside the "AI Research" template (only template using them). 2 components in 1 template updated.
+- **Verified end-to-end:** Navin Kumar V, Jan 2026 (29/31 payable days) → Gross ₹41,161.29, Deductions ₹2,424.40, Net ₹38,736.89. Full-month sample (44K CTC, 28/28 Feb) → Gross ₹44,000, Deductions ₹2,591.60, Net **₹41,408.40** ✅
+- **Regression safety:** True employee deductions (TDS/PT — future) leave the checkbox off and get the old behaviour: not added to Gross, subtracted from Net. Verified with fixed ₹1,000 TDS sample: Gross ₹41,408.40, Deductions ₹1,000, Net ₹40,408.40.
+- **Existing generated payslips:** unchanged in DB (they store `calc` snapshot). To reflect the new math for Feb 2026, HR must re-run generation from the "Monthly Payslips" tab.
+
+
+
 ## ⚠️ MANDATORY RULE — Test Data Cleanup (established 2026-07-23)
 
 **User directive:** "Hereafter if gonna be creating the Test User, Once testing is done properly remove."

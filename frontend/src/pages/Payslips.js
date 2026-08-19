@@ -17,7 +17,7 @@ const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFract
 const emptyComponent = (order) => ({
   name: '', component_type: 'earning', operation: 'add', calc_type: 'percentage',
   percentage_value: '', fixed_amount: '', calc_base: 'monthly_pay',
-  proratable: true, active: true, display_order: order,
+  proratable: true, active: true, include_in_gross: true, display_order: order,
 });
 
 const CALC_LABEL = { percentage: '% of Base', fixed: 'Fixed Amount', payroll_extra_pay: 'Extra Pay (Payroll)' };
@@ -40,10 +40,17 @@ export const CalcBreakdown = ({ calc }) => (
       <tbody>
         {calc.components.map((c, i) => (
           <tr key={i} className="border-b border-slate-100">
-            <td className="py-2 font-medium">{c.name}</td>
+            <td className="py-2 font-medium">
+              {c.name}
+              {c.operation === 'deduct' && (
+                <span className="ml-1 text-[10px] uppercase tracking-wide text-slate-400">
+                  {c.include_in_gross ? '(CTC · deducted)' : '(deduction)'}
+                </span>
+              )}
+            </td>
             <td className="py-2 text-xs text-slate-500">{c.calc_type === 'percentage' ? `${c.percentage_value}% of base` : CALC_LABEL[c.calc_type]}{c.proratable === false ? ' · not prorated' : ''}</td>
             <td className="py-2 text-right">{inr(c.monthly_amount)}</td>
-            <td className={`py-2 text-right font-medium ${c.operation === 'deduct' ? 'text-red-600' : 'text-slate-800'}`}>{c.operation === 'deduct' ? '−' : ''}{inr(c.amount)}</td>
+            <td className="py-2 text-right font-medium text-slate-800">{inr(c.amount)}</td>
           </tr>
         ))}
         {calc.other_allowance > 0 && (
@@ -86,7 +93,11 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
   const setComp = (i, patch) => setComponents((prev) => prev.map((c, idx) => {
     if (idx !== i) return c;
     const next = { ...c, ...patch };
-    if (patch.component_type) next.operation = patch.component_type === 'earning' ? 'add' : 'deduct';
+    if (patch.component_type) {
+      next.operation = patch.component_type === 'earning' ? 'add' : 'deduct';
+      // Earnings always in gross; deductions default to NOT in gross (user can flip on for CTC lines like PF Employer, Gratuity)
+      next.include_in_gross = patch.component_type === 'earning';
+    }
     return next;
   }));
 
@@ -203,6 +214,12 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
                 <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
                   <input data-testid={`component-proratable-${i}`} type="checkbox" checked={c.proratable !== false} onChange={(e) => setComp(i, { proratable: e.target.checked })} />
                   Prorate by payable days
+                </label>
+              )}
+              {c.component_type === 'deduction' && (
+                <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer" title="Enable for employer contributions (PF Company, Gratuity) that appear on both Earnings and Deductions sides — they cancel out in Net Pay. Leave off for real employee deductions like TDS or Professional Tax.">
+                  <input data-testid={`component-include-gross-${i}`} type="checkbox" checked={!!c.include_in_gross} onChange={(e) => setComp(i, { include_in_gross: e.target.checked })} />
+                  Include in Gross (CTC line)
                 </label>
               )}
               <button data-testid={`component-remove-${i}`} className="ml-auto text-red-500 hover:text-red-700" onClick={() => setComponents((p) => p.filter((_, idx) => idx !== i))} disabled={components.length === 1}>
