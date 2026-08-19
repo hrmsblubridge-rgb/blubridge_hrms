@@ -231,73 +231,222 @@ async def assignment_history(employee_id: str, current_user: dict = Depends(get_
     return await db.payslip_assignments.find({"employee_id": employee_id}, {"_id": 0}).sort("created_at", -1).to_list(50)
 
 
+PF_CAP_MONTHLY = 1800.0  # Statutory PF (Employer/EPS) monthly cap on 12% of Basic
+
+
+def _norm(n: str) -> str:
+    return (n or "").lower().strip()
+
+
+def _is_basic(n: str) -> bool:
+    s = _norm(n)
+    return s == "basic" or s == "basic salary"
+
+
+def _is_hra(n: str) -> bool:
+    s = _norm(n)
+    return "hra" in s or "house rent" in s
+
+
+def _is_pf(n: str) -> bool:
+    s = _norm(n)
+    return "pf" in s or "provident fund" in s
+
+
+def _is_gratuity(n: str) -> bool:
+    return "gratuity" in _norm(n)
+
+
+_FLEX_KEYWORDS = ("leave travel", "phone", "bonus", "stay", "special", "food")
+
+
+def _is_flex(n: str) -> bool:
+    if _is_basic(n) or _is_hra(n) or _is_pf(n) or _is_gratuity(n):
+        return False
+    s = _norm(n)
+    return any(k in s for k in _FLEX_KEYWORDS)
+
+
+def _is_special(n: str) -> bool:
+    s = _norm(n)
+    return "special" in s and "allowance" in s
+
+
+def _infer_category(n: str) -> str:
+    if _is_basic(n) or _is_hra(n):
+        return "Base Components (A)"
+    if _is_pf(n) or _is_gratuity(n):
+        return "Retirement Benefits (C)"
+    return "Basket of Allowances (B)"
+
+
+def _component_full_month(c: dict, monthly_pay: float, resolved: dict, per_day: float, extra_pay_days: float) -> float:
+    ct = c.get("calc_type")
+    if ct == "percentage":
+        base_key = c.get("calc_base") or "monthly_pay"
+        base = monthly_pay if base_key == "monthly_pay" else resolved.get(base_key, {}).get("monthly", 0.0)
+        return base * float(c.get("percentage_value") or 0) / 100.0
+    if ct == "fixed":
+        return float(c.get("fixed_amount") or 0)
+    if ct == "payroll_extra_pay":
+        return per_day * float(extra_pay_days or 0)
+    return 0.0
+
+
 def compute_payslip(monthly_pay: float, components: list, month: str, payable_days: float, extra_pay_days: float) -> dict:
-    """Core calculation engine. month='YYYY-MM'. Returns full component breakdown."""
+    """Core calculation engine implementing the reconciliation algorithm.
+
+    Rules (see PRD 2026-08-19 v3):
+      • PF (any component whose name contains 'pf' or 'provident fund') is auto-computed as
+        min(Basic × 12%, ₹1,800). The template's own percentage/fixed for PF is ignored.
+      • Gratuity is prorated as (full_month_gratuity / cal_days) × payable_days.
+      • Any deficit between (Basic + HRA + Flex + PF_final + Gratuity_payable) and Monthly Pay is
+        redistributed proportionally into the 6 flexible allowances (LTA, Phone & Internet,
+        Bonus, Stay & Travel, Special, Food). The rounding balance lands on Special Allowance
+        so the full-month structure reconciles to Monthly Pay exactly (±₹0.01).
+      • All per-month values are then prorated by payable_days/cal_days for the displayed amount.
+    """
     y, m = int(month[:4]), int(month[5:7])
     cal_days = calendar.monthrange(y, m)[1]
     if cal_days <= 0 or monthly_pay <= 0:
         raise HTTPException(status_code=400, detail="Invalid month or monthly pay")
     per_day = monthly_pay / cal_days
     ratio = max(0.0, float(payable_days)) / cal_days
+    active = sorted([c for c in components if c.get("active", True)], key=lambda x: int(x.get("display_order") or 0))
+
+    # ---- Pass 1: compute full-month baseline for every component except PF and Gratuity ----
     resolved = {}
+    baseline = {}  # name -> full-month value BEFORE any redistribution
+    basic_full = 0.0
+    pf_component = None
+    gratuity_component = None
+    for c in active:
+        name = c["name"]
+        if _is_pf(name):
+            pf_component = c
+            continue
+        if _is_gratuity(name):
+            gratuity_component = c
+            continue
+        val = _component_full_month(c, monthly_pay, resolved, per_day, extra_pay_days)
+        baseline[name] = val
+        resolved[name] = {"monthly": val}
+        if _is_basic(name):
+            basic_full = val
+
+    # ---- Pass 2: PF (auto ₹1,800 cap on Basic × 12%) ----
+    pf_raw = basic_full * 0.12
+    pf_final = min(pf_raw, PF_CAP_MONTHLY)
+    pf_diff = max(pf_raw - pf_final, 0.0)  # exposed for reporting; deficit-based redistribution handles it
+
+    # ---- Pass 3: Gratuity (full-month value from template, then pro-rate) ----
+    gratuity_full = _component_full_month(gratuity_component, monthly_pay, resolved, per_day, extra_pay_days) if gratuity_component else 0.0
+    gratuity_payable = gratuity_full * ratio
+    gratuity_diff = gratuity_full - gratuity_payable
+
+    # ---- Pass 4: Reconcile full-month salary structure to Monthly Pay ----
+    # The "structure" (what the user sees in the Monthly column, after PF cap + Gratuity proration)
+    # must equal Monthly Pay. Any difference is redistributed to flex allowances.
+    #
+    # struct_total_before_redist = Basic + HRA + Flex_baseline + PF_final + Gratuity_payable
+    # Payroll-extra-pay component is excluded (it lives on top of Monthly Pay).
+    non_extra_baseline = sum(
+        v for n, v in baseline.items()
+        if next((cc.get("calc_type") for cc in active if cc["name"] == n), None) != "payroll_extra_pay"
+    )
+    struct_total_before = non_extra_baseline + pf_final + gratuity_payable
+    redistribute_amount = round(float(monthly_pay) - struct_total_before, 4)
+
+    # ---- Pass 5: Redistribute proportionally across flex allowances ----
+    flex_names = [n for n in baseline.keys() if _is_flex(n)]
+    flex_weights = {n: baseline[n] for n in flex_names}
+    flex_total = sum(flex_weights.values())
+    special_name = next((n for n in flex_names if _is_special(n)), None)
+    adjustments = {n: 0.0 for n in flex_names}
+    if abs(redistribute_amount) > 0.001 and flex_total > 0.001:
+        running = 0.0
+        for n in flex_names:
+            if n == special_name:
+                continue
+            share = round(redistribute_amount * flex_weights[n] / flex_total, 2)
+            adjustments[n] = share
+            running += share
+        # Special Allowance takes the rounding balance
+        if special_name is not None:
+            adjustments[special_name] = round(redistribute_amount - running, 2)
+        else:
+            # No Special found — dump remainder onto the last flex row
+            if flex_names:
+                adjustments[flex_names[-1]] = round(adjustments[flex_names[-1]] + (redistribute_amount - running), 2)
+    for n in flex_names:
+        baseline[n] = round(baseline[n] + adjustments[n], 2)
+
+    # ---- Pass 6: Emit line items with THIS-MONTH prorated amounts ----
     lines = []
     gross = 0.0
     deductions = 0.0
-    for c in sorted([c for c in components if c.get("active", True)], key=lambda x: int(x.get("display_order") or 0)):
+    for c in active:
+        name = c["name"]
         ct = c.get("calc_type")
-        if ct == "percentage":
-            base_key = c.get("calc_base") or "monthly_pay"
-            base = monthly_pay if base_key == "monthly_pay" else resolved.get(base_key, {}).get("monthly", 0.0)
-            monthly_amt = base * float(c.get("percentage_value") or 0) / 100.0
-        elif ct == "fixed":
-            monthly_amt = float(c.get("fixed_amount") or 0)
+        proratable = c.get("proratable", True)
+        auto_note = None
+        if _is_pf(name):
+            monthly_amt = pf_final
+            amount = round(pf_final * ratio if proratable else pf_final, 2)
+            if pf_diff > 0.01:
+                auto_note = f"12% of Basic ₹{round(basic_full,2):,.2f} = ₹{round(pf_raw,2):,.2f}, capped at ₹{PF_CAP_MONTHLY:,.0f}"
+            else:
+                auto_note = f"12% of Basic ₹{round(basic_full,2):,.2f}"
+        elif _is_gratuity(name):
+            monthly_amt = gratuity_full
+            amount = round(gratuity_payable, 2)
+            auto_note = f"(₹{round(gratuity_full,2):,.2f} / {cal_days}) × {int(payable_days) if float(payable_days).is_integer() else payable_days}"
         elif ct == "payroll_extra_pay":
             monthly_amt = per_day * float(extra_pay_days or 0)
+            amount = round(monthly_amt, 2)
         else:
-            monthly_amt = 0.0
-        # Apply optional cap on the FULL-MONTH value (e.g. PF Employer capped at ₹1,800/month)
-        cap_raw = c.get("max_amount")
-        capped = False
-        if cap_raw not in (None, "", 0):
-            try:
-                cap_val = float(cap_raw)
-                if cap_val > 0 and monthly_amt > cap_val:
-                    monthly_amt = cap_val
-                    capped = True
-            except (TypeError, ValueError):
-                pass
-        if ct == "payroll_extra_pay":
-            amount = monthly_amt  # already day-based, never prorated again
-        else:
-            amount = monthly_amt * ratio if c.get("proratable", True) else monthly_amt
-        amount = round(amount, 2)
-        resolved[c["name"]] = {"monthly": monthly_amt, "amount": amount}
-        # include_in_gross defaults to (operation == 'add') so behaviour stays
-        # backward-compatible; setting it True on a deduction (e.g. PF Employer
-        # Contribution, Gratuity) makes it a CTC line — added to Gross AND
-        # subtracted in Total Deductions so it cancels out (standard India
-        # payslip format).
+            monthly_amt = baseline.get(name, 0.0)
+            amount = round(monthly_amt * ratio if proratable else monthly_amt, 2)
+        operation = c.get("operation")
         include_gross = c.get("include_in_gross")
         if include_gross is None:
-            include_gross = c.get("operation") == "add"
+            include_gross = operation == "add"
         if include_gross:
             gross += amount
-        if c.get("operation") == "deduct":
+        if operation == "deduct":
             deductions += amount
-        lines.append({"name": c["name"], "component_type": c["component_type"], "operation": c["operation"],
-                      "calc_type": ct, "percentage_value": c.get("percentage_value"),
-                      "calc_base": c.get("calc_base"),
-                      "monthly_amount": round(monthly_amt, 2), "amount": amount,
-                      "proratable": c.get("proratable", True),
-                      "include_in_gross": bool(include_gross),
-                      "category": c.get("category") or "",
-                      "max_amount": float(cap_raw) if cap_raw not in (None, "", 0) else None,
-                      "capped": capped})
+        lines.append({
+            "name": name,
+            "component_type": c.get("component_type"),
+            "operation": operation,
+            "calc_type": ct,
+            "percentage_value": c.get("percentage_value"),
+            "calc_base": c.get("calc_base"),
+            "monthly_amount": round(monthly_amt, 2),
+            "amount": amount,
+            "proratable": proratable,
+            "include_in_gross": bool(include_gross),
+            "category": _infer_category(name),
+            "capped": _is_pf(name) and pf_diff > 0.01,
+            "auto_note": auto_note,
+            "redistribution_adjustment": round(adjustments.get(name, 0.0), 2),
+        })
+
     other_allowance = round(per_day * float(extra_pay_days or 0), 2)
     has_extra_component = any(l["calc_type"] == "payroll_extra_pay" for l in lines)
     if not has_extra_component and other_allowance:
         gross += other_allowance
     net = round(gross - deductions, 2)
+
+    # Final reconciliation sanity — hybrid structure (Basic + HRA + FlexNew + PF_final + Gratuity_payable)
+    # MUST equal Monthly Pay (±₹0.01). Payroll extra pay lives on top of Monthly Pay so exclude it.
+    full_month_structure_total = round(
+        sum(v for n, v in baseline.items()
+            if next((cc.get("calc_type") for cc in active if cc["name"] == n), None) != "payroll_extra_pay")
+        + pf_final + gratuity_payable,
+        2,
+    )
+
     return {
         "month": month, "calendar_days": cal_days, "payable_days": payable_days,
         "extra_pay_days": extra_pay_days, "monthly_pay": monthly_pay,
@@ -305,6 +454,18 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
         "gross_earnings": round(gross, 2), "total_deductions": round(deductions, 2),
         "other_allowance": 0 if has_extra_component else other_allowance,
         "net_pay": net,
+        # Reconciliation debug/reporting fields
+        "reconciliation": {
+            "pf_raw": round(pf_raw, 2),
+            "pf_final": round(pf_final, 2),
+            "pf_diff": round(pf_diff, 2),
+            "gratuity_full": round(gratuity_full, 2),
+            "gratuity_payable": round(gratuity_payable, 2),
+            "gratuity_diff": round(gratuity_diff, 2),
+            "redistributed_amount": round(redistribute_amount, 2),
+            "full_month_structure_total": full_month_structure_total,
+            "matches_monthly_pay": abs(full_month_structure_total - monthly_pay) < 0.02,
+        },
     }
 
 

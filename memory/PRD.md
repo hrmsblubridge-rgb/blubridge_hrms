@@ -5,6 +5,31 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-19 (v3) — Automatic PF/Gratuity Reconciliation Algorithm
+- **Requirement:** Remove the manual Category dropdown and generic Max Amount UI. Implement PF cap and Gratuity proration as built-in behaviour with automatic redistribution of any excess/loss into the 6 flexible allowance components, so the full-month salary structure always reconciles to the employee's configured Monthly Pay (₹44,000).
+- **Backend (`payslip_module.py::compute_payslip` — full rewrite of engine):**
+  - PF is auto-recognised by component name (contains "pf" or "provident fund") and hardcoded to `min(Basic × 12%, ₹1,800)`. Template PF percentage/fixed is IGNORED.
+  - Gratuity is auto-recognised by name (contains "gratuity") — full-month value taken from template, this-month value = `(gratuity_full / cal_days) × payable_days`.
+  - Hybrid salary structure (Basic + HRA + flex allowances + PF_final + Gratuity_payable) is reconciled to Monthly Pay via a deficit calculation: any shortfall is redistributed proportionally into the 6 flex components — Leave Travel, Phone & Internet, Bonus, Stay & Travel, Special Allowance, Food Reimbursement — using each row's baseline weight. The rounding balance (paise-level) always lands on Special Allowance.
+  - Categories (Base A / Basket B / Retirement C) are auto-inferred from component name for DISPLAY grouping only — no manual configuration.
+  - Response now carries a `reconciliation` block with `pf_raw`, `pf_final`, `pf_diff`, `gratuity_full`, `gratuity_payable`, `gratuity_diff`, `redistributed_amount`, `full_month_structure_total`, and `matches_monthly_pay` flag for HR to audit each payslip.
+  - Every line item now carries `auto_note` (human-readable formula, e.g. "12% of Basic ₹16,500.00 = ₹1,980.00, capped at ₹1,800"), `redistribution_adjustment`, and `capped` flag.
+- **Frontend (`Payslips.js`):**
+  - Removed **Category** dropdown from template editor.
+  - Removed **Max Amount ₹** input from template editor.
+  - Removed **Include in Gross (CTC line)** checkbox — auto-derived from name (PF/Gratuity are always CTC lines).
+  - Save-payload builder now auto-sets `include_in_gross = true` when component is an earning OR its name contains "pf/provident/gratuity".
+  - Preview breakdown still shows category grouping (from backend-inferred `category` field) with per-category subtotals; component rows now display the `auto_note` under the Basis column and a green **"· reconciled +₹X.XX"** marker on any flex row that received a redistribution adjustment.
+- **DB cleanup:** Legacy `max_amount` and `category` fields on template components blanked out (auto-driven now).
+- **Live verification** (Navin Kumar V, ₹44,000 CTC, current AI Research template):
+  - **Feb 2026 (27/28 payable):** PF raw ₹1,980 → capped ₹1,800 (this-month ₹1,735.71); Gratuity full ₹792 → payable ₹763.71 (28.29 diff). Redistributed ₹27.89 across 6 flex allowances (Special Allowance took the +₹11.32 rounding balance). **Full-month hybrid structure = ₹44,000.00 exact.** Gross ₹42,455.84 / Deductions ₹2,499.42 / **Net Pay ₹39,956.42**.
+  - **Feb 2026 (28/28 full):** Redistribution = 0, Structure = ₹44,000.00, Net = ₹41,407.00.
+  - **Apr 2026 (28/30 payable, tested):** Gratuity full ₹793 → payable ₹740.13 (₹52.87 diff). Redistributed ₹52.87. Structure = ₹44,000.00 exact.
+  - Regression test with hypothetical high-Basic template (PF_raw > 1,800): PF_diff of ₹180 correctly folded into redistribution, structure reconciles.
+- Reconciliation banner-per-row + `matches_monthly_pay` audit flag guarantee no unexplained ₹0.05 drift.
+
+
+
 ## 🆕 2026-08-19 (later) — Payslip Category Grouping + Cap + PF/Gratuity formulas
 - **User requirement:** Payslip components must display grouped by category (Base Components (A), Basket of Allowances (B), Retirement Benefits (C)) with subtotals; PF Company Contribution must compute as `min(12% × Basic, ₹1,800)`; Gratuity must compute as fixed ₹793 pro-rated by `(payable_days / cal_days)`.
 - **Backend (`backend/payslip_module.py`):**

@@ -17,12 +17,10 @@ const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFract
 const emptyComponent = (order) => ({
   name: '', component_type: 'earning', operation: 'add', calc_type: 'percentage',
   percentage_value: '', fixed_amount: '', calc_base: 'monthly_pay',
-  proratable: true, active: true, include_in_gross: true,
-  category: '', max_amount: '', display_order: order,
+  proratable: true, active: true, display_order: order,
 });
 
 const CALC_LABEL = { percentage: '% of Base', fixed: 'Fixed Amount', payroll_extra_pay: 'Extra Pay (Payroll)' };
-const CATEGORIES = ['Base Components (A)', 'Basket of Allowances (B)', 'Retirement Benefits (C)'];
 
 // ---------- Shared calculation breakdown ----------
 export const CalcBreakdown = ({ calc }) => {
@@ -67,14 +65,20 @@ export const CalcBreakdown = ({ calc }) => {
                       </span>
                     )}
                     {c.capped && (
-                      <span className="ml-1 text-[10px] uppercase tracking-wide text-amber-600" title={`Capped at ${inr(c.max_amount)}`}>· capped</span>
+                      <span className="ml-1 text-[10px] uppercase tracking-wide text-amber-600" title="Capped at ₹1,800 monthly">· capped</span>
+                    )}
+                    {Math.abs(Number(c.redistribution_adjustment || 0)) > 0.01 && (
+                      <span className="ml-1 text-[10px] uppercase tracking-wide text-emerald-600" title={`Reconciled ${Number(c.redistribution_adjustment) >= 0 ? '+' : ''}${inr(c.redistribution_adjustment)} from PF cap / Gratuity proration`}>
+                        · reconciled {Number(c.redistribution_adjustment) >= 0 ? '+' : ''}{inr(c.redistribution_adjustment)}
+                      </span>
                     )}
                   </td>
                   <td className="py-2 text-xs text-slate-500">
-                    {c.calc_type === 'percentage'
-                      ? `${c.percentage_value}% of ${c.calc_base && c.calc_base !== 'monthly_pay' ? c.calc_base : 'base'}`
-                      : CALC_LABEL[c.calc_type]}
-                    {c.max_amount ? ` · cap ${inr(c.max_amount)}` : ''}
+                    {c.auto_note
+                      ? c.auto_note
+                      : (c.calc_type === 'percentage'
+                          ? `${c.percentage_value}% of ${c.calc_base && c.calc_base !== 'monthly_pay' ? c.calc_base : 'base'}`
+                          : CALC_LABEL[c.calc_type])}
                     {c.proratable === false ? ' · not prorated' : ''}
                   </td>
                   <td className="py-2 text-right">{inr(c.monthly_amount)}</td>
@@ -131,8 +135,6 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
     const next = { ...c, ...patch };
     if (patch.component_type) {
       next.operation = patch.component_type === 'earning' ? 'add' : 'deduct';
-      // Earnings always in gross; deductions default to NOT in gross (user can flip on for CTC lines like PF Employer, Gratuity)
-      next.include_in_gross = patch.component_type === 'earning';
     }
     return next;
   }));
@@ -146,8 +148,10 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
         percentage_value: c.calc_type === 'percentage' ? Number(c.percentage_value || 0) : null,
         fixed_amount: c.calc_type === 'fixed' ? Number(c.fixed_amount || 0) : null,
         calc_base: c.calc_type === 'percentage' ? (c.calc_base || 'monthly_pay') : null,
-        max_amount: (c.max_amount === '' || c.max_amount == null) ? null : Number(c.max_amount),
-        category: c.category || '',
+        // PF & Gratuity are auto-recognised CTC lines by name — always include in gross.
+        // Regular earnings are always in gross. Non-CTC deductions are handled by the backend.
+        include_in_gross: c.component_type === 'earning'
+          || /pf|provident|gratuity/i.test(c.name || ''),
       })),
     };
     setSaving(true);
@@ -201,16 +205,6 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
                 <Input data-testid={`component-name-${i}`} value={c.name} onChange={(e) => setComp(i, { name: e.target.value })} placeholder="e.g. Basic" />
               </div>
               <div>
-                <label className="text-xs text-slate-500">Category</label>
-                <Select value={c.category || '__none__'} onValueChange={(v) => setComp(i, { category: v === '__none__' ? '' : v })}>
-                  <SelectTrigger data-testid={`component-category-${i}`}><SelectValue placeholder="—" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">— None —</SelectItem>
-                    {CATEGORIES.map((cat) => (<SelectItem key={cat} value={cat}>{cat}</SelectItem>))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
                 <label className="text-xs text-slate-500">Type</label>
                 <Select value={c.component_type} onValueChange={(v) => setComp(i, { component_type: v })}>
                   <SelectTrigger data-testid={`component-type-${i}`}><SelectValue /></SelectTrigger>
@@ -243,12 +237,6 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
                   <Input data-testid={`component-fixed-${i}`} type="number" min="0" value={c.fixed_amount ?? ''} onChange={(e) => setComp(i, { fixed_amount: e.target.value })} />
                 </div>
               )}
-              {c.calc_type !== 'payroll_extra_pay' && (
-                <div>
-                  <label className="text-xs text-slate-500" title="Optional monthly cap. Full-month value never exceeds this (e.g. PF Employer capped at 1800).">Max Amount ₹ <span className="text-slate-300">(optional cap)</span></label>
-                  <Input data-testid={`component-max-${i}`} type="number" min="0" value={c.max_amount ?? ''} onChange={(e) => setComp(i, { max_amount: e.target.value })} placeholder="e.g. 1800" />
-                </div>
-              )}
             </div>
             <div className="flex flex-wrap items-center gap-4">
               {c.calc_type === 'percentage' && (
@@ -268,12 +256,6 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
                 <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
                   <input data-testid={`component-proratable-${i}`} type="checkbox" checked={c.proratable !== false} onChange={(e) => setComp(i, { proratable: e.target.checked })} />
                   Prorate by payable days
-                </label>
-              )}
-              {c.component_type === 'deduction' && (
-                <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer" title="Enable for employer contributions (PF Company, Gratuity) that appear on both Earnings and Deductions sides — they cancel out in Net Pay. Leave off for real employee deductions like TDS or Professional Tax.">
-                  <input data-testid={`component-include-gross-${i}`} type="checkbox" checked={!!c.include_in_gross} onChange={(e) => setComp(i, { include_in_gross: e.target.checked })} />
-                  Include in Gross (CTC line)
                 </label>
               )}
               <button data-testid={`component-remove-${i}`} className="ml-auto text-red-500 hover:text-red-700" onClick={() => setComponents((p) => p.filter((_, idx) => idx !== i))} disabled={components.length === 1}>
