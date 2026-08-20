@@ -5,6 +5,22 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-19 (v6.1) — Payslip PDF Rebuilt to BluBridge Standard Layout
+- **User request:** Match the exact PDF layout in the reference image (Company/Employee/Summary info box, side-by-side Earnings/Deductions grid with Total (A)/(B) and Net Pay (A-B), Other Perquisites/Other Deductions row with Net Payment in Rupees, Net Pay In Words, footer note).
+- **Rewrite (`backend/payslip_pdf.py`):**
+  - Header: BluBridge wordmark (left) + "Payslip for {Month Year}" (right).
+  - Info box: 3-column layout (Company address · Employee name/Code/Desg/DOJ · Summary showing Net Salary, Gross/Actual CTC monthly/annual, Paid/Total Days).
+  - Earnings/Deductions grid: template earning components on the left (using the split-from-attendance-payable values), fixed 4-row deduction block on right (PF Contribution, Professional Tax = 0, Gratuity, Other Deductions). Includes `Total - (A)` / `Total - (B)` and a `Net Pay ( A - B )` row (spanning left half only, per reference).
+  - Other Perquisites row: Petrol Allowance = 0, Additional Pay on weekends = Extra Pay (from Payroll), `Net Payment in Rupees` = Net Pay (A-B) + Perquisites.
+  - Other Deductions column on the right of the perquisites row.
+  - Net Pay In Words (whole-rupee): standard Indian format e.g. "Forty Thousand Seven Hundred and Forty Eight Rupees Only."
+  - Footer: "This is a system generated payslip hence signature is not required."
+- **Amounts formatted with Indian comma grouping** (`_int_amt` helper, e.g. 5,28,000).
+- **Verified via sample generation** for Praveen (₹44,000 CTC, Jan 2026 · 29/31 payable · 1.5 extra): PDF reconciles Basic ₹16,402 + HRA ₹8,201 + ... = Total (A) ₹41,161 · Total (B) ₹2,542 · Net Pay (A-B) ₹38,619 · Additional Pay ₹2,129 · **Net Payment in Rupees ₹40,748** ✅.
+- Old `_inr("Rs. 0.00")` legacy formatter dropped; integer-only display matches reference image.
+
+
+
 ## 🆕 2026-08-19 (v6 · MAJOR REWRITE) — Payroll-First Calculation Engine
 - **User's new spec:** Complete rewrite of `compute_payslip`. Compute payable salary first, then PF/Gratuity/Extra Pay independently, THEN split attendance_payable into template earning components. Component split-up must NOT control the payroll calculation — the calc drives the numbers, template only distributes for display.
 - **New calculation sequence (`backend/payslip_module.py::compute_payslip`):**

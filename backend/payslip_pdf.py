@@ -1,16 +1,18 @@
-"""BluBridge payslip PDF generator (reportlab)."""
+"""BluBridge payslip PDF generator — matches the standard BluBridge format
+(header · info-box · earnings/deductions grid · perquisites/other-deductions grid
+· net-pay-in-words · footer note)."""
 import io
 from datetime import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-NAVY = colors.HexColor("#1e3a5f")
-LIGHT = colors.HexColor("#f1f5f9")
-BORDER = colors.HexColor("#cbd5e1")
+BLACK = colors.black
+BORDER = colors.HexColor("#000000")
+LIGHT_BG = colors.HexColor("#f5f5f5")
 
 _ONES = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
          "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen",
@@ -25,11 +27,10 @@ def _two(n):
 
 
 def _three(n):
-    s = ""
     if n >= 100:
         s = _ONES[n // 100] + " Hundred"
         if n % 100:
-            s += " " + _two(n % 100)
+            s += " and " + _two(n % 100)
         return s
     return _two(n)
 
@@ -50,98 +51,210 @@ def amount_in_words(amount):
         parts.append(_two(thousand) + " Thousand")
     if n:
         parts.append(_three(n))
-    return " ".join(parts) + " Rupees Only"
+    return " ".join(parts) + " Rupees Only."
 
 
-def _inr(v):
-    return f"Rs. {float(v or 0):,.2f}"
+def _int_amt(v):
+    """Whole-rupee integer formatting with Indian comma grouping (e.g. 20,581)."""
+    n = int(round(float(v or 0)))
+    s = str(abs(n))
+    if len(s) <= 3:
+        formatted = s
+    else:
+        tail = s[-3:]
+        head = s[:-3]
+        groups = []
+        while len(head) > 2:
+            groups.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            groups.insert(0, head)
+        formatted = ",".join(groups) + "," + tail
+    return ("-" if n < 0 else "") + formatted
 
 
 def build_payslip_pdf(slip: dict) -> bytes:
     emp = slip.get("employee", {})
     calc = slip.get("calc", {})
-    pmeta = slip.get("payroll_meta", {})
     month = slip.get("month", "")
     month_label = datetime(int(month[:4]), int(month[5:7]), 1).strftime("%B %Y") if month else ""
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm,
-                            topMargin=14 * mm, bottomMargin=14 * mm)
-    W = A4[0] - 30 * mm
-    company = ParagraphStyle("company", fontName="Helvetica-Bold", fontSize=17, textColor=NAVY, alignment=TA_CENTER)
-    addr = ParagraphStyle("addr", fontName="Helvetica", fontSize=9, textColor=colors.HexColor("#475569"), alignment=TA_CENTER)
-    title = ParagraphStyle("title", fontName="Helvetica-Bold", fontSize=12, textColor=colors.white, alignment=TA_CENTER)
-    small = ParagraphStyle("small", fontName="Helvetica", fontSize=8, textColor=colors.HexColor("#64748b"), alignment=TA_CENTER)
-    cell = ParagraphStyle("cell", fontName="Helvetica", fontSize=9)
-    cell_b = ParagraphStyle("cellb", fontName="Helvetica-Bold", fontSize=9)
+    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=12 * mm, rightMargin=12 * mm,
+                            topMargin=12 * mm, bottomMargin=12 * mm)
+    W = A4[0] - 24 * mm
 
-    story = [
-        Paragraph("BluBridge Technologies Pvt Ltd", company),
+    # ---- Styles ----
+    logo_style = ParagraphStyle("logo", fontName="Helvetica-Bold", fontSize=28, textColor=BLACK,
+                                alignment=TA_LEFT, leading=30)
+    title_style = ParagraphStyle("title", fontName="Helvetica", fontSize=13, textColor=BLACK,
+                                 alignment=TA_RIGHT, leading=16)
+    hdr_cell_b = ParagraphStyle("hcb", fontName="Helvetica-Bold", fontSize=10, alignment=TA_CENTER, leading=13)
+    hdr_cell = ParagraphStyle("hc", fontName="Helvetica", fontSize=9, alignment=TA_CENTER, leading=12)
+    lbl_b = ParagraphStyle("lbb", fontName="Helvetica-Bold", fontSize=9, alignment=TA_LEFT, leading=12)
+    val_l = ParagraphStyle("vl", fontName="Helvetica", fontSize=9, alignment=TA_LEFT, leading=12)
+    val_r = ParagraphStyle("vr", fontName="Helvetica", fontSize=9, alignment=TA_RIGHT, leading=12)
+    val_r_b = ParagraphStyle("vrb", fontName="Helvetica-Bold", fontSize=9, alignment=TA_RIGHT, leading=12)
+    small = ParagraphStyle("sm", fontName="Helvetica", fontSize=8, textColor=colors.HexColor("#333333"), leading=11)
+    words_style = ParagraphStyle("words", fontName="Helvetica-Bold", fontSize=10, alignment=TA_LEFT, leading=13)
+    words_lbl = ParagraphStyle("wlbl", fontName="Helvetica-Bold", fontSize=9, alignment=TA_LEFT)
+
+    story = []
+
+    # ---- 1) Header: Logo (left) + Title (right) ----
+    logo = Paragraph('Blu<font color="#000000">B</font>ridge', logo_style)
+    title = Paragraph(f"Payslip for {month_label}", title_style)
+    hdr = Table([[logo, title]], colWidths=[W * 0.5, W * 0.5])
+    hdr.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                             ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))
+    story += [hdr, Spacer(1, 5 * mm)]
+
+    # ---- 2) Info block: Company | Employee | Summary ----
+    company_name = "Blubridge Technologies Pvt Ltd"
+    company_addr = "Plot #E160 Tiger Varadhachari Road,<br/>Kalashetra Colony, Besant Nagar, Chennai-600090"
+
+    net_rounded = int(round(calc.get("net_pay_rounded") if calc.get("net_pay_rounded") is not None else calc.get("net_pay", 0)))
+    monthly_pay = int(round(calc.get("monthly_pay", 0)))
+    annual_pay = monthly_pay * 12
+    payable_days = calc.get("payable_days", 0)
+    cal_days = calc.get("calendar_days", 0)
+
+    company_cell = [
+        Paragraph("<b>Company</b>", hdr_cell_b),
         Spacer(1, 2 * mm),
-        Paragraph("Chennai, Tamil Nadu, India", addr),
-        Spacer(1, 5 * mm),
+        Paragraph(company_name, hdr_cell),
+        Paragraph(company_addr, hdr_cell),
+    ]
+    employee_cell = [
+        Paragraph("<b>Employee</b>", hdr_cell_b),
+        Spacer(1, 2 * mm),
+        Paragraph(emp.get("full_name") or "-", hdr_cell),
+        Paragraph(f"Code: {emp.get('custom_employee_id') or '-'}", hdr_cell),
+        Paragraph(f"Desg: {emp.get('designation') or '-'}", hdr_cell),
+        Paragraph(f"DOJ: {emp.get('date_of_joining') or '-'}", hdr_cell),
+    ]
+    def _fmt_days(d):
+        try:
+            return f"{float(d):.2f}"
+        except Exception:
+            return str(d)
+    summary_cell = [
+        Paragraph("<b>Summary</b>", hdr_cell_b),
+        Spacer(1, 2 * mm),
+        Paragraph(f"Net Salary: {_int_amt(net_rounded)}", hdr_cell),
+        Paragraph(f"Gross/Actual CTC : {_int_amt(monthly_pay)}/{_int_amt(annual_pay)}", hdr_cell),
+        Paragraph(f"Paid / Total Days : {_fmt_days(payable_days)}/{_fmt_days(cal_days)}", hdr_cell),
     ]
 
-    tt = Table([[Paragraph(f"PAYSLIP — {month_label.upper()}", title)]], colWidths=[W])
-    tt.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), NAVY), ("TOPPADDING", (0, 0), (-1, -1), 6),
-                            ("BOTTOMPADDING", (0, 0), (-1, -1), 6)]))
-    story += [tt, Spacer(1, 5 * mm)]
+    info_tbl = Table([[company_cell, employee_cell, summary_cell]], colWidths=[W * 0.36, W * 0.30, W * 0.34])
+    info_tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.75, BORDER),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+    ]))
+    story += [info_tbl, Spacer(1, 5 * mm)]
 
-    info = [
-        ["Employee Name", emp.get("full_name") or "-", "Employee ID", emp.get("custom_employee_id") or "-"],
-        ["Designation", emp.get("designation") or "-", "Department", emp.get("department") or "-"],
-        ["Employee Type", emp.get("employment_type") or "-", "Date of Joining", emp.get("date_of_joining") or "-"],
-        ["Calendar Days", str(calc.get("calendar_days", "-")), "Payable Days", str(calc.get("payable_days", "-"))],
-        ["LOP Days", str(pmeta.get("lop", 0)), "Extra Pay Days", str(calc.get("extra_pay_days", 0))],
+    # ---- 3) Earnings (left) + Deductions (right) ----
+    # Earning rows: template split components (add, non-extra_pay).
+    earnings = [c for c in calc.get("components", []) if c.get("operation") == "add"
+                and c.get("calc_type") != "payroll_extra_pay"]
+    # Deduction rows: from computed components (PF, Gratuity) + fixed Professional Tax = 0.
+    ded_components = [c for c in calc.get("components", []) if c.get("operation") == "deduct"]
+    pf_comp = next((c for c in ded_components if "pf" in (c.get("name") or "").lower()
+                    or "provident" in (c.get("name") or "").lower()), None)
+    gr_comp = next((c for c in ded_components if "gratuity" in (c.get("name") or "").lower()), None)
+    other_deds = [c for c in ded_components if c is not pf_comp and c is not gr_comp]
+
+    ded_rows = [
+        ("PF Contribution", pf_comp.get("amount") if pf_comp else 0),
+        ("Professional Tax", 0),
+        ("Gratuity", gr_comp.get("amount") if gr_comp else 0),
+        ("Other Deductions", sum((c.get("amount") or 0) for c in other_deds)),
     ]
-    info = [[Paragraph(str(r[0]), cell_b), Paragraph(str(r[1]), cell),
-             Paragraph(str(r[2]), cell_b), Paragraph(str(r[3]), cell)] for r in info]
-    it = Table(info, colWidths=[W * 0.22, W * 0.28, W * 0.22, W * 0.28])
-    it.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (0, -1), LIGHT), ("BACKGROUND", (2, 0), (2, -1), LIGHT),
-        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+
+    total_a = sum((c.get("amount") or 0) for c in earnings)
+    total_b = sum(v for _, v in ded_rows)
+    net_ab = total_a - total_b + (calc.get("other_allowance") or 0) - 0  # note: perquisites row below adds extra_pay separately
+
+    # Pad earnings to at least len(ded_rows) rows for alignment
+    n_rows = max(len(earnings), len(ded_rows))
+    earning_padded = earnings + [None] * (n_rows - len(earnings))
+    ded_padded = list(ded_rows) + [None] * (n_rows - len(ded_rows))
+
+    # Build split table body:
+    grid = [[Paragraph("<b>Earnings</b>", lbl_b), Paragraph("<b>Amount</b>", val_r_b),
+             Paragraph("<b>Deductions</b>", lbl_b), Paragraph("<b>Amount</b>", val_r_b)]]
+    for i in range(n_rows):
+        e = earning_padded[i]
+        d = ded_padded[i]
+        left_name = Paragraph(e.get("name"), val_l) if e else ""
+        left_amt = Paragraph(_int_amt(e.get("amount") or 0), val_r) if e else ""
+        right_name = Paragraph(d[0], val_l) if d else ""
+        right_amt = Paragraph(_int_amt(d[1]), val_r) if d else ""
+        grid.append([left_name, left_amt, right_name, right_amt])
+    grid.append([Paragraph("<b>Total - (A)</b>", lbl_b), Paragraph(f"<b>{_int_amt(total_a)}</b>", val_r_b),
+                 Paragraph("<b>Total - (B)</b>", lbl_b), Paragraph(f"<b>{_int_amt(total_b)}</b>", val_r_b)])
+    # Net Pay (A-B) row — spans only the LEFT half in the reference layout
+    net_ab_display = total_a - total_b
+    grid.append([Paragraph("<b>Net Pay ( A - B )</b>", ParagraphStyle("nab", fontName="Helvetica-Bold", fontSize=9, alignment=TA_CENTER)),
+                 Paragraph(f"<b>{_int_amt(net_ab_display)}</b>", val_r_b), "", ""])
+
+    grid_tbl = Table(grid, colWidths=[W * 0.30, W * 0.20, W * 0.30, W * 0.20])
+    grid_tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (1, -2), 0.75, BORDER),           # left box (Earnings + Total(A) + NetPay row)
+        ("BOX", (2, 0), (3, -3), 0.75, BORDER),           # right box (Deductions + Total(B))
+        ("INNERGRID", (0, 0), (1, -2), 0.4, BORDER),
+        ("INNERGRID", (2, 0), (3, -3), 0.4, BORDER),
+        ("BACKGROUND", (0, -1), (1, -1), LIGHT_BG),       # Net Pay row background
+        ("BACKGROUND", (0, -2), (-1, -2), LIGHT_BG),      # Totals row background
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ]))
-    story += [it, Spacer(1, 6 * mm)]
+    story += [grid_tbl, Spacer(1, 4 * mm)]
 
-    earnings = [c for c in calc.get("components", []) if c.get("operation") == "add"]
-    deductions = [c for c in calc.get("components", []) if c.get("operation") == "deduct"]
-    if calc.get("other_allowance"):
-        earnings.append({"name": "Other Allowance (Extra Pay)", "amount": calc["other_allowance"]})
+    # ---- 4) Other Perquisites (left) + Other Deductions (right) ----
+    extra_pay = calc.get("other_allowance") or 0
+    perquisite_rows = [
+        ("Petrol Allowance", 0),
+        ("Additional Pay on weekends", extra_pay),
+    ]
+    net_payment = int(round(net_ab_display + extra_pay))  # Total-A minus Total-B, plus perquisites (Extra Pay)
 
-    rows = [["EARNINGS", "AMOUNT", "DEDUCTIONS", "AMOUNT"]]
-    for i in range(max(len(earnings), len(deductions), 1)):
-        e = earnings[i] if i < len(earnings) else {}
-        d = deductions[i] if i < len(deductions) else {}
-        rows.append([e.get("name", ""), _inr(e["amount"]) if e else "",
-                     d.get("name", ""), _inr(d["amount"]) if d else ""])
-    rows.append(["Gross Earnings", _inr(calc.get("gross_earnings")), "Total Deductions", _inr(calc.get("total_deductions"))])
-
-    ct = Table(rows, colWidths=[W * 0.30, W * 0.20, W * 0.30, W * 0.20])
-    ct.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"), ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("BACKGROUND", (0, 0), (-1, 0), NAVY), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"), ("BACKGROUND", (0, -1), (-1, -1), LIGHT),
-        ("ALIGN", (1, 0), (1, -1), "RIGHT"), ("ALIGN", (3, 0), (3, -1), "RIGHT"),
-        ("GRID", (0, 0), (-1, -1), 0.5, BORDER),
-        ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7), ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+    perq_grid = [[Paragraph("<b>Other Perquisites</b>", lbl_b), Paragraph("<b>Amount</b>", val_r_b),
+                  Paragraph("<b>Other Deductions</b>", lbl_b), Paragraph("<b>Amount</b>", val_r_b)]]
+    for i, (nm, val) in enumerate(perquisite_rows):
+        right_name = Paragraph("Other Deductions", val_l) if i == 0 else ""
+        right_amt = Paragraph(_int_amt(0), val_r) if i == 0 else ""
+        perq_grid.append([Paragraph(nm, val_l), Paragraph(_int_amt(val), val_r), right_name, right_amt])
+    # Final "Net Payment in Rupees" row (spans left half)
+    perq_grid.append([Paragraph("<b>Net Payment in Rupees</b>", ParagraphStyle("npr", fontName="Helvetica-Bold", fontSize=9, alignment=TA_CENTER)),
+                      Paragraph(f"<b>{_int_amt(net_payment)}</b>", val_r_b), "", ""])
+    perq_tbl = Table(perq_grid, colWidths=[W * 0.30, W * 0.20, W * 0.30, W * 0.20])
+    perq_tbl.setStyle(TableStyle([
+        ("BOX", (0, 0), (1, -1), 0.75, BORDER),
+        ("BOX", (2, 0), (3, -2), 0.75, BORDER),
+        ("INNERGRID", (0, 0), (1, -1), 0.4, BORDER),
+        ("INNERGRID", (2, 0), (3, -2), 0.4, BORDER),
+        ("BACKGROUND", (0, -1), (1, -1), LIGHT_BG),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ]))
-    story += [ct, Spacer(1, 6 * mm)]
+    story += [perq_tbl, Spacer(1, 6 * mm)]
 
-    net = calc.get("net_pay", 0)
-    net_style = ParagraphStyle("net", fontName="Helvetica-Bold", fontSize=12, textColor=NAVY, alignment=TA_RIGHT)
-    nt = Table([[Paragraph("NET PAY", ParagraphStyle("nl", fontName="Helvetica-Bold", fontSize=12, textColor=NAVY)),
-                 Paragraph(_inr(net), net_style)]], colWidths=[W * 0.5, W * 0.5])
-    nt.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, -1), LIGHT), ("BOX", (0, 0), (-1, -1), 1, NAVY),
-                            ("TOPPADDING", (0, 0), (-1, -1), 8), ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-                            ("LEFTPADDING", (0, 0), (-1, -1), 10), ("RIGHTPADDING", (0, 0), (-1, -1), 10)]))
-    words = ParagraphStyle("words", fontName="Helvetica-Oblique", fontSize=9, textColor=colors.HexColor("#334155"))
-    story += [nt, Spacer(1, 3 * mm),
-              Paragraph(f"Amount in words: {amount_in_words(net)}", words),
-              Spacer(1, 10 * mm),
-              Paragraph("This is a computer-generated payslip and does not require a signature.", small)]
+    # ---- 5) Net Pay in Words ----
+    words_row = Table([[Paragraph("Net Pay In Words :", words_lbl),
+                        Paragraph(amount_in_words(net_payment), words_style)]],
+                      colWidths=[W * 0.22, W * 0.78])
+    words_row.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                                   ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                   ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
+    story += [words_row, Spacer(1, 8 * mm)]
+
+    # ---- 6) Footer note ----
+    story += [Paragraph("<b>Note</b> : This is a system generated payslip hence signature is not required.", small)]
 
     doc.build(story)
     return buf.getvalue()
