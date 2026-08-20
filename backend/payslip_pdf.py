@@ -2,13 +2,17 @@
 (header · info-box · earnings/deductions grid · perquisites/other-deductions grid
 · net-pay-in-words · footer note)."""
 import io
+import os
 from datetime import datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib import colors
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+
+_LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "public", "logo.png")
+_LOGO_PATH = os.path.normpath(_LOGO_PATH)
 
 BLACK = colors.black
 BORDER = colors.HexColor("#000000")
@@ -102,7 +106,14 @@ def build_payslip_pdf(slip: dict) -> bytes:
     story = []
 
     # ---- 1) Header: Logo (left) + Title (right) ----
-    logo = Paragraph('Blu<font color="#000000">B</font>ridge', logo_style)
+    if os.path.exists(_LOGO_PATH):
+        # Original logo is 246x33 px (7.45:1 ratio). Render ~52mm wide keeping aspect ratio.
+        logo_w = 52 * mm
+        logo_h = logo_w * 33.0 / 246.0
+        logo = Image(_LOGO_PATH, width=logo_w, height=logo_h)
+        logo.hAlign = "LEFT"
+    else:
+        logo = Paragraph('Blu<font color="#000000">B</font>ridge', logo_style)
     title = Paragraph(f"Payslip for {month_label}", title_style)
     hdr = Table([[logo, title]], colWidths=[W * 0.5, W * 0.5])
     hdr.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
