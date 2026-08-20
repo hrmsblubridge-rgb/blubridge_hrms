@@ -5,6 +5,34 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-19 (v6 · MAJOR REWRITE) — Payroll-First Calculation Engine
+- **User's new spec:** Complete rewrite of `compute_payslip`. Compute payable salary first, then PF/Gratuity/Extra Pay independently, THEN split attendance_payable into template earning components. Component split-up must NOT control the payroll calculation — the calc drives the numbers, template only distributes for display.
+- **New calculation sequence (`backend/payslip_module.py::compute_payslip`):**
+  1. `per_day = monthly_pay / cal_days`
+  2. `attendance_payable = per_day × payable_days`
+  3. **`pf = min(attendance_payable / 2 × 12%, ₹1,800)`** ← changed from Basic-based to attendance-payable-based
+  4. `gratuity = round((template_gratuity_full / cal_days) × payable_days)` (rounded to whole rupee)
+  5. `extra_pay = per_day × extra_pay_days`
+  6. `gross_earnings = attendance_payable + extra_pay`
+  7. `total_deductions = pf + gratuity`
+  8. `net_pay = gross_earnings − total_deductions`
+  9. Split `attendance_payable` into earning components using their template weights (percentages or fixed as ratio). **Rounding balance goes to Special Allowance so components sum to attendance_payable exactly.**
+  10. **Extra Pay is displayed separately as "Other Allowance"** — never split across components.
+- **PF and Gratuity NO LONGER appear as CTC gross lines.** They're pure deductions. Their `include_in_gross=False` in the emit; gross_earnings computed directly as `attendance_payable + extra_pay`.
+- **All redistribution logic removed** — no more inflating flex allowances by gratuity_diff.
+- **Frontend (`Payslips.js`, `EmployeePayslips.js`):**
+  - Summary card row now shows Attendance Payable alongside Per-Day.
+  - Footer split into "Template Earnings (= Attendance Payable)" + "Gross Earnings (+ Other Allowance)" + "Total Deductions" + "NET PAY" + optional "Rounded Payable" line.
+- **DB migration:** Gratuity component in AI Research template flipped from `1.8% percentage` to `fixed ₹793` to match user's spec exactly.
+- **Live verified end-to-end (Kota / Navin, ₹44,000 CTC, Jul 2026 · Cal 31 · Payable 29 · Extra 1.5):**
+  - Per-Day ₹1,419.35 ✓ · Attendance Payable ₹41,161.29 ✓
+  - PF ₹1,800 (capped from 12% × 20,580.65 = 2,469.68) ✓
+  - Gratuity ₹742 (rounded from 741.84) ✓ · Extra Pay ₹2,129.03 ✓
+  - **Gross ₹43,290.32 · Deductions ₹2,542.00 · Net ₹40,748.32 · Rounded ₹40,748** — matches user's Excel to the paisa ✅
+  - Component split sums to ₹41,161.29 exact (Special Allowance absorbs rounding balance).
+
+
+
 ## 🆕 2026-08-19 (v5) — Payslip Excel Alignment: PF Cap Shortfall + No Redistribution
 - **Bug reported (Excel comparison):** For KOTA DHANAKUMAR, July 2026 (Cal 31, Payable 29, Extra 1.5, MP ₹44,000), Excel Total Payable = ₹40,748.00 but system showed ₹40,913.34 (₹165.31 higher).
 - **Root causes:**

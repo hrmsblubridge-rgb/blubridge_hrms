@@ -37,8 +37,15 @@ export const CalcBreakdown = ({ calc }) => {
 
   return (
     <div className="space-y-4" data-testid="calc-breakdown">
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-center">
-        {[['Month', calc.month], ['Calendar Days', calc.calendar_days], ['Payable Days', calc.payable_days], ['Extra Pay Days', calc.extra_pay_days], ['Per-Day Salary', inr(calc.per_day_salary)]].map(([l, v]) => (
+      <div className="grid grid-cols-2 sm:grid-cols-6 gap-3 text-center">
+        {[
+          ['Month', calc.month],
+          ['Calendar Days', calc.calendar_days],
+          ['Payable Days', calc.payable_days],
+          ['Extra Pay Days', calc.extra_pay_days],
+          ['Per-Day Salary', inr(calc.per_day_salary)],
+          ['Attendance Payable', inr(calc.attendance_payable)],
+        ].map(([l, v]) => (
           <div key={l} className="bg-slate-50 rounded-lg p-3">
             <div className="text-xs text-slate-400">{l}</div>
             <div className="font-semibold text-slate-800">{v}</div>
@@ -99,18 +106,28 @@ export const CalcBreakdown = ({ calc }) => {
           )}
         </tbody>
         <tfoot>
+          <tr className="text-sm border-t">
+            <td colSpan="3" className="py-2 text-right text-slate-500">Template Earnings <span className="text-[10px] text-slate-400">(= Attendance Payable)</span></td>
+            <td className="py-2 text-right font-semibold" data-testid="preview-template-earnings">{inr(calc.attendance_payable)}</td>
+          </tr>
           <tr className="text-sm">
-            <td colSpan="3" className="py-2 text-right text-slate-500">Gross Earnings</td>
+            <td colSpan="3" className="py-2 text-right text-slate-500">Gross Earnings <span className="text-[10px] text-slate-400">(Template + Other Allowance)</span></td>
             <td className="py-2 text-right font-semibold" data-testid="preview-gross">{inr(calc.gross_earnings)}</td>
           </tr>
           <tr className="text-sm">
-            <td colSpan="3" className="py-2 text-right text-slate-500">Total Deductions</td>
+            <td colSpan="3" className="py-2 text-right text-slate-500">Total Deductions <span className="text-[10px] text-slate-400">(PF + Gratuity)</span></td>
             <td className="py-2 text-right font-semibold text-red-600" data-testid="preview-deductions">−{inr(calc.total_deductions)}</td>
           </tr>
           <tr className="text-base border-t">
             <td colSpan="3" className="py-3 text-right font-semibold">NET PAY</td>
             <td className="py-3 text-right font-bold text-emerald-700" data-testid="preview-net">{inr(calc.net_pay)}</td>
           </tr>
+          {calc.net_pay_rounded != null && Math.abs(calc.net_pay_rounded - calc.net_pay) > 0.01 && (
+            <tr className="text-xs">
+              <td colSpan="3" className="py-1 text-right text-slate-400">Rounded Payable</td>
+              <td className="py-1 text-right font-medium text-slate-500">₹{Number(calc.net_pay_rounded).toLocaleString('en-IN')}</td>
+            </tr>
+          )}
         </tfoot>
       </table>
     </div>

@@ -86,8 +86,14 @@ export default function EmployeePayslips() {
           <DialogHeader><DialogTitle>Payslip — {viewSlip && monthLabel(viewSlip.month)}</DialogTitle></DialogHeader>
           {viewSlip && (
             <div className="space-y-3">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
-                {[['Calendar Days', viewSlip.calc?.calendar_days], ['Payable Days', viewSlip.calc?.payable_days], ['Extra Pay Days', viewSlip.calc?.extra_pay_days], ['Per-Day', inr(viewSlip.calc?.per_day_salary)]].map(([l, v]) => (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+                {[
+                  ['Calendar Days', viewSlip.calc?.calendar_days],
+                  ['Payable Days', viewSlip.calc?.payable_days],
+                  ['Extra Pay Days', viewSlip.calc?.extra_pay_days],
+                  ['Per-Day', inr(viewSlip.calc?.per_day_salary)],
+                  ['Attendance Payable', inr(viewSlip.calc?.attendance_payable)],
+                ].map(([l, v]) => (
                   <div key={l} className="bg-slate-50 rounded-lg p-2">
                     <div className="text-xs text-slate-400">{l}</div>
                     <div className="font-semibold text-sm">{v}</div>
@@ -136,9 +142,13 @@ export default function EmployeePayslips() {
                   )}
                 </tbody>
                 <tfoot>
-                  <tr><td className="py-2 text-right text-slate-500">Gross</td><td className="py-2 text-right font-semibold">{inr(viewSlip.calc?.gross_earnings)}</td></tr>
-                  <tr><td className="py-2 text-right text-slate-500">Deductions</td><td className="py-2 text-right font-semibold text-red-600">−{inr(viewSlip.calc?.total_deductions)}</td></tr>
+                  <tr className="border-t"><td className="py-2 text-right text-slate-500">Template Earnings <span className="text-[10px] text-slate-400">(= Attendance Payable)</span></td><td className="py-2 text-right font-semibold">{inr(viewSlip.calc?.attendance_payable)}</td></tr>
+                  <tr><td className="py-2 text-right text-slate-500">Gross Earnings <span className="text-[10px] text-slate-400">(+ Other Allowance)</span></td><td className="py-2 text-right font-semibold">{inr(viewSlip.calc?.gross_earnings)}</td></tr>
+                  <tr><td className="py-2 text-right text-slate-500">Total Deductions</td><td className="py-2 text-right font-semibold text-red-600">−{inr(viewSlip.calc?.total_deductions)}</td></tr>
                   <tr className="border-t"><td className="py-2 text-right font-semibold">NET PAY</td><td className="py-2 text-right font-bold text-emerald-700">{inr(viewSlip.calc?.net_pay)}</td></tr>
+                  {viewSlip.calc?.net_pay_rounded != null && Math.abs(viewSlip.calc.net_pay_rounded - viewSlip.calc.net_pay) > 0.01 && (
+                    <tr><td className="py-1 text-right text-xs text-slate-400">Rounded Payable</td><td className="py-1 text-right text-xs font-medium text-slate-500">₹{Number(viewSlip.calc.net_pay_rounded).toLocaleString('en-IN')}</td></tr>
+                  )}
                 </tfoot>
               </table>
             </div>

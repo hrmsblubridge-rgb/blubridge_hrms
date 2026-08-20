@@ -293,109 +293,155 @@ def _component_full_month(c: dict, monthly_pay: float, resolved: dict, per_day: 
     return 0.0
 
 
-def compute_payslip(monthly_pay: float, components: list, month: str, payable_days: float, extra_pay_days: float) -> dict:
-    """Core calculation engine implementing the reconciliation algorithm.
+GRATUITY_FULL_MONTH_DEFAULT = 793.0  # Full-month reference gratuity amount (per PRD v6)
 
-    Rules (see PRD 2026-08-19 v3):
-      • PF (any component whose name contains 'pf' or 'provident fund') is auto-computed as
-        min(Basic × 12%, ₹1,800). The template's own percentage/fixed for PF is ignored.
-      • Gratuity is prorated as (full_month_gratuity / cal_days) × payable_days.
-      • Any deficit between (Basic + HRA + Flex + PF_final + Gratuity_payable) and Monthly Pay is
-        redistributed proportionally into the 6 flexible allowances (LTA, Phone & Internet,
-        Bonus, Stay & Travel, Special, Food). The rounding balance lands on Special Allowance
-        so the full-month structure reconciles to Monthly Pay exactly (±₹0.01).
-      • All per-month values are then prorated by payable_days/cal_days for the displayed amount.
+
+def compute_payslip(monthly_pay: float, components: list, month: str, payable_days: float, extra_pay_days: float) -> dict:
+    """Payroll-first calculation engine (PRD v6 · 2026-08-19).
+
+    Sequence (do NOT change):
+      1. Per-Day Salary          = monthly_pay / cal_days
+      2. Attendance Payable      = per_day × payable_days       ← core salary for the month
+      3. PF                       = min(attendance_payable / 2 × 12%, ₹1,800)
+      4. Gratuity                 = round((gratuity_full / cal_days) × payable_days)
+      5. Extra Pay                = per_day × extra_pay_days
+      6. Gross Earnings           = attendance_payable + extra_pay
+      7. Total Deductions         = PF + Gratuity
+      8. Net Pay                  = Gross Earnings − Total Deductions
+      9. Split attendance_payable into template earning components by their weights;
+         rounding balance to Special Allowance so components sum to attendance_payable exactly.
+      10. Extra Pay is displayed separately as "Other Allowance" — never split across components.
+
+    PF and Gratuity are calculated BEFORE the component split and are NOT part of the
+    template earnings percentage (i.e. earnings sum to 100% of attendance_payable, PF and
+    Gratuity are separate deductions).
     """
     y, m = int(month[:4]), int(month[5:7])
     cal_days = calendar.monthrange(y, m)[1]
     if cal_days <= 0 or monthly_pay <= 0:
         raise HTTPException(status_code=400, detail="Invalid month or monthly pay")
-    per_day = monthly_pay / cal_days
-    ratio = max(0.0, float(payable_days)) / cal_days
-    active = sorted([c for c in components if c.get("active", True)], key=lambda x: int(x.get("display_order") or 0))
 
-    # ---- Pass 1: compute full-month baseline for every component except PF and Gratuity ----
-    resolved = {}
-    baseline = {}  # name -> full-month value BEFORE any redistribution
-    basic_full = 0.0
-    pf_component = None
-    gratuity_component = None
-    for c in active:
-        name = c["name"]
-        if _is_pf(name):
-            pf_component = c
-            continue
-        if _is_gratuity(name):
-            gratuity_component = c
-            continue
-        val = _component_full_month(c, monthly_pay, resolved, per_day, extra_pay_days)
-        baseline[name] = val
-        resolved[name] = {"monthly": val}
-        if _is_basic(name):
-            basic_full = val
+    per_day = float(monthly_pay) / cal_days
+    payable = max(0.0, float(payable_days or 0))
+    extra_days = max(0.0, float(extra_pay_days or 0))
 
-    # ---- Pass 2: PF (auto ₹1,800 cap on Basic × 12%) ----
-    pf_raw = basic_full * 0.12
+    active = sorted([c for c in components if c.get("active", True)],
+                    key=lambda x: int(x.get("display_order") or 0))
+
+    # --- Step 1-2: Attendance payable salary ---
+    attendance_payable = per_day * payable
+
+    # --- Step 3: PF = min(attendance_payable / 2 × 12%, ₹1,800) ---
+    pf_base = attendance_payable / 2.0
+    pf_raw = pf_base * 0.12
     pf_final = min(pf_raw, PF_CAP_MONTHLY)
-    pf_diff = max(pf_raw - pf_final, 0.0)  # exposed for reporting; deficit-based redistribution handles it
+    pf_capped = pf_raw > PF_CAP_MONTHLY
 
-    # ---- Pass 3: Gratuity (full-month value from template, then pro-rate) ----
-    gratuity_full = _component_full_month(gratuity_component, monthly_pay, resolved, per_day, extra_pay_days) if gratuity_component else 0.0
-    gratuity_payable = gratuity_full * ratio
-    gratuity_diff = gratuity_full - gratuity_payable
+    # --- Step 4: Gratuity ---
+    # Use template's Gratuity fixed_amount if provided; else default to ₹793.
+    gratuity_full = GRATUITY_FULL_MONTH_DEFAULT
+    for c in active:
+        if _is_gratuity(c["name"]):
+            ct = c.get("calc_type")
+            if ct == "fixed" and c.get("fixed_amount"):
+                gratuity_full = float(c["fixed_amount"])
+            elif ct == "percentage" and c.get("percentage_value"):
+                gratuity_full = float(monthly_pay) * float(c["percentage_value"]) / 100.0
+            break
+    gratuity_raw = (gratuity_full / cal_days) * payable if cal_days else 0.0
+    gratuity_final = round(gratuity_raw)  # rounded to whole rupee per spec
 
-    # ---- Pass 4: NO structural redistribution ----
-    # Excel model (source of truth): Net = MP × ratio + Extra Pay − PF_capped − Gratuity_prorated.
-    # PF is a MONTHLY statutory obligation (cap ₹1,800) that does NOT prorate down as-is when
-    # Basic × 12% ≥ ₹1,800 — the employee "loses" the (PF_cap − PF_prorated) portion of their
-    # take-home for the days they were absent. Flex allowances are NOT redistributed.
-    redistribute_amount = 0.0
-    flex_names = [n for n in baseline.keys() if _is_flex(n)]
-    adjustments = {n: 0.0 for n in flex_names}
+    # --- Step 5: Extra pay ---
+    extra_pay = round(per_day * extra_days, 2)
 
-    # ---- Pass 6: Emit line items with THIS-MONTH prorated amounts ----
+    # --- Steps 6-8: Totals ---
+    gross_earnings = round(attendance_payable + extra_pay, 2)
+    total_deductions = round(pf_final + gratuity_final, 2)
+    net_pay = round(gross_earnings - total_deductions, 2)
+    net_pay_rounded = round(net_pay)
+
+    # --- Step 9: Split attendance_payable into template earning components ---
+    # Earning = add operations, not PF/Gratuity/Extra_pay.
+    earning_components = [
+        c for c in active
+        if c.get("operation") == "add"
+        and c.get("calc_type") != "payroll_extra_pay"
+        and not _is_pf(c["name"])
+        and not _is_gratuity(c["name"])
+    ]
+
+    # Each earning's implied full-month value (from template % or fixed).
+    tmpl_full = {}
+    for c in earning_components:
+        ct = c.get("calc_type")
+        if ct == "percentage":
+            tmpl_full[c["name"]] = float(monthly_pay) * float(c.get("percentage_value") or 0) / 100.0
+        elif ct == "fixed":
+            tmpl_full[c["name"]] = float(c.get("fixed_amount") or 0)
+        else:
+            tmpl_full[c["name"]] = 0.0
+    tmpl_total = sum(tmpl_full.values())
+
+    split_amounts = {n: 0.0 for n in tmpl_full}
+    if tmpl_total > 0.001 and attendance_payable > 0.001:
+        special_name = next((n for n in tmpl_full if _is_special(n)), None)
+        running = 0.0
+        for name, val in tmpl_full.items():
+            if name == special_name:
+                continue
+            share = round(attendance_payable * val / tmpl_total, 2)
+            split_amounts[name] = share
+            running += share
+        if special_name is not None:
+            # Special Allowance absorbs any rounding balance so sum = attendance_payable exactly.
+            split_amounts[special_name] = round(attendance_payable - running, 2)
+        elif earning_components:
+            first_name = earning_components[0]["name"]
+            split_amounts[first_name] = round(split_amounts[first_name] + (attendance_payable - running), 2)
+
+    # --- Emit line items ---
     lines = []
-    gross = 0.0
-    deductions = 0.0
     for c in active:
         name = c["name"]
         ct = c.get("calc_type")
         proratable = c.get("proratable", True)
-        auto_note = None
         deduct_amount = None
+        auto_note = None
         if _is_pf(name):
-            # CTC contribution: pf_final × ratio (uniform proration of the capped monthly value).
-            # Deduction: min(Basic_this × 12%, ₹1,800) — statutory MONTHLY cap; not further prorated.
             monthly_amt = pf_final
-            basic_this = round(basic_full * ratio, 2)
-            pf_this_raw = basic_this * 0.12
-            pf_this_deduct = round(min(pf_this_raw, PF_CAP_MONTHLY), 2)
-            amount = round(pf_final * ratio if proratable else pf_final, 2)  # CTC line value
-            deduct_amount = pf_this_deduct  # actual deduction (monthly cap)
-            pf_this_capped = pf_this_raw > PF_CAP_MONTHLY
-            if pf_this_capped:
-                auto_note = f"12% of Basic ₹{basic_this:,.2f} = ₹{round(pf_this_raw,2):,.2f}, deducted ₹{PF_CAP_MONTHLY:,.0f} (statutory monthly cap)"
+            amount = round(pf_final, 2)  # NOT further prorated (already calculated on attendance-payable base)
+            deduct_amount = round(pf_final, 2)
+            if pf_capped:
+                auto_note = (
+                    f"12% of (Attendance Payable ₹{attendance_payable:,.2f} / 2 = ₹{pf_base:,.2f})"
+                    f" = ₹{pf_raw:,.2f}, capped at ₹{PF_CAP_MONTHLY:,.0f}"
+                )
             else:
-                auto_note = f"12% of Basic ₹{basic_this:,.2f} = ₹{round(pf_this_raw,2):,.2f}"
+                auto_note = f"12% of (Attendance Payable ₹{attendance_payable:,.2f} / 2 = ₹{pf_base:,.2f}) = ₹{round(pf_raw,2):,.2f}"
+            operation = "deduct"
+            include_gross = False
         elif _is_gratuity(name):
             monthly_amt = gratuity_full
-            amount = round(gratuity_payable, 2)
-            auto_note = f"(₹{round(gratuity_full,2):,.2f} / {cal_days}) × {int(payable_days) if float(payable_days).is_integer() else payable_days}"
+            amount = float(gratuity_final)
+            deduct_amount = float(gratuity_final)
+            _pd = int(payable) if payable == int(payable) else payable
+            auto_note = f"(₹{gratuity_full:,.2f} / {cal_days}) × {_pd} = ₹{gratuity_raw:,.2f} → rounded ₹{gratuity_final:,.0f}"
+            operation = "deduct"
+            include_gross = False
         elif ct == "payroll_extra_pay":
-            monthly_amt = per_day * float(extra_pay_days or 0)
-            amount = round(monthly_amt, 2)
+            monthly_amt = per_day * extra_days
+            amount = extra_pay
+            operation = "add"
+            include_gross = True
+            _ed = int(extra_days) if extra_days == int(extra_days) else extra_days
+            auto_note = f"Per-Day ₹{per_day:,.2f} × {_ed} extra day(s)"
         else:
-            monthly_amt = baseline.get(name, 0.0)
-            amount = round(monthly_amt * ratio if proratable else monthly_amt, 2)
-        operation = c.get("operation")
-        include_gross = c.get("include_in_gross")
-        if include_gross is None:
-            include_gross = operation == "add"
-        if include_gross:
-            gross += amount
-        if operation == "deduct":
-            # Use deduct_amount override when set (e.g. PF statutory monthly cap that overrides the prorated CTC line)
-            deductions += (deduct_amount if deduct_amount is not None else amount)
+            monthly_amt = tmpl_full.get(name, 0.0)
+            amount = round(split_amounts.get(name, 0.0), 2)
+            pct_of_total = (tmpl_full[name] / tmpl_total * 100.0) if tmpl_total > 0 else 0.0
+            auto_note = f"{pct_of_total:.2f}% of Attendance Payable ₹{attendance_payable:,.2f}"
+            operation = c.get("operation", "add")
+            include_gross = True
         lines.append({
             "name": name,
             "component_type": c.get("component_type"),
@@ -409,44 +455,41 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
             "proratable": proratable,
             "include_in_gross": bool(include_gross),
             "category": _infer_category(name),
-            "capped": _is_pf(name) and pf_diff > 0.01,
+            "capped": _is_pf(name) and pf_capped,
             "auto_note": auto_note,
-            "redistribution_adjustment": round(adjustments.get(name, 0.0), 2),
+            "redistribution_adjustment": 0.0,
         })
 
-    other_allowance = round(per_day * float(extra_pay_days or 0), 2)
-    has_extra_component = any(l["calc_type"] == "payroll_extra_pay" for l in lines)
-    if not has_extra_component and other_allowance:
-        gross += other_allowance
-    net = round(gross - deductions, 2)
-
-    # Final reconciliation sanity — full-month CTC structure (Basic + HRA + Flex_baseline + PF_final + Gratuity_full)
-    # should equal Monthly Pay (±₹1 tolerance for percentage rounding). No redistribution.
-    full_month_structure_total = round(
-        sum(v for n, v in baseline.items()
-            if next((cc.get("calc_type") for cc in active if cc["name"] == n), None) != "payroll_extra_pay")
-        + pf_final + gratuity_full,
-        2,
-    )
-
+    # Reconciliation
+    split_sum = round(sum(v for v in split_amounts.values()), 2)
     return {
         "month": month, "calendar_days": cal_days, "payable_days": payable_days,
         "extra_pay_days": extra_pay_days, "monthly_pay": monthly_pay,
-        "per_day_salary": round(per_day, 4), "components": lines,
-        "gross_earnings": round(gross, 2), "total_deductions": round(deductions, 2),
-        "other_allowance": 0 if has_extra_component else other_allowance,
-        "net_pay": net,
-        # Reconciliation debug/reporting fields
+        "per_day_salary": round(per_day, 4),
+        "attendance_payable": round(attendance_payable, 2),
+        "components": lines,
+        "gross_earnings": gross_earnings,
+        "total_deductions": total_deductions,
+        "other_allowance": extra_pay,
+        "net_pay": net_pay,
+        "net_pay_rounded": net_pay_rounded,
         "reconciliation": {
+            "per_day_salary": round(per_day, 4),
+            "attendance_payable": round(attendance_payable, 2),
+            "pf_base": round(pf_base, 2),
             "pf_raw": round(pf_raw, 2),
             "pf_final": round(pf_final, 2),
-            "pf_diff": round(pf_diff, 2),
-            "gratuity_full": round(gratuity_full, 2),
-            "gratuity_payable": round(gratuity_payable, 2),
-            "gratuity_diff": round(gratuity_diff, 2),
-            "redistributed_amount": round(redistribute_amount, 2),
-            "full_month_structure_total": full_month_structure_total,
-            "matches_monthly_pay": abs(full_month_structure_total - monthly_pay) < 1.0,
+            "pf_capped": pf_capped,
+            "gratuity_full_month": round(gratuity_full, 2),
+            "gratuity_raw": round(gratuity_raw, 2),
+            "gratuity_final": float(gratuity_final),
+            "extra_pay": extra_pay,
+            "template_split_total": split_sum,
+            "template_earnings_percent_sum": round(sum(
+                (c.get("percentage_value") or 0) for c in earning_components
+                if c.get("calc_type") == "percentage"
+            ), 4),
+            "matches_attendance_payable": abs(split_sum - round(attendance_payable, 2)) < 0.02,
         },
     }
 
