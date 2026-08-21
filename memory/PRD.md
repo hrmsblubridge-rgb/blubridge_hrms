@@ -5,6 +5,29 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-19 (v7 · Template-Driven Deductions + Assignment Overhaul)
+- **Backend `payslip_module.py`:**
+  - **PF fully template-driven.** PF component now uses two fields: `base_percentage` (portion of Attendance Payable that forms the PF base) and `percentage_value` (contribution %). Formula: `PF = min(attendance_payable × base_pct% × contrib_pct%, ₹1,800)`. Cap can be disabled per component via `apply_pf_cap=False`. **If no PF component in the assigned template → PF = 0 and no PF row appears.**
+  - **Gratuity fully template-driven.** Supports both `Fixed` (`(fixed / cal_days) × payable_days`, rounded) and `Percentage` (`% × monthly_pay × ratio`, rounded). **No Gratuity in template → Gratuity = 0.**
+  - **Generic deductions.** Any additional deduct component (TDS, Professional Tax, ESI, Other) now flows through and gets summed into Total Deductions using its template calc_type (percentage or fixed).
+  - `total_deductions` now recomputed from emitted line items so ALL deductions participate, not just PF/Gratuity.
+  - **`extra_work_compensation`** parameter added to `compute_payslip()`. When assignment says `comp_off` or `not_applicable`, monetary Extra Pay is forced to 0 regardless of payroll extra-day value.
+  - Response now carries `extra_work_compensation` mode + `extra_pay_days_raw` (audit).
+- **Assignment API (`POST /api/payslips/assignments`):**
+  - Accepts `effective_from_type` ∈ {`joining_date`, `confirmation_date`, `custom_date`} and auto-resolves the date from Employee's `date_of_joining` / `confirmation_date` fields. Custom Date requires an explicit `effective_from`.
+  - Accepts `extra_work_compensation` ∈ {`extra_pay`, `comp_off`, `not_applicable`} — stored on each assignment and consumed by the calc engine.
+  - Rejects Confirmation Date pick when employee has no confirmation date on record.
+- **Frontend `Payslips.js`:**
+  - Assignment dialog: **Effective From** dropdown (Joining Date / Confirmation Date / Custom Date) with live "Resolved date" preview per employee for non-custom types; **Extra Work Compensation** dropdown (Extra Pay / Comp Off / Not Applicable).
+  - Template editor: added **PF Base %** input that appears only for PF-named deduction rows (default 100% if left blank).
+  - Monthly Payslips table: **bidirectional sortable columns** (Employee / Template / Payable Days / Gross / Deductions / Net Pay / Status) with ↑/↓/↕ indicators.
+  - Actions column: added **PDF Preview** (opens payslip PDF in a new tab) alongside existing Download PDF button.
+- **DB migration:** PF component in AI Research + Support Staff templates set to `calc_type=percentage, percentage_value=12, base_percentage=50, calc_base=attendance_payable`.
+- **Verified live** (Navin, ₹44,000, base 50% × 12%): PF Base = ₹22,000, PF raw = ₹2,640 → capped ₹1,800 ✅. Scenarios A-F (PF+Gratuity, PF-capped, no PF, no deductions, Extra Pay on, Comp Off) all validated via unit tests.
+- **Future-work notes:** Sorting on Templates + Assignments tables (Monthly Payslips already done); Gratuity percentage-mode UI hint; overlap validation for effective periods.
+
+
+
 ## 🆕 2026-08-19 (v6.1) — Payslip PDF Rebuilt to BluBridge Standard Layout
 - **User request:** Match the exact PDF layout in the reference image (Company/Employee/Summary info box, side-by-side Earnings/Deductions grid with Total (A)/(B) and Net Pay (A-B), Other Perquisites/Other Deductions row with Net Payment in Rupees, Net Pay In Words, footer note).
 - **Rewrite (`backend/payslip_pdf.py`):**

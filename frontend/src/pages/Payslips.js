@@ -162,6 +162,7 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
         percentage_value: c.calc_type === 'percentage' ? Number(c.percentage_value || 0) : null,
         fixed_amount: c.calc_type === 'fixed' ? Number(c.fixed_amount || 0) : null,
         calc_base: c.calc_type === 'percentage' ? (c.calc_base || 'monthly_pay') : null,
+        base_percentage: (c.base_percentage === '' || c.base_percentage == null) ? null : Number(c.base_percentage),
         // PF & Gratuity are auto-recognised CTC lines by name — always include in gross.
         // Regular earnings are always in gross. Non-CTC deductions are handled by the backend.
         include_in_gross: c.component_type === 'earning'
@@ -251,6 +252,12 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
                   <Input data-testid={`component-fixed-${i}`} type="number" min="0" value={c.fixed_amount ?? ''} onChange={(e) => setComp(i, { fixed_amount: e.target.value })} />
                 </div>
               )}
+              {c.component_type === 'deduction' && /pf|provident/i.test(c.name || '') && (
+                <div>
+                  <label className="text-xs text-slate-500" title="What % of Attendance Payable becomes the PF base (default 100%)">PF Base %</label>
+                  <Input data-testid={`component-pf-base-${i}`} type="number" min="0" max="100" value={c.base_percentage ?? ''} onChange={(e) => setComp(i, { base_percentage: e.target.value })} placeholder="e.g. 50" />
+                </div>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-4">
               {c.calc_type === 'percentage' && (
@@ -310,7 +317,9 @@ export default function Payslips() {
   // assign dialog (single or bulk)
   const [assignDialog, setAssignDialog] = useState(null); // {employees:[...]}
   const [assignTpl, setAssignTpl] = useState('');
+  const [assignEffType, setAssignEffType] = useState('custom_date');
   const [assignDate, setAssignDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [assignEWC, setAssignEWC] = useState('extra_pay');
   const [assignPay, setAssignPay] = useState({});
   const [assignSaving, setAssignSaving] = useState(false);
 
@@ -364,21 +373,36 @@ export default function Payslips() {
     emps.forEach((e) => { pay[e.id] = e.assignment?.monthly_pay || ''; });
     setAssignPay(pay);
     setAssignTpl(emps.length === 1 ? (emps[0].assignment?.template_id || '') : '');
+    setAssignEffType(emps.length === 1 ? (emps[0].assignment?.effective_from_type || 'custom_date') : 'custom_date');
     setAssignDate(new Date().toISOString().slice(0, 10));
+    setAssignEWC(emps.length === 1 ? (emps[0].assignment?.extra_work_compensation || 'extra_pay') : 'extra_pay');
     setAssignDialog({ employees: emps });
+  };
+
+  const resolvedEffFrom = (emp) => {
+    if (assignEffType === 'joining_date') return (emp?.date_of_joining || '').slice(0, 10);
+    if (assignEffType === 'confirmation_date') return (emp?.confirmation_date || '').slice(0, 10);
+    return assignDate;
   };
 
   const submitAssign = async () => {
     if (!assignTpl) return toast.error('Select a template');
     const items = assignDialog.employees.map((e) => ({ employee_id: e.id, monthly_pay: Number(assignPay[e.id] || 0) }));
     if (items.some((it) => it.monthly_pay <= 0)) return toast.error('Enter Monthly Pay for every employee');
+    if (assignEffType === 'custom_date' && !assignDate) return toast.error('Custom Date requires an Effective From date');
+    if (assignEffType === 'confirmation_date' && assignDialog.employees.some((e) => !e.confirmation_date))
+      return toast.error('Some employees have no Confirmation Date on record');
+    if (assignEffType === 'joining_date' && assignDialog.employees.some((e) => !e.date_of_joining))
+      return toast.error('Some employees have no Joining Date on record');
     setAssignSaving(true);
     try {
+      const commonPayload = { template_id: assignTpl, effective_from_type: assignEffType,
+                               effective_from: assignDate, extra_work_compensation: assignEWC };
       if (items.length === 1) {
-        await axios.post(`${API}/payslips/assignments`, { ...items[0], template_id: assignTpl, effective_from: assignDate }, { headers });
+        await axios.post(`${API}/payslips/assignments`, { ...items[0], ...commonPayload }, { headers });
         toast.success('Template assigned');
       } else {
-        const res = await axios.post(`${API}/payslips/assignments/bulk`, { template_id: assignTpl, effective_from: assignDate, items }, { headers });
+        const res = await axios.post(`${API}/payslips/assignments/bulk`, { ...commonPayload, items }, { headers });
         toast.success(`Assigned to ${res.data.assigned} employee(s)`);
         if (res.data.errors?.length) toast.error(`${res.data.errors.length} failed: ${res.data.errors.map((x) => x.name || x.employee_id).join(', ')}`);
       }
@@ -481,6 +505,36 @@ export default function Payslips() {
       a.click(); URL.revokeObjectURL(url);
     } catch { toast.error('PDF download failed'); }
   };
+
+  const previewPdf = async (s) => {
+    try {
+      const res = await axios.get(`${API}/payslips/${s.id}/pdf`, { headers, responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch { toast.error('PDF preview failed'); }
+  };
+
+  // ---- Sorting for Monthly Payslips table ----
+  const [slipSort, setSlipSort] = useState({ key: 'employee_name', dir: 'asc' });
+  const toggleSort = (key) => setSlipSort((s) => ({ key, dir: s.key === key && s.dir === 'asc' ? 'desc' : 'asc' }));
+  const sortedSlips = [...slips].sort((a, b) => {
+    const dir = slipSort.dir === 'asc' ? 1 : -1;
+    const get = (row, k) => {
+      if (k === 'employee_name') return row.employee_name || '';
+      if (k === 'template_name') return row.template_name || '';
+      if (k === 'payable_days') return Number(row.calc?.payable_days || 0);
+      if (k === 'gross_earnings') return Number(row.calc?.gross_earnings || 0);
+      if (k === 'total_deductions') return Number(row.calc?.total_deductions || 0);
+      if (k === 'net_pay') return Number(row.calc?.net_pay || 0);
+      if (k === 'status') return row.status || '';
+      return '';
+    };
+    const va = get(a, slipSort.key), vb = get(b, slipSort.key);
+    if (typeof va === 'number' && typeof vb === 'number') return (va - vb) * dir;
+    return String(va).localeCompare(String(vb)) * dir;
+  });
+  const sortIcon = (k) => slipSort.key === k ? (slipSort.dir === 'asc' ? '↑' : '↓') : '↕';
 
   const draftCount = slips.filter((s) => s.status === 'draft').length;
   const confirmedCount = slips.filter((s) => s.status === 'confirmed').length;
@@ -657,22 +711,22 @@ export default function Payslips() {
             <table className="w-full text-sm min-w-[950px]">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
                 <tr>
-                  <th className="text-left px-4 py-3">Employee</th>
-                  <th className="text-left px-4 py-3">Template</th>
-                  <th className="text-right px-4 py-3">Payable Days</th>
-                  <th className="text-right px-4 py-3">Gross</th>
-                  <th className="text-right px-4 py-3">Deductions</th>
-                  <th className="text-right px-4 py-3">Net Pay</th>
-                  <th className="text-left px-4 py-3">Status</th>
+                  <th className="text-left px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('employee_name')}>Employee <span className="text-slate-300">{sortIcon('employee_name')}</span></th>
+                  <th className="text-left px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('template_name')}>Template <span className="text-slate-300">{sortIcon('template_name')}</span></th>
+                  <th className="text-right px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('payable_days')}>Payable Days <span className="text-slate-300">{sortIcon('payable_days')}</span></th>
+                  <th className="text-right px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('gross_earnings')}>Gross <span className="text-slate-300">{sortIcon('gross_earnings')}</span></th>
+                  <th className="text-right px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('total_deductions')}>Deductions <span className="text-slate-300">{sortIcon('total_deductions')}</span></th>
+                  <th className="text-right px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('net_pay')}>Net Pay <span className="text-slate-300">{sortIcon('net_pay')}</span></th>
+                  <th className="text-left px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('status')}>Status <span className="text-slate-300">{sortIcon('status')}</span></th>
                   <th className="text-right px-4 py-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {slipsLoading ? (
                   <tr><td colSpan="8" className="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
-                ) : slips.length === 0 ? (
+                ) : sortedSlips.length === 0 ? (
                   <tr><td colSpan="8" className="px-4 py-8 text-center text-slate-400" data-testid="no-slips-msg">No payslips generated for {genMonth} yet.</td></tr>
-                ) : slips.map((s) => (
+                ) : sortedSlips.map((s) => (
                   <tr key={s.id} className="border-t hover:bg-slate-50" data-testid={`slip-row-${s.employee_name}`}>
                     <td className="px-4 py-3">
                       <div className="font-medium text-slate-800">{s.employee_name}</div>
@@ -690,6 +744,7 @@ export default function Payslips() {
                     </td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       <Button data-testid={`view-slip-${s.employee_name}`} size="sm" variant="ghost" title="View breakdown" onClick={() => setViewSlip(s)}><Eye className="w-4 h-4" /></Button>
+                      <Button data-testid={`preview-pdf-${s.employee_name}`} size="sm" variant="ghost" title="Preview PDF" onClick={() => previewPdf(s)}><FileCheck2 className="w-4 h-4" /></Button>
                       <Button data-testid={`pdf-slip-${s.employee_name}`} size="sm" variant="ghost" title="Download PDF" onClick={() => downloadPdf(s)}><Download className="w-4 h-4" /></Button>
                       {s.status === 'draft' ? (
                         <>
@@ -773,7 +828,36 @@ export default function Payslips() {
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-500">Effective From *</label>
-                  <Input data-testid="assign-effective-date" type="date" value={assignDate} onChange={(e) => setAssignDate(e.target.value)} />
+                  <Select value={assignEffType} onValueChange={setAssignEffType}>
+                    <SelectTrigger data-testid="assign-eff-type"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="joining_date">Joining Date</SelectItem>
+                      <SelectItem value="confirmation_date">Confirmation Date</SelectItem>
+                      <SelectItem value="custom_date">Custom Date</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {assignEffType === 'custom_date' && (
+                  <div className="col-span-2">
+                    <label className="text-xs font-medium text-slate-500">Custom Effective Date *</label>
+                    <Input data-testid="assign-effective-date" type="date" value={assignDate} onChange={(e) => setAssignDate(e.target.value)} />
+                  </div>
+                )}
+                {assignEffType !== 'custom_date' && (
+                  <div className="col-span-2 text-xs text-slate-500 bg-slate-50 rounded p-2">
+                    Resolved date for each employee: {assignDialog.employees.map((e) => `${e.full_name} → ${resolvedEffFrom(e) || 'MISSING'}`).join(' · ')}
+                  </div>
+                )}
+                <div className="col-span-2">
+                  <label className="text-xs font-medium text-slate-500">Extra Work Compensation *</label>
+                  <Select value={assignEWC} onValueChange={setAssignEWC}>
+                    <SelectTrigger data-testid="assign-ewc"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="extra_pay">Extra Pay (monetary — from Payroll)</SelectItem>
+                      <SelectItem value="comp_off">Comp Off (no monetary extra)</SelectItem>
+                      <SelectItem value="not_applicable">Not Applicable</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
               <div className="space-y-2">
