@@ -42,19 +42,19 @@ import {
 } from './ui/dropdown-menu';
 
 const navItems = [
-  { path: '/employee/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/employee/attendance', label: 'My Attendance', icon: CalendarCheck },
-  { path: '/employee/leave', label: 'Leave', icon: CalendarDays },
-  { path: '/employee/late-request', label: 'Late Request', icon: Clock },
-  { path: '/employee/early-out', label: 'Early Out', icon: LogOutIcon },
-  { path: '/employee/missed-punch', label: 'Missed Punch', icon: Fingerprint },
-  { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper },
-  { path: '/employee/payslips', label: 'My Payslips', icon: Receipt },
-  { path: '/employee/policies', label: 'Policies', icon: BookOpen },
-  { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap },
-  { path: '/employee/documents', label: 'My Documents', icon: FileText },
-  { path: '/employee/tickets', label: 'Support Tickets', icon: MessageSquarePlus },
-  { path: '/employee/profile', label: 'Profile', icon: User },
+  { path: '/employee/dashboard', label: 'Dashboard', icon: LayoutDashboard, moduleKey: null }, // always visible
+  { path: '/employee/attendance', label: 'My Attendance', icon: CalendarCheck, moduleKey: 'attendance' },
+  { path: '/employee/leave', label: 'Leave', icon: CalendarDays, moduleKey: 'leave' },
+  { path: '/employee/late-request', label: 'Late Request', icon: Clock, moduleKey: 'late_request' },
+  { path: '/employee/early-out', label: 'Early Out', icon: LogOutIcon, moduleKey: 'early_out' },
+  { path: '/employee/missed-punch', label: 'Missed Punch', icon: Fingerprint, moduleKey: 'missed_punch' },
+  { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper, moduleKey: 'holidays' },
+  { path: '/employee/payslips', label: 'My Payslips', icon: Receipt, moduleKey: 'payslips' },
+  { path: '/employee/policies', label: 'Policies', icon: BookOpen, moduleKey: 'policies' },
+  { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap, moduleKey: 'education_experience' },
+  { path: '/employee/documents', label: 'My Documents', icon: FileText, moduleKey: 'documents' },
+  { path: '/employee/tickets', label: 'Support Tickets', icon: MessageSquarePlus, moduleKey: 'tickets' },
+  { path: '/employee/profile', label: 'Profile', icon: User, moduleKey: null }, // always visible
 ];
 
 const EmployeeLayout = ({ children }) => {
@@ -65,6 +65,22 @@ const EmployeeLayout = ({ children }) => {
   const [hasVigilance, setHasVigilance] = useState(false);
   const [hasStarRewards, setHasStarRewards] = useState(false);
   const [warningsCount, setWarningsCount] = useState(0);
+  const [visibleModuleKeys, setVisibleModuleKeys] = useState(null); // null = loading
+
+  // Fetch module visibility settings for this employee. Admins bypass, but
+  // this layout is only used on the employee side, so no role check needed.
+  useEffect(() => {
+    let active = true;
+    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/employee/module-visibility`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(res => {
+      if (active) setVisibleModuleKeys(res.data?.visible_modules || []);
+    }).catch(() => {
+      // Fail-open: on network error, show everything (backward-compat)
+      if (active) setVisibleModuleKeys(null);
+    });
+    return () => { active = false; };
+  }, [token]);
 
   // Dynamically reveal the Operational Vigilance Report link ONLY for employees
   // whose designation == "Vigilance" (resolved server-side, no hardcoding).
@@ -103,11 +119,19 @@ const EmployeeLayout = ({ children }) => {
     if (hasStarRewards) {
       // Insert "My Rewards" right after Holidays (near the recognition/policies group)
       const insertAt = items.findIndex((i) => i.path === '/employee/holidays');
-      const rewardItem = { path: '/employee/rewards', label: 'My Rewards', icon: Star };
+      const rewardItem = { path: '/employee/rewards', label: 'My Rewards', icon: Star, moduleKey: null };
       items.splice(insertAt >= 0 ? insertAt + 1 : items.length, 0, rewardItem);
     }
-    if (hasVigilance) items.push({ path: '/employee/vigilance', label: 'Vigilance Report', icon: ShieldAlert });
-    if (warningsCount > 0) items.push({ path: '/employee/warnings', label: 'My Warnings', icon: AlertTriangle, badge: warningsCount });
+    if (hasVigilance) items.push({ path: '/employee/vigilance', label: 'Vigilance Report', icon: ShieldAlert, moduleKey: 'vigilance' });
+    if (warningsCount > 0) items.push({ path: '/employee/warnings', label: 'My Warnings', icon: AlertTriangle, badge: warningsCount, moduleKey: 'warnings' });
+
+    // Apply Module Visibility filter — items with moduleKey=null (Dashboard,
+    // Profile, Rewards) are always kept. If the visibility list hasn't loaded
+    // yet (null) we show everything to avoid a flicker of missing items.
+    if (visibleModuleKeys !== null) {
+      const allowed = new Set(visibleModuleKeys);
+      items = items.filter((it) => !it.moduleKey || allowed.has(it.moduleKey));
+    }
     return items;
   })();
 
@@ -152,6 +176,18 @@ const EmployeeLayout = ({ children }) => {
   useEffect(() => {
     // intentionally no redirect — see above comment.
   }, [location.pathname, navigate]);
+
+  // Route-level Module Visibility guard: if the employee lands on a path
+  // whose module has been disabled by Admin, bounce them back to the
+  // Dashboard. Frontend defense-in-depth alongside backend `check_module_access`.
+  useEffect(() => {
+    if (visibleModuleKeys === null) return; // still loading
+    const match = navItems.find((n) => n.path === location.pathname);
+    if (match && match.moduleKey && !visibleModuleKeys.includes(match.moduleKey)) {
+      toast.info('This module has been disabled by your Admin.');
+      navigate('/employee/dashboard', { replace: true });
+    }
+  }, [location.pathname, visibleModuleKeys, navigate]);
 
   return (
     <div className="min-h-screen bg-[#efede5]">

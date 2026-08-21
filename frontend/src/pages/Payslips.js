@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Plus, Trash2, Pencil, Receipt, Users, Calculator, X, CheckCircle2, Download, RefreshCw, Eye, FileCheck2 } from 'lucide-react';
+import { Plus, Trash2, Pencil, Receipt, Users, Calculator, X, CheckCircle2, Download, RefreshCw, Eye, FileCheck2, Copy } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
@@ -444,6 +444,33 @@ export default function Payslips() {
     }
   };
 
+  // Duplicate template: copy components, auto-suggest a unique name, open Edit dialog as new template.
+  const duplicateTemplate = (t) => {
+    const existingNames = new Set(templates.map((x) => (x.name || '').toLowerCase()));
+    let suggested = `${t.name} (Copy)`;
+    let i = 2;
+    while (existingNames.has(suggested.toLowerCase())) {
+      suggested = `${t.name} (Copy ${i})`;
+      i++;
+    }
+    // Strip id + audit fields so the save flow POSTs a new template.
+    const cleanComps = (t.components || []).map((c) => {
+      const { _id, ...rest } = c;
+      return { ...rest };
+    });
+    setEditingTpl({
+      ...t,
+      id: undefined,
+      _id: undefined,
+      name: suggested,
+      components: cleanComps,
+      created_at: undefined,
+      updated_at: undefined,
+    });
+    setTplDialog(true);
+    toast.success(`Duplicated as "${suggested}" — edit and save`);
+  };
+
   const runPreview = async () => {
     if (!prevEmp) return toast.error('Select an employee');
     setPrevLoading(true); setPreview(null);
@@ -620,8 +647,9 @@ export default function Payslips() {
                       <td className="px-4 py-3"><Badge className={t.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}>{t.status}</Badge></td>
                       <td className="px-4 py-3">{count} employee(s)</td>
                       <td className="px-4 py-3 text-right">
-                        <Button data-testid={`edit-template-${t.name}`} size="sm" variant="ghost" onClick={() => { setEditingTpl(t); setTplDialog(true); }}><Pencil className="w-4 h-4" /></Button>
-                        <Button data-testid={`delete-template-${t.name}`} size="sm" variant="ghost" className="text-red-500" onClick={() => deleteTemplate(t)}><Trash2 className="w-4 h-4" /></Button>
+                        <Button data-testid={`edit-template-${t.name}`} size="sm" variant="ghost" title="Edit" onClick={() => { setEditingTpl(t); setTplDialog(true); }}><Pencil className="w-4 h-4" /></Button>
+                        <Button data-testid={`duplicate-template-${t.name}`} size="sm" variant="ghost" title="Duplicate template" onClick={() => duplicateTemplate(t)}><Copy className="w-4 h-4" /></Button>
+                        <Button data-testid={`delete-template-${t.name}`} size="sm" variant="ghost" className="text-red-500" title="Delete" onClick={() => deleteTemplate(t)}><Trash2 className="w-4 h-4" /></Button>
                       </td>
                     </tr>
                   );

@@ -5,6 +5,30 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-21 — Module Visibility Control (Settings → new tab)
+- **New backend module `backend/module_visibility.py`** (registered via `server.py::app.include_router(api_router)` and startup seed).
+  - Collections: `module_visibility_settings` (one row per module), `module_visibility_selections` (module_key + employee_id, indexed unique).
+  - Endpoints (all admin-only):
+    - `GET /api/settings/module-visibility` — list all modules + status + counts
+    - `PUT /api/settings/module-visibility/{module_key}` — update `enabled` / `visibility_mode` (`ALL` / `SELECTED_ONLY` / `ALL_EXCEPT_SELECTED`)
+    - `GET /api/settings/module-visibility/{module_key}/employees` — get selected employee IDs
+    - `PUT /api/settings/module-visibility/{module_key}/employees` — replace selection list
+  - Employee endpoint: `GET /api/employee/module-visibility` returns `visible_modules[]` for the caller (admins get everything).
+  - Helper `check_module_access(user, module_key)` — Admin bypass; missing settings default to ALLOW; enforces SELECTED_ONLY / ALL_EXCEPT_SELECTED at the data layer.
+  - Startup seed initialises every module as `ON + SHOW_ALL` (backward-compat, existing modules untouched).
+- **Registered modules (13):** attendance, leave, late_request, early_out, missed_punch, holidays, payslips, policies, education_experience, documents, tickets, warnings, vigilance. Dashboard & Profile intentionally excluded (essential pages).
+- **Frontend `Settings.js`** — new **"Module Visibility"** tab (Shield icon):
+  - Sortable table (Module / Status / Visibility / Employees / Last Updated / Action) with quick ON/OFF toggle and Configure button.
+  - Configure modal: ON/OFF switch + radio group (3 modes) + employee selector (search by name/ID/email + filters for Employee Type / Department / Team + Select-All-Visible + Clear + selection-persists-across-search).
+  - Validation: SELECTED_ONLY with 0 employees blocked; ALL_EXCEPT_SELECTED with 0 shows an amber warning.
+  - Explicit **Save** button (matches other Settings tabs).
+- **Frontend `EmployeeLayout.js`** — fetches `/api/employee/module-visibility` on mount, filters `navItems` by `moduleKey`. Also enforces a **route-level guard** — deep-linking to a disabled module (e.g. `/employee/payslips`) redirects to `/employee/dashboard` with a toast.
+- **Admin bypass:** admin sidebar (Layout.js) is never touched — the visibility settings apply only to Employee/Intern accounts.
+- **Backend projection fix:** `GET /api/employees/all` now also returns `employment_type` so the Module Visibility selector's "Employee Type" filter works.
+- **Verified (curl acceptance tests):** ✅ ON+ALL visible ✅ OFF hidden for employee & visible for admin ✅ SELECTED_ONLY includes/excludes correctly ✅ ALL_EXCEPT_SELECTED includes/excludes correctly ✅ non-admin blocked from admin endpoints (HTTP 403) ✅ URL manipulation redirect works.
+
+
+
 ## 🆕 2026-08-21 (later) — Assignment Template Filter + Change-Dialog Date Prefill
 - **Fix 1 — Template filter (`Payslips.js`):** Added a **"Template"** dropdown on the Assignments filter bar with three modes: All Templates · Unassigned · specific template. Wired into the existing `filtered` memo (Filters → Search → Sort → Pagination order preserved).
 - **Fix 2 — Change dialog now pre-populates Effective From (`openAssign`):** When clicking Change, the dialog now reads `assignment.effective_from` from the existing record and initialises `assignDate` to that value instead of today's date. `assignEffType` and `assignEWC` also default from the existing record when present (legacy assignments without these fields fall back to `custom_date` / `extra_pay`).

@@ -4682,7 +4682,7 @@ async def get_employees(
 async def get_all_employees(current_user: dict = Depends(get_current_user)):
     """Get all active employees (for dropdowns)"""
     query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
-    employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1, "custom_employee_id": 1, "biometric_id": 1, "avatar": 1, "designation": 1, "official_email": 1}).to_list(1000)
+    employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1, "custom_employee_id": 1, "biometric_id": 1, "avatar": 1, "designation": 1, "official_email": 1, "employment_type": 1}).to_list(1000)
     return employees
 
 @api_router.get("/employees/autocomplete")
@@ -19068,6 +19068,12 @@ try:
 except Exception as _e:
     print(f"Payslip module load failed: {_e}")
 
+# Module Visibility Control — admin toggles employee sidebar modules ON/OFF
+try:
+    import module_visibility  # noqa: F401  (registers routes via api_router import)
+except Exception as _e:
+    print(f"Module visibility load failed: {_e}")
+
 app.include_router(api_router)
 
 # ---------------------------------------------------------------------------
@@ -19323,6 +19329,15 @@ async def ensure_indexes():
         _start_star_scheduler(db)
     except Exception as e:
         print(f"Email scheduler startup failed: {e}")
+
+    # Module Visibility — seed default (ON + SHOW_ALL) settings for every
+    # employee-facing module registered in module_visibility.EMPLOYEE_MODULES.
+    # Idempotent: existing records are untouched.
+    try:
+        from module_visibility import ensure_module_visibility_seed
+        await ensure_module_visibility_seed()
+    except Exception as e:
+        print(f"Module visibility seed failed: {e}")
 
     # 2026-05-22 — Refresh any policy whose code-side `version` is newer than
     # the DB record (so content updates pushed via deploy reach existing

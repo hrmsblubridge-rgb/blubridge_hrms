@@ -17,6 +17,13 @@ import {
   Search,
   RefreshCw,
   MapPin,
+  Shield,
+  Eye,
+  ArrowUp,
+  ArrowDown,
+  ArrowUpDown,
+  CheckSquare,
+  X,
 } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -56,6 +63,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
+import { RadioGroup, RadioGroupItem } from '../components/ui/radio-group';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -106,6 +114,9 @@ const Settings = () => {
           <TabsTrigger value="assign" data-testid="tab-assign" className="gap-2">
             <UserPlus className="w-4 h-4" /> Assign Shifts
           </TabsTrigger>
+          <TabsTrigger value="module-visibility" data-testid="tab-module-visibility" className="gap-2">
+            <Shield className="w-4 h-4" /> Module Visibility
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="departments" className="mt-5">
@@ -128,6 +139,9 @@ const Settings = () => {
         </TabsContent>
         <TabsContent value="assign" className="mt-5">
           <AssignShiftsTab authHeaders={authHeaders} />
+        </TabsContent>
+        <TabsContent value="module-visibility" className="mt-5">
+          <ModuleVisibilityTab authHeaders={authHeaders} />
         </TabsContent>
       </Tabs>
     </div>
@@ -1456,6 +1470,441 @@ const AssignShiftsTab = ({ authHeaders }) => {
         </Table>
       </Card>
     </div>
+  );
+};
+
+// ============================================================
+//  Module Visibility Tab
+// ============================================================
+
+const VISIBILITY_LABELS = {
+  ALL: 'Show to All',
+  SELECTED_ONLY: 'Show Only to Selected Employees',
+  ALL_EXCEPT_SELECTED: 'Show to All Except Selected Employees',
+};
+
+const MvSortIcon = ({ col, sortKey, sortDir }) => {
+  if (sortKey !== col) return <ArrowUpDown className="w-3.5 h-3.5 inline ml-1 text-slate-400" />;
+  return sortDir === 'asc'
+    ? <ArrowUp className="w-3.5 h-3.5 inline ml-1 text-slate-700" />
+    : <ArrowDown className="w-3.5 h-3.5 inline ml-1 text-slate-700" />;
+};
+
+const ModuleVisibilityTab = ({ authHeaders }) => {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [sortKey, setSortKey] = useState('module_name');
+  const [sortDir, setSortDir] = useState('asc');
+  const [configModule, setConfigModule] = useState(null);
+
+  const fetchRows = async () => {
+    try {
+      setLoading(true);
+      const r = await axios.get(`${API}/settings/module-visibility`, { headers: authHeaders });
+      setRows(r.data || []);
+    } catch {
+      toast.error('Failed to load module visibility');
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { fetchRows(); }, []); // eslint-disable-line
+
+  const sortedRows = useMemo(() => {
+    const arr = [...rows];
+    arr.sort((a, b) => {
+      const va = a[sortKey] ?? '';
+      const vb = b[sortKey] ?? '';
+      if (va < vb) return sortDir === 'asc' ? -1 : 1;
+      if (va > vb) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+    return arr;
+  }, [rows, sortKey, sortDir]);
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('asc'); }
+  };
+
+  const quickToggle = async (row) => {
+    // Guard: cannot enable a SELECTED_ONLY module with 0 selections
+    if (!row.enabled && row.visibility_mode === 'SELECTED_ONLY' && row.selection_count === 0) {
+      toast.error("Configure at least one employee before enabling 'Selected Only'");
+      return;
+    }
+    setSaving(true);
+    try {
+      await axios.put(`${API}/settings/module-visibility/${row.module_key}`,
+        { enabled: !row.enabled },
+        { headers: authHeaders }
+      );
+      toast.success(`${row.module_name} ${!row.enabled ? 'enabled' : 'disabled'}`);
+      fetchRows();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || 'Failed to update');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <Card
+        title="Module Visibility"
+        subtitle="Control which HRMS modules appear in the Employee/Intern sidebar. Admin sidebar is never affected."
+        action={
+          <Button variant="outline" size="sm" onClick={fetchRows} data-testid="refresh-module-visibility-btn">
+            <RefreshCw className="w-4 h-4 mr-1" /> Refresh
+          </Button>
+        }
+      >
+        <Table data-testid="module-visibility-table">
+          <TableHeader>
+            <TableRow>
+              <TableHead onClick={() => toggleSort('module_name')} className="cursor-pointer select-none">Module<MvSortIcon col="module_name" sortKey={sortKey} sortDir={sortDir} /></TableHead>
+              <TableHead onClick={() => toggleSort('enabled')} className="cursor-pointer select-none">Status<MvSortIcon col="enabled" sortKey={sortKey} sortDir={sortDir} /></TableHead>
+              <TableHead onClick={() => toggleSort('visibility_mode')} className="cursor-pointer select-none">Visibility<MvSortIcon col="visibility_mode" sortKey={sortKey} sortDir={sortDir} /></TableHead>
+              <TableHead>Employees</TableHead>
+              <TableHead onClick={() => toggleSort('updated_at')} className="cursor-pointer select-none">Last Updated<MvSortIcon col="updated_at" sortKey={sortKey} sortDir={sortDir} /></TableHead>
+              <TableHead className="text-right">Action</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {loading && <EmptyRow cols={6} text="Loading…" />}
+            {!loading && sortedRows.length === 0 && <EmptyRow cols={6} text="No modules registered." />}
+            {!loading && sortedRows.map((r) => (
+              <TableRow key={r.module_key} data-testid={`module-row-${r.module_key}`}>
+                <TableCell className="font-medium">
+                  {r.module_name}
+                  <div className="text-xs text-slate-500 mt-0.5">{r.route}</div>
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <Switch
+                      checked={!!r.enabled}
+                      onCheckedChange={() => quickToggle(r)}
+                      disabled={saving}
+                      data-testid={`module-toggle-${r.module_key}`}
+                    />
+                    <span className={`text-xs font-medium ${r.enabled ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {r.enabled ? 'ON' : 'OFF'}
+                    </span>
+                  </div>
+                </TableCell>
+                <TableCell>
+                  <Badge variant="outline" className="font-normal">
+                    {VISIBILITY_LABELS[r.visibility_mode] || r.visibility_mode}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  {r.visibility_mode === 'ALL'
+                    ? <span className="text-slate-400">—</span>
+                    : (
+                      <span className="text-sm">
+                        <span className="font-semibold">{r.selection_count}</span>
+                        <span className="text-slate-500 ml-1">
+                          {r.visibility_mode === 'SELECTED_ONLY' ? 'selected' : 'excluded'}
+                        </span>
+                      </span>
+                    )
+                  }
+                </TableCell>
+                <TableCell className="text-xs text-slate-500">
+                  {r.updated_at ? formatDate(r.updated_at) : '—'}
+                  {r.updated_by ? <div className="text-[10px]">by {r.updated_by}</div> : null}
+                </TableCell>
+                <TableCell className="text-right">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfigModule(r)}
+                    data-testid={`module-configure-${r.module_key}`}
+                  >
+                    <Edit2 className="w-3.5 h-3.5 mr-1" /> Configure
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </Card>
+
+      {configModule && (
+        <ModuleConfigDialog
+          module={configModule}
+          authHeaders={authHeaders}
+          onClose={() => setConfigModule(null)}
+          onSaved={() => { setConfigModule(null); fetchRows(); }}
+        />
+      )}
+    </div>
+  );
+};
+
+// -------------------- Configure Modal --------------------
+
+const ModuleConfigDialog = ({ module, authHeaders, onClose, onSaved }) => {
+  const [enabled, setEnabled] = useState(!!module.enabled);
+  const [mode, setMode] = useState(module.visibility_mode || 'ALL');
+  const [saving, setSaving] = useState(false);
+
+  // Employee selection state
+  const [allEmployees, setAllEmployees] = useState([]);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [empLoading, setEmpLoading] = useState(false);
+  const [search, setSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState('All');
+  const [deptFilter, setDeptFilter] = useState('All');
+  const [teamFilter, setTeamFilter] = useState('All');
+
+  const needsSelection = mode === 'SELECTED_ONLY' || mode === 'ALL_EXCEPT_SELECTED';
+
+  // Load employees + current selection once (or when selector is needed)
+  useEffect(() => {
+    if (!needsSelection) return;
+    let active = true;
+    (async () => {
+      try {
+        setEmpLoading(true);
+        const [empRes, selRes] = await Promise.all([
+          axios.get(`${API}/employees/all`, { headers: authHeaders }),
+          axios.get(`${API}/settings/module-visibility/${module.module_key}/employees`, { headers: authHeaders }),
+        ]);
+        if (!active) return;
+        setAllEmployees(empRes.data || []);
+        setSelectedIds(new Set(selRes.data?.employee_ids || []));
+      } catch {
+        toast.error('Failed to load employees');
+      } finally {
+        if (active) setEmpLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [needsSelection, module.module_key]); // eslint-disable-line
+
+  // Distinct filter options built from loaded employees
+  const departments = useMemo(() => Array.from(new Set(allEmployees.map(e => e.department).filter(Boolean))).sort(), [allEmployees]);
+  const teams = useMemo(() => Array.from(new Set(allEmployees.map(e => e.team).filter(Boolean))).sort(), [allEmployees]);
+  const employmentTypes = useMemo(() => Array.from(new Set(allEmployees.map(e => e.employment_type).filter(Boolean))).sort(), [allEmployees]);
+
+  const filteredEmployees = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allEmployees.filter(e => {
+      if (typeFilter !== 'All' && e.employment_type !== typeFilter) return false;
+      if (deptFilter !== 'All' && e.department !== deptFilter) return false;
+      if (teamFilter !== 'All' && e.team !== teamFilter) return false;
+      if (!q) return true;
+      return (
+        (e.full_name || '').toLowerCase().includes(q) ||
+        (e.emp_id || '').toLowerCase().includes(q) ||
+        (e.custom_employee_id || '').toLowerCase().includes(q) ||
+        (e.official_email || '').toLowerCase().includes(q)
+      );
+    });
+  }, [allEmployees, search, typeFilter, deptFilter, teamFilter]);
+
+  const toggleId = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const selectAllVisible = () => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      filteredEmployees.forEach(e => next.add(e.id));
+      return next;
+    });
+  };
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const canSave = (() => {
+    if (mode === 'SELECTED_ONLY' && enabled && selectedIds.size === 0) return false;
+    return true;
+  })();
+
+  const submit = async () => {
+    if (!canSave) {
+      toast.error("Select at least one employee for 'Selected Only'");
+      return;
+    }
+    setSaving(true);
+    try {
+      // 1. Save the employee selection first if applicable
+      if (needsSelection) {
+        await axios.put(
+          `${API}/settings/module-visibility/${module.module_key}/employees`,
+          { employee_ids: Array.from(selectedIds) },
+          { headers: authHeaders }
+        );
+      } else {
+        // If switching to ALL, we don't wipe the stored list (preserved as
+        // per requirement). Simply update mode.
+      }
+      // 2. Save status + mode
+      await axios.put(
+        `${API}/settings/module-visibility/${module.module_key}`,
+        { enabled, visibility_mode: mode },
+        { headers: authHeaders }
+      );
+      toast.success(`${module.module_name} saved`);
+      onSaved();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || 'Failed to save');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const excludeWarning = mode === 'ALL_EXCEPT_SELECTED' && selectedIds.size === 0;
+
+  return (
+    <Dialog open={true} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-w-3xl" data-testid="module-configure-dialog">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Shield className="w-5 h-5 text-[#063c88]" />
+            Configure — {module.module_name}
+          </DialogTitle>
+          <DialogDescription>
+            Control who can see this module in the Employee/Intern sidebar. Admin sidebar is never affected.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-5">
+          {/* Status */}
+          <div className="flex items-center justify-between p-3 rounded-lg bg-slate-50/70 border border-slate-100">
+            <div>
+              <Label className="text-sm font-semibold">Module Status</Label>
+              <p className="text-xs text-slate-500 mt-0.5">Turn OFF to hide this module from all Employees/Interns.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch checked={enabled} onCheckedChange={setEnabled} data-testid="dlg-module-enabled" />
+              <span className={`text-xs font-bold ${enabled ? 'text-emerald-600' : 'text-slate-400'}`}>
+                {enabled ? 'ON' : 'OFF'}
+              </span>
+            </div>
+          </div>
+
+          {/* Visibility mode */}
+          <div className={`space-y-2 ${!enabled ? 'opacity-50 pointer-events-none' : ''}`}>
+            <Label className="text-sm font-semibold">Visibility</Label>
+            <RadioGroup value={mode} onValueChange={setMode} className="space-y-2">
+              {['ALL', 'SELECTED_ONLY', 'ALL_EXCEPT_SELECTED'].map(m => (
+                <div key={m} className="flex items-start gap-2 p-2 rounded-md hover:bg-slate-50">
+                  <RadioGroupItem value={m} id={`mode-${m}`} data-testid={`mode-${m}`} />
+                  <Label htmlFor={`mode-${m}`} className="cursor-pointer text-sm font-normal">
+                    {VISIBILITY_LABELS[m]}
+                  </Label>
+                </div>
+              ))}
+            </RadioGroup>
+          </div>
+
+          {/* Employee selector */}
+          {enabled && needsSelection && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm font-semibold">
+                  {mode === 'SELECTED_ONLY' ? 'Select Employees' : 'Exclude Employees'}
+                </Label>
+                <span className="text-xs text-slate-500">
+                  {selectedIds.size} {mode === 'SELECTED_ONLY' ? 'selected' : 'excluded'}
+                </span>
+              </div>
+
+              {excludeWarning && (
+                <div className="text-xs bg-amber-50 border border-amber-200 text-amber-800 rounded-md p-2">
+                  No employees are excluded. This module will be visible to everyone.
+                </div>
+              )}
+
+              {/* Filters + search */}
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                <div className="relative sm:col-span-2">
+                  <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <Input
+                    className="pl-8"
+                    placeholder="Search by name, ID, email…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    data-testid="emp-selector-search"
+                  />
+                </div>
+                <Select value={typeFilter} onValueChange={setTypeFilter}>
+                  <SelectTrigger data-testid="emp-selector-type"><SelectValue placeholder="Employee Type" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="All">All Types</SelectItem>
+                    {employmentTypes.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <Select value={deptFilter} onValueChange={setDeptFilter}>
+                  <SelectTrigger data-testid="emp-selector-dept"><SelectValue placeholder="Department" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="All">All Departments</SelectItem>
+                    {departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                <div className="sm:col-span-4 flex flex-wrap items-center gap-2">
+                  <Select value={teamFilter} onValueChange={setTeamFilter}>
+                    <SelectTrigger className="w-56" data-testid="emp-selector-team"><SelectValue placeholder="Team" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="All">All Teams</SelectItem>
+                      {teams.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" variant="outline" size="sm" onClick={selectAllVisible} data-testid="emp-selector-select-all">
+                    <CheckSquare className="w-3.5 h-3.5 mr-1" /> Select All Visible ({filteredEmployees.length})
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={clearSelection} data-testid="emp-selector-clear">
+                    <X className="w-3.5 h-3.5 mr-1" /> Clear Selection
+                  </Button>
+                </div>
+              </div>
+
+              {/* List */}
+              <div className="border border-slate-200 rounded-lg max-h-72 overflow-y-auto divide-y divide-slate-100" data-testid="emp-selector-list">
+                {empLoading && <div className="p-4 text-center text-sm text-slate-500"><Loader2 className="w-4 h-4 inline animate-spin mr-1" /> Loading…</div>}
+                {!empLoading && filteredEmployees.length === 0 && <div className="p-4 text-center text-sm text-slate-500">No employees match your filters.</div>}
+                {!empLoading && filteredEmployees.map(e => (
+                  <label
+                    key={e.id}
+                    htmlFor={`emp-${e.id}`}
+                    className="flex items-center gap-3 p-2.5 hover:bg-slate-50 cursor-pointer"
+                    data-testid={`emp-row-${e.id}`}
+                  >
+                    <Checkbox
+                      id={`emp-${e.id}`}
+                      checked={selectedIds.has(e.id)}
+                      onCheckedChange={() => toggleId(e.id)}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-slate-900 truncate">
+                        {e.full_name} <span className="text-xs text-slate-500 font-normal">({e.custom_employee_id || e.emp_id})</span>
+                      </div>
+                      <div className="text-xs text-slate-500 truncate">
+                        {[e.employment_type, e.department, e.team, e.official_email].filter(Boolean).join(' • ')}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={saving} data-testid="dlg-cancel">Cancel</Button>
+          <Button onClick={submit} disabled={saving || !canSave} data-testid="dlg-save">
+            {saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };
 
