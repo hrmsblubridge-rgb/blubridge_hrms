@@ -312,6 +312,7 @@ export default function Payslips() {
   const [search, setSearch] = useState('');
   const [deptFilter, setDeptFilter] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
+  const [tplFilter, setTplFilter] = useState('all'); // template filter: 'all' | 'none' | <template_id>
   const [selected, setSelected] = useState({});
 
   // assign dialog (single or bulk)
@@ -358,12 +359,16 @@ export default function Payslips() {
   const filtered = useMemo(() => rows.filter((r) => {
     if (deptFilter !== 'all' && r.department !== deptFilter) return false;
     if (typeFilter !== 'all' && r.employment_type !== typeFilter) return false;
+    if (tplFilter !== 'all') {
+      if (tplFilter === 'none') { if (r.assignment) return false; }
+      else if (!r.assignment || r.assignment.template_id !== tplFilter) return false;
+    }
     if (search) {
       const s = search.toLowerCase();
       if (!(`${r.full_name} ${r.custom_employee_id || ''}`.toLowerCase().includes(s))) return false;
     }
     return true;
-  }), [rows, deptFilter, typeFilter, search]);
+  }), [rows, deptFilter, typeFilter, tplFilter, search]);
 
   const selectedIds = Object.keys(selected).filter((k) => selected[k]);
   const activeTemplates = templates.filter((t) => t.status === 'Active');
@@ -372,10 +377,15 @@ export default function Payslips() {
     const pay = {};
     emps.forEach((e) => { pay[e.id] = e.assignment?.monthly_pay || ''; });
     setAssignPay(pay);
-    setAssignTpl(emps.length === 1 ? (emps[0].assignment?.template_id || '') : '');
-    setAssignEffType(emps.length === 1 ? (emps[0].assignment?.effective_from_type || 'custom_date') : 'custom_date');
-    setAssignDate(new Date().toISOString().slice(0, 10));
-    setAssignEWC(emps.length === 1 ? (emps[0].assignment?.extra_work_compensation || 'extra_pay') : 'extra_pay');
+    const single = emps.length === 1 ? emps[0] : null;
+    const existing = single?.assignment;
+    setAssignTpl(existing?.template_id || '');
+    // Pre-populate Effective From from existing assignment when changing template for a single employee
+    const existingType = existing?.effective_from_type || 'custom_date';
+    setAssignEffType(existing ? existingType : 'custom_date');
+    const existingDate = (existing?.effective_from || '').slice(0, 10);
+    setAssignDate(existingDate || new Date().toISOString().slice(0, 10));
+    setAssignEWC(existing?.extra_work_compensation || 'extra_pay');
     setAssignDialog({ employees: emps });
   };
 
@@ -637,6 +647,14 @@ export default function Payslips() {
               <SelectContent>
                 <SelectItem value="all">All Types</SelectItem>
                 {empTypes.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={tplFilter} onValueChange={setTplFilter}>
+              <SelectTrigger className="w-52" data-testid="assignment-template-filter"><SelectValue placeholder="Template" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Templates</SelectItem>
+                <SelectItem value="none">Unassigned</SelectItem>
+                {templates.map((t) => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
               </SelectContent>
             </Select>
             {selectedIds.length > 0 && (

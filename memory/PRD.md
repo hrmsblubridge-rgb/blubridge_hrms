@@ -5,6 +5,13 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-21 (later) — Assignment Template Filter + Change-Dialog Date Prefill
+- **Fix 1 — Template filter (`Payslips.js`):** Added a **"Template"** dropdown on the Assignments filter bar with three modes: All Templates · Unassigned · specific template. Wired into the existing `filtered` memo (Filters → Search → Sort → Pagination order preserved).
+- **Fix 2 — Change dialog now pre-populates Effective From (`openAssign`):** When clicking Change, the dialog now reads `assignment.effective_from` from the existing record and initialises `assignDate` to that value instead of today's date. `assignEffType` and `assignEWC` also default from the existing record when present (legacy assignments without these fields fall back to `custom_date` / `extra_pay`).
+- **Verified live via `/api/payslips/assignments`:** Adhitya Charan → `effective_from=2026-02-13` (correctly returned) — clicking Change now shows 2026-02-13 pre-filled.
+
+
+
 ## 🆕 2026-08-21 — Fix: Assign Dialog "Resolved date · MISSING" bug
 - **Bug:** In the Assign Template dialog, choosing "Joining Date" or "Confirmation Date" showed "MISSING" for every employee even though the Employee record clearly had those dates (e.g. Sabari R with DOJ + Confirmation both set to 07-Jul-2026).
 - **Root cause:** `GET /api/payslips/assignments` projection returned only `id, full_name, custom_employee_id, department, team, designation, employment_type` — the frontend never received `date_of_joining` or `confirmation_date`, so `resolvedEffFrom(emp)` always evaluated to empty.
