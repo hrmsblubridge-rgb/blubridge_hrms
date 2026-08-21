@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Plus, Trash2, Pencil, Receipt, Users, Calculator, X, CheckCircle2, Download, RefreshCw, Eye, FileCheck2, Copy } from 'lucide-react';
+import { Plus, Trash2, Pencil, Receipt, Users, Calculator, X, CheckCircle2, Download, RefreshCw, Eye, FileCheck2, Copy, Search, Filter } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
+import { Checkbox } from '../components/ui/checkbox';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
@@ -526,10 +527,31 @@ export default function Payslips() {
   };
 
   const confirmAll = async () => {
-    if (!window.confirm(`Confirm ALL draft payslips for ${genMonth}? Employees will see them from the 5th of the following month.`)) return;
+    // "Confirm All" honours current filters — only visible drafts are confirmed
+    const draftIds = filteredSlips.filter((s) => s.status === 'draft').map((s) => s.id);
+    if (draftIds.length === 0) { toast.error('No drafts to confirm in current view'); return; }
+    const scoped = draftIds.length !== slips.filter((s) => s.status === 'draft').length;
+    const msg = scoped
+      ? `Confirm ${draftIds.length} filtered draft payslip(s) for ${genMonth}?`
+      : `Confirm ALL draft payslips for ${genMonth}? Employees will see them from the 5th of the following month.`;
+    if (!window.confirm(msg)) return;
     try {
-      const res = await axios.post(`${API}/payslips/confirm-all`, { month: genMonth }, { headers });
+      const body = scoped ? { month: genMonth, ids: draftIds } : { month: genMonth };
+      const res = await axios.post(`${API}/payslips/confirm-all`, body, { headers });
       toast.success(`Confirmed ${res.data.confirmed} payslip(s)`);
+      setSlipSelectedIds(new Set());
+      fetchSlips(genMonth);
+    } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
+  };
+
+  const confirmSelected = async () => {
+    const draftIds = [...slipSelectedIds].filter((id) => slips.find((s) => s.id === id && s.status === 'draft'));
+    if (draftIds.length === 0) { toast.error('Select at least one draft to confirm'); return; }
+    if (!window.confirm(`Confirm ${draftIds.length} selected payslip(s) for ${genMonth}?`)) return;
+    try {
+      const res = await axios.post(`${API}/payslips/confirm-all`, { month: genMonth, ids: draftIds }, { headers });
+      toast.success(`Confirmed ${res.data.confirmed} payslip(s)`);
+      setSlipSelectedIds(new Set());
       fetchSlips(genMonth);
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
   };
@@ -562,10 +584,54 @@ export default function Payslips() {
     } catch { toast.error('PDF preview failed'); }
   };
 
+  // ---- Filters + Selection for Monthly Payslips table ----
+  const [slipSearch, setSlipSearch] = useState('');
+  const [slipEmpType, setSlipEmpType] = useState('all');
+  const [slipDept, setSlipDept] = useState('all');
+  const [slipTemplate, setSlipTemplate] = useState('all');
+  const [slipStatusFilter, setSlipStatusFilter] = useState('all');
+  const [slipSelectedIds, setSlipSelectedIds] = useState(new Set());
+
+  // Distinct dropdown options built from current month's slips
+  const slipDepartments = useMemo(
+    () => Array.from(new Set(slips.map((s) => s.employee?.department).filter(Boolean))).sort(),
+    [slips]
+  );
+  const slipEmpTypes = useMemo(
+    () => Array.from(new Set(slips.map((s) => s.employee?.employment_type).filter(Boolean))).sort(),
+    [slips]
+  );
+  const slipTemplateNames = useMemo(
+    () => Array.from(new Set(slips.map((s) => s.template_name).filter(Boolean))).sort(),
+    [slips]
+  );
+
+  const filteredSlips = useMemo(() => {
+    const q = slipSearch.trim().toLowerCase();
+    return slips.filter((s) => {
+      if (slipEmpType !== 'all' && s.employee?.employment_type !== slipEmpType) return false;
+      if (slipDept !== 'all' && s.employee?.department !== slipDept) return false;
+      if (slipTemplate !== 'all' && s.template_name !== slipTemplate) return false;
+      if (slipStatusFilter !== 'all' && s.status !== slipStatusFilter) return false;
+      if (!q) return true;
+      return (
+        (s.employee_name || '').toLowerCase().includes(q) ||
+        (s.employee?.custom_employee_id || '').toLowerCase().includes(q) ||
+        (s.employee?.email || '').toLowerCase().includes(q)
+      );
+    });
+  }, [slips, slipSearch, slipEmpType, slipDept, slipTemplate, slipStatusFilter]);
+
+  const clearSlipFilters = () => {
+    setSlipSearch(''); setSlipEmpType('all'); setSlipDept('all');
+    setSlipTemplate('all'); setSlipStatusFilter('all');
+  };
+  const filtersActive = slipSearch || slipEmpType !== 'all' || slipDept !== 'all' || slipTemplate !== 'all' || slipStatusFilter !== 'all';
+
   // ---- Sorting for Monthly Payslips table ----
   const [slipSort, setSlipSort] = useState({ key: 'employee_name', dir: 'asc' });
   const toggleSort = (key) => setSlipSort((s) => ({ key, dir: s.key === key && s.dir === 'asc' ? 'desc' : 'asc' }));
-  const sortedSlips = [...slips].sort((a, b) => {
+  const sortedSlips = [...filteredSlips].sort((a, b) => {
     const dir = slipSort.dir === 'asc' ? 1 : -1;
     const get = (row, k) => {
       if (k === 'employee_name') return row.employee_name || '';
@@ -752,9 +818,15 @@ export default function Payslips() {
               <RefreshCw className={`w-4 h-4 mr-1 ${genLoading ? 'animate-spin' : ''}`} />
               {genLoading ? 'Generating…' : slips.length ? 'Regenerate Drafts' : 'Generate Payslips'}
             </Button>
-            {draftCount > 0 && (
+            {slipSelectedIds.size > 0 && (
+              <Button data-testid="confirm-selected-btn" variant="outline" className="text-emerald-700 border-emerald-300" onClick={confirmSelected}>
+                <CheckCircle2 className="w-4 h-4 mr-1" /> Confirm Selected ({[...slipSelectedIds].filter((id) => slips.find((s) => s.id === id && s.status === 'draft')).length})
+              </Button>
+            )}
+            {draftCount > 0 && slipSelectedIds.size === 0 && (
               <Button data-testid="confirm-all-btn" variant="outline" className="text-emerald-700 border-emerald-300" onClick={confirmAll}>
-                <CheckCircle2 className="w-4 h-4 mr-1" /> Confirm All ({draftCount})
+                <CheckCircle2 className="w-4 h-4 mr-1" />
+                {filtersActive ? `Confirm Filtered (${filteredSlips.filter((s) => s.status === 'draft').length})` : `Confirm All (${draftCount})`}
               </Button>
             )}
             <div className="ml-auto flex gap-2">
@@ -762,11 +834,88 @@ export default function Payslips() {
               <Badge className="bg-emerald-100 text-emerald-700" data-testid="confirmed-count-badge">Confirmed: {confirmedCount}</Badge>
             </div>
           </div>
+
+          {/* Filter row */}
+          {slips.length > 0 && (
+            <div className="bg-white rounded-xl border p-3 flex flex-wrap gap-2 items-center" data-testid="slip-filters">
+              <div className="relative flex-1 min-w-[220px] max-w-sm">
+                <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <Input
+                  className="pl-8"
+                  placeholder="Search by name, EMP ID, email…"
+                  value={slipSearch}
+                  onChange={(e) => setSlipSearch(e.target.value)}
+                  data-testid="slip-filter-search"
+                />
+              </div>
+              <Select value={slipEmpType} onValueChange={setSlipEmpType}>
+                <SelectTrigger className="w-40" data-testid="slip-filter-emp-type"><SelectValue placeholder="Type" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Types</SelectItem>
+                  {slipEmpTypes.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={slipDept} onValueChange={setSlipDept}>
+                <SelectTrigger className="w-48" data-testid="slip-filter-dept"><SelectValue placeholder="Department" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Departments</SelectItem>
+                  {slipDepartments.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={slipTemplate} onValueChange={setSlipTemplate}>
+                <SelectTrigger className="w-48" data-testid="slip-filter-template"><SelectValue placeholder="Template" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Templates</SelectItem>
+                  {slipTemplateNames.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={slipStatusFilter} onValueChange={setSlipStatusFilter}>
+                <SelectTrigger className="w-36" data-testid="slip-filter-status"><SelectValue placeholder="Status" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="draft">Draft</SelectItem>
+                  <SelectItem value="confirmed">Confirmed</SelectItem>
+                </SelectContent>
+              </Select>
+              {filtersActive && (
+                <Button variant="ghost" size="sm" onClick={clearSlipFilters} data-testid="slip-filter-clear">
+                  <X className="w-3.5 h-3.5 mr-1" /> Clear
+                </Button>
+              )}
+              <span className="ml-auto text-xs text-slate-500">
+                Showing <b>{filteredSlips.length}</b> of {slips.length}
+              </span>
+            </div>
+          )}
+
           <p className="text-xs text-slate-400">Confirmed payslips become visible to employees from the <b>5th of the following month</b>. Regenerating only updates drafts — confirmed payslips are never overwritten.</p>
           <div className="bg-white rounded-xl border overflow-x-auto">
-            <table className="w-full text-sm min-w-[950px]">
+            <table className="w-full text-sm min-w-[1000px]">
               <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
                 <tr>
+                  <th className="px-3 py-3 w-10">
+                    {(() => {
+                      const visibleDraftIds = sortedSlips.filter((s) => s.status === 'draft').map((s) => s.id);
+                      const allSelected = visibleDraftIds.length > 0 && visibleDraftIds.every((id) => slipSelectedIds.has(id));
+                      const someSelected = visibleDraftIds.some((id) => slipSelectedIds.has(id));
+                      return (
+                        <Checkbox
+                          checked={allSelected ? true : (someSelected ? 'indeterminate' : false)}
+                          onCheckedChange={(v) => {
+                            setSlipSelectedIds((prev) => {
+                              const next = new Set(prev);
+                              if (v) visibleDraftIds.forEach((id) => next.add(id));
+                              else visibleDraftIds.forEach((id) => next.delete(id));
+                              return next;
+                            });
+                          }}
+                          disabled={visibleDraftIds.length === 0}
+                          data-testid="slip-select-all"
+                          aria-label="Select all drafts"
+                        />
+                      );
+                    })()}
+                  </th>
                   <th className="text-left px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('employee_name')}>Employee <span className="text-slate-300">{sortIcon('employee_name')}</span></th>
                   <th className="text-left px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('template_name')}>Template <span className="text-slate-300">{sortIcon('template_name')}</span></th>
                   <th className="text-right px-4 py-3 cursor-pointer select-none" onClick={() => toggleSort('payable_days')}>Payable Days <span className="text-slate-300">{sortIcon('payable_days')}</span></th>
@@ -779,11 +928,28 @@ export default function Payslips() {
               </thead>
               <tbody>
                 {slipsLoading ? (
-                  <tr><td colSpan="8" className="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
+                  <tr><td colSpan="9" className="px-4 py-8 text-center text-slate-400">Loading…</td></tr>
                 ) : sortedSlips.length === 0 ? (
-                  <tr><td colSpan="8" className="px-4 py-8 text-center text-slate-400" data-testid="no-slips-msg">No payslips generated for {genMonth} yet.</td></tr>
+                  <tr><td colSpan="9" className="px-4 py-8 text-center text-slate-400" data-testid="no-slips-msg">
+                    {slips.length === 0 ? `No payslips generated for ${genMonth} yet.` : 'No payslips match the current filters.'}
+                  </td></tr>
                 ) : sortedSlips.map((s) => (
                   <tr key={s.id} className="border-t hover:bg-slate-50" data-testid={`slip-row-${s.employee_name}`}>
+                    <td className="px-3 py-3">
+                      <Checkbox
+                        checked={slipSelectedIds.has(s.id)}
+                        onCheckedChange={(v) => {
+                          setSlipSelectedIds((prev) => {
+                            const next = new Set(prev);
+                            if (v) next.add(s.id); else next.delete(s.id);
+                            return next;
+                          });
+                        }}
+                        disabled={s.status !== 'draft'}
+                        data-testid={`slip-select-${s.employee_name}`}
+                        aria-label={`Select ${s.employee_name}`}
+                      />
+                    </td>
                     <td className="px-4 py-3">
                       <div className="font-medium text-slate-800">{s.employee_name}</div>
                       <div className="text-xs text-slate-400">{s.employee?.custom_employee_id} · {s.employee?.employment_type || '—'}</div>

@@ -5,6 +5,18 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-21 (later) — Monthly Payslips: Filters + Bulk Select Confirm
+- **Frontend `Payslips.js` — Monthly Payslips tab:**
+  - New filter row: **Search** (name / EMP ID / email), **Employee Type**, **Department**, **Template**, **Status** dropdowns + **Clear** button + "Showing X of Y" counter.
+  - Filter options built dynamically from the current month's slips (no wasted queries).
+  - New **checkbox column** with header select-all (indeterminate state supported), row-level checkboxes disabled for already-confirmed slips.
+  - New action button **Confirm Selected (N)** appears when 1+ rows are selected.
+  - `Confirm All` button intelligently renames to **Confirm Filtered (N)** when any filter is active — only visible drafts are confirmed.
+- **Backend `payslip_module.py`:**
+  - `POST /api/payslips/confirm-all` now accepts an optional `ids: List[str]` — when supplied, only those drafts are confirmed. Empty / non-list → 400.
+  - Audit trail records `scope=selected(N)` vs `scope=all` for traceability.
+  - Payslip generation now stores `team` in the embedded `employee` sub-doc (used by future filters/exports).
+
 ## 🆕 2026-08-21 — Module Visibility Control (Settings → new tab)
 - **New backend module `backend/module_visibility.py`** (registered via `server.py::app.include_router(api_router)` and startup seed).
   - Collections: `module_visibility_settings` (one row per module), `module_visibility_selections` (module_key + employee_id, indexed unique).

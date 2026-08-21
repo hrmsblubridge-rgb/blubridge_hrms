@@ -681,6 +681,7 @@ async def generate_payslips(payload: dict = Body(...), current_user: dict = Depe
             "employee": {
                 "full_name": name, "custom_employee_id": emp.get("custom_employee_id"),
                 "designation": emp.get("designation"), "department": emp.get("department"),
+                "team": emp.get("team"),
                 "employment_type": emp.get("employment_type"), "date_of_joining": emp.get("date_of_joining"),
                 "email": emp.get("email"),
             },
@@ -734,13 +735,26 @@ async def unconfirm_payslip(payslip_id: str, current_user: dict = Depends(get_cu
 
 @api_router.post("/payslips/confirm-all")
 async def confirm_all_payslips(payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    """Bulk-confirm draft payslips.
+
+    Two supported shapes:
+      • {"month": "YYYY-MM"}                     → confirm every draft in that month
+      • {"month": "YYYY-MM", "ids": [id1, id2]}  → confirm only those specific drafts
+    """
     _hr_only(current_user)
     month = payload.get("month")
     if not month:
         raise HTTPException(status_code=400, detail="month required")
-    res = await db.payslips.update_many({"month": month, "status": "draft"}, {"$set": {
+    ids = payload.get("ids")
+    query = {"month": month, "status": "draft"}
+    if ids is not None:
+        if not isinstance(ids, list) or not ids:
+            raise HTTPException(status_code=400, detail="ids must be a non-empty list when provided")
+        query["id"] = {"$in": [str(x) for x in ids]}
+    res = await db.payslips.update_many(query, {"$set": {
         "status": "confirmed", "confirmed_by": current_user.get("username"), "confirmed_at": _now()}})
-    await _audit(current_user, "payslips_confirmed_all", ref_id=month, new=f"count={res.modified_count}")
+    subject = f"selected({len(ids)})" if ids is not None else "all"
+    await _audit(current_user, "payslips_confirmed_bulk", ref_id=month, new=f"scope={subject}, count={res.modified_count}")
     return {"confirmed": res.modified_count}
 
 
