@@ -11,9 +11,23 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { MonthPicker } from '../components/ui/month-picker';
+import { DatePicker } from '../components/ui/date-picker';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Display any ISO / date-like value as DD-MM-YYYY. Empty inputs return "".
+const fmtDMY = (v) => {
+  if (!v) return '';
+  const s = typeof v === 'string' ? v : String(v);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()}`;
+};
 
 const emptyComponent = (order) => ({
   name: '', component_type: 'earning', operation: 'add', calc_type: 'percentage',
@@ -393,13 +407,13 @@ export default function Payslips() {
   const resolvedEffFrom = (emp) => {
     if (assignEffType === 'joining_date') {
       const d = emp?.date_of_joining || '';
-      return typeof d === 'string' ? d.slice(0, 10) : '';
+      return typeof d === 'string' ? fmtDMY(d.slice(0, 10)) : '';
     }
     if (assignEffType === 'confirmation_date') {
       const d = emp?.confirmation_date || '';
-      return typeof d === 'string' ? d.slice(0, 10) : '';
+      return typeof d === 'string' ? fmtDMY(d.slice(0, 10)) : '';
     }
-    return assignDate;
+    return fmtDMY(assignDate);
   };
 
   // Interns don't have a Confirmation Date; if any selected employee lacks it,
@@ -797,7 +811,7 @@ export default function Payslips() {
                       {r.assignment ? <Badge className="bg-blue-100 text-blue-700">{r.assignment.template_name}</Badge> : <span className="text-slate-400 text-xs">Not assigned</span>}
                     </td>
                     <td className="px-4 py-3 text-right font-medium">{r.assignment ? inr(r.assignment.monthly_pay) : '—'}</td>
-                    <td className="px-4 py-3">{r.assignment?.effective_from || '—'}</td>
+                    <td className="px-4 py-3">{fmtDMY(r.assignment?.effective_from) || '—'}</td>
                     <td className="px-4 py-3 text-right">
                       <Button data-testid={`assign-btn-${r.full_name}`} size="sm" variant={r.assignment ? 'outline' : 'default'} onClick={() => openAssign([r])}>
                         {r.assignment ? 'Change' : 'Assign'}
@@ -1067,7 +1081,12 @@ export default function Payslips() {
                 {assignEffType === 'custom_date' && (
                   <div className="col-span-2">
                     <label className="text-xs font-medium text-slate-500">Custom Effective Date *</label>
-                    <Input data-testid="assign-effective-date" type="date" value={assignDate} onChange={(e) => setAssignDate(e.target.value)} />
+                    <DatePicker
+                      value={assignDate}
+                      onChange={(val) => setAssignDate(val)}
+                      className="mt-1.5"
+                      data-testid="assign-effective-date"
+                    />
                   </div>
                 )}
                 {assignEffType !== 'custom_date' && (

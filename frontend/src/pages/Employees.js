@@ -967,7 +967,7 @@ const Employees = () => {
     if (!form.department) { toast.error('Department is required'); return false; }
     if (!form.team) { toast.error('Team is required'); return false; }
     if (!form.designation.trim()) { toast.error('Designation is required'); return false; }
-    if (!form.custom_employee_id.trim()) { toast.error('Employee ID is required'); return false; }
+    // Employee ID is now optional — an auto-generated `emp_id` is always available as a fallback.
     if (!form.biometric_id.trim()) { toast.error('Biometric ID is required'); return false; }
     if (!form.office_location || !form.office_location.trim()) { toast.error('Office Location is required'); return false; }
     // Paid-Leave Confirmation Date: required + valid for leave-eligible types.
@@ -1544,7 +1544,7 @@ const Employees = () => {
               <TabsContent value="employment" className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-sm font-medium text-slate-700">Employee ID <span className="text-red-500">*</span></Label>
+                    <Label className="text-sm font-medium text-slate-700">Employee ID</Label>
                     <Input value={form.custom_employee_id} onChange={(e) => setForm(prev => ({ ...prev, custom_employee_id: e.target.value }))} placeholder="e.g., EID-001" className="mt-1.5 rounded-lg" data-testid="input-custom-employee-id" />
                   </div>
                   <div>
@@ -1771,7 +1771,7 @@ const Employees = () => {
               <TabsContent value="employment" className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <Label className="text-sm font-medium text-slate-700">Employee ID <span className="text-red-500">*</span></Label>
+                    <Label className="text-sm font-medium text-slate-700">Employee ID</Label>
                     <Input value={form.custom_employee_id} onChange={(e) => setForm(prev => ({ ...prev, custom_employee_id: e.target.value }))} placeholder="e.g., EID-001" className="mt-1.5 rounded-lg" data-testid="input-custom-employee-id" />
                   </div>
                   <div>

@@ -5,6 +5,14 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-21 (v3) — Employee ID Optional + Payslip Dates as DD-MM-YYYY
+- **`Employees.js`:** Removed `*` asterisks from the "Employee ID" label in both Add and Edit dialogs. Removed the client-side `Employee ID is required` validation (backend model was already `Optional[str]`). System still generates the auto `emp_id` used as fallback everywhere.
+- **`Payslips.js`:**
+  - Added a `fmtDMY()` helper that converts any ISO / date-like value to **DD-MM-YYYY**.
+  - Assignments-tab "Effective From" column now renders as DD-MM-YYYY (e.g., `13-02-2026` instead of `2026-02-13`).
+  - Assignment dialog's "Custom Effective Date" input replaced with the shared shadcn `DatePicker` (calendar popover, displays `dd-MMM-yyyy` like the Employees module for a consistent HRMS aesthetic).
+  - `resolvedEffFrom()` (per-employee resolved-date preview) also formats through `fmtDMY`.
+
 ## 🆕 2026-08-21 (later) — Monthly Payslips: Filters + Bulk Select Confirm
 - **Frontend `Payslips.js` — Monthly Payslips tab:**
   - New filter row: **Search** (name / EMP ID / email), **Employee Type**, **Department**, **Template**, **Status** dropdowns + **Clear** button + "Showing X of Y" counter.
