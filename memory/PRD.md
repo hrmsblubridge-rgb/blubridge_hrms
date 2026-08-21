@@ -5,6 +5,18 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-21 — Fix: Assign Dialog "Resolved date · MISSING" bug
+- **Bug:** In the Assign Template dialog, choosing "Joining Date" or "Confirmation Date" showed "MISSING" for every employee even though the Employee record clearly had those dates (e.g. Sabari R with DOJ + Confirmation both set to 07-Jul-2026).
+- **Root cause:** `GET /api/payslips/assignments` projection returned only `id, full_name, custom_employee_id, department, team, designation, employment_type` — the frontend never received `date_of_joining` or `confirmation_date`, so `resolvedEffFrom(emp)` always evaluated to empty.
+- **Fix (`backend/payslip_module.py::list_payslip_assignments`):** Added `date_of_joining: 1, confirmation_date: 1` to the Mongo projection.
+- **Frontend (`Payslips.js`) improvements:**
+  - `resolvedEffFrom` now safely handles non-string values.
+  - **Confirmation Date option is hidden entirely when no employee in the current selection has a `confirmation_date`** (interns don't have one — matches user's request). Small hint "Interns have no Confirmation Date — that option is hidden." shown for intern-only selections.
+  - Per-employee resolved-date preview upgraded to list each employee on its own line with an **amber warning** when a date is missing, so admins immediately see who needs to fall back to Custom Date.
+- **Verified via `/api/payslips/assignments`:** Adari (Intern) → DOJ=2026-07-01, CONF=None ✅ · Adhitya Charan (Full-time) → DOJ=2025-09-29, CONF=2026-02-13 ✅.
+
+
+
 ## 🆕 2026-08-19 (v7 · Template-Driven Deductions + Assignment Overhaul)
 - **Backend `payslip_module.py`:**
   - **PF fully template-driven.** PF component now uses two fields: `base_percentage` (portion of Attendance Payable that forms the PF base) and `percentage_value` (contribution %). Formula: `PF = min(attendance_payable × base_pct% × contrib_pct%, ₹1,800)`. Cap can be disabled per component via `apply_pf_cap=False`. **If no PF component in the assigned template → PF = 0 and no PF row appears.**

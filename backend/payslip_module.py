@@ -200,7 +200,8 @@ async def list_payslip_assignments(q: Optional[str] = Query(None), department: O
                          {"custom_employee_id": {"$regex": q, "$options": "i"}},
                          {"email": {"$regex": q, "$options": "i"}}]
     emps = await db.employees.find(equery, {"_id": 0, "id": 1, "full_name": 1, "custom_employee_id": 1,
-                                            "department": 1, "team": 1, "designation": 1, "employment_type": 1}).sort("full_name", 1).to_list(500)
+                                            "department": 1, "team": 1, "designation": 1, "employment_type": 1,
+                                            "date_of_joining": 1, "confirmation_date": 1}).sort("full_name", 1).to_list(500)
     assigns = {a["employee_id"]: a for a in await db.payslip_assignments.find(
         {"effective_to": None}, {"_id": 0}).to_list(1000)}
     out = []

@@ -380,10 +380,20 @@ export default function Payslips() {
   };
 
   const resolvedEffFrom = (emp) => {
-    if (assignEffType === 'joining_date') return (emp?.date_of_joining || '').slice(0, 10);
-    if (assignEffType === 'confirmation_date') return (emp?.confirmation_date || '').slice(0, 10);
+    if (assignEffType === 'joining_date') {
+      const d = emp?.date_of_joining || '';
+      return typeof d === 'string' ? d.slice(0, 10) : '';
+    }
+    if (assignEffType === 'confirmation_date') {
+      const d = emp?.confirmation_date || '';
+      return typeof d === 'string' ? d.slice(0, 10) : '';
+    }
     return assignDate;
   };
+
+  // Interns don't have a Confirmation Date; if any selected employee lacks it,
+  // still let the admin pick it — the backend will error and we'll show a friendly message.
+  const anySelectedHasConfirmation = assignDialog?.employees?.some((e) => !!e.confirmation_date);
 
   const submitAssign = async () => {
     if (!assignTpl) return toast.error('Select a template');
@@ -832,10 +842,15 @@ export default function Payslips() {
                     <SelectTrigger data-testid="assign-eff-type"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="joining_date">Joining Date</SelectItem>
-                      <SelectItem value="confirmation_date">Confirmation Date</SelectItem>
+                      {anySelectedHasConfirmation && (
+                        <SelectItem value="confirmation_date">Confirmation Date</SelectItem>
+                      )}
                       <SelectItem value="custom_date">Custom Date</SelectItem>
                     </SelectContent>
                   </Select>
+                  {!anySelectedHasConfirmation && assignDialog.employees.some((e) => (e.employment_type || '').toLowerCase().includes('intern')) && (
+                    <div className="text-[10px] text-slate-400 mt-1">Interns have no Confirmation Date — that option is hidden.</div>
+                  )}
                 </div>
                 {assignEffType === 'custom_date' && (
                   <div className="col-span-2">
@@ -844,8 +859,15 @@ export default function Payslips() {
                   </div>
                 )}
                 {assignEffType !== 'custom_date' && (
-                  <div className="col-span-2 text-xs text-slate-500 bg-slate-50 rounded p-2">
-                    Resolved date for each employee: {assignDialog.employees.map((e) => `${e.full_name} → ${resolvedEffFrom(e) || 'MISSING'}`).join(' · ')}
+                  <div className="col-span-2 text-xs bg-slate-50 rounded p-2 space-y-1">
+                    {assignDialog.employees.map((e) => {
+                      const r = resolvedEffFrom(e);
+                      return (
+                        <div key={e.id} className={r ? 'text-slate-600' : 'text-amber-600'}>
+                          <span className="font-medium">{e.full_name}</span> → {r || 'MISSING — pick Custom Date instead'}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
                 <div className="col-span-2">
