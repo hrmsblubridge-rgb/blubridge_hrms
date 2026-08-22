@@ -5,6 +5,25 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-22 (v2) — Credential-Email System: Permanent Fix
+**Root cause discovered:** `RESEND_API_KEY` in `backend/.env` is INVALID → the old code silently swallowed every send failure with a single `logger.error(...)` call, so no welcome email has ever been delivered — this affected Mrinmayi Verma and every other employee created since the key expired.
+
+**Permanent fix delivered:**
+- New backend module `backend/credential_email.py` — 3-attempt retry with exponential back-off (2s / 4s / 8s), persists delivery status on the employee document (`credential_email_status`, `credential_email_sent_at`, `credential_email_attempts`, `credential_email_last_error`, `credential_email_last_attempt_at`). Idempotent (won't resend if already `sent` unless `force=True`).
+- FastAPI `BackgroundTasks` used instead of `asyncio.create_task` — background tasks survive request lifecycle & are awaited before shutdown.
+- Email normalization at model boundary: trim + lowercase; invalid emails fail fast with a stored error message (never silently drops).
+- Two existing call sites migrated (`POST /api/employees` single-create + `POST /api/employees/bulk-import`) — REACTIVATE path also migrated.
+- New admin endpoints:
+  - `POST /api/employees/{id}/resend-credentials` — regenerates a fresh secure temp password (10-char alphanumeric via `secrets`) + queues the email with retry, bypassing idempotency.
+  - `GET  /api/employees/{id}/credential-email-status` — returns full delivery status for the details/audit view.
+- Frontend `Employees.js` — status pill next to email column (green ✉️ delivered / red ✉️ failed / amber pulsing ✉️ pending, with tooltips), plus **"Resend Credential Email"** menu action in the row's More menu.
+- All secrets remain server-side; no password ever hits browser console or logs.
+
+**Verified end-to-end:**
+- Triggered resend for Mrinmayi → status persisted as `failed`, attempts=3, error=`ResendError: API key is invalid` — the actual root cause is now VISIBLE to Admin. Once the key is rotated, the exact same "Resend Credential Email" button will succeed with zero further code changes.
+
+**Action required from user:** rotate the `RESEND_API_KEY` in Render (Production) and `/app/backend/.env` (local). Sender domain must be verified in the Resend dashboard for `hrms@blubridge.ai`. After that, every new-employee creation OR the Resend button will deliver reliably.
+
 ## 🆕 2026-08-22 — Payslip Manual Adjustments (Additions + Deductions)
 - **New backend module `backend/payslip_adjustments.py`** — post-processing layer that never touches the delicate base calc engine.
   - Collections: `payslip_adjustments` (id, payslip_id, employee_id, month, adjustment_type ADDITION/DEDUCTION, amount, description, remarks, status, batch_id, created_by/at, updated_by/at, deleted_by/at) + `payslip_adjustment_history` (append-only change log).

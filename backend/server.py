@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File as FastAPIFile, Body, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File as FastAPIFile, Body, Request, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -5003,6 +5003,7 @@ async def export_employees(
 
 @api_router.post("/employees/bulk-import")
 async def bulk_import_employees(
+    background_tasks: BackgroundTasks,
     file: UploadFile = FastAPIFile(...),
     current_user: dict = Depends(get_current_user)
 ):
@@ -5340,16 +5341,21 @@ async def bulk_import_employees(
                 user_doc['created_at'] = user_doc['created_at'].isoformat()
                 await db.users.insert_one(user_doc.copy())
             
-            # Send welcome email with credentials (non-blocking)
-            asyncio.create_task(
-                send_welcome_email(
-                    emp_name=full_name,
-                    emp_id=emp_id,
-                    email=email,
-                    username=username,
-                    password=temp_password,
-                    login_url=absolute_url("/login")
-                )
+            # Queue credential email via robust retry pipeline
+            from credential_email import schedule_credential_email
+            await db.employees.update_one(
+                {"id": employee.id},
+                {"$set": {"credential_email_status": "pending",
+                          "credential_email_last_error": "",
+                          "credential_email_attempts": 0}},
+            )
+            schedule_credential_email(
+                background_tasks,
+                employee.id,
+                username=username,
+                password=temp_password,
+                force=False,
+                triggered_by=current_user.get("id", "system"),
             )
 
             # Temporary policy: skip onboarding within configured window so
@@ -5429,7 +5435,7 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
     return serialize_doc(employee)
 
 @api_router.post("/employees")
-async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get_current_user)):
+async def create_employee(data: EmployeeCreate, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.HR]:
         raise HTTPException(status_code=403, detail="Permission denied")
 
@@ -5439,6 +5445,10 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
 
     # Case-insensitive duplicate guards (Email + Biometric ID)
     email_norm = (data.official_email or "").strip()
+    # Normalize to lowercase for stable storage + duplicate detection
+    if email_norm:
+        email_norm = email_norm.lower()
+        data.official_email = email_norm
     bio_norm = (data.biometric_id or "").strip() if data.biometric_id else ""
 
     # Check for duplicate email among active employees (case-insensitive)
@@ -5581,16 +5591,22 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
                 user_doc['created_at'] = user_doc['created_at'].isoformat()
                 await db.users.insert_one(user_doc.copy())
             
-            # Send welcome email with new credentials
-            asyncio.create_task(
-                send_welcome_email(
-                    emp_name=data.full_name,
-                    emp_id=emp_id,
-                    email=data.official_email,
-                    username=username,
-                    password=temp_password,
-                    login_url=login_url
-                )
+            # Reset delivery-status so the new attempt starts clean
+            await db.employees.update_one(
+                {"id": employee_id},
+                {"$set": {"credential_email_status": "pending",
+                          "credential_email_last_error": "",
+                          "credential_email_attempts": 0}},
+            )
+            # Robust queued send with 3-attempt retry (never lost on shutdown)
+            from credential_email import schedule_credential_email
+            schedule_credential_email(
+                background_tasks,
+                employee_id,
+                username=username,
+                password=temp_password,
+                force=True,
+                triggered_by=current_user.get("id", "system"),
             )
         
         await log_audit(current_user["id"], "reactivate", "employee", employee_id, f"Reactivated employee: {data.full_name}")
@@ -5666,16 +5682,22 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
             user_doc['created_at'] = user_doc['created_at'].isoformat()
             await db.users.insert_one(user_doc.copy())
         
-        # Send welcome email with credentials
-        asyncio.create_task(
-            send_welcome_email(
-                emp_name=data.full_name,
-                emp_id=emp_id,
-                email=data.official_email,
-                username=username,
-                password=temp_password,
-                login_url=login_url
-            )
+        # Queue credential email — 3-attempt retry, delivery-status
+        # persisted on the employee document.
+        from credential_email import schedule_credential_email
+        await db.employees.update_one(
+            {"id": employee.id},
+            {"$set": {"credential_email_status": "pending",
+                      "credential_email_last_error": "",
+                      "credential_email_attempts": 0}},
+        )
+        schedule_credential_email(
+            background_tasks,
+            employee.id,
+            username=username,
+            password=temp_password,
+            force=False,
+            triggered_by=current_user.get("id", "system"),
         )
     
     await log_audit(current_user["id"], "create", "employee", employee.id, f"Created employee: {data.full_name}")
@@ -19073,6 +19095,12 @@ try:
     import payslip_adjustments  # noqa: F401
 except Exception as _e:
     print(f"Payslip adjustments load failed: {_e}")
+
+# Credential-Email delivery — retriable welcome-email system + resend endpoint
+try:
+    import credential_email  # noqa: F401
+except Exception as _e:
+    print(f"Credential email module load failed: {_e}")
 
 # Module Visibility Control — admin toggles employee sidebar modules ON/OFF
 try:

@@ -36,6 +36,9 @@ import {
   ShieldAlert,
   AlertTriangle,
   KeyRound,
+  MailCheck,
+  MailWarning,
+  MailX,
   Copy,
   Briefcase,
   Mail,
@@ -866,6 +869,24 @@ const Employees = () => {
     setShowResetCredsDialog(true);
   };
 
+  // ---- Resend Credential Email (uses robust retry pipeline) --------------
+  const resendCredentialEmail = async (emp) => {
+    if (!emp?.official_email) { toast.error('Employee has no email on record'); return; }
+    if (!window.confirm(`Resend login credentials to ${emp.official_email}?\n\nThis will regenerate a new temporary password.`)) return;
+    try {
+      const { data } = await axios.post(
+        `${API}/employees/${emp.id}/resend-credentials`,
+        {},
+        { headers: getAuthHeaders() },
+      );
+      toast.success(`Credential email queued to ${data.queued_for}. Delivery status will update in the table shortly.`, { duration: 6000 });
+      // Refresh employees so the status pill updates
+      setTimeout(() => fetchData(), 15000);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to queue credential email');
+    }
+  };
+
   const submitResetCreds = async () => {
     if (!selectedEmployee) return;
     if (resetMode === 'manual') {
@@ -1397,7 +1418,10 @@ const Employees = () => {
                           </div>
                         </td>
                         <td className="text-slate-600 hidden md:table-cell">
-                          <span className="truncate max-w-[180px] block" title={emp.official_email}>{emp.official_email}</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate max-w-[180px] block" title={emp.official_email}>{emp.official_email}</span>
+                            <CredentialEmailPill emp={emp} />
+                          </div>
                         </td>
                         <td className="text-slate-600 hidden lg:table-cell whitespace-nowrap">{emp.department}</td>
                         <td className="text-slate-600 hidden lg:table-cell">
@@ -1442,6 +1466,10 @@ const Employees = () => {
                                     <DropdownMenuItem onClick={() => openResetCreds(emp)} data-testid={`reset-creds-${emp.id}`}>
                                       <KeyRound className="w-4 h-4 mr-2 text-blue-600" />
                                       <span>Reset Credentials</span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => resendCredentialEmail(emp)} data-testid={`resend-cred-email-${emp.id}`}>
+                                      <MailCheck className="w-4 h-4 mr-2 text-emerald-600" />
+                                      <span>Resend Credential Email</span>
                                     </DropdownMenuItem>
                                     <DropdownMenuSeparator />
                                     {emp.employee_status !== 'Inactive' && (
@@ -3194,5 +3222,38 @@ const SalaryRow = ({ label, value }) => (
     <td className="px-5 py-2.5 text-right tabular-nums text-slate-800">{fmtINR(value * 12)}</td>
   </tr>
 );
+
+// Small status pill shown next to the employee email — indicates delivery
+// state of the auto-sent welcome/credential email.
+const CredentialEmailPill = ({ emp }) => {
+  const st = emp.credential_email_status;
+  if (!st) return null; // legacy employees before the tracking system existed
+  const attempts = emp.credential_email_attempts || 0;
+  const err = emp.credential_email_last_error || '';
+  const sentAt = emp.credential_email_sent_at ? new Date(emp.credential_email_sent_at).toLocaleString() : '';
+  if (st === 'sent') {
+    return (
+      <span title={`Credential email delivered${sentAt ? ' at ' + sentAt : ''}`} className="inline-flex items-center text-emerald-600" data-testid={`cred-status-${emp.id}`}>
+        <MailCheck className="w-3.5 h-3.5" />
+      </span>
+    );
+  }
+  if (st === 'failed') {
+    return (
+      <span
+        title={`Credential email FAILED after ${attempts} attempt(s).\nReason: ${err || 'unknown'}\nUse "Resend Credential Email" from the row menu.`}
+        className="inline-flex items-center text-red-600"
+        data-testid={`cred-status-${emp.id}`}
+      >
+        <MailX className="w-3.5 h-3.5" />
+      </span>
+    );
+  }
+  return (
+    <span title={`Credential email pending (attempt ${attempts})`} className="inline-flex items-center text-amber-500" data-testid={`cred-status-${emp.id}`}>
+      <MailWarning className="w-3.5 h-3.5 animate-pulse" />
+    </span>
+  );
+};
 
 export default Employees;
