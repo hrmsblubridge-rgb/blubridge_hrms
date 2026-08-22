@@ -5,6 +5,32 @@ Build and enhance a premium enterprise-grade HRMS web application with role-base
 
 ## Tech Stack
 
+## 🆕 2026-08-22 — Payslip Manual Adjustments (Additions + Deductions)
+- **New backend module `backend/payslip_adjustments.py`** — post-processing layer that never touches the delicate base calc engine.
+  - Collections: `payslip_adjustments` (id, payslip_id, employee_id, month, adjustment_type ADDITION/DEDUCTION, amount, description, remarks, status, batch_id, created_by/at, updated_by/at, deleted_by/at) + `payslip_adjustment_history` (append-only change log).
+  - Endpoints (admin-only, confirmed slips return 409):
+    - `POST /api/payslips/adjustments` — single or bulk create; individual record per employee, common `batch_id` for reporting.
+    - `GET  /api/payslips/{id}/adjustments?include_deleted=`
+    - `GET  /api/payslips/{id}/adjustments/history` — full audit trail (created / updated / deleted with old→new amount and description)
+    - `PATCH /api/payslips/adjustments/{id}` — edit amount / description / remarks; old values preserved in history
+    - `DELETE /api/payslips/adjustments/{id}` — soft-delete only; history preserved
+    - `GET  /api/payslips/adjustments/summary?month=...` — per-slip additions/deductions totals (used by grid inline pill)
+  - Helper `_recompute_slip_totals()`  captures base_gross_earnings / base_total_deductions once, then re-applies active adjustments to update `manual_additions_total`, `manual_deductions_total`, `gross_earnings`, `total_deductions`, `net_pay`. Called automatically on every create / edit / delete AND after `POST /api/payslips/generate` so admin's adjustments survive a regeneration.
+- **`payslip_pdf.py`** — the existing "Other Allowance" perquisite row now reflects `manual_additions_total`; the existing "Other Deductions" row shows `manual_deductions_total`; final "Net Payment in Rupees" uses adjusted totals. Rename "Petrol Allowance" → "Other Allowance".
+- **Frontend `Payslips.js` → Monthly Payslips tab:**
+  - Per-row **Sparkles icon** → single-employee Add Adjustment (disabled on confirmed).
+  - Bulk **"Add Adjustment (N)"** button when 1+ drafts selected.
+  - **Add Manual Adjustment dialog:** employee(s) preview, month readonly, Addition/Deduction toggle, amount, description, optional remarks; per-employee record created; toast summary of successes / failures.
+  - Per-row **History icon** → `AdjustmentsDialog`: Active adjustments (inline edit ✏️ + soft-delete 🗑), Deleted/Inactive strike-through list, Change History timeline (created / updated with old→new amount / deleted).
+  - Table cells inline show `+₹N` (emerald) under Gross and `incl. −₹N` (red) under Deductions when adjustments exist.
+- **All 6 acceptance tests pass** (curl-verified):
+  - A: +₹1000 ded → gross unchanged, ded +1000, net −1000 ✅
+  - B: edit 1000→750 → ded +750 in totals, history preserves both amounts ✅
+  - C: delete 750 → totals revert, history retained (soft delete) ✅
+  - D: +₹2000 add → gross +2000, deds unchanged, net +2000 ✅
+  - E: both simultaneously → correct combined result ✅
+  - F: confirmed payslip → add/edit/delete return 409 with "unconfirm to edit" ✅
+
 ## 🆕 2026-08-21 (v3) — Employee ID Optional + Payslip Dates as DD-MM-YYYY
 - **`Employees.js`:** Removed `*` asterisks from the "Employee ID" label in both Add and Edit dialogs. Removed the client-side `Employee ID is required` validation (backend model was already `Optional[str]`). System still generates the auto `emp_id` used as fallback everywhere.
 - **`Payslips.js`:**

@@ -696,6 +696,15 @@ async def generate_payslips(payload: dict = Body(...), current_user: dict = Depe
         await db.payslips.update_one(
             {"employee_id": a["employee_id"], "month": month},
             {"$set": doc, "$setOnInsert": {"id": str(uuid.uuid4())}}, upsert=True)
+        # Re-apply any active manual adjustments on top of the fresh base calc
+        # so admin's earlier adjustments survive a regeneration.
+        fresh = await db.payslips.find_one({"employee_id": a["employee_id"], "month": month}, {"_id": 0, "id": 1})
+        if fresh:
+            try:
+                from payslip_adjustments import _recompute_slip_totals
+                await _recompute_slip_totals(fresh["id"])
+            except Exception as _e:
+                pass
         generated += 1
     await _audit(current_user, "payslips_generated", ref_id=month,
                  new=f"generated={generated}, skipped={skipped_confirmed}, errors={len(errors)}")

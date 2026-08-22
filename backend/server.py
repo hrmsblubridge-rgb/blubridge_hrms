@@ -19068,6 +19068,12 @@ try:
 except Exception as _e:
     print(f"Payslip module load failed: {_e}")
 
+# Payslip Manual Adjustments — post-generation additions/deductions
+try:
+    import payslip_adjustments  # noqa: F401
+except Exception as _e:
+    print(f"Payslip adjustments load failed: {_e}")
+
 # Module Visibility Control — admin toggles employee sidebar modules ON/OFF
 try:
     import module_visibility  # noqa: F401  (registers routes via api_router import)

@@ -242,17 +242,19 @@ def build_payslip_pdf(slip: dict) -> bytes:
 
     # ---- 4) Other Perquisites (left) + Other Deductions (right) ----
     extra_pay = calc.get("other_allowance") or 0
+    manual_add = float(calc.get("manual_additions_total") or 0)
+    manual_ded = float(calc.get("manual_deductions_total") or 0)
     perquisite_rows = [
-        ("Petrol Allowance", 0),
+        ("Other Allowance", manual_add),
         ("Additional Pay on weekends", extra_pay),
     ]
-    net_payment = int(round(net_ab_display + extra_pay))  # Total-A minus Total-B, plus perquisites (Extra Pay)
+    net_payment = int(round(net_ab_display + extra_pay + manual_add - manual_ded))
 
     perq_grid = [[Paragraph("<b>Other Perquisites</b>", lbl_b), Paragraph("<b>Amount</b>", val_r_b),
                   Paragraph("<b>Other Deductions</b>", lbl_b), Paragraph("<b>Amount</b>", val_r_b)]]
     for i, (nm, val) in enumerate(perquisite_rows):
         right_name = Paragraph("Other Deductions", val_l) if i == 0 else ""
-        right_amt = Paragraph(_int_amt(0), val_r) if i == 0 else ""
+        right_amt = Paragraph(_int_amt(manual_ded), val_r) if i == 0 else ""
         perq_grid.append([Paragraph(nm, val_l), Paragraph(_int_amt(val), val_r), right_name, right_amt])
     # Final "Net Payment in Rupees" row (spans left half)
     perq_grid.append([Paragraph("<b>Net Payment in Rupees</b>", ParagraphStyle("npr", fontName="Helvetica-Bold", fontSize=9, alignment=TA_CENTER)),

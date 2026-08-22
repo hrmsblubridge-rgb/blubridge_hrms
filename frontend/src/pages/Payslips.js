@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, Fragment } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Plus, Trash2, Pencil, Receipt, Users, Calculator, X, CheckCircle2, Download, RefreshCw, Eye, FileCheck2, Copy, Search, Filter } from 'lucide-react';
+import { Plus, Trash2, Pencil, Receipt, Users, Calculator, X, CheckCircle2, Download, RefreshCw, Eye, FileCheck2, Copy, Search, Filter, MinusCircle, PlusCircle, History, Sparkles } from 'lucide-react';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
@@ -606,6 +606,43 @@ export default function Payslips() {
   const [slipStatusFilter, setSlipStatusFilter] = useState('all');
   const [slipSelectedIds, setSlipSelectedIds] = useState(new Set());
 
+  // ---- Manual Adjustment state ----
+  const [adjDialog, setAdjDialog] = useState(null); // { slips: [], month }
+  const [adjType, setAdjType] = useState('DEDUCTION');
+  const [adjAmount, setAdjAmount] = useState('');
+  const [adjDesc, setAdjDesc] = useState('');
+  const [adjRemarks, setAdjRemarks] = useState('');
+  const [adjSaving, setAdjSaving] = useState(false);
+  const [viewAdjSlip, setViewAdjSlip] = useState(null); // slip whose adjustments are being viewed
+
+  const openAdjDialog = (slipsForAdj) => {
+    setAdjType('DEDUCTION'); setAdjAmount(''); setAdjDesc(''); setAdjRemarks('');
+    setAdjDialog({ slips: slipsForAdj, month: genMonth });
+  };
+  const submitAdjustment = async () => {
+    const amt = Number(adjAmount);
+    if (!amt || amt <= 0) { toast.error('Amount must be > 0'); return; }
+    if (!adjDesc.trim()) { toast.error('Description is required'); return; }
+    setAdjSaving(true);
+    try {
+      const res = await axios.post(`${API}/payslips/adjustments`, {
+        payslip_ids: adjDialog.slips.map((s) => s.id),
+        adjustment_type: adjType,
+        amount: amt,
+        description: adjDesc.trim(),
+        remarks: adjRemarks.trim(),
+      }, { headers });
+      const okN = res.data.created.length;
+      const errN = res.data.errors.length;
+      if (okN) toast.success(`${okN} adjustment(s) created and payslip(s) recalculated`);
+      if (errN) toast.error(`${errN} failed: ${res.data.errors.slice(0, 2).map((e) => e.error).join('; ')}`, { duration: 6000 });
+      setAdjDialog(null);
+      setSlipSelectedIds(new Set());
+      fetchSlips(genMonth);
+    } catch (e) { toast.error(e.response?.data?.detail || 'Save failed'); }
+    finally { setAdjSaving(false); }
+  };
+
   // Distinct dropdown options built from current month's slips
   const slipDepartments = useMemo(
     () => Array.from(new Set(slips.map((s) => s.employee?.department).filter(Boolean))).sort(),
@@ -833,9 +870,25 @@ export default function Payslips() {
               {genLoading ? 'Generating…' : slips.length ? 'Regenerate Drafts' : 'Generate Payslips'}
             </Button>
             {slipSelectedIds.size > 0 && (
-              <Button data-testid="confirm-selected-btn" variant="outline" className="text-emerald-700 border-emerald-300" onClick={confirmSelected}>
-                <CheckCircle2 className="w-4 h-4 mr-1" /> Confirm Selected ({[...slipSelectedIds].filter((id) => slips.find((s) => s.id === id && s.status === 'draft')).length})
-              </Button>
+              <>
+                <Button data-testid="confirm-selected-btn" variant="outline" className="text-emerald-700 border-emerald-300" onClick={confirmSelected}>
+                  <CheckCircle2 className="w-4 h-4 mr-1" /> Confirm Selected ({[...slipSelectedIds].filter((id) => slips.find((s) => s.id === id && s.status === 'draft')).length})
+                </Button>
+                <Button
+                  data-testid="adjust-selected-btn"
+                  variant="outline"
+                  className="text-[#063c88] border-[#063c88]/40"
+                  onClick={() => {
+                    const eligible = [...slipSelectedIds]
+                      .map((id) => slips.find((s) => s.id === id))
+                      .filter((s) => s && s.status === 'draft');
+                    if (eligible.length === 0) { toast.error('Select at least one draft payslip'); return; }
+                    openAdjDialog(eligible);
+                  }}
+                >
+                  <Sparkles className="w-4 h-4 mr-1" /> Add Adjustment ({[...slipSelectedIds].filter((id) => slips.find((s) => s.id === id && s.status === 'draft')).length})
+                </Button>
+              </>
             )}
             {draftCount > 0 && slipSelectedIds.size === 0 && (
               <Button data-testid="confirm-all-btn" variant="outline" className="text-emerald-700 border-emerald-300" onClick={confirmAll}>
@@ -970,8 +1023,22 @@ export default function Payslips() {
                     </td>
                     <td className="px-4 py-3">{s.template_name}</td>
                     <td className="px-4 py-3 text-right">{s.calc?.payable_days}</td>
-                    <td className="px-4 py-3 text-right">{inr(s.calc?.gross_earnings)}</td>
-                    <td className="px-4 py-3 text-right text-red-600">−{inr(s.calc?.total_deductions)}</td>
+                    <td className="px-4 py-3 text-right">
+                      {inr(s.calc?.gross_earnings)}
+                      {(s.calc?.manual_additions_total || 0) > 0 && (
+                        <div className="text-[10px] text-emerald-600 mt-0.5" title="Manual Additions applied">
+                          +{inr(s.calc.manual_additions_total)}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right text-red-600">
+                      −{inr(s.calc?.total_deductions)}
+                      {(s.calc?.manual_deductions_total || 0) > 0 && (
+                        <div className="text-[10px] text-red-500 mt-0.5" title="Manual Deductions applied">
+                          incl. −{inr(s.calc.manual_deductions_total)}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-right font-semibold">{inr(s.calc?.net_pay)}</td>
                     <td className="px-4 py-3">
                       <Badge className={s.status === 'confirmed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'} data-testid={`slip-status-${s.employee_name}`}>
@@ -982,6 +1049,20 @@ export default function Payslips() {
                       <Button data-testid={`view-slip-${s.employee_name}`} size="sm" variant="ghost" title="View breakdown" onClick={() => setViewSlip(s)}><Eye className="w-4 h-4" /></Button>
                       <Button data-testid={`preview-pdf-${s.employee_name}`} size="sm" variant="ghost" title="Preview PDF" onClick={() => previewPdf(s)}><FileCheck2 className="w-4 h-4" /></Button>
                       <Button data-testid={`pdf-slip-${s.employee_name}`} size="sm" variant="ghost" title="Download PDF" onClick={() => downloadPdf(s)}><Download className="w-4 h-4" /></Button>
+                      <Button
+                        data-testid={`adjust-slip-${s.employee_name}`}
+                        size="sm" variant="ghost"
+                        className="text-[#063c88]"
+                        title={s.status === 'draft' ? 'Add Adjustment' : 'Payslip is confirmed — cannot add adjustment'}
+                        onClick={() => openAdjDialog([s])}
+                        disabled={s.status !== 'draft'}
+                      ><Sparkles className="w-4 h-4" /></Button>
+                      <Button
+                        data-testid={`view-adjustments-${s.employee_name}`}
+                        size="sm" variant="ghost"
+                        title="View Adjustments & History"
+                        onClick={() => setViewAdjSlip(s)}
+                      ><History className="w-4 h-4" /></Button>
                       {s.status === 'draft' ? (
                         <>
                           <Button data-testid={`confirm-slip-${s.employee_name}`} size="sm" variant="ghost" className="text-emerald-600" title="Confirm" onClick={() => confirmSlip(s)}><CheckCircle2 className="w-4 h-4" /></Button>
@@ -1131,6 +1212,255 @@ export default function Payslips() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* ---------------- Add Adjustment Dialog ---------------- */}
+      <Dialog open={!!adjDialog} onOpenChange={(o) => !o && setAdjDialog(null)}>
+        <DialogContent className="max-w-lg" data-testid="adj-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              Add Manual Adjustment {adjDialog?.slips?.length > 1 ? `(${adjDialog.slips.length} employees)` : ''}
+            </DialogTitle>
+          </DialogHeader>
+          {adjDialog && (
+            <div className="space-y-4">
+              <div className="text-xs bg-slate-50 rounded p-2 max-h-24 overflow-y-auto">
+                <div className="font-medium text-slate-600 mb-1">Employee(s):</div>
+                {adjDialog.slips.map((s) => (
+                  <div key={s.id} className="text-slate-500">{s.employee_name} <span className="text-[10px]">({s.employee?.custom_employee_id || '—'})</span></div>
+                ))}
+                <div className="mt-1 text-slate-500">Payroll Month: <b>{adjDialog.month}</b></div>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-500 block mb-1">Adjustment Type *</label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant={adjType === 'ADDITION' ? 'default' : 'outline'}
+                    onClick={() => setAdjType('ADDITION')}
+                    className={adjType === 'ADDITION' ? 'bg-emerald-600 hover:bg-emerald-700' : ''}
+                    data-testid="adj-type-addition"
+                  >
+                    <PlusCircle className="w-4 h-4 mr-1" /> Addition
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={adjType === 'DEDUCTION' ? 'default' : 'outline'}
+                    onClick={() => setAdjType('DEDUCTION')}
+                    className={adjType === 'DEDUCTION' ? 'bg-red-600 hover:bg-red-700' : ''}
+                    data-testid="adj-type-deduction"
+                  >
+                    <MinusCircle className="w-4 h-4 mr-1" /> Deduction
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-500">Amount (₹) *</label>
+                  <Input
+                    type="number" min="0" step="0.01" placeholder="e.g., 1000"
+                    value={adjAmount} onChange={(e) => setAdjAmount(e.target.value)}
+                    data-testid="adj-amount"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-500">Description / Reason *</label>
+                  <Input
+                    placeholder={adjType === 'ADDITION' ? 'e.g., Performance Incentive' : 'e.g., Advance Recovery'}
+                    value={adjDesc} onChange={(e) => setAdjDesc(e.target.value)}
+                    data-testid="adj-description"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-medium text-slate-500">Remarks (optional)</label>
+                <Input
+                  placeholder="Any internal note…"
+                  value={adjRemarks} onChange={(e) => setAdjRemarks(e.target.value)}
+                  data-testid="adj-remarks"
+                />
+              </div>
+
+              <div className="text-xs bg-amber-50 border border-amber-200 rounded p-2 text-amber-800">
+                A separate adjustment record is created per employee. Payslips will be recalculated immediately.
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={() => setAdjDialog(null)} data-testid="adj-cancel"><X className="w-4 h-4 mr-1" />Cancel</Button>
+                <Button onClick={submitAdjustment} disabled={adjSaving} data-testid="adj-save">
+                  {adjSaving ? 'Saving…' : 'Save Adjustment'}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ---------------- View Adjustments + History Dialog ---------------- */}
+      {viewAdjSlip && (
+        <AdjustmentsDialog
+          slip={viewAdjSlip}
+          headers={headers}
+          onClose={() => setViewAdjSlip(null)}
+          onRefresh={() => fetchSlips(genMonth)}
+        />
+      )}
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+//  Adjustments / History dialog
+// ---------------------------------------------------------------------------
+const AdjustmentsDialog = ({ slip, headers, onClose, onRefresh }) => {
+  const [rows, setRows] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editingId, setEditingId] = useState(null);
+  const [editAmount, setEditAmount] = useState('');
+  const [editDesc, setEditDesc] = useState('');
+  const isConfirmed = slip.status === 'confirmed';
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [a, h] = await Promise.all([
+        axios.get(`${API}/payslips/${slip.id}/adjustments`, { headers, params: { include_deleted: true } }),
+        axios.get(`${API}/payslips/${slip.id}/adjustments/history`, { headers }),
+      ]);
+      setRows(a.data || []);
+      setHistory(h.data || []);
+    } catch { toast.error('Failed to load adjustments'); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []); // eslint-disable-line
+
+  const saveEdit = async (adj) => {
+    const amt = Number(editAmount);
+    if (!amt || amt <= 0) { toast.error('Amount must be > 0'); return; }
+    if (!editDesc.trim()) { toast.error('Description required'); return; }
+    try {
+      await axios.patch(`${API}/payslips/adjustments/${adj.id}`, { amount: amt, description: editDesc.trim() }, { headers });
+      toast.success('Adjustment updated');
+      setEditingId(null);
+      await load();
+      onRefresh();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Update failed'); }
+  };
+
+  const removeAdj = async (adj) => {
+    if (!window.confirm(`Delete this ${adj.adjustment_type.toLowerCase()} of ₹${adj.amount}? History will be preserved.`)) return;
+    try {
+      await axios.delete(`${API}/payslips/adjustments/${adj.id}`, { headers });
+      toast.success('Adjustment deleted');
+      await load();
+      onRefresh();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Delete failed'); }
+  };
+
+  const active = rows.filter((r) => r.status === 'active');
+  const deleted = rows.filter((r) => r.status !== 'active');
+
+  return (
+    <Dialog open={true} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto" data-testid="adj-history-dialog">
+        <DialogHeader>
+          <DialogTitle>Adjustments — {slip.employee_name} · {slip.month}</DialogTitle>
+        </DialogHeader>
+
+        {isConfirmed && (
+          <div className="text-xs bg-amber-50 border border-amber-200 rounded p-2 text-amber-800">
+            This payslip is confirmed — editing and deletion are disabled. Unconfirm to make changes.
+          </div>
+        )}
+
+        <div className="space-y-4">
+          <div>
+            <div className="text-sm font-semibold text-slate-700 mb-2">Active Adjustments ({active.length})</div>
+            {loading ? <div className="text-xs text-slate-400">Loading…</div> :
+             active.length === 0 ? <div className="text-xs text-slate-400 italic">No active adjustments.</div> :
+             <div className="space-y-2">
+               {active.map((a) => (
+                 <div key={a.id} className="flex items-center gap-2 border rounded-lg p-2 bg-white" data-testid={`adj-row-${a.id}`}>
+                   <Badge className={a.adjustment_type === 'ADDITION' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'}>
+                     {a.adjustment_type === 'ADDITION' ? <PlusCircle className="w-3 h-3 mr-1" /> : <MinusCircle className="w-3 h-3 mr-1" />}
+                     {a.adjustment_type}
+                   </Badge>
+                   {editingId === a.id ? (
+                     <>
+                       <Input type="number" min="0" className="w-28" value={editAmount} onChange={(e) => setEditAmount(e.target.value)} />
+                       <Input className="flex-1" value={editDesc} onChange={(e) => setEditDesc(e.target.value)} />
+                       <Button size="sm" onClick={() => saveEdit(a)}><CheckCircle2 className="w-3.5 h-3.5" /></Button>
+                       <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}><X className="w-3.5 h-3.5" /></Button>
+                     </>
+                   ) : (
+                     <>
+                       <div className="text-sm font-semibold w-28">₹{Number(a.amount).toLocaleString('en-IN')}</div>
+                       <div className="flex-1 min-w-0">
+                         <div className="text-sm text-slate-800 truncate">{a.description}</div>
+                         {a.remarks && <div className="text-[10px] text-slate-400 truncate">{a.remarks}</div>}
+                         <div className="text-[10px] text-slate-400">by {a.created_by} · {a.created_at?.slice(0, 16).replace('T', ' ')}</div>
+                       </div>
+                       <Button size="sm" variant="ghost" disabled={isConfirmed}
+                         onClick={() => { setEditingId(a.id); setEditAmount(String(a.amount)); setEditDesc(a.description || ''); }}
+                         data-testid={`adj-edit-${a.id}`}
+                       ><Pencil className="w-3.5 h-3.5" /></Button>
+                       <Button size="sm" variant="ghost" className="text-red-500" disabled={isConfirmed} onClick={() => removeAdj(a)} data-testid={`adj-delete-${a.id}`}>
+                         <Trash2 className="w-3.5 h-3.5" />
+                       </Button>
+                     </>
+                   )}
+                 </div>
+               ))}
+             </div>
+            }
+          </div>
+
+          {deleted.length > 0 && (
+            <div>
+              <div className="text-sm font-semibold text-slate-500 mb-2">Deleted / Inactive ({deleted.length})</div>
+              <div className="space-y-1">
+                {deleted.map((a) => (
+                  <div key={a.id} className="flex items-center gap-2 border rounded p-2 bg-slate-50 opacity-70">
+                    <Badge variant="outline">{a.adjustment_type}</Badge>
+                    <span className="text-sm line-through">₹{Number(a.amount).toLocaleString('en-IN')} — {a.description}</span>
+                    <span className="text-[10px] text-slate-400 ml-auto">deleted by {a.deleted_by}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div>
+            <div className="text-sm font-semibold text-slate-700 mb-2 flex items-center gap-1"><History className="w-3.5 h-3.5" /> Change History ({history.length})</div>
+            {history.length === 0 ? <div className="text-xs text-slate-400 italic">No history yet.</div> :
+             <div className="text-xs space-y-1 max-h-60 overflow-y-auto">
+               {history.map((h) => (
+                 <div key={h.id} className="border-l-2 border-slate-200 pl-2 py-1">
+                   <div className="text-slate-500">
+                     <b>{h.action.toUpperCase()}</b> · by {h.actor} · {h.at?.slice(0, 16).replace('T', ' ')}
+                   </div>
+                   {h.action === 'updated' && (
+                     <div className="text-slate-700">
+                       Amount: ₹{h.old_amount} → <b>₹{h.new_amount}</b>
+                       {h.old_description !== h.new_description && <div>Desc: &quot;{h.old_description}&quot; → &quot;{h.new_description}&quot;</div>}
+                     </div>
+                   )}
+                   {h.action === 'created' && <div className="text-emerald-700">Amount: ₹{h.new_amount} · {h.new_description}</div>}
+                   {h.action === 'deleted' && <div className="text-red-600">Removed: ₹{h.old_amount} · {h.old_description}</div>}
+                 </div>
+               ))}
+             </div>
+            }
+          </div>
+        </div>
+
+        <div className="flex justify-end mt-4">
+          <Button variant="outline" onClick={onClose}>Close</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+};
