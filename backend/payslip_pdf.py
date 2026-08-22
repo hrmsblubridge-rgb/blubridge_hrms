@@ -11,6 +11,21 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT, TA_LEFT
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 
+
+def _fmt_dmy(v):
+    """Format any ISO / date-like value as DD-MM-YYYY. Empty → '-'."""
+    if not v:
+        return "-"
+    s = str(v)
+    # Fast path: ISO YYYY-MM-DD prefix
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        return f"{s[8:10]}-{s[5:7]}-{s[0:4]}"
+    try:
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return d.strftime("%d-%m-%Y")
+    except Exception:
+        return s
+
 _LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "public", "logo.png")
 _LOGO_PATH = os.path.normpath(_LOGO_PATH)
 
@@ -142,7 +157,7 @@ def build_payslip_pdf(slip: dict) -> bytes:
         Paragraph(emp.get("full_name") or "-", hdr_cell),
         Paragraph(f"Code: {emp.get('custom_employee_id') or '-'}", hdr_cell),
         Paragraph(f"Desg: {emp.get('designation') or '-'}", hdr_cell),
-        Paragraph(f"DOJ: {emp.get('date_of_joining') or '-'}", hdr_cell),
+        Paragraph(f"DOJ: {_fmt_dmy(emp.get('date_of_joining'))}", hdr_cell),
     ]
     def _fmt_days(d):
         try:
