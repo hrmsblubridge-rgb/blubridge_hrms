@@ -63,11 +63,15 @@ def _valid_email(email: str) -> bool:
 
 
 def _default_login_url() -> str:
-    return (
-        os.environ.get("FRONTEND_URL")
-        or os.environ.get("REACT_APP_BACKEND_URL")
-        or "https://hrms.blubridge.ai"
-    )
+    """Resolve the credential-email login button URL via the shared
+    email_service.absolute_url so it stays in sync with every other outgoing
+    HRMS email (single source of truth = FRONTEND_BASE_URL / FRONTEND_URL,
+    with `https://blubrg.com` as the safe fallback)."""
+    try:
+        from email_service import absolute_url
+        return absolute_url("/login")
+    except Exception:
+        return "https://blubrg.com/login"
 
 
 def _build_welcome_html(name: str, emp_id: str, username: str, password: str, login_url: str) -> str:

@@ -38,11 +38,9 @@ const ForgotPassword = () => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#f5f3ee] px-4" data-testid="forgot-password-page">
       <div className="w-full max-w-[440px]">
-        <div className="text-center mb-8">
-          <h1 className="text-2xl font-bold tracking-[3px] text-[#0f1d3d]" style={{ fontFamily: 'Outfit' }}>
-            BLU<span className="text-[#f59e0b]">B</span>RIDGE
-          </h1>
-          <p className="text-xs text-[#9ca3af] tracking-[2px] mt-1">HRMS PLATFORM</p>
+        {/* Logo — matches the Login page exactly (same asset, same sizing) */}
+        <div className="flex justify-center mb-8">
+          <img src="/logo-black.png" alt="BluBridge" className="w-auto" />
         </div>
 
         <div className="bg-[#fffdf7] rounded-2xl shadow-xl p-8 sm:p-10">

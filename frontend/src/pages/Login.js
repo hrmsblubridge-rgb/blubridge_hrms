@@ -165,12 +165,17 @@ const Login = () => {
                   placeholder="Enter your password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="pl-11 pr-11 h-[52px] bg-[#f5f5f3] border-0 rounded-xl text-[15px] placeholder:text-[#9ca3af] focus:bg-white focus:ring-2 focus:ring-[#063c88]/20 transition-all"
+                  className="pl-11 pr-11 h-[52px] bg-[#f5f5f3] border-0 rounded-xl text-[15px] placeholder:text-[#9ca3af] focus:bg-white focus:ring-2 focus:ring-[#063c88]/20 transition-all [&::-ms-reveal]:hidden [&::-ms-clear]:hidden"
                   data-testid="password-input"
                 />
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
+                  tabIndex={-1}
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  aria-pressed={showPassword}
+                  data-testid="toggle-password-visibility"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setShowPassword((v) => !v)}
                   className="absolute right-4 top-1/2 -translate-y-1/2 text-[#9ca3af] hover:text-[#6b7280] transition-colors"
                 >
                   {showPassword ? <EyeOff className="w-[18px] h-[18px]" /> : <Eye className="w-[18px] h-[18px]" />}
