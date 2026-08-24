@@ -66,28 +66,15 @@ const AvatarUploader = ({
     const localUrl = URL.createObjectURL(file);
     setPreview(localUrl);
     setBusy(true);
-    let uploadFile = file;
     try {
-      // 0) STRICT: force a solid #FFFFFF background on every profile photo
-      // (client-side ML) — see /lib/whitenBackground.
-      try {
-        const { whitenBackground } = await import('../lib/whitenBackground');
-        uploadFile = await whitenBackground(file);
-      } catch (bgErr) {
-        console.error('Background whitening failed:', bgErr);
-        toast.error('Could not standardize the photo background. Please try a clearer image.');
-        setBusy(false);
-        setPreview(employee?.avatar || null);
-        return;
-      }
-
       // 1) Cloudinary signature
       const sigResp = await axios.get(`${API}/cloudinary/signature?folder=avatars`, { headers: authHeader });
       const { signature, timestamp, cloud_name, api_key, folder, type } = sigResp.data;
 
-      // 2) Upload to Cloudinary
+      // 2) Upload ORIGINAL to Cloudinary. Background whitening happens on
+      //    delivery via `e_background_removal,b_rgb:ffffff` (pixel-verified).
       const fd = new FormData();
-      fd.append('file', uploadFile);
+      fd.append('file', file);
       fd.append('signature', signature);
       fd.append('timestamp', timestamp);
       fd.append('api_key', api_key);
@@ -101,9 +88,8 @@ const AvatarUploader = ({
       const fullUrl = cloudResp.data.secure_url;
       const publicId = cloudResp.data.public_id;
 
-      // STRICT #FFFFFF background: ML cut-out (client) + Cloudinary AI
-      // background removal + solid white underlay (three redundant layers
-      // so no coloured background can ever slip through).
+      // STRICT #FFFFFF background: Cloudinary AI bg removal + solid white
+      // underlay + face-aware 512×512 crop + auto quality/format.
       const transformed = fullUrl.includes('/upload/')
         ? fullUrl.replace('/upload/', '/upload/e_background_removal,b_rgb:ffffff,c_fill,g_face,w_512,h_512,q_auto,f_auto/')
         : fullUrl;
