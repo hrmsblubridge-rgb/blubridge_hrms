@@ -101,11 +101,11 @@ const AvatarUploader = ({
       const fullUrl = cloudResp.data.secure_url;
       const publicId = cloudResp.data.public_id;
 
-      // Auto-resize via Cloudinary URL transformation (512x512, smart-crop on faces, web-optimized).
-      // Insert transformation segment right after `/upload/`. `b_rgb:ffffff`
-      // is a second belt-and-braces guard against any residual transparency.
+      // STRICT #FFFFFF background: ML cut-out (client) + Cloudinary AI
+      // background removal + solid white underlay (three redundant layers
+      // so no coloured background can ever slip through).
       const transformed = fullUrl.includes('/upload/')
-        ? fullUrl.replace('/upload/', '/upload/c_fill,g_face,w_512,h_512,b_rgb:ffffff,q_auto,f_auto/')
+        ? fullUrl.replace('/upload/', '/upload/e_background_removal,b_rgb:ffffff,c_fill,g_face,w_512,h_512,q_auto,f_auto/')
         : fullUrl;
 
       // 3) Persist on backend

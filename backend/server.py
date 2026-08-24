@@ -19102,6 +19102,12 @@ try:
 except Exception as _e:
     print(f"Credential email module load failed: {_e}")
 
+# Avatar white-background retro-fit (admin bulk endpoint)
+try:
+    import avatar_bg_whiten  # noqa: F401
+except Exception as _e:
+    print(f"Avatar bg-whiten load failed: {_e}")
+
 # Module Visibility Control — admin toggles employee sidebar modules ON/OFF
 try:
     import module_visibility  # noqa: F401  (registers routes via api_router import)

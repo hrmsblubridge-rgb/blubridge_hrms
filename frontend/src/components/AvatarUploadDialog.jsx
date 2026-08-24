@@ -202,10 +202,12 @@ const AvatarUploadDialog = ({ employee, open, onClose, onUpdated, token }) => {
       );
       const fullUrl = cloudResp.data.secure_url;
       const publicId = cloudResp.data.public_id;
-      // Second safety net: b_rgb:ffffff underlays any residual transparency
-      // with white on the CDN side. Belt-and-braces.
+      // STRICT #FFFFFF background — three layers:
+      //   1) client-side ML cut-out & composite (`whitenBackground`)
+      //   2) Cloudinary `e_background_removal` on delivery (belt)
+      //   3) `b_rgb:ffffff` underlay (braces)
       const transformed = fullUrl.includes('/upload/')
-        ? fullUrl.replace('/upload/', '/upload/c_fill,g_face,w_512,h_512,b_rgb:ffffff,q_auto,f_auto/')
+        ? fullUrl.replace('/upload/', '/upload/e_background_removal,b_rgb:ffffff,c_fill,g_face,w_512,h_512,q_auto,f_auto/')
         : fullUrl;
       setProgress(95);
 
