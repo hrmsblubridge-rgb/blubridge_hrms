@@ -32,6 +32,7 @@ import {
 import EmployeeAvatar from './EmployeeAvatar';
 import { Button } from './ui/button';
 import { useAuth } from '../contexts/AuthContext';
+import { whitenBackground } from '../lib/whitenBackground';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -151,8 +152,28 @@ const AvatarUploadDialog = ({ employee, open, onClose, onUpdated, token }) => {
   const handleSave = async () => {
     if (!pendingFile || !employee?.id) return;
     setBusy(true);
-    setProgress(5);
+    setProgress(2);
+    let uploadFile = pendingFile;
     try {
+      // 0) STRICT: force a solid #FFFFFF background on every profile photo.
+      // Runs entirely in the browser via @imgly/background-removal —
+      // no coloured/patterned backgrounds can slip through to Cloudinary.
+      try {
+        uploadFile = await whitenBackground(pendingFile, {
+          onProgress: (_key, cur, total) => {
+            // Map ML progress (0..1) into 2..14% of the overall bar
+            const pct = 2 + Math.round((cur / total) * 12);
+            setProgress(pct);
+          },
+        });
+      } catch (bgErr) {
+        console.error('Background whitening failed:', bgErr);
+        toast.error('Could not standardize the photo background. Please try a clearer image.');
+        setBusy(false);
+        setProgress(0);
+        return;
+      }
+
       // 1) Cloudinary signature
       const sigResp = await axios.get(`${API}/cloudinary/signature?folder=avatars`, { headers: authHeader });
       const { signature, timestamp, cloud_name, api_key, folder, type } = sigResp.data;
@@ -160,7 +181,7 @@ const AvatarUploadDialog = ({ employee, open, onClose, onUpdated, token }) => {
 
       // 2) Upload to Cloudinary with progress
       const fd = new FormData();
-      fd.append('file', pendingFile);
+      fd.append('file', uploadFile);
       fd.append('signature', signature);
       fd.append('timestamp', timestamp);
       fd.append('api_key', api_key);
@@ -181,8 +202,10 @@ const AvatarUploadDialog = ({ employee, open, onClose, onUpdated, token }) => {
       );
       const fullUrl = cloudResp.data.secure_url;
       const publicId = cloudResp.data.public_id;
+      // Second safety net: b_rgb:ffffff underlays any residual transparency
+      // with white on the CDN side. Belt-and-braces.
       const transformed = fullUrl.includes('/upload/')
-        ? fullUrl.replace('/upload/', '/upload/c_fill,g_face,w_512,h_512,q_auto,f_auto/')
+        ? fullUrl.replace('/upload/', '/upload/c_fill,g_face,w_512,h_512,b_rgb:ffffff,q_auto,f_auto/')
         : fullUrl;
       setProgress(95);
 

@@ -66,14 +66,28 @@ const AvatarUploader = ({
     const localUrl = URL.createObjectURL(file);
     setPreview(localUrl);
     setBusy(true);
+    let uploadFile = file;
     try {
+      // 0) STRICT: force a solid #FFFFFF background on every profile photo
+      // (client-side ML) — see /lib/whitenBackground.
+      try {
+        const { whitenBackground } = await import('../lib/whitenBackground');
+        uploadFile = await whitenBackground(file);
+      } catch (bgErr) {
+        console.error('Background whitening failed:', bgErr);
+        toast.error('Could not standardize the photo background. Please try a clearer image.');
+        setBusy(false);
+        setPreview(employee?.avatar || null);
+        return;
+      }
+
       // 1) Cloudinary signature
       const sigResp = await axios.get(`${API}/cloudinary/signature?folder=avatars`, { headers: authHeader });
       const { signature, timestamp, cloud_name, api_key, folder, type } = sigResp.data;
 
       // 2) Upload to Cloudinary
       const fd = new FormData();
-      fd.append('file', file);
+      fd.append('file', uploadFile);
       fd.append('signature', signature);
       fd.append('timestamp', timestamp);
       fd.append('api_key', api_key);
@@ -88,9 +102,10 @@ const AvatarUploader = ({
       const publicId = cloudResp.data.public_id;
 
       // Auto-resize via Cloudinary URL transformation (512x512, smart-crop on faces, web-optimized).
-      // Insert transformation segment right after `/upload/`.
+      // Insert transformation segment right after `/upload/`. `b_rgb:ffffff`
+      // is a second belt-and-braces guard against any residual transparency.
       const transformed = fullUrl.includes('/upload/')
-        ? fullUrl.replace('/upload/', '/upload/c_fill,g_face,w_512,h_512,q_auto,f_auto/')
+        ? fullUrl.replace('/upload/', '/upload/c_fill,g_face,w_512,h_512,b_rgb:ffffff,q_auto,f_auto/')
         : fullUrl;
 
       // 3) Persist on backend
