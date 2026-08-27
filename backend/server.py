@@ -2426,9 +2426,12 @@ def _leave_code_for_status(leave_type: str, leave_split: str) -> str:
         # Optional Holiday — single code regardless of split
         return "OH"
     if lt.startswith("paid"):
-        return "PP" if is_half else "PA"
+        # HR update 2026-08-24: half-day Paid Leave now surfaces as PH
+        # (previously PP). PA / PH are the ONLY paid-leave codes displayed
+        # in the payroll grid — see Section 6A / 6B mappings.
+        return "PH" if is_half else "PA"
     # Everything else → Paid Leave bucket
-    return "PP" if is_half else "PA"
+    return "PH" if is_half else "PA"
 
 
 # ============== PAID LEAVE BALANCE HELPERS ==============
@@ -3080,7 +3083,14 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                         lop += 0.5
                         detail["lop_value"] = 0.5
                 else:
-                    detail["status"] = "P"
+                    # Approved without LOP. HR fix 2026-08-24: an approved
+                    # Paid Leave day must display PA (full) / PH (half),
+                    # NOT the generic "P" that all other non-LOP approved
+                    # leaves still use.
+                    if _is_paid_leave_type(leave.get("leave_type")):
+                        detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
+                    else:
+                        detail["status"] = "P"
             elif ls == "pending":
                 if split == "Full Day":
                     lop += 1
@@ -3113,8 +3123,13 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
 
             if split in ("First Half", "Second Half"):
                 if is_lop_flag is not True:
-                    # Approved Without LOP half-day + worked the other half → present
-                    detail["status"] = "P"
+                    # Approved Without LOP half-day + worked the other half → present.
+                    # HR fix 2026-08-24: for approved Paid Leave surface PH,
+                    # every other non-LOP half-day keeps the existing "P".
+                    if _is_paid_leave_type(leave.get("leave_type")):
+                        detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
+                    else:
+                        detail["status"] = "P"
                 else:
                     # Approved With LOP half-day → display the half leave code
                     # (PH/SH/EH/PP…); the 0.5 LOP is applied internally only.
@@ -3131,8 +3146,13 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     lop += 1
                     detail["lop_value"] = 1
                 else:
-                    # Approved Without LOP → fully payable day → display "P"
-                    detail["status"] = "P"
+                    # Approved Without LOP → fully payable day → display "P".
+                    # HR fix 2026-08-24: an approved Paid Leave full-day
+                    # surfaces PA; every other non-LOP leave keeps "P".
+                    if _is_paid_leave_type(leave.get("leave_type")):
+                        detail["status"] = _leave_code_for_status(leave.get("leave_type"), "Full Day")
+                    else:
+                        detail["status"] = "P"
 
             attendance_details.append(detail)
             continue
