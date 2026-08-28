@@ -40,7 +40,7 @@ class TestEmployeeDeactivation:
         if self.test_employee_id:
             try:
                 self.session.put(f"{BASE_URL}/api/employees/{self.test_employee_id}/restore")
-            except:
+            except Exception:
                 pass
     
     def test_01_login_success(self):

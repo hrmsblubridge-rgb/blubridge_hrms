@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File as FastAPIFile, Body, Request, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, UploadFile, File as FastAPIFile, Body, Request, BackgroundTasks
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
@@ -2068,7 +2068,7 @@ def parse_time_12h_to_24h(time_str: str) -> str:
             dt = datetime.strptime(time_str.replace(' ', ''), "%I:%M%p")
             return dt.strftime("%H:%M")
         return time_str  # Already in 24h format
-    except:
+    except Exception:
         return None
 
 def parse_time_24h_to_minutes(time_str: str) -> int:
@@ -2078,7 +2078,7 @@ def parse_time_24h_to_minutes(time_str: str) -> int:
     try:
         hours, minutes = map(int, time_str.split(':'))
         return hours * 60 + minutes
-    except:
+    except Exception:
         return None
 
 def minutes_to_time_24h(minutes: int) -> str:
@@ -2408,9 +2408,9 @@ def _leave_code_for_status(leave_type: str, leave_split: str) -> str:
         Sick          Full → SF | Half → SH
         Emergency     Full → EF | Half → EH
         Optional      Any  → OH        (Optional Holiday — no half/full split)
-        Paid Leave    Full → PA | Half → PP
+        Paid Leave    Full → PA | Half → PH
         Casual / Earned / Annual / Maternity / Paternity / Bereavement /
-        General Leave Full → PA | Half → PP   (Paid Leave bucket)
+        General Leave Full → PA | Half → PH   (Paid Leave bucket)
     """
     lt = (leave_type or "").strip().lower()
     is_half = (leave_split or "").strip().lower() in (
@@ -5205,7 +5205,7 @@ async def bulk_import_employees(
         
         try:
             monthly_salary = float(monthly_salary) if monthly_salary else 0.0
-        except:
+        except Exception:
             monthly_salary = 0.0
         
         # Validate required fields
@@ -6501,11 +6501,22 @@ async def update_employee_avatar(employee_id: str, data: AvatarUpdate, current_u
         except Exception as e:
             logger.warning(f"Failed to delete old avatar: {e}")
 
+    # Light/white shirts blend into the enforced #FFFFFF backdrop — recolour
+    # them navy via Cloudinary Generative AI (new uploads only).
+    final_avatar_url = data.avatar_url
+    shirt_recolored = False
+    if data.avatar_url:
+        from avatar_shirt_recolor import maybe_recolor_shirt
+        final_avatar_url, shirt_recolored = await asyncio.to_thread(
+            maybe_recolor_shirt, data.avatar_url
+        )
+
     await db.employees.update_one(
         {"id": employee_id},
         {"$set": {
-            "avatar": data.avatar_url,
+            "avatar": final_avatar_url,
             "avatar_public_id": data.avatar_public_id,
+            "avatar_shirt_recolored": shirt_recolored,
             "updated_at": get_ist_now().isoformat()
         }}
     )
@@ -6514,10 +6525,11 @@ async def update_employee_avatar(employee_id: str, data: AvatarUpdate, current_u
     # Audit log: capture both previous and new image URLs so HR can trace
     # who replaced/removed which photo (regulatory ask from 2026-05-20).
     prev_url = existing.get("avatar") or "(none)"
-    new_url = data.avatar_url or "(removed)"
+    new_url = final_avatar_url or "(removed)"
     audit_detail = (
         f"Avatar updated by {actor} | employee={existing.get('full_name','?')} "
         f"| previous={prev_url} | updated={new_url}"
+        + (" | light shirt auto-recoloured navy" if shirt_recolored else "")
     )
     await log_audit(current_user["id"], "update_avatar", "employee", employee_id, audit_detail)
 
@@ -6834,7 +6846,7 @@ async def validate_profile_upload_token(token: str):
 
 
 @api_router.post("/profile-upload/redeem")
-async def redeem_profile_upload_token(body: dict):
+async def redeem_profile_upload_token(body: dict, http_request: Request = None):
     """Single-use redemption: validates the token, marks it consumed, and
     returns a short-lived auth token + the employee profile so the
     frontend can drop the user straight onto the upload page."""
@@ -6869,14 +6881,9 @@ async def redeem_profile_upload_token(body: dict):
         {"$set": {"used_at": get_ist_now().isoformat()}},
     )
 
-    # Issue a normal auth token (short-lived) the frontend can use as Bearer.
-    jwt_payload = {
-        "user_id": user["id"],
-        "username": user.get("username"),
-        "role": user.get("role"),
-        "exp": datetime.utcnow() + timedelta(hours=2),
-    }
-    auth_token = jwt.encode(jwt_payload, JWT_SECRET, algorithm="HS256")
+    # Issue a proper server-side session (access + refresh token) the frontend
+    # can use as Bearer and auto-refresh, matching the standard login flow.
+    auth_token, refresh_token = await create_auth_session(user, http_request)
 
     # Fetch employee row (for avatar etc.)
     emp = await db.employees.find_one({"id": user.get("employee_id")}, {"_id": 0})
@@ -7102,7 +7109,7 @@ async def get_attendance(
         try:
             parts = ds.split("-")
             return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
-        except:
+        except Exception:
             return 0
 
     if from_date and to_date:
@@ -7262,7 +7269,7 @@ async def get_attendance(
         try:
             parts = a.get("date", "01-01-1970").split("-")
             return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
-        except:
+        except Exception:
             return 0
     
     attendance.sort(key=date_sort_key, reverse=True)
@@ -8148,7 +8155,7 @@ async def get_attendance_stats(
         try:
             parts = ds.split("-")
             return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
-        except:
+        except Exception:
             return 0
     
     # Build an indexed query for date range by enumerating valid DD-MM-YYYY
@@ -12544,7 +12551,7 @@ async def get_employee_dashboard(current_user: dict = Depends(get_current_user))
                     # Check if late (after 10 AM)
                     if hour > late_threshold_hour or (hour == late_threshold_hour and minute > late_threshold_minute):
                         is_late_login = True
-            except:
+            except Exception:
                 pass
         
         # Count based on status
@@ -12716,7 +12723,7 @@ async def employee_clock_out(current_user: dict = Depends(get_current_user)):
         hours = diff.seconds // 3600
         minutes = (diff.seconds % 3600) // 60
         total_hours = f"{hours}h {minutes}m"
-    except:
+    except Exception:
         total_hours = None
     
     # Determine status (Early Out if before 6:00 PM)
@@ -12958,7 +12965,7 @@ async def get_employee_leaves(current_user: dict = Depends(get_current_user)):
             try:
                 dt = datetime.strptime(leave["start_date"], "%Y-%m-%d")
                 leave_data["display_date"] = dt.strftime("%d-%m-%Y")
-            except:
+            except Exception:
                 leave_data["display_date"] = leave["start_date"]
         
         if leave.get("start_date", "") >= today_str:
@@ -14140,7 +14147,7 @@ async def get_issue_ticket_stats(current_user: dict = Depends(get_current_user))
                 created = datetime.fromisoformat(ticket["created_at"].replace("Z", "+00:00")) if isinstance(ticket["created_at"], str) else ticket["created_at"]
                 resolved = datetime.fromisoformat(ticket["resolved_at"].replace("Z", "+00:00")) if isinstance(ticket["resolved_at"], str) else ticket["resolved_at"]
                 total_hours += (resolved - created).total_seconds() / 3600
-            except:
+            except Exception:
                 pass
         avg_resolution_hours = round(total_hours / len(resolved_tickets), 1) if resolved_tickets else None
     

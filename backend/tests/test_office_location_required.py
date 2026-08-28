@@ -195,7 +195,6 @@ class TestReactivateBranchOfficeLocation:
         To exercise the reactivate branch we flip is_deleted=True directly
         in Mongo, then POST with the same email.
         """
-        import os
         from pymongo import MongoClient
         mongo_url = os.environ.get("MONGO_URL") or \
             open("/app/backend/.env").read().split('MONGO_URL="')[1].split('"')[0]

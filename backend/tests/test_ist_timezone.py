@@ -258,7 +258,7 @@ class TestISTTimezone:
                             print(f"      {emp.get('full_name')}: created_at = {created_at}")
                         else:
                             print(f"      {emp.get('full_name')}: created_at = {created_at} (no tz)")
-                    except:
+                    except Exception:
                         print(f"      {emp.get('full_name')}: created_at = {created_at} (parse error)")
         
         print(f"PASS: Verified created_at timestamps on {len(employees)} employees")

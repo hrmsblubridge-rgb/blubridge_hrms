@@ -316,7 +316,7 @@ class TestGetAttendanceSortOrder:
             try:
                 parts = date_str.split("-")
                 return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
-            except:
+            except Exception:
                 return 0
         
         prev_date_num = float('inf')

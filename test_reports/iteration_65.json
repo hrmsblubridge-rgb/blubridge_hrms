@@ -1,0 +1,34 @@
+{
+  "summary": "Verified the Paid Leave payroll grid code fix (bug: approved Paid Leave day was showing 'P' instead of 'PA'/'PH'). Wrote 14 pytest cases covering (a) the _leave_code_for_status helper mapping — direct import — for Paid/Pre-Planned/Sick/Emergency/Optional/unknown types × Full/Half splits, (b) end-to-end via POST /api/leaves (auto_approve) + GET /api/payroll/{employee_id}?month=YYYY-MM verifying the day's status is 'PA' for Full Day Paid Leave and 'PH' for First Half Paid Leave, and (c) regression check that /api/payroll still returns valid payable-days for employees with no leave. All 14 tests PASSED. The fix is verified WORKING.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/leaves", "issue": "No DELETE endpoint exists — tests had to use direct Mongo cleanup for leave rows created during integration tests."},
+      {"endpoint": "/api/auth/login", "issue": "Intermittent 502 / >30s cold latency at the public ingress observed once during this run; retry-with-backoff added to the fixture."},
+      {"endpoint": "GET /api/payroll response `attendance_details[].date`", "issue": "Uses locale-dependent `DD-MM-YYYY` string. Consider standardising to ISO `YYYY-MM-DD` (an ISO regex is already used for internal Mongo queries in server.py:2824-2837)."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_paid_leave_grid_codes.py",
+    "/app/test_reports/pytest/paid_leave_grid_codes.xml"
+  ],
+  "action_items": [
+    "No action required — the Paid Leave PA/PH mapping is verified working end-to-end."
+  ],
+  "critical_code_review_comments": [
+    "server.py:2401 _leave_code_for_status — docstring at line 2411 still says 'Paid Leave Full → PA | Half → PP' but the implementation at line 2432 correctly returns 'PH' for half-day paid leave (HR update 2026-08-24). The docstring is now stale; recommend updating the comment for future readers. Also the _present_codes/_leave_codes tuples at server.py:3303-3304 still contain the legacy 'PP' code — safe (backward compat) but slightly confusing.",
+    "server.py:12137 GET /api/payroll — day rows use DD-MM-YYYY dates (`day.strftime('%d-%m-%Y')` somewhere upstream). Frontend + integration consumers must parse this format specifically; consider adopting ISO for consistency with everything else.",
+    "server.py is 19,530 lines — extremely difficult to review. Modularisation into per-feature routers (payroll, leaves, employees, auth, etc.) is overdue but explicitly out of scope for this task."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_paid_leave_grid_codes.py (new)"
+  ],
+  "success_rate": {"backend": "100% (14/14)", "frontend": "not tested (skip per request)"},
+  "test_credentials": "admin / HrAdmin786$ — used as-is; NOT modified (per pinned mandate)",
+  "seed_data_creation": "Two Paid Leave rows were auto-approved for a randomly picked eligible employee during e2e tests; all rows deleted from Mongo after each test (verified 0 remaining TEST_ leaves).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "The pytest suite at /app/backend/tests/test_paid_leave_grid_codes.py is a reusable regression harness for the payroll leave-code mapping. It (1) imports _leave_code_for_status directly from server.py for unit tests, (2) picks a random confirmed non-intern employee with paid-leave balance ≥ 1 who joined before the current month via /api/employees + /api/admin/employees/{id}/paid-leave-balance, (3) POSTs an auto-approved Paid Leave via /api/leaves for a past free workday, (4) GETs /api/payroll/{emp}?month=YYYY-MM and asserts the day's status is exactly 'PA' or 'PH', and (5) direct-cleans-up via Mongo (no DELETE endpoint exists for leaves). Public URL is used (REACT_APP_BACKEND_URL). Login fixture has retry-with-backoff (up to 4 attempts) because the ingress sometimes returns 502 on cold starts.",
+  "rca of the issue": "Original bug: approved Paid Leave days were displaying 'P' in the Attendance View grid because the branches at server.py:3090-3093 (leave without attendance) and 3129-3132 / 3152-3155 (leave with attendance, Without-LOP) fell through to a generic `detail['status'] = 'P'`. Fix (already applied before this iteration) branched on _is_paid_leave_type() and invoked _leave_code_for_status(leave_type, split), which returns 'PA'/'PH' for the Paid Leave bucket. This iteration verified (a) the helper's mapping unit-level, (b) that the payroll endpoint now surfaces 'PA'/'PH' end-to-end for Full/Half day Paid Leave, and (c) that adding 'PA'/'PH' to _present_codes/_leave_codes tuples (server.py:3303-3304) does not regress payable-days for employees with no leave. All good."
+}
