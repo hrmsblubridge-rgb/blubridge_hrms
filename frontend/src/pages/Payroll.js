@@ -168,7 +168,7 @@ const Payroll = () => {
           const detail = emp.attendance_details?.find(a => a.date === day.date);
           return getStatusDisplay(detail?.status, detail?.is_lop).code;
         });
-        return [i + 1, emp.emp_id, emp.emp_name, emp.shift_type, ...dayStatuses, emp.total_days, emp.working_days, emp.weekoff_pay, emp.extra_pay, emp.oh_pay, emp.lop, emp.final_payable_days];
+        return [i + 1, emp.emp_id, emp.emp_name, emp.shift_type, ...dayStatuses, emp.total_days, emp.working_days, emp.weekoff_pay, emp.extra_pay, (emp.holiday_pay || 0) + (emp.oh_pay || 0), emp.lop, emp.final_payable_days];
       });
       filename = `payroll-attendance-${selectedMonth}.csv`;
     } else {
@@ -392,7 +392,7 @@ const Payroll = () => {
                         <td className="px-3 py-2 text-center text-sm font-medium text-blue-600 bg-blue-50">{emp.working_days}</td>
                         <td className="px-3 py-2 text-center text-sm font-medium text-indigo-600 bg-indigo-50">{emp.weekoff_pay}</td>
                         <td className="px-3 py-2 text-center text-sm font-medium text-teal-600 bg-teal-50">{emp.extra_pay}</td>
-                        <td className="px-3 py-2 text-center text-sm font-medium text-cyan-600 bg-cyan-50">{emp.oh_pay > 0 ? emp.oh_pay : <span className="text-slate-400">0</span>}</td>
+                        <td className="px-3 py-2 text-center text-sm font-medium text-cyan-600 bg-cyan-50">{((emp.holiday_pay || 0) + (emp.oh_pay || 0)) > 0 ? (emp.holiday_pay || 0) + (emp.oh_pay || 0) : <span className="text-slate-400">0</span>}</td>
                         <td className="px-3 py-2 text-center text-sm font-semibold text-red-600 bg-red-50">{emp.lop > 0 ? emp.lop : <span className="text-slate-400">0</span>}</td>
                         <td className="px-3 py-2 text-center text-sm font-bold text-emerald-700 bg-emerald-100">{emp.final_payable_days}</td>
                       </tr>
@@ -503,7 +503,8 @@ const Payroll = () => {
               <li><strong>Late Coming (LC):</strong> Unapproved late = LOP 0.5 day</li>
               <li><strong>Half Day (PH):</strong> Less than full hours = LOP 0.5 day</li>
               <li><strong>Absent (A):</strong> No attendance = LOP 1 day</li>
-              <li><strong>Formula:</strong> Payable Days = Working Days + Weekoff Pay + Extra Pay + Holiday Pay - LOP</li>
+              <li><strong>Formula:</strong> Payable Days = Working Days + Weekoff Pay + Holiday Pay - LOP (Extra Pay for week-off work is paid separately)</li>
+              <li><strong>Worked Holiday:</strong> Full day (FD) = +1.0 payable day, Half day (HD) = +0.5 payable day</li>
             </ul>
           </div>
         </TabsContent>
