@@ -36,8 +36,8 @@
 > and it will now persist forever (across restarts, deploys, test runs).
 
 ## Employee Accounts
-- **Vigilance Employee 1 (WORKING)**: `madhan.s` / `Vigil@123` — Madhan S, designation=Vigilance. Re-synced to `Vigil@123` on 2026-06-06 (drifts frequently; data-level reset via SHA256 hash_password, method=agent_test_resync).
-- **Vigilance Employee 2 (WORKING)**: `dinesh.t` / `Vigil@123` — Dinesh T, designation=Vigilance. Re-synced to `Vigil@123` on 2026-06-06 (same note).
+- **Vigilance Employee 1 (WORKING)**: `madhan.s` / `Vigil@123` — Madhan S, designation=Vigilance. Re-synced to `Vigil@123` on 2026-06-09 (drifts frequently; data-level reset via SHA256 hash_password, method=agent_rbac_test_resync). USED BY /app/backend/tests/test_rbac_isolation.py as 'Employee B'.
+- **Vigilance Employee 2 (WORKING)**: `dinesh.t` / `Vigil@123` — Dinesh T, designation=Vigilance. Re-synced to `Vigil@123` on 2026-06-09 (same note). USED BY test_rbac_isolation.py as 'Employee C'.
 
 > ⚙️ **ONBOARDING GATE DISABLED (2026-06-06):** The mandatory onboarding flow is
 > turned OFF app-wide via `ONBOARDING_ENABLED = false` in
@@ -79,3 +79,12 @@ Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "
 - spartasolace1 / spar@1230 → INVALID
 - admin / HrAdmin786$ → WORKING
 - user / pass123 → WORKING (Rishi S Nayak, Business & Product)
+
+## RBAC / data-isolation note (2026-06-09)
+- Centralised deny-by-default gate for role=employee lives in `/app/backend/rbac.py`
+  (allowlist + middleware, registered in server.py just before CORSMiddleware).
+- Regression suite: `/app/backend/tests/test_rbac_isolation.py` (43 tests, all passing).
+- Working employee logins used by that suite (re-synced 2026-06-09, method=agent_rbac_test_resync):
+  - `madhan.s` / `Vigil@123` (Employee B)
+  - `dinesh.t` / `Vigil@123` (Employee C)
+- Admin: `admin` / `HrAdmin786$` (unchanged, still PINNED).

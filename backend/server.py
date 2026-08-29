@@ -4629,6 +4629,7 @@ async def get_employees(
     limit: int = Query(50, ge=1, le=500),
     current_user: dict = Depends(get_current_user)
 ):
+    require_any_admin(current_user)
     query = {}
     
     # Exclude soft-deleted by default, but include them when filtering by inactive status or inactive type
@@ -4700,7 +4701,13 @@ async def get_employees(
 
 @api_router.get("/employees/all")
 async def get_all_employees(current_user: dict = Depends(get_current_user)):
-    """Get all active employees (for dropdowns)"""
+    """Get all active employees (for dropdowns) — ADMIN ONLY.
+
+    Contains the full internal directory (biometric ids, official emails,
+    department/team). Employees must use `/api/employee/profile` for their own
+    record instead.
+    """
+    require_any_admin(current_user)
     query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
     employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1, "custom_employee_id": 1, "biometric_id": 1, "avatar": 1, "designation": 1, "official_email": 1, "employment_type": 1}).to_list(1000)
     return employees
@@ -4711,6 +4718,7 @@ async def employee_autocomplete(
     current_user: dict = Depends(get_current_user)
 ):
     """Lightweight autocomplete: returns max 10 matches by name/email/emp_id."""
+    require_any_admin(current_user)
     if not q or len(q.strip()) < 1:
         return []
     q = q.strip()
@@ -4738,6 +4746,7 @@ async def get_employee_stats(current_user: dict = Depends(get_current_user)):
     round-trip instead of ~40 concurrent count_documents calls (which was
     the dominant reason the Employees page took 2.4s to render on Atlas).
     """
+    require_any_admin(current_user)
     base_query = {"is_deleted": {"$ne": True}}
 
     def _norm_intern(t: str) -> bool:
@@ -6589,10 +6598,20 @@ async def get_employee_avatar_map(current_user: dict = Depends(get_current_user)
     Employees without an avatar are omitted (frontend falls back to the
     gradient initial-letter automatically).
     """
-    # Anyone authenticated can call this — employees may also benefit
-    # (e.g. team page). The data is non-sensitive (just a public photo URL
-    # the user has explicitly opted to share inside the org).
+    # SECURITY: admins get the company-wide map (needed by Attendance / Leave /
+    # Verification grids). A standard employee gets ONLY their own avatar — the
+    # complete company photo database is never exposed to them.
     out = {}
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        emp_id = current_user.get("employee_id")
+        if not emp_id:
+            return out
+        me = await db.employees.find_one(
+            {"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "avatar": 1}
+        )
+        if me and me.get("avatar"):
+            out[me["id"]] = me["avatar"]
+        return out
     async for e in db.employees.find(
         {"is_deleted": {"$ne": True}, "avatar": {"$exists": True, "$ne": None}},
         {"_id": 0, "id": 1, "avatar": 1},
@@ -7082,6 +7101,15 @@ async def get_attendance(
     current_user: dict = Depends(get_current_user)
 ):
     query = {}
+    # SECURITY (object-level authorisation): a standard employee ALWAYS reads
+    # their own attendance only. The scope comes from the verified JWT identity,
+    # never from a client-supplied name / team / department filter.
+    self_only_employee_id = None
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        self_only_employee_id = current_user.get("employee_id") or "__none__"
+        query["employee_id"] = self_only_employee_id
+        employee_name = None
+        team = department = designation = None
     if employee_name:
         query["emp_name"] = {"$regex": employee_name, "$options": "i"}
     if status and status != "All":
@@ -7150,6 +7178,8 @@ async def get_attendance(
             # plus any employees matching the supplied filters (so we still
             # surface "Absent" days for filtered employees with NO records).
             emp_query = {"is_deleted": {"$ne": True}}
+            if self_only_employee_id:
+                emp_query["id"] = self_only_employee_id
             if employee_name:
                 emp_query["full_name"] = {"$regex": employee_name, "$options": "i"}
             if team and team != "All":
@@ -7335,6 +7365,12 @@ async def get_attendance(
                 continue
             attendance.append(stub)
         attendance.sort(key=date_sort_key, reverse=True)
+
+    # FINAL SECURITY NET: no row belonging to another employee may leave this
+    # endpoint for a non-admin caller (covers stubs/overlays added above).
+    if self_only_employee_id:
+        attendance = [a for a in attendance
+                      if a.get("employee_id") == self_only_employee_id]
 
     return [serialize_doc(a) for a in attendance]
 
@@ -8146,6 +8182,7 @@ async def get_attendance_stats(
     to_date: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
+    require_any_admin(current_user)
     # Use single date or date range
     if not date and not from_date:
         date = get_ist_today()
@@ -8485,6 +8522,13 @@ async def get_leaves(
     current_user: dict = Depends(get_current_user)
 ):
     query = {}
+    # SECURITY (object-level authorisation): employees see ONLY their own leave
+    # records — including reasons/remarks. Scope is derived from the verified
+    # JWT identity; client-supplied filters cannot widen it.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        query["employee_id"] = current_user.get("employee_id") or "__none__"
+        employee_name = None
+        team = department = None
     if employee_name:
         query["emp_name"] = {"$regex": employee_name, "$options": "i"}
     if team and team != "All":
@@ -10653,7 +10697,13 @@ async def get_teams(department: Optional[str] = None, current_user: dict = Depen
     query = {"is_deleted": {"$ne": True}}
     if department and department != "All":
         query["department"] = department
-    
+
+    # SECURITY: employees get the MINIMAL dropdown shape (id + name) only —
+    # no member counts, descriptions, leads or other internal team records.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        teams = await db.teams.find(query, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+        return [{"id": t.get("id"), "name": t.get("name")} for t in teams]
+
     teams = await db.teams.find(query, {"_id": 0}).to_list(100)
     
     # Calculate member counts in a SINGLE aggregation pipeline instead of
@@ -10677,6 +10727,7 @@ async def get_teams(department: Optional[str] = None, current_user: dict = Depen
 
 @api_router.get("/teams/{team_id}")
 async def get_team(team_id: str, current_user: dict = Depends(get_current_user)):
+    require_any_admin(current_user)
     team = await db.teams.find_one({"id": team_id}, {"_id": 0})
     if not team:
         raise HTTPException(status_code=404, detail="Team not found")
@@ -10691,6 +10742,14 @@ async def get_team(team_id: str, current_user: dict = Depends(get_current_user))
 
 @api_router.get("/departments")
 async def get_departments(current_user: dict = Depends(get_current_user)):
+    # SECURITY: employees get the MINIMAL dropdown shape (id + name) only —
+    # never employee counts, team counts or other internal department records.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        rows = await db.departments.find(
+            {"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(100)
+        return [{"id": d.get("id"), "name": d.get("name")} for d in rows]
+
     departments = await db.departments.find({"is_deleted": {"$ne": True}}, {"_id": 0}).to_list(100)
     
     # Calculate actual counts via 2 single aggregation pipelines (was 2*N round-trips).
@@ -10722,6 +10781,69 @@ async def get_departments(current_user: dict = Depends(get_current_user)):
 
 # ============== DASHBOARD ROUTES ==============
 
+async def _personal_dashboard_stats(current_user: dict, query_from: str, query_to: str) -> dict:
+    """Employee-scoped dashboard statistics (OWN records only).
+
+    Mirrors the shape the admin dashboard consumes, but every number is
+    computed from the authenticated employee's OWN attendance/leave rows.
+    Company headcount and company-wide aggregates are never included.
+    """
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="No employee profile linked to this user")
+
+    try:
+        f_d = datetime.strptime(query_from, "%d-%m-%Y").date()
+        t_d = datetime.strptime(query_to, "%d-%m-%Y").date()
+    except (ValueError, TypeError):
+        f_d = t_d = get_ist_now().date()
+    if t_d < f_d:
+        f_d, t_d = t_d, f_d
+
+    date_list = []
+    cur = f_d
+    while cur <= t_d and len(date_list) <= 400:
+        date_list.append(cur.strftime("%d-%m-%Y"))
+        cur += timedelta(days=1)
+
+    records = await db.attendance.find(
+        {"employee_id": employee_id, "date": {"$in": date_list}},
+        {"_id": 0, "date": 1, "status": 1, "is_late": 1, "check_in": 1},
+    ).to_list(500)
+
+    present = late = leave = 0
+    for r in records:
+        st = (r.get("status") or "").strip().lower()
+        if "leave" in st:
+            leave += 1
+        elif st in ("absent", "not logged", ""):
+            pass
+        else:
+            present += 1
+        if r.get("is_late") or st == "late login":
+            late += 1
+
+    working_days = len([d for d in date_list
+                        if datetime.strptime(d, "%d-%m-%Y").weekday() != 6])
+    absent = max(0, working_days - present - leave)
+    pct = round((present / working_days) * 100, 1) if working_days else 0.0
+
+    return {
+        "scope": "self",
+        "attendance": {
+            "employee_id": employee_id,
+            "from_date": query_from,
+            "to_date": query_to,
+            "working_days": working_days,
+            "present_days": present,
+            "absent_days": absent,
+            "leave_days": leave,
+            "late_days": late,
+            "attendance_percentage": pct,
+        },
+    }
+
+
 @api_router.get("/dashboard/stats")
 async def get_dashboard_stats(
     from_date: Optional[str] = None,
@@ -10733,6 +10855,11 @@ async def get_dashboard_stats(
     # Use provided dates or default to today
     query_from = from_date if from_date else today
     query_to = to_date if to_date else today
+
+    # SECURITY: a standard employee gets PERSONAL statistics only. No company
+    # headcount, no company-wide attendance, no company-wide leave counts.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        return await _personal_dashboard_stats(current_user, query_from, query_to)
     
     # Get counts from employee master - run all in parallel.
     # NOTE: employee_stats() was removed from this endpoint — the Dashboard UI
@@ -10826,6 +10953,47 @@ async def get_dashboard_birthdays(
             upcoming.append(item)
 
     upcoming.sort(key=lambda x: x["days_until"])
+    # SECURITY / DATA MINIMISATION: the birthday widget is the ONE sanctioned
+    # exception where an employee may see colleagues' data. Employees receive
+    # ONLY the fields the widget renders — display name, day/month, department,
+    # team, designation and avatar. No DOB year, emp_id, contact details,
+    # salary, biometric id or any other personal record.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        avatar_map = {}
+        ids = [i.get("id") for i in (todays + upcoming) if i.get("id")]
+        if ids:
+            async for e in db.employees.find(
+                {"id": {"$in": ids}}, {"_id": 0, "id": 1, "avatar": 1}
+            ):
+                if e.get("avatar"):
+                    avatar_map[e["id"]] = e["avatar"]
+
+        def _sanitize(item: dict) -> dict:
+            dob = _parse_date_flex(item.get("date_of_birth"))
+            if isinstance(dob, datetime):
+                dob = dob.date()
+            out = {
+                "name": item.get("full_name"),
+                "full_name": item.get("full_name"),
+                "birthday_day": dob.day if dob else None,
+                "birthday_month": dob.month if dob else None,
+                "dob_display": item.get("dob_display"),
+                "department": item.get("department"),
+                "team": item.get("team"),
+                "designation": item.get("designation"),
+                "avatar": avatar_map.get(item.get("id")),
+            }
+            if "days_until" in item:
+                out["days_until"] = item["days_until"]
+                out["next_date_display"] = item.get("next_date_display")
+            return out
+
+        return {
+            "today": [_sanitize(i) for i in todays],
+            "upcoming": [_sanitize(i) for i in upcoming],
+            "window_days": window_days,
+        }
+
     return {"today": todays, "upcoming": upcoming, "window_days": window_days}
 
 
@@ -10909,6 +11077,7 @@ async def get_dashboard_leave_list(
     to_date: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
+    require_any_admin(current_user)
     today = get_ist_now().strftime("%d-%m-%Y")
     query_date = from_date if from_date else today
 
@@ -16880,9 +17049,13 @@ async def edit_late_request(request_id: str, data: LateRequestCreate, current_us
     if not rec:
         raise HTTPException(status_code=404, detail="Request not found")
     is_admin = current_user["role"] in ALL_ADMIN_ROLES
-    # Employees may only edit their own pending requests; HR/Admin can edit any status
-    if not is_admin and rec.get("status") != "pending":
-        raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    # Employees may only edit their OWN pending requests (ownership check —
+    # prevents editing another employee's request by changing the id).
+    if not is_admin:
+        if rec.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="You can only edit your own requests")
+        if rec.get("status") != "pending":
+            raise HTTPException(status_code=400, detail="Can only edit pending requests")
     update = {
         "date": data.date,
         "reason": data.reason,
@@ -17373,8 +17546,11 @@ async def edit_early_out_request(request_id: str, data: EarlyOutRequestCreate, c
     if not rec:
         raise HTTPException(status_code=404, detail="Request not found")
     is_admin = current_user["role"] in ALL_ADMIN_ROLES
-    if not is_admin and rec.get("status") != "pending":
-        raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    if not is_admin:
+        if rec.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="You can only edit your own requests")
+        if rec.get("status") != "pending":
+            raise HTTPException(status_code=400, detail="Can only edit pending requests")
     update = {
         "date": data.date,
         "reason": data.reason,
@@ -18395,8 +18571,11 @@ async def edit_missed_punch(request_id: str, data: MissedPunchCreate, current_us
     if not rec:
         raise HTTPException(status_code=404, detail="Request not found")
     is_admin = current_user["role"] in ALL_ADMIN_ROLES
-    if not is_admin and rec.get("status") != "pending":
-        raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    if not is_admin:
+        if rec.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="You can only edit your own requests")
+        if rec.get("status") != "pending":
+            raise HTTPException(status_code=400, detail="Can only edit pending requests")
     update = {
         "date": data.date,
         "punch_type": data.punch_type,
@@ -19149,6 +19328,24 @@ app.include_router(api_router)
 # ---------------------------------------------------------------------------
 from vigilance import get_vigilance_router, ensure_vigilance_indexes  # noqa: E402
 app.include_router(get_vigilance_router(db, get_current_user))
+
+
+# ---------------------------------------------------------------------------
+# CENTRALISED RBAC — deny-by-default gate for the `employee` role.
+# Registered BEFORE CORSMiddleware so CORS still wraps 403 responses.
+# Every /api route not on the employee allowlist in rbac.py is 403 for
+# employees, regardless of what the frontend does. Row-level scoping for the
+# shared endpoints lives in the handlers themselves.
+# ---------------------------------------------------------------------------
+from rbac import install_employee_rbac  # noqa: E402
+
+
+async def _security_deny_sink(entry: dict):
+    entry["timestamp"] = get_ist_now().isoformat()
+    await db.security_denials.insert_one(entry)
+
+
+install_employee_rbac(app, JWT_SECRET, JWT_ALGORITHM, deny_sink=_security_deny_sink)
 
 
 # CORS

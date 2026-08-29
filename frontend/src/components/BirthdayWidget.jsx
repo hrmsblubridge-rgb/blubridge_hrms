@@ -72,13 +72,13 @@ const BirthdayWidget = ({ windowDays = 30 }) => {
         </div>
       ) : (
         <div className="space-y-3 max-h-[280px] overflow-y-auto pr-1">
-          {todays.map((e) => (
+          {todays.map((e, i) => (
             <div
-              key={e.id}
+              key={e.id || `today-${i}`}
               className="flex items-center gap-3 p-3 rounded-xl bg-gradient-to-r from-rose-50 to-amber-50 border border-rose-100"
-              data-testid={`birthday-today-${e.id}`}
+              data-testid={`birthday-today-${e.id || i}`}
             >
-              <EmployeeAvatar employeeId={e.id} name={e.full_name} size="sm" shape="circle" />
+              <EmployeeAvatar employeeId={e.id} src={e.avatar} name={e.full_name} size="sm" shape="circle" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5">
                   <p className="text-sm font-semibold text-slate-900 truncate">{e.full_name}</p>
@@ -93,13 +93,13 @@ const BirthdayWidget = ({ windowDays = 30 }) => {
               </span>
             </div>
           ))}
-          {upcoming.map((e) => (
+          {upcoming.map((e, i) => (
             <div
-              key={e.id}
+              key={e.id || `upcoming-${i}`}
               className="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-50 transition-colors"
-              data-testid={`birthday-upcoming-${e.id}`}
+              data-testid={`birthday-upcoming-${e.id || i}`}
             >
-              <EmployeeAvatar employeeId={e.id} name={e.full_name} size="sm" shape="circle" />
+              <EmployeeAvatar employeeId={e.id} src={e.avatar} name={e.full_name} size="sm" shape="circle" />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-slate-900 truncate">{e.full_name}</p>
                 <p className="text-xs text-slate-500 truncate">
