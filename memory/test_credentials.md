@@ -88,3 +88,20 @@ Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "
   - `madhan.s` / `Vigil@123` (Employee B)
   - `dinesh.t` / `Vigil@123` (Employee C)
 - Admin: `admin` / `HrAdmin786$` (unchanged, still PINNED).
+
+## Payslip Module 6-digit authorization code (2026-06-09)
+- Initial code (version 1): **082026** — stored ONLY as a salted PBKDF2-SHA256 hash in
+  mongo `payslip_security_settings` (id="payslip_auth"). Never in plain text anywhere.
+- Admin must enter it once per login session before ANY `/api/payslips*` route works
+  (guard: `/app/backend/payslip_auth_guard.py`). Logout / new login => code required again.
+- Regeneration: ONLY username `admin` may call `POST /api/payslip-security/regenerate`.
+  It emails a new random 6-digit code to the FIXED address hrrecruiter@blubridge.com and
+  permanently invalidates 082026. **Agents must NOT call it** (the new code is only
+  readable in that mailbox). Resend delivery to that address was verified working
+  (message id returned) on 2026-06-09 without sending any code.
+- Safe simulation of a regeneration (bumps version with a known code, then RESTORES
+  082026/version 1): `python3 /app/backend/tests/payslip_auth_regen_sim.py <backend_url>`.
+- Locked out after 5 wrong codes (15 min)? Clear it with:
+  `db.payslip_auth_attempts.delete_many({})`.
+- Test suites: `/app/backend/tests/test_payslip_auth_layer.py` (13),
+  `/app/backend/tests/payslip_auth_probe.py`.

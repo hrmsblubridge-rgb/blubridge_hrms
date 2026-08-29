@@ -19302,6 +19302,14 @@ try:
 except Exception as _e:
     print(f"Payslip adjustments load failed: {_e}")
 
+# Payslip 6-digit authorization layer (admin side) — registers
+# /api/payslip-security/* routes. The request guard itself is installed further
+# down (middleware must be added before CORSMiddleware).
+try:
+    import payslip_security  # noqa: F401
+except Exception as _e:
+    print(f"Payslip security module load failed: {_e}")
+
 # Credential-Email delivery — retriable welcome-email system + resend endpoint
 try:
     import credential_email  # noqa: F401
@@ -19346,6 +19354,24 @@ async def _security_deny_sink(entry: dict):
 
 
 install_employee_rbac(app, JWT_SECRET, JWT_ALGORITHM, deny_sink=_security_deny_sink)
+
+
+# ---------------------------------------------------------------------------
+# PAYSLIP 6-DIGIT AUTHORIZATION LAYER — one central guard for every admin-side
+# payslip route (APIs, AJAX, calculation views, adjustments, exports, PDFs).
+# Employee self-service payslip access is deliberately untouched.
+# ---------------------------------------------------------------------------
+try:
+    from payslip_auth_guard import install_payslip_auth_guard
+
+    async def _payslip_session_verified(session_id):
+        # Lazy import keeps the guard immune to module-init ordering.
+        from payslip_security import is_session_verified
+        return await is_session_verified(session_id)
+
+    install_payslip_auth_guard(app, JWT_SECRET, JWT_ALGORITHM, _payslip_session_verified)
+except Exception as _e:
+    print(f"Payslip auth guard install failed: {_e}")
 
 
 # CORS
@@ -19602,6 +19628,14 @@ async def ensure_indexes():
         await ensure_module_visibility_seed()
     except Exception as e:
         print(f"Module visibility seed failed: {e}")
+
+    # Payslip 6-digit authorization layer — bootstrap the initial code (hash
+    # only, never plain text) on first deployment. Idempotent.
+    try:
+        from payslip_security import ensure_payslip_security_seed
+        await ensure_payslip_security_seed()
+    except Exception as e:
+        print(f"Payslip security seed failed: {e}")
 
     # 2026-05-22 — Refresh any policy whose code-side `version` is newer than
     # the DB record (so content updates pushed via deploy reach existing
