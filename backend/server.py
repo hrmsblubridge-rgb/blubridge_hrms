@@ -1558,11 +1558,10 @@ class PayrollRecord(BaseModel):
     monthly_salary: float = 0.0
     total_days: int = 0  # Calendar days in month
     working_days: int = 0  # Non-Sunday, non-Holiday days
-    weekoff_pay: float = 0.0  # +1 per Sunday/Holiday
-    extra_pay: float = 0.0  # +1/+0.5 for Sunday (week-off) worked
-    holiday_pay: float = 0.0  # +1/+0.5 for a worked company holiday (payable)
+    weekoff_pay: float = 0.0  # "Weekoff Pay / Holiday Pay": week-offs + holidays
+    extra_pay: float = 0.0  # +1/+0.5 for week-off or holiday WORKED (not payable)
     lop: float = 0.0  # Total LOP days (supports 0.5)
-    final_payable_days: float = 0.0  # Working Days + Weekoff + OH + Holiday - LOP
+    final_payable_days: float = 0.0  # Working Days + Weekoff/Holiday Pay + OH - LOP
     present_days: int = 0  # Backward compat
     lop_days: float = 0  # Backward compat (= lop)
     leave_days: int = 0
@@ -2823,10 +2822,11 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     Payroll engine aligned to strict specification.
     - Department-based work hour mapping (Research 11h, Business 10h, Support 9h)
     - Sunday: Weekoff Pay +1; if worked Full→FD Extra+1, Half→HD Extra+0.5
-    - Holiday: if worked Full→FD Holiday Pay+1, Half→HD Holiday Pay+0.5 (payable)
+    - Holiday (Admin → Holidays): Weekoff/Holiday Pay +1 always; if worked
+      Full→FD Extra+1, Half→HD Extra+0.5 (Extra Pay is NOT payable)
     - Working day classification cross-references leaves, late requests, missed punches
     - LOP: A=1, LC=0.5, PH(working day)=0.5, pending/LOP leave
-    - Payable Days = Working Days + Weekoff Pay + OH Pay + Holiday Pay - LOP
+    - Payable Days = Working Days + Weekoff/Holiday Pay + OH Pay - LOP
     - Relieved employee: if last_day_payable=0 → subtract 1 day
     """
     import calendar
@@ -3002,7 +3002,6 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
             "weekoff_value": 0,
             "extra_value": 0,
             "oh_value": 0,
-            "holiday_value": 0,  # worked company holiday → payable (FD=1, HD=0.5)
             "check_in": None,
             "check_out": None,
             "total_hours": None,
@@ -3100,14 +3099,15 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
 
         # ===== SECTION 5B: HOLIDAY (non-Sunday) =====
         if is_hol:
-            # Holiday: NO weekoff pay (the day itself is unpaid unless worked).
-            # HR fix 2026-08-29: when the employee DOES work a company holiday
-            # the day is PAYABLE — FD → +1.0, HD → +0.5 — credited through
-            # `holiday_value` (Holiday Pay) which now feeds Payable Days.
-            # It is credited ONCE: a worked holiday no longer also adds to
-            # Extra Pay, so the same day can never be counted twice.
-            # The FD/HD status decision below is the pre-existing logic and is
-            # deliberately unchanged.
+            # HR spec 2026-08-29: a holiday configured in Admin → Holidays is
+            # ALWAYS payable — it contributes exactly +1 to the combined
+            # "Weekoff Pay / Holiday Pay" column (`weekoff_value`) whether or
+            # not the employee works. If the employee ALSO works, that work is
+            # credited separately as Extra Pay (FD → +1, HD → +0.5), which is
+            # NOT part of Payable Days. The holiday itself is never counted
+            # twice. The FD/HD determination below is the pre-existing logic
+            # and is deliberately unchanged.
+            detail["weekoff_value"] = 1
             if att:
                 detail["check_in"] = att.get("check_in")
                 detail["check_out"] = att.get("check_out")
@@ -3119,10 +3119,10 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                     detail["status"] = "MP"
                 elif hw >= full_hours:
                     detail["status"] = "FD"  # Full Day worked on Holiday
-                    detail["holiday_value"] = 1
+                    detail["extra_value"] = 1
                 elif hw >= half_hours:
                     detail["status"] = "HD"  # Half Day worked on Holiday
-                    detail["holiday_value"] = 0.5
+                    detail["extra_value"] = 0.5
                 else:
                     detail["status"] = "H"
             else:
@@ -3356,15 +3356,13 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     weekoff_pay = sum(d.get("weekoff_value", 0) or 0 for d in attendance_details)
     extra_pay = sum(d.get("extra_value", 0) or 0 for d in attendance_details)
     oh_pay = sum(d.get("oh_value", 0) or 0 for d in attendance_details)
-    holiday_pay = sum(d.get("holiday_value", 0) or 0 for d in attendance_details)
     lop = sum(d.get("lop_value", 0) or 0 for d in attendance_details)
 
-    # Payable Days = Working Days + Weekoff Pay + Optional-Holiday Pay
-    #                + Holiday Pay (worked company holidays) - LOP
-    # Extra Pay (Week-Off work) remains an INDEPENDENT payroll component and is
-    # still EXCLUDED from Payable Days (HR spec 2026-06-30 §8). A worked company
-    # holiday is credited only through Holiday Pay — never twice.
-    final_payable_days = working_days + weekoff_pay + oh_pay + holiday_pay - lop
+    # Payable Days = Working Days + "Weekoff Pay / Holiday Pay" (week-offs AND
+    #                configured holidays) + Optional-Holiday Pay - LOP
+    # Extra Pay (week-off / holiday work) stays an INDEPENDENT payroll component
+    # and is EXCLUDED from Payable Days (HR spec 2026-06-30 §8, 2026-08-29 §9).
+    final_payable_days = working_days + weekoff_pay + oh_pay - lop
     final_payable_days = max(0, final_payable_days)
 
     # Salary calculation
@@ -3398,7 +3396,6 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
         "weekoff_pay": weekoff_pay,
         "extra_pay": extra_pay,
         "oh_pay": oh_pay,
-        "holiday_pay": holiday_pay,
         "lop": lop,
         "final_payable_days": final_payable_days,
         # Salary
