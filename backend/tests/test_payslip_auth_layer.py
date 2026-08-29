@@ -263,6 +263,12 @@ class Test4_BruteForce:
 class Test5_EmployeeUnaffected:
     def test_employee_my_payslips_works(self, session, emp_token):
         r = _req(session, "GET", "/payslips/my", emp_token)
+        # The payslip AUTH-CODE gate must never touch employees. If the admin
+        # has hidden the payslips module from this employee via Module
+        # Visibility, 403 module_unavailable is the expected answer instead.
+        if r.status_code == 403:
+            assert r.json().get("error") == "module_unavailable", r.text[:200]
+            return
         assert r.status_code == 200, (r.status_code, r.text[:200])
 
     def test_employee_denied_admin_payslip_endpoints(self, session, emp_token):

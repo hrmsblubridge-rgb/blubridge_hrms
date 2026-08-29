@@ -161,6 +161,24 @@ JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get('ACCESS_TOKEN_EXPIRE_MINUTES', '10'))
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get('REFRESH_TOKEN_EXPIRE_DAYS', '7'))
 
+# ---------------------------------------------------------------------------
+# SLIDING INACTIVITY TIMEOUT (server-side authority)
+# A session dies after this many minutes with NO authenticated activity. Real
+# API calls slide the window forward; background polls do NOT (see
+# NON_ACTIVITY_PATHS) so an idle open tab cannot keep a session alive.
+# ---------------------------------------------------------------------------
+INACTIVITY_TIMEOUT_MINUTES = int(os.environ.get('INACTIVITY_TIMEOUT_MINUTES', '30'))
+ACTIVITY_TOUCH_THROTTLE_SECONDS = 60
+INACTIVITY_MESSAGE = (
+    f"Your session expired due to {INACTIVITY_TIMEOUT_MINUTES} minutes of inactivity. "
+    "Please log in again."
+)
+# Requests fired by timers/widgets rather than by the user.
+NON_ACTIVITY_PATHS = {
+    "/api/notifications/unread-count",
+    "/api/dashboard/birthdays",
+}
+
 # Cloudinary Configuration
 cloudinary.config(
     cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
@@ -1950,6 +1968,7 @@ async def create_auth_session(user: dict, http_request: Optional[Request] = None
         "user_agent": (http_request.headers.get("user-agent") if http_request else None),
         "ip_address": (http_request.client.host if http_request and http_request.client else None),
         "expires_at": (now + ttl).isoformat(),
+        "last_activity_at": now.isoformat(),
         "revoked_at": None,
         "revoke_reason": None,
         "replaced_by_jti": None,
@@ -1968,12 +1987,46 @@ async def revoke_auth_session(session_id: str, reason: str = "logout"):
         }},
     )
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def enforce_session_activity(session: dict, session_id: str, touch: bool = True):
+    """Sliding inactivity window for an auth session.
+
+    Raises 401 (and revokes the session) once the user has been inactive for
+    INACTIVITY_TIMEOUT_MINUTES. Otherwise slides the window forward, throttled
+    so a burst of requests does not hammer Mongo. Login time is irrelevant —
+    only the time since the last authenticated activity matters.
+    """
+    now = datetime.now(timezone.utc)
+    raw = session.get("last_activity_at") or session.get("created_at")
+    last = None
+    if raw:
+        try:
+            last = datetime.fromisoformat(raw)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            last = None
+
+    if last and (now - last) >= timedelta(minutes=INACTIVITY_TIMEOUT_MINUTES):
+        await revoke_auth_session(session_id, "inactivity_timeout")
+        raise HTTPException(status_code=401, detail=INACTIVITY_MESSAGE)
+
+    if touch and (last is None or (now - last).total_seconds() >= ACTIVITY_TOUCH_THROTTLE_SECONDS):
+        await db.auth_sessions.update_one(
+            {"session_id": session_id},
+            {"$set": {"last_activity_at": now.isoformat(), "updated_at": now.isoformat()}},
+        )
+
+
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
     """Protected-API auth middleware.
 
     SECURITY checks (in order): signature valid → token_type == "access" →
     exp valid (no sliding extension) → session exists AND not revoked →
-    user exists AND is active. Refresh tokens are rejected here.
+    30-minute sliding INACTIVITY window not exhausted → user exists AND is
+    active. Refresh tokens are rejected here.
     """
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
@@ -1989,9 +2042,19 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         raise HTTPException(status_code=401, detail="Invalid token")
 
     # Server-side revocation check: logout kills the access token instantly.
-    session = await db.auth_sessions.find_one({"session_id": session_id}, {"_id": 0, "revoked_at": 1})
+    session = await db.auth_sessions.find_one(
+        {"session_id": session_id},
+        {"_id": 0, "revoked_at": 1, "last_activity_at": 1, "created_at": 1},
+    )
     if session is None or session.get("revoked_at"):
         raise HTTPException(status_code=401, detail="Session revoked. Please login again.")
+
+    # Sliding 30-minute inactivity window (server is the source of truth).
+    await enforce_session_activity(
+        session,
+        session_id,
+        touch=(request.url.path not in NON_ACTIVITY_PATHS),
+    )
 
     user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
     if not user:
@@ -4068,6 +4131,10 @@ async def refresh_auth_tokens(body: RefreshRequest):
     if session_exp <= now:
         await revoke_auth_session(session_id, "expired")
         raise HTTPException(status_code=401, detail="Session expired. Please login again.")
+
+    # A token refresh is NOT user activity: it only checks the sliding window,
+    # so a background refresh loop can never keep an idle session alive.
+    await enforce_session_activity(session, session_id, touch=False)
 
     # Rotation reuse detection: jti/hash mismatch means an OLD refresh token
     # is being replayed after rotation → revoke the whole session.
@@ -19363,7 +19430,6 @@ install_employee_rbac(app, JWT_SECRET, JWT_ALGORITHM, deny_sink=_security_deny_s
 # ---------------------------------------------------------------------------
 try:
     from payslip_auth_guard import install_payslip_auth_guard
-
     async def _payslip_session_verified(session_id):
         # Lazy import keeps the guard immune to module-init ordering.
         from payslip_security import is_session_verified
@@ -19372,6 +19438,18 @@ try:
     install_payslip_auth_guard(app, JWT_SECRET, JWT_ALGORITHM, _payslip_session_verified)
 except Exception as _e:
     print(f"Payslip auth guard install failed: {_e}")
+
+
+# ---------------------------------------------------------------------------
+# MODULE VISIBILITY — API/AJAX guard so a module hidden from the sidebar is
+# also unreachable through direct requests (same check_module_access decision).
+# ---------------------------------------------------------------------------
+try:
+    from module_visibility import install_module_visibility_guard
+
+    install_module_visibility_guard(app, JWT_SECRET, JWT_ALGORITHM)
+except Exception as _e:
+    print(f"Module visibility guard install failed: {_e}")
 
 
 # CORS

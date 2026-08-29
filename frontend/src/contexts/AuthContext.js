@@ -26,10 +26,17 @@ const ONBOARDING_ENABLED = false;
 // ============================================================================
 export const TOKEN_KEY = 'blubridge_token';
 export const REFRESH_TOKEN_KEY = 'blubridge_refresh_token';
-// 30-minute inactivity timeout — timestamp shared via localStorage so ALL
-// tabs of the same logged-in session share one activity clock.
+// 30-minute inactivity timeout. The BACKEND is the source of truth (it slides
+// `last_activity_at` on every real authenticated request and returns 401 once
+// the window is exhausted). This local clock only mirrors backend activity —
+// it is fed by actual API calls, never by mouse/keyboard events — so an idle
+// open tab is signed out promptly instead of sitting on stale HRMS data.
 export const LAST_ACTIVITY_KEY = 'blubridge_last_activity';
+export const SESSION_EXPIRED_KEY = 'blubridge_session_expired_msg';
 export const INACTIVITY_LIMIT_MS = 30 * 60 * 1000;
+// Timer-driven background polls must not count as user activity (mirrors
+// NON_ACTIVITY_PATHS on the backend).
+const BACKGROUND_POLL_PATHS = ['/notifications/unread-count', '/dashboard/birthdays'];
 
 // Bare client (NO interceptors) for refresh/logout calls — avoids loops.
 const bareAxios = axios.create();
@@ -65,6 +72,11 @@ axios.interceptors.request.use((config) => {
   if (isOurApi(config.url) && !isAuthEndpoint(config.url)) {
     const t = localStorage.getItem(TOKEN_KEY);
     if (t) config.headers.Authorization = `Bearer ${t}`;
+    // Mirror the backend activity clock: real API calls slide the window,
+    // timer-driven polls do not.
+    if (t && !BACKGROUND_POLL_PATHS.some((p) => config.url.includes(p))) {
+      localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
+    }
   }
   return config;
 });
@@ -75,6 +87,15 @@ axios.interceptors.response.use(
   (res) => res,
   async (error) => {
     const { config, response } = error;
+    // Backend declared the session dead through inactivity: do NOT try to
+    // refresh — clear everything and send the user to login with a message.
+    if (response?.status === 401 && /inactivity/i.test(response?.data?.detail || '')) {
+      clearStoredAuth();
+      localStorage.removeItem(LAST_ACTIVITY_KEY);
+      sessionStorage.setItem(SESSION_EXPIRED_KEY, response.data.detail);
+      if (window.location.pathname !== '/login') window.location.href = '/login';
+      return Promise.reject(error);
+    }
     if (
       response?.status === 401 &&
       config &&
@@ -207,38 +228,37 @@ export const AuthProvider = ({ children }) => {
     setAvatarMap({});
   };
 
-  // ===== 30-MINUTE INACTIVITY TIMEOUT =====
-  // Sits ON TOP of the existing JWT auth: uses the existing logout() flow
-  // (server-side revoke + local cleanup) when the shared activity clock in
-  // localStorage exceeds 30 minutes. Works across tabs of the same session.
+  // ===== 30-MINUTE INACTIVITY TIMEOUT (client mirror) =====
+  // Authority lives on the backend (`enforce_session_activity` in server.py).
+  // This watchdog only reacts to the SAME signal the backend uses — the time
+  // of the last real authenticated API call — so an idle tab is cleared even
+  // if the user never triggers another request. Mouse/keyboard activity does
+  // NOT extend the session.
   useEffect(() => {
     if (!user) return undefined;
-    localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
-    let lastWrite = Date.now();
+    if (!localStorage.getItem(LAST_ACTIVITY_KEY)) {
+      localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()));
+    }
     const isExpired = () => {
       const last = parseInt(localStorage.getItem(LAST_ACTIVITY_KEY) || '0', 10);
       return !!last && Date.now() - last > INACTIVITY_LIMIT_MS;
     };
-    const expire = () => {
-      // Existing logout process — revokes the session server-side and clears
-      // auth state; route guards then redirect to the login page.
-      logout();
-    };
-    const onActivity = () => {
-      if (isExpired()) { expire(); return; }
-      const now = Date.now();
-      if (now - lastWrite > 5000) {  // throttle localStorage writes
-        lastWrite = now;
-        localStorage.setItem(LAST_ACTIVITY_KEY, String(now));
-      }
-    };
-    const events = ['mousedown', 'keydown', 'scroll', 'touchstart', 'click'];
-    events.forEach((e) => window.addEventListener(e, onActivity, { passive: true }));
-    const watchdog = setInterval(() => { if (isExpired()) expire(); }, 30000);
-    return () => {
-      events.forEach((e) => window.removeEventListener(e, onActivity));
-      clearInterval(watchdog);
-    };
+    const watchdog = setInterval(async () => {
+      if (!isExpired()) return;
+      sessionStorage.setItem(
+        SESSION_EXPIRED_KEY,
+        'Your session expired due to 30 minutes of inactivity. Please log in again.'
+      );
+      await logout();               // existing flow: server revoke + local cleanup
+      localStorage.removeItem(LAST_ACTIVITY_KEY);
+      // Route guards usually navigate to /login on their own; only force a
+      // hard redirect if that did not happen (a hard reload here would wipe
+      // the expiry toast the login page has just shown).
+      setTimeout(() => {
+        if (window.location.pathname !== '/login') window.location.href = '/login';
+      }, 600);
+    }, 30000);
+    return () => clearInterval(watchdog);
   }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateUser = useCallback((updates) => {

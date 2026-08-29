@@ -236,4 +236,8 @@ def test_admin_still_sees_company_wide_data(actors):
 ])
 def test_employee_self_service_still_works(actors, path):
     r = _get(actors["b_token"], path)
+    # A module the admin has hidden from this employee via Module Visibility
+    # legitimately answers 403 module_unavailable — that is not an RBAC failure.
+    if r.status_code == 403 and r.json().get("error") == "module_unavailable":
+        pytest.skip(f"{path}: module hidden for this employee by Module Visibility")
     assert r.status_code == 200, f"{path} -> {r.status_code} {r.text[:150]}"

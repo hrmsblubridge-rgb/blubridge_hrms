@@ -5,16 +5,24 @@ Backward-compat: any module without a settings record is treated as
 `enabled=True, visibility_mode=ALL` (default open). Admin always bypasses
 these checks.
 
+ONE decision function — `check_module_access(user, module_key)` — backs the
+employee sidebar, the direct-URL guard AND the API/AJAX guard (middleware
+below), so a module can never be visible while access is denied (or vice versa).
+
 Collections:
   - module_visibility_settings  (one doc per module_key)
   - module_visibility_selections (module_key + employee_id, one row each)
 """
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
 
-from fastapi import HTTPException, Depends, Body
+import jwt
+from fastapi import HTTPException, Depends, Body, Response
 from pydantic import BaseModel, Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from server import (
     api_router, db, get_current_user, UserRole,
@@ -99,6 +107,76 @@ async def check_module_access(user: dict, module_key: str) -> bool:
     if mode == VISIBILITY_ALL_EXCEPT_SELECTED:
         return not in_list
     return True
+
+
+# ---------------------------------------------------------------------------
+# API / AJAX guard — the SAME `check_module_access()` decision applied at the
+# request level, so a hidden module cannot be reached with curl/Postman or by
+# editing the URL. Employee-facing paths only; admins are never affected.
+# ---------------------------------------------------------------------------
+_MODULE_PATH_RULES: List[tuple] = [
+    ("attendance",           re.compile(r"^/api/employee/attendance")),
+    ("leave",                re.compile(r"^/api/(employee/leaves|leaves$|leaves\?)")),
+    ("late_request",         re.compile(r"^/api/late-requests")),
+    ("early_out",            re.compile(r"^/api/early-out-requests")),
+    ("missed_punch",         re.compile(r"^/api/missed-punches")),
+    ("holidays",             re.compile(r"^/api/holidays")),
+    ("payslips",             re.compile(r"^/api/(payslips/my|employee/payslips)")),
+    ("policies",             re.compile(r"^/api/policies")),
+    ("education_experience", re.compile(r"^/api/employee-profile/education-experience")),
+    ("documents",            re.compile(r"^/api/(employee-profile/documents|onboarding/(my-status|upload-document|submit))")),
+    ("tickets",              re.compile(r"^/api/issue-tickets")),
+    ("warnings",             re.compile(r"^/api/(warnings/|employee/warnings)")),
+    ("vigilance",            re.compile(r"^/api/vigilance/")),
+]
+
+MODULE_DENY_BODY = {
+    "success": False,
+    "error": "module_unavailable",
+    "message": "This module is not available for your account.",
+}
+
+
+def module_key_for_path(path: str) -> Optional[str]:
+    for key, rx in _MODULE_PATH_RULES:
+        if rx.match(path):
+            return key
+    return None
+
+
+def install_module_visibility_guard(app, jwt_secret: str, jwt_algorithm: str):
+    """Deny API access to modules hidden from this employee (403)."""
+
+    @app.middleware("http")
+    async def _module_visibility_gate(request: Request, call_next):
+        path = request.url.path
+        if request.method.upper() == "OPTIONS" or not path.startswith("/api/"):
+            return await call_next(request)
+
+        module_key = module_key_for_path(path)
+        if not module_key:
+            return await call_next(request)
+
+        auth = request.headers.get("authorization") or ""
+        if not auth.lower().startswith("bearer "):
+            return await call_next(request)
+        try:
+            payload = jwt.decode(auth.split(" ", 1)[1].strip(), jwt_secret, algorithms=[jwt_algorithm])
+        except Exception:
+            return await call_next(request)
+        if payload.get("role") in ALL_ADMIN_ROLES:
+            return await call_next(request)
+
+        user = await db.users.find_one(
+            {"id": payload.get("user_id")}, {"_id": 0, "id": 1, "role": 1, "employee_id": 1}
+        )
+        if not user:
+            return await call_next(request)
+        if await check_module_access(user, module_key):
+            return await call_next(request)
+        return JSONResponse(status_code=403, content=MODULE_DENY_BODY)
+
+    return _module_visibility_gate
 
 
 # ---------------------------------------------------------------------------
@@ -298,9 +376,18 @@ async def set_module_selected_employees(
 
 # ---------------------------------------------------------------------------
 # Employee endpoint — returns list of visible module keys for the sidebar.
+# The sidebar and every backend route resolve visibility through the SAME
+# `check_module_access()` function, so a module can never appear in the
+# sidebar while direct access is denied. Responses are marked no-store so an
+# admin's visibility change is never served from a stale browser cache.
 # ---------------------------------------------------------------------------
 @api_router.get("/employee/module-visibility")
-async def get_visible_modules_for_me(current_user: dict = Depends(get_current_user)):
+async def get_visible_modules_for_me(
+    response: Response, current_user: dict = Depends(get_current_user)
+):
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+
     # Admins get everything (sidebar/settings guard uses this too if needed)
     if _is_admin(current_user):
         return {"visible_modules": [m["key"] for m in EMPLOYEE_MODULES]}
@@ -309,4 +396,4 @@ async def get_visible_modules_for_me(current_user: dict = Depends(get_current_us
     for m in EMPLOYEE_MODULES:
         if await check_module_access(current_user, m["key"]):
             visible.append(m["key"])
-    return {"visible_modules": visible}
+    return {"visible_modules": visible, "all_modules": [m["key"] for m in EMPLOYEE_MODULES]}

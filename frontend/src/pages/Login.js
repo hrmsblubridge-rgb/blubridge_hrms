@@ -65,6 +65,15 @@ const Login = () => {
   }, [user, navigate, needsOnboarding]);
 
   useEffect(() => {
+    // Session expired through 30 minutes of inactivity — tell the user once.
+    const msg = sessionStorage.getItem('blubridge_session_expired_msg');
+    if (msg) {
+      sessionStorage.removeItem('blubridge_session_expired_msg');
+      toast.warning(msg, { duration: 8000 });
+    }
+  }, []);
+
+  useEffect(() => {
     const seedDb = async () => {
       try {
         setSeeding(true);

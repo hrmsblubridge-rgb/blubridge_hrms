@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import NotificationBell from './NotificationBell';
@@ -57,6 +57,26 @@ const navItems = [
   { path: '/employee/profile', label: 'Profile', icon: User, moduleKey: null }, // always visible
 ];
 
+// Every employee route that belongs to a controllable module (includes routes
+// that are not sidebar entries, e.g. Warnings / Vigilance). Prefix match so
+// nested paths are covered too.
+const MODULE_ROUTES = [
+  ['/employee/attendance', 'attendance'],
+  ['/employee/leave', 'leave'],
+  ['/employee/late-request', 'late_request'],
+  ['/employee/early-out', 'early_out'],
+  ['/employee/missed-punch', 'missed_punch'],
+  ['/employee/holidays', 'holidays'],
+  ['/employee/payslips', 'payslips'],
+  ['/employee/salary', 'payslips'],
+  ['/employee/policies', 'policies'],
+  ['/employee/education-experience', 'education_experience'],
+  ['/employee/documents', 'documents'],
+  ['/employee/tickets', 'tickets'],
+  ['/employee/warnings', 'warnings'],
+  ['/employee/vigilance', 'vigilance'],
+];
+
 const EmployeeLayout = ({ children }) => {
   const { user, token, logout, isWithinDocumentBypass } = useAuth();
   const navigate = useNavigate();
@@ -65,22 +85,33 @@ const EmployeeLayout = ({ children }) => {
   const [hasVigilance, setHasVigilance] = useState(false);
   const [hasStarRewards, setHasStarRewards] = useState(false);
   const [warningsCount, setWarningsCount] = useState(0);
-  const [visibleModuleKeys, setVisibleModuleKeys] = useState(null); // null = loading
+  const [visibleModuleKeys, setVisibleModuleKeys] = useState(null); // null = not resolved yet
 
-  // Fetch module visibility settings for this employee. Admins bypass, but
-  // this layout is only used on the employee side, so no role check needed.
-  useEffect(() => {
-    let active = true;
-    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/employee/module-visibility`, {
-      headers: { Authorization: `Bearer ${token}` },
-    }).then(res => {
-      if (active) setVisibleModuleKeys(res.data?.visible_modules || []);
-    }).catch(() => {
-      // Fail-open: on network error, show everything (backward-compat)
-      if (active) setVisibleModuleKeys(null);
-    });
-    return () => { active = false; };
+  // Module Visibility for THIS employee. The backend resolves it with the same
+  // `check_module_access()` used by the routes/APIs, so the sidebar can never
+  // show a module the employee is not allowed to open. Re-fetched on every
+  // navigation (cache-busted, server sends no-store) so an admin's change
+  // takes effect without waiting for a re-login.
+  const fetchVisibility = useCallback(async () => {
+    try {
+      const res = await axios.get(
+        `${process.env.REACT_APP_BACKEND_URL}/api/employee/module-visibility?t=${Date.now()}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setVisibleModuleKeys(res.data?.visible_modules || []);
+    } catch (e) {
+      // Fail CLOSED: never reveal a module we could not authorise.
+      setVisibleModuleKeys((prev) => (prev === null ? [] : prev));
+    }
   }, [token]);
+
+  useEffect(() => { fetchVisibility(); }, [fetchVisibility, location.pathname]);
+
+  useEffect(() => {
+    const onFocus = () => fetchVisibility();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [fetchVisibility]);
 
   // Dynamically reveal the Operational Vigilance Report link ONLY for employees
   // whose designation == "Vigilance" (resolved server-side, no hardcoding).
@@ -126,12 +157,10 @@ const EmployeeLayout = ({ children }) => {
     if (warningsCount > 0) items.push({ path: '/employee/warnings', label: 'My Warnings', icon: AlertTriangle, badge: warningsCount, moduleKey: 'warnings' });
 
     // Apply Module Visibility filter — items with moduleKey=null (Dashboard,
-    // Profile, Rewards) are always kept. If the visibility list hasn't loaded
-    // yet (null) we show everything to avoid a flicker of missing items.
-    if (visibleModuleKeys !== null) {
-      const allowed = new Set(visibleModuleKeys);
-      items = items.filter((it) => !it.moduleKey || allowed.has(it.moduleKey));
-    }
+    // Profile, Rewards) are always kept. Until visibility resolves we render
+    // ONLY those, so an unauthorized module never flashes on screen.
+    const allowed = new Set(visibleModuleKeys || []);
+    items = items.filter((it) => !it.moduleKey || allowed.has(it.moduleKey));
     return items;
   })();
 
@@ -178,16 +207,22 @@ const EmployeeLayout = ({ children }) => {
   }, [location.pathname, navigate]);
 
   // Route-level Module Visibility guard: if the employee lands on a path
-  // whose module has been disabled by Admin, bounce them back to the
-  // Dashboard. Frontend defense-in-depth alongside backend `check_module_access`.
+  // whose module is hidden from them, bounce them back to the Dashboard.
+  // Uses the SAME resolved visibility as the sidebar, and the page body is not
+  // rendered at all while access is unresolved or denied (see render below).
+  const currentModuleKey = (() => {
+    const hit = MODULE_ROUTES.find(([p]) => location.pathname.startsWith(p));
+    return hit ? hit[1] : null;
+  })();
+  const moduleResolving = !!currentModuleKey && visibleModuleKeys === null;
+  const moduleBlocked =
+    !!currentModuleKey && visibleModuleKeys !== null && !visibleModuleKeys.includes(currentModuleKey);
+
   useEffect(() => {
-    if (visibleModuleKeys === null) return; // still loading
-    const match = navItems.find((n) => n.path === location.pathname);
-    if (match && match.moduleKey && !visibleModuleKeys.includes(match.moduleKey)) {
-      toast.info('This module has been disabled by your Admin.');
-      navigate('/employee/dashboard', { replace: true });
-    }
-  }, [location.pathname, visibleModuleKeys, navigate]);
+    if (!moduleBlocked) return;
+    toast.info('This module is not available for your account.');
+    navigate('/employee/dashboard', { replace: true });
+  }, [moduleBlocked, location.pathname, navigate]);
 
   return (
     <div className="min-h-screen bg-[#efede5]">
@@ -363,9 +398,16 @@ const EmployeeLayout = ({ children }) => {
           </div>
         </header>
 
-        {/* Page content */}
+        {/* Page content — never rendered while module access is unresolved or
+            denied, so an unauthorized page shell can't appear even briefly. */}
         <main className="p-4 lg:p-8 max-w-[1600px] mx-auto">
-          {children}
+          {moduleBlocked || moduleResolving ? (
+            <div className="py-24 text-center text-sm text-slate-500" data-testid="module-access-check">
+              {moduleBlocked ? 'Redirecting…' : 'Checking access…'}
+            </div>
+          ) : (
+            children
+          )}
         </main>
       </div>
     </div>
