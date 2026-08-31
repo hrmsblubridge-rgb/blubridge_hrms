@@ -2,12 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
-import { Download, DollarSign, Users, AlertTriangle, Calendar, Wallet, TrendingUp } from 'lucide-react';
+import { Download, Users, AlertTriangle, Calendar, Wallet, TrendingUp } from 'lucide-react';
 import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { MonthPicker } from '../components/ui/month-picker';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 import { formatDate } from '../lib/dateFormat';
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -17,7 +14,6 @@ const Payroll = () => {
   const [payrollData, setPayrollData] = useState([]);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('attendance');
   const [selectedMonth, setSelectedMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -160,22 +156,15 @@ const Payroll = () => {
   };
 
   const handleExportCSV = () => {
-    let headers, rows, filename;
-    if (activeTab === 'attendance') {
-      headers = ['Sl.No', 'Emp ID', 'Name', 'Shift', ...days.map(d => `${String(d.day).padStart(2, '0')} ${d.dayName}`), 'Total Days', 'Working Days', 'Weekoff Pay / Holiday Pay', 'Extra Pay', 'LOP', 'Payable Days'];
-      rows = payrollData.map((emp, i) => {
-        const dayStatuses = days.map(day => {
-          const detail = emp.attendance_details?.find(a => a.date === day.date);
-          return getStatusDisplay(detail?.status, detail?.is_lop).code;
-        });
-        return [i + 1, emp.emp_id, emp.emp_name, emp.shift_type, ...dayStatuses, emp.total_days, emp.working_days, (emp.weekoff_pay || 0) + (emp.oh_pay || 0), emp.extra_pay, emp.lop, emp.final_payable_days];
+    const headers = ['Sl.No', 'Emp ID', 'Name', 'Shift', ...days.map(d => `${String(d.day).padStart(2, '0')} ${d.dayName}`), 'Total Days', 'Working Days', 'Weekoff Pay / Holiday Pay', 'Extra Pay', 'LOP', 'Payable Days'];
+    const rows = payrollData.map((emp, i) => {
+      const dayStatuses = days.map(day => {
+        const detail = emp.attendance_details?.find(a => a.date === day.date);
+        return getStatusDisplay(detail?.status, detail?.is_lop).code;
       });
-      filename = `payroll-attendance-${selectedMonth}.csv`;
-    } else {
-      headers = ['Sl.No', 'Emp ID', 'Name', 'Salary', 'Working Days', 'Present', 'LOP', 'Deduction', 'Net'];
-      rows = payrollData.map((emp, i) => [i + 1, emp.emp_id, emp.emp_name, emp.monthly_salary, emp.working_days, emp.present_days, emp.lop_days, emp.lop_deduction, emp.net_salary]);
-      filename = `payroll-salary-${selectedMonth}.csv`;
-    }
+      return [i + 1, emp.emp_id, emp.emp_name, emp.shift_type, ...dayStatuses, emp.total_days, emp.working_days, (emp.weekoff_pay || 0) + (emp.oh_pay || 0), emp.extra_pay, emp.lop, emp.final_payable_days];
+    });
+    const filename = `payroll-attendance-${selectedMonth}.csv`;
     const csv = [headers, ...rows].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -185,12 +174,14 @@ const Payroll = () => {
     toast.success('CSV exported');
   };
 
-  // Chart data for salary distribution
-  const chartData = payrollData.slice(0, 10).map(emp => ({
-    name: emp.emp_name?.split(' ')[0] || 'N/A',
-    salary: emp.net_salary || 0,
-    deduction: emp.lop_deduction || 0
-  }));
+  // Month totals shown in the summary cards
+  const totals = payrollData.reduce(
+    (acc, emp) => ({
+      payable: Math.round((acc.payable + (emp.final_payable_days || 0)) * 100) / 100,
+      extra: Math.round((acc.extra + (emp.extra_pay || 0)) * 100) / 100,
+    }),
+    { payable: 0, extra: 0 }
+  );
 
   if (loading) {
     return (
@@ -279,15 +270,14 @@ const Payroll = () => {
 
       {/* Summary Cards */}
       {summary && (
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {[
             { label: 'Total Employees', value: summary.total_employees, icon: Users, color: 'blue' },
-            { label: 'Total Salary', value: `₹${summary.total_salary?.toLocaleString()}`, icon: DollarSign, color: 'emerald' },
-            { label: 'LOP Deductions', value: `₹${summary.total_deductions?.toLocaleString()}`, icon: AlertTriangle, color: 'red', isNeg: true },
-            { label: 'Net Payable', value: `₹${summary.total_net_salary?.toLocaleString()}`, icon: TrendingUp, color: 'teal' },
-            { label: 'Total LOP Days', value: summary.total_lop_days, icon: Calendar, color: 'amber' },
+            { label: 'Total Payable Days', value: totals.payable, icon: TrendingUp, color: 'emerald' },
+            { label: 'Total Extra Payable Days', value: totals.extra, icon: Calendar, color: 'teal' },
+            { label: 'Total LOP Days', value: summary.total_lop_days, icon: AlertTriangle, color: 'amber' },
           ].map((stat, i) => (
-            <div key={i} className="stat-card">
+            <div key={i} className="stat-card" data-testid={`payroll-stat-${i}`}>
               <div className="flex items-center gap-4">
                 <div className={`w-12 h-12 rounded-xl bg-${stat.color}-100 flex items-center justify-center`}>
                   <stat.icon className={`w-6 h-6 text-${stat.color}-600`} />
@@ -302,34 +292,8 @@ const Payroll = () => {
         </div>
       )}
 
-      {/* Chart */}
-      {chartData.length > 0 && (
-        <div className="card-premium p-6">
-          <h3 className="text-lg font-semibold text-slate-900 mb-4" style={{ fontFamily: 'Outfit' }}>Salary Distribution (Top 10)</h3>
-          <div className="h-[200px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#64748b' }} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#64748b' }} />
-                <Tooltip contentStyle={{ backgroundColor: 'white', border: 'none', borderRadius: '12px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)' }} />
-                <Bar dataKey="salary" radius={[4, 4, 0, 0]}>
-                  {chartData.map((_, index) => <Cell key={index} fill={index % 2 === 0 ? '#063c88' : '#10b981'} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-        <TabsList className="bg-slate-100 p-1 rounded-xl">
-          <TabsTrigger value="attendance" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm px-6">Attendance View</TabsTrigger>
-          <TabsTrigger value="salary" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm px-6">Salary View</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="attendance" className="mt-4">
+      {/* Attendance View */}
+      <div className="w-full">
           <div className="card-premium overflow-hidden payroll-attendance-shell">
             {/* Top horizontal scrollbar */}
             <div
@@ -429,84 +393,20 @@ const Payroll = () => {
               </div>
             ))}
           </div>
-        </TabsContent>
 
-        <TabsContent value="salary" className="mt-4">
-          <div className="card-premium overflow-hidden">
-            <div className="overflow-x-auto">
-              <table className="table-premium">
-                <thead className="bg-gradient-to-r from-slate-100 to-slate-50">
-                  <tr>
-                    <th>Sl</th>
-                    <th>Employee</th>
-                    <th>Department</th>
-                    <th className="text-right">Monthly Salary</th>
-                    <th className="text-center">Working</th>
-                    <th className="text-center text-emerald-700">Present</th>
-                    <th className="text-center text-red-700">LOP</th>
-                    <th className="text-center">Leave</th>
-                    <th className="text-center">Absent</th>
-                    <th className="text-right text-red-700">Deduction</th>
-                    <th className="text-right text-emerald-700">Net Salary</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {payrollData.length === 0 ? (
-                    <tr><td colSpan="11" className="text-center py-12 text-slate-500">No payroll data found</td></tr>
-                  ) : (
-                    payrollData.map((emp, index) => (
-                      <tr key={emp.employee_id}>
-                        <td className="text-slate-600">{index + 1}</td>
-                        <td>
-                          <div className="font-medium text-slate-900">{emp.emp_name}</div>
-                          <div className="text-xs text-slate-500">{emp.emp_id}</div>
-                        </td>
-                        <td className="text-slate-600">{emp.department}</td>
-                        <td className="text-right font-medium">₹{emp.monthly_salary?.toLocaleString()}</td>
-                        <td className="text-center text-slate-600">{emp.working_days}</td>
-                        <td className="text-center text-emerald-600 font-semibold">{emp.present_days}</td>
-                        <td className="text-center">
-                          {emp.lop_days > 0 ? <Badge className="badge-error">{emp.lop_days}</Badge> : <span className="text-slate-400">0</span>}
-                        </td>
-                        <td className="text-center text-purple-600">{emp.leave_days}</td>
-                        <td className="text-center text-amber-600">{emp.absent_days}</td>
-                        <td className="text-right font-semibold text-red-600">{emp.lop_deduction > 0 ? `-₹${emp.lop_deduction?.toLocaleString()}` : '-'}</td>
-                        <td className="text-right font-bold text-emerald-600">₹{emp.net_salary?.toLocaleString()}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-                {payrollData.length > 0 && (
-                  <tfoot className="bg-slate-50 font-semibold">
-                    <tr>
-                      <td colSpan="3" className="text-right">Total:</td>
-                      <td className="text-right">₹{summary?.total_salary?.toLocaleString()}</td>
-                      <td className="text-center">-</td>
-                      <td className="text-center text-emerald-600">{summary?.total_present_days}</td>
-                      <td className="text-center text-red-600">{summary?.total_lop_days}</td>
-                      <td colSpan="2"></td>
-                      <td className="text-right text-red-600">-₹{summary?.total_deductions?.toLocaleString()}</td>
-                      <td className="text-right text-emerald-600">₹{summary?.total_net_salary?.toLocaleString()}</td>
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
-            </div>
-          </div>
-          <div className="mt-4 p-4 bg-amber-50 rounded-xl border border-amber-200">
-            <h3 className="font-semibold text-amber-800 mb-2 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4" /> Payroll Calculation Rules
-            </h3>
-            <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
-              <li><strong>Late Coming (LC):</strong> Unapproved late = LOP 0.5 day</li>
-              <li><strong>Half Day (PH):</strong> Less than full hours = LOP 0.5 day</li>
-              <li><strong>Absent (A):</strong> No attendance = LOP 1 day</li>
-              <li><strong>Formula:</strong> Payable Days = Working Days + Weekoff Pay / Holiday Pay − LOP (Extra Pay is paid separately and is NOT added here)</li>
-              <li><strong>Holiday:</strong> every configured holiday adds 1 to Weekoff Pay / Holiday Pay — no work = H, half day worked = HD (Extra Pay +0.5), full day worked = FD (Extra Pay +1)</li>
-            </ul>
-          </div>
-        </TabsContent>
-      </Tabs>
+        <div className="mt-4 p-4 bg-amber-50 rounded-xl border border-amber-200">
+          <h3 className="font-semibold text-amber-800 mb-2 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4" /> Payroll Calculation Rules
+          </h3>
+          <ul className="text-sm text-amber-700 space-y-1 list-disc list-inside">
+            <li><strong>Late Coming (LC):</strong> Unapproved late = LOP 0.5 day</li>
+            <li><strong>Half Day (PH):</strong> Less than full hours = LOP 0.5 day</li>
+            <li><strong>Absent (A):</strong> No attendance = LOP 1 day</li>
+            <li><strong>Formula:</strong> Payable Days = Working Days + Weekoff Pay / Holiday Pay − LOP (Extra Pay is paid separately and is NOT added here)</li>
+            <li><strong>Holiday:</strong> every configured holiday adds 1 to Weekoff Pay / Holiday Pay — no work = H, half day worked = HD (Extra Pay +0.5), full day worked = FD (Extra Pay +1)</li>
+          </ul>
+        </div>
+      </div>
     </div>
   );
 };
