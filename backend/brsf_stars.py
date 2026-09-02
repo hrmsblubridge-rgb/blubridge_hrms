@@ -106,6 +106,27 @@ def _dur_to_minutes(v) -> int:
     return h * 60 + mi + (1 if sec >= 30 else 0)
 
 
+def _is_type(leave: dict, needle: str) -> bool:
+    return needle in (leave.get("leave_type") or "").lower().replace("-", "").replace(" ", "")
+
+
+def _applied_at(leave: dict) -> Optional[datetime]:
+    """Application timestamp (HRMS local/IST as stored)."""
+    try:
+        return datetime.fromisoformat(str(leave.get("created_at")))
+    except (TypeError, ValueError):
+        return None
+
+
+def _has_proof(leave: dict) -> bool:
+    return bool(leave.get("supporting_document_url"))
+
+
+def _leave_dates(leave: dict) -> list:
+    return [leave["_start"] + timedelta(days=i)
+            for i in range((leave["_end"] - leave["_start"]).days + 1)]
+
+
 def _minutes_to_hhmm(mins: float) -> str:
     total = int(round(mins))
     return f"{total // 60:02d}:{total % 60:02d}"
@@ -173,7 +194,7 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     if win_start > m_end:
         return {}
 
-    payroll = await calculate_payroll_for_employee(employee["id"], month, employee=employee)
+    payroll = await calculate_payroll_for_employee(employee["id"], month, employee=employee) or {}
     details = {}
     for d in payroll.get("attendance_details", []):
         dd, mm, yy = d["date"].split("-")
@@ -188,9 +209,10 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     breaches = [{"date": iso, "status": d["status"]} for iso, d in sorted(details.items())
                 if d["status"] in FULL_LEAVE_CODES | HALF_LEAVE_CODES | ABSENT_CODES]
     out["P01"] = {
-        "value": 0 if breaches else 2,
+        "value": 0 if (breaches or not details) else 2,
         "children": breaches,
-        "note": "Disqualified by leave/absence" if breaches else "All applicable working days attended",
+        "note": ("No attendance data for this month" if not details else
+                 ("Disqualified by leave/absence" if breaches else "All applicable working days attended")),
     }
 
     # ---- P05 / N04 weekly research averages (minute based)
@@ -200,7 +222,7 @@ async def compute_system_values(employee: dict, month: str) -> dict:
                     if details.get(_iso(d)) and details[_iso(d)]["status"] not in
                     (FULL_LEAVE_CODES | HALF_LEAVE_CODES | ABSENT_CODES | NON_REQUIRED_CODES)]
         if not eligible:
-            avg = 0.0
+            total, avg = 0, 0.0
             pos, neg = 0, 0
         else:
             total = sum(res_mins.get(_iso(d), 0) for d in eligible)
@@ -210,7 +232,8 @@ async def compute_system_values(employee: dict, month: str) -> dict:
         capped = pos_total + pos > CRITERIA_MAP["P05"][5]
         row = {"week": b["week"], "start": b["start"], "end": b["end"],
                "eligible_days": len(eligible), "avg_minutes": round(avg, 2),
-               "avg_hhmm": _minutes_to_hhmm(avg)}
+               "avg_hhmm": _minutes_to_hhmm(avg),
+               "total_minutes": total, "total_hhmm": _minutes_to_hhmm(total)}
         pos_children.append({**row, "value": 0 if capped else pos,
                              "capped": bool(capped and pos)})
         neg_children.append({**row, "value": neg})
@@ -229,15 +252,22 @@ async def compute_system_values(employee: dict, month: str) -> dict:
                        "work": "Full Day" if d["status"] == "FD" else "Half Day", "value": 1})
     out["P06"] = {"value": len(ee), "children": ee}
 
-    # ---- N03 Frequent Emergencies (> 2 instances in the month → one -3)
-    em = []
+    # ---- Leaves overlapping the eligible window (single fetch, reused below)
+    leaves = []
     async for lv in db.leaves.find(
-        {"employee_id": employee["id"], "leave_type": "Emergency", "status": "approved"},
-        {"_id": 0, "id": 1, "start_date": 1, "end_date": 1, "leave_split": 1},
+        {"employee_id": employee["id"], "status": "approved"},
+        {"_id": 0, "id": 1, "leave_type": 1, "leave_split": 1, "start_date": 1, "end_date": 1,
+         "created_at": 1, "supporting_document_url": 1, "reason": 1},
     ):
         s, e = _parse_iso(lv.get("start_date")), _parse_iso(lv.get("end_date") or lv.get("start_date"))
         if s and e and not (e < win_start or s > m_end):
-            em.append({"date": lv.get("start_date"), "split": lv.get("leave_split"), "value": 0})
+            lv["_start"], lv["_end"] = s, e
+            leaves.append(lv)
+    leaves.sort(key=lambda x: x["_start"])
+
+    # ---- N03 Frequent Emergencies (> 2 instances in the month → one -3)
+    em = [{"date": lv["start_date"], "split": lv.get("leave_split"), "value": 0}
+          for lv in leaves if _is_type(lv, "emergency")]
     out["N03"] = {"value": -3 if len(em) >= 3 else 0, "children": em,
                   "note": f"{len(em)} emergency leave instance(s); up to 2 allowed"}
 
@@ -252,9 +282,88 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     out["N06"] = {"value": -3 if equiv >= 4.5 else 0, "children": abs_children,
                   "note": f"{equiv} absence-equivalent day(s); up to 4.0 allowed"}
 
-    # ---- Phase 2 automated rules (exist with 0 until implemented)
-    for code in ("N01", "N02", "N05"):
-        out[code] = {"value": 0, "children": [], "note": "Automation pending (phase 2)"}
+    # ---- N01 Invalid Leave Request (-1 max per Sick / Pre-planned instance)
+    n01 = []
+    for lv in leaves:
+        if not (_is_type(lv, "sick") or _is_type(lv, "preplan")):
+            continue
+        applied, split = _applied_at(lv), (lv.get("leave_split") or "Full Day")
+        reasons = []
+        if not applied:
+            reasons.append("No HRMS application record")
+        elif _is_type(lv, "sick"):
+            if split == "Second Half":
+                if applied.date() > lv["_start"]:
+                    reasons.append("Second-half sick leave applied after the leave date")
+            else:
+                deadline = datetime.combine(lv["_start"], datetime.min.time(),
+                                            tzinfo=applied.tzinfo).replace(hour=7)
+                if applied > deadline:
+                    reasons.append(f"Applied {applied.strftime('%d-%b %H:%M')} — after 07:00 AM deadline")
+        else:  # pre-planned: at least 4 days in advance
+            if (lv["_start"] - applied.date()).days < 4:
+                reasons.append(f"Applied only {(lv['_start'] - applied.date()).days} day(s) in advance "
+                               "(4 days required)")
+        if reasons:
+            n01.append({"date": lv["start_date"], "leave_type": lv.get("leave_type"),
+                        "split": split, "applied_at": lv.get("created_at"),
+                        "reason": "; ".join(reasons), "value": -1})  # capped at -1 per instance
+    out["N01"] = {"value": -len(n01), "children": n01,
+                  "note": f"{len(n01)} invalid sick/pre-planned leave instance(s)"}
+
+    # ---- N02 Emergency Leave Violation (-2 max per emergency instance)
+    n02 = []
+    for lv in leaves:
+        if not _is_type(lv, "emergency"):
+            continue
+        applied, split = _applied_at(lv), (lv.get("leave_split") or "Full Day")
+        reasons = []
+        if not applied:
+            reasons.append("No HRMS application/notification record")
+        elif split == "Second Half":
+            if applied.date() > lv["_start"]:
+                reasons.append("Second-half emergency notified after the leave date")
+        else:
+            deadline = datetime.combine(lv["_start"], datetime.min.time(),
+                                        tzinfo=applied.tzinfo).replace(hour=9)
+            if applied > deadline:
+                reasons.append(f"Notified {applied.strftime('%d-%b %H:%M')} — after 09:00 AM deadline")
+        if not (_has_proof(lv) or (lv.get("reason") or "").strip()):
+            reasons.append("No proof or justification provided within 24 hours")
+        if reasons:
+            n02.append({"date": lv["start_date"], "split": split, "applied_at": lv.get("created_at"),
+                        "reason": "; ".join(reasons), "value": -2})  # capped at -2 per instance
+    out["N02"] = {"value": -2 * len(n02), "children": n02,
+                  "note": f"{len(n02)} violating emergency leave instance(s)"}
+
+    # ---- N05 No Proof / Verification (-3 per consecutive leave sequence)
+    by_date = {}
+    for lv in leaves:
+        for d in _leave_dates(lv):
+            if win_start <= d <= m_end:
+                by_date.setdefault(d, []).append(lv)
+    sequences, cur_seq = [], []
+    for d in sorted(by_date):
+        if cur_seq and (d - cur_seq[-1]).days > 1:
+            sequences.append(cur_seq); cur_seq = []
+        cur_seq.append(d)
+    if cur_seq:
+        sequences.append(cur_seq)
+    n05 = []
+    for seq in sequences:
+        if len(seq) < 2:
+            continue  # single-day leaves are handled by N01 / N02
+        seq_leaves = {lv["id"]: lv for d in seq for lv in by_date[d]}.values()
+        proof = any(_has_proof(lv) for lv in seq_leaves)
+        n05.append({
+            "start": _iso(seq[0]), "end": _iso(seq[-1]), "days": len(seq),
+            "leave_types": sorted({lv.get("leave_type") for lv in seq_leaves}),
+            "proof_uploaded": proof,
+            "value": 0 if proof else -3,
+        })
+    out["N05"] = {"value": sum(c["value"] for c in n05), "children": n05,
+                  "note": f"{len(n05)} consecutive leave sequence(s) checked "
+                          "(one document anywhere in a sequence satisfies it)"}
     return out
 
 
@@ -365,7 +474,13 @@ async def brsf_stars(employee_id: str, month: str, current_user: dict = Depends(
                             detail="Employee is not eligible for BRSF stars in this month "
                                    "(Research Unit + confirmed employees only).")
     lines = await sync_lines(emp, month)
-    return {"employee": emp, "month": month, "lines": lines, "totals": _totals(lines)}
+    m_start, m_end = _month_bounds(month)
+    conf = _parse_iso(emp.get("confirmation_date"))
+    win_start = max(m_start, conf) if conf else m_start
+    weeks = [{"week": b["week"], "start": b["start"], "end": b["end"]}
+             for b in _week_buckets(win_start, m_end)]
+    return {"employee": emp, "month": month, "lines": lines,
+            "weeks": weeks, "totals": _totals(lines)}
 
 
 @api_router.post("/brsf/recalculate")

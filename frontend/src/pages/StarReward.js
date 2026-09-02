@@ -15,6 +15,7 @@ import { Textarea } from '../components/ui/textarea';
 import { MonthPicker } from '../components/ui/month-picker';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { PageSizeSelector } from '../components/PageSizeSelector';
+import BrsfFramework from '../components/brsf/BrsfFramework';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -705,6 +706,9 @@ const StarReward = () => {
             <TabsTrigger value="teams" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm px-6" data-testid="tab-teams">
               <Award className="w-4 h-4 mr-2" /> Teams
             </TabsTrigger>
+            <TabsTrigger value="brsf" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm px-6" data-testid="tab-brsf">
+              <Sparkles className="w-4 h-4 mr-2" /> BRSF Framework
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="employees" className="mt-4">
@@ -869,6 +873,10 @@ const StarReward = () => {
                 </div>
               ))}
             </div>
+          </TabsContent>
+
+          <TabsContent value="brsf" className="mt-4">
+            <BrsfFramework />
           </TabsContent>
         </Tabs>
       </div>
