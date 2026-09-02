@@ -19386,6 +19386,12 @@ try:
 except Exception as _e:
     print(f"Payslip security module load failed: {_e}")
 
+# BRSF — BluBridge Research Star Framework (14-criteria star engine)
+try:
+    import brsf_stars  # noqa: F401
+except Exception as _e:
+    print(f"BRSF star module load failed: {_e}")
+
 # Credential-Email delivery — retriable welcome-email system + resend endpoint
 try:
     import credential_email  # noqa: F401
@@ -19723,6 +19729,12 @@ async def ensure_indexes():
         await ensure_payslip_security_seed()
     except Exception as e:
         print(f"Payslip security seed failed: {e}")
+
+    try:
+        from brsf_stars import ensure_brsf_indexes
+        await ensure_brsf_indexes()
+    except Exception as e:
+        print(f"BRSF index setup failed: {e}")
 
     # 2026-05-22 — Refresh any policy whose code-side `version` is newer than
     # the DB record (so content updates pushed via deploy reach existing

@@ -105,3 +105,5 @@ Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "
   `db.payslip_auth_attempts.delete_many({})`.
 - Test suites: `/app/backend/tests/test_payslip_auth_layer.py` (13),
   `/app/backend/tests/payslip_auth_probe.py`.
+
+- 2026-06-09: `madhan.s` password re-synced again to `Vigil@123` (method=agent_brsf_test_resync). It drifts often — re-sync via `db.users.update_one({'username':...},{'$set':{'password_hash': sha256('Vigil@123')}})` if a login returns 401.
