@@ -450,6 +450,11 @@ const BrsfFramework = () => {
                           </td>
                           <td className="px-3 py-3">
                             <Badge variant="outline" className={`text-xs ${STATUS_STYLE[status]}`} data-testid={`brsf-status-${line.code}`}>{status}</Badge>
+                            {line.validation?.invalid && (
+                              <Badge variant="outline" className="ml-1 text-xs bg-red-100 text-red-700 border-red-200"
+                                title={`${line.validation.reasons.join(' ')} ${line.validation.hint}`}
+                                data-testid={`brsf-invalid-${line.code}`}>Invalid value</Badge>
+                            )}
                           </td>
                           <td className="px-3 py-3">
                             <div className="flex items-center justify-end gap-1">
@@ -561,10 +566,28 @@ const BrsfFramework = () => {
 };
 
 const OverrideDialog = ({ line, onClose, onSaved, headers }) => {
+  const parent = line.limits?.parent || {};
+  const allowed = parent.allowed || null;
   const [value, setValue] = useState(line.override_value ?? line.system_value ?? 0);
   const [reason, setReason] = useState(line.override_reason || '');
   const [saving, setSaving] = useState(false);
+  const message = line.limits?.message || '';
+  const rangeLabel = allowed
+    ? allowed.map((v) => fmt(v)).join(' or ')
+    : `${fmt(parent.min ?? 0)} to ${fmt(parent.max ?? 0)}`;
+
+  const localError = () => {
+    if (value === '' || value === null || value === undefined) return 'A star value is required.';
+    const n = Number(value);
+    if (!Number.isInteger(n)) return 'Stars must be a whole number — fractional stars are not allowed.';
+    if (allowed) return allowed.includes(n) ? null : (message || `Allowed values: ${rangeLabel}.`);
+    if (n < (parent.min ?? 0) || n > (parent.max ?? 0)) return message || `Allowed range is ${rangeLabel}.`;
+    return null;
+  };
+
   const save = async () => {
+    const err = localError();
+    if (err) { toast.error(err); return; }
     setSaving(true);
     try {
       const res = await axios.put(`${API}/brsf/stars/${line.id}/override`, { value: Number(value), reason }, { headers });
@@ -583,14 +606,25 @@ const OverrideDialog = ({ line, onClose, onSaved, headers }) => {
         <DialogHeader>
           <DialogTitle>Override — {line.code} {line.name}</DialogTitle>
           <DialogDescription>
-            System calculated: <b>{fmt(line.system_value)}</b>
-            {line.cap ? ` · Allowed up to ${line.sign > 0 ? '+' : '-'}${line.cap}` : ''}
+            System calculated: <b>{fmt(line.system_value)}</b> · Allowed: <b>{rangeLabel}</b>
+            {line.limits?.child_count ? ` (${line.limits.child_count} qualifying record(s))` : ''}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div>
             <Label className="mb-1.5 block">Override star value</Label>
-            <Input type="number" step="0.5" value={value} onChange={(e) => setValue(e.target.value)} data-testid="brsf-override-value" />
+            {allowed ? (
+              <Select value={String(value)} onValueChange={(v) => setValue(Number(v))}>
+                <SelectTrigger data-testid="brsf-override-value"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {allowed.map((v) => <SelectItem key={v} value={String(v)}>{fmt(v)}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input type="number" step="1" min={parent.min} max={parent.max} value={value}
+                onChange={(e) => setValue(e.target.value)} data-testid="brsf-override-value" />
+            )}
+            {message && <p className="text-xs text-slate-500 mt-1.5" data-testid="brsf-override-rule">{message}</p>}
           </div>
           <div>
             <Label className="mb-1.5 block">Reason</Label>
@@ -618,8 +652,20 @@ const ManualDialog = ({ line, weeks, onClose, onSaved, headers }) => {
   }));
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
+  const monthlyMax = line.limits?.monthly?.max ?? line.cap ?? 0;
+  const weeklyTotal = weekly.reduce((s, w) => s + (Number(w.value) || 0), 0);
 
   const save = async () => {
+    if (mode === 'monthly') {
+      const n = Number(monthlyValue);
+      if (!Number.isInteger(n) || n < 0 || n > monthlyMax) {
+        toast.error(line.limits?.monthly_message || `Allowed range is 0 to +${monthlyMax}.`);
+        return;
+      }
+    } else if (weeklyTotal > monthlyMax) {
+      toast.error(`${line.name} cannot exceed +${monthlyMax} star(s) per month — the weekly entries total +${weeklyTotal}.`);
+      return;
+    }
     setSaving(true);
     try {
       const payload = mode === 'monthly'
@@ -641,7 +687,7 @@ const ManualDialog = ({ line, weeks, onClose, onSaved, headers }) => {
       <DialogContent className="max-w-lg" data-testid="brsf-manual-dialog">
         <DialogHeader>
           <DialogTitle>Manual Entry — {line.code} {line.name}</DialogTitle>
-          <DialogDescription>Maximum {line.cap} star(s) per month for this criteria.</DialogDescription>
+          <DialogDescription>{line.limits?.monthly_message || `Maximum ${monthlyMax} star(s) per month.`}</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           {weeklyAllowed && (
@@ -658,12 +704,15 @@ const ManualDialog = ({ line, weeks, onClose, onSaved, headers }) => {
           )}
           {mode === 'monthly' ? (
             <div>
-              <Label className="mb-1.5 block">Monthly star value</Label>
-              <Input type="number" min="0" max={line.cap ?? undefined} step="1" value={monthlyValue}
+              <Label className="mb-1.5 block">Monthly star value (0 to +{monthlyMax})</Label>
+              <Input type="number" min="0" max={monthlyMax} step="1" value={monthlyValue}
                 onChange={(e) => setMonthlyValue(e.target.value)} data-testid="brsf-manual-monthly-value" />
             </div>
           ) : (
             <div className="space-y-2">
+              <p className="text-xs text-slate-500" data-testid="brsf-manual-weekly-rule">
+                {line.limits?.weekly_message} Weekly total: <b>{fmt(weeklyTotal)}</b> of max +{monthlyMax}
+              </p>
               {weekly.map((w, i) => (
                 <div key={w.week} className="flex items-center justify-between gap-3 border border-slate-200 rounded-lg px-3 py-2">
                   <span className="text-sm text-slate-700">Week {w.week} <span className="text-xs text-slate-400">({w.start} → {w.end})</span></span>
@@ -695,17 +744,17 @@ const ManualDialog = ({ line, weeks, onClose, onSaved, headers }) => {
 };
 
 const InstanceDialog = ({ line, instance, onClose, onSaved, headers }) => {
+  const fixedValue = line.limits?.child?.fixed ?? (line.code === 'N07' ? -3 : -4);
   const [form, setForm] = useState({
     date: instance?.date || new Date().toISOString().slice(0, 10),
     time: instance?.time || '',
     remarks: instance?.remarks || '',
-    value: instance?.value ?? (line.code === 'N07' ? -3 : -4),
   });
   const [saving, setSaving] = useState(false);
   const save = async () => {
     setSaving(true);
     try {
-      const body = { ...form, value: Number(form.value) };
+      const body = { ...form, value: fixedValue };
       const res = instance
         ? await axios.put(`${API}/brsf/stars/${line.id}/instances/${instance.id}`, body, { headers })
         : await axios.post(`${API}/brsf/stars/${line.id}/instances`, body, { headers });
@@ -723,7 +772,7 @@ const InstanceDialog = ({ line, instance, onClose, onSaved, headers }) => {
       <DialogContent className="max-w-md" data-testid="brsf-instance-dialog">
         <DialogHeader>
           <DialogTitle>{instance ? 'Edit' : 'Add'} Instance — {line.code} {line.name}</DialogTitle>
-          <DialogDescription>Negative criteria — the star value must be zero or negative.</DialogDescription>
+          <DialogDescription>{line.limits?.message}</DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
@@ -737,8 +786,8 @@ const InstanceDialog = ({ line, instance, onClose, onSaved, headers }) => {
             </div>
           </div>
           <div>
-            <Label className="mb-1.5 block">Star value</Label>
-            <Input type="number" step="1" max="0" value={form.value} onChange={(e) => setForm({ ...form, value: e.target.value })} data-testid="brsf-instance-value" />
+            <Label className="mb-1.5 block">Star value (fixed)</Label>
+            <Input type="number" value={fixedValue} readOnly disabled className="bg-slate-100" data-testid="brsf-instance-value" />
           </div>
           <div>
             <Label className="mb-1.5 block">Remarks</Label>

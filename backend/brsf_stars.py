@@ -27,6 +27,14 @@ from server import (
     get_current_user,
     get_ist_now,
 )
+from brsf_validation import (
+    limits_for,
+    line_violation,
+    validate_instance_value,
+    validate_monthly_entry,
+    validate_override,
+    validate_weekly_entries,
+)
 
 # Eligible departments — "AI Search" is accepted as the renamed form of the
 # same unit so a department rename in the employee master needs no code change.
@@ -420,6 +428,8 @@ async def sync_lines(employee: dict, month: str) -> list:
         doc["status"] = ("Manually Overridden" if doc["override_value"] is not None
                          else ("Auto" if ctype == "automated" else "Manual"))
         await db.brsf_star_lines.update_one(key, {"$set": doc}, upsert=True)
+        doc["limits"] = limits_for(doc)
+        doc["validation"] = line_violation(doc)
         lines.append(doc)
     return lines
 
@@ -451,11 +461,15 @@ async def _get_line(line_id: str) -> dict:
 
 
 async def _save_line(line: dict) -> dict:
+    line.pop("limits", None)
+    line.pop("validation", None)
     line["final_value"] = _resolve_final(line)
     line["status"] = ("Manually Overridden" if line.get("override_value") is not None
                       else ("Auto" if line["type"] == "automated" else "Manual"))
     line["updated_at"] = _utc_now_iso()
     await db.brsf_star_lines.update_one({"id": line["id"]}, {"$set": line})
+    line["limits"] = limits_for(line)
+    line["validation"] = line_violation(line)
     return line
 
 
@@ -547,17 +561,7 @@ async def brsf_override(line_id: str, payload: dict = Body(...),
                         current_user: dict = Depends(get_current_user)):
     _require_star_admin(current_user)
     line = await _get_line(line_id)
-    sign, cap = line["sign"], line.get("cap")
-    try:
-        value = float(payload.get("value"))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="A numeric star value is required")
-    if sign > 0 and value < 0:
-        raise HTTPException(status_code=400, detail="Positive criteria cannot hold a negative star value")
-    if sign < 0 and value > 0:
-        raise HTTPException(status_code=400, detail="Negative criteria cannot hold a positive star value")
-    if cap is not None and abs(value) > cap:
-        raise HTTPException(status_code=400, detail=f"Maximum allowed is {cap} star(s) for this criteria")
+    value = validate_override(line, payload.get("value"))
     prev = line["final_value"]
     line.update({"override_value": value, "override_reason": payload.get("reason"),
                  "changed_by": current_user.get("full_name") or current_user.get("username"),
@@ -588,7 +592,6 @@ async def brsf_manual_entry(line_id: str, payload: dict = Body(...),
     line = await _get_line(line_id)
     if line["type"] != "manual" or line["code"] in MANUAL_INSTANCE_CODES:
         raise HTTPException(status_code=400, detail="This criteria does not accept a manual monthly/weekly value")
-    cap = line["cap"]
     mode = payload.get("entry_mode", line.get("entry_mode") or "monthly")
     if mode not in ("monthly", "weekly"):
         raise HTTPException(status_code=400, detail="entry_mode must be 'monthly' or 'weekly'")
@@ -596,20 +599,10 @@ async def brsf_manual_entry(line_id: str, payload: dict = Body(...),
         raise HTTPException(status_code=400, detail="This criteria supports monthly entry only")
     prev = line["final_value"]
     if mode == "monthly":
-        try:
-            val = float(payload.get("monthly_value", line.get("manual_value") or 0))
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="A numeric star value is required")
-        if val < 0 or (cap is not None and val > cap):
-            raise HTTPException(status_code=400, detail=f"Allowed range is 0 to {cap}")
-        line["manual_value"] = val  # weekly history is kept, not deleted
+        line["manual_value"] = validate_monthly_entry(
+            line, payload.get("monthly_value", line.get("manual_value") or 0))
     else:
-        weekly = payload.get("weekly") or []
-        for w in weekly:
-            v = float(w.get("value") or 0)
-            if v not in (0, 1):
-                raise HTTPException(status_code=400, detail="Each week may only be 0 or +1")
-        line["weekly"] = weekly
+        line["weekly"] = validate_weekly_entries(line, payload.get("weekly") or [])
     line["entry_mode"] = mode
     line = await _save_line(line)
     await _audit(current_user, line, prev, line["final_value"], payload.get("reason"), f"manual:{mode}")
@@ -623,9 +616,7 @@ async def brsf_add_instance(line_id: str, payload: dict = Body(...),
     line = await _get_line(line_id)
     if line["code"] not in MANUAL_INSTANCE_CODES:
         raise HTTPException(status_code=400, detail="This criteria does not accept manual instances")
-    value = float(payload.get("value", DEFAULT_INSTANCE_STAR[line["code"]]))
-    if value > 0:
-        raise HTTPException(status_code=400, detail="Negative criteria cannot hold a positive star value")
+    value = validate_instance_value(line, payload.get("value"))
     prev = line["final_value"]
     inst = {
         "id": str(uuid.uuid4()),
@@ -650,10 +641,7 @@ async def brsf_edit_instance(line_id: str, instance_id: str, payload: dict = Bod
         raise HTTPException(status_code=404, detail="Instance not found")
     prev = line["final_value"]
     if "value" in payload:
-        v = float(payload["value"])
-        if v > 0:
-            raise HTTPException(status_code=400, detail="Negative criteria cannot hold a positive star value")
-        inst["value"] = v
+        inst["value"] = validate_instance_value(line, payload["value"])
     for f in ("date", "time", "remarks"):
         if f in payload:
             inst[f] = payload[f]
