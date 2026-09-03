@@ -52,6 +52,8 @@ const BrsfFramework = () => {
   const [auditOpen, setAuditOpen] = useState(false);
   const [audit, setAudit] = useState([]);
   const [viewMode, setViewMode] = useState('table');
+  const [monthCompleted, setMonthCompleted] = useState(true);
+  const [childEdit, setChildEdit] = useState(null);
 
   const loadEmployees = useCallback(async () => {
     setLoadingEmp(true);
@@ -90,6 +92,7 @@ const BrsfFramework = () => {
     try {
       const res = await axios.get(`${API}/brsf/summary`, { params: { month }, headers: getAuthHeaders() });
       setSummary(res.data.rows || []);
+      setMonthCompleted(!!res.data.month_completed);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed to load star summary');
       setSummary([]);
@@ -225,12 +228,13 @@ const BrsfFramework = () => {
                 className={`rounded-none px-4 h-full ${viewMode === 'grid' ? 'bg-[#063c88] text-white hover:bg-[#052f6b]' : ''}`} data-testid="brsf-view-grid">Grid View</Button>
             </div>
           )}
-          <Button onClick={recalculate} disabled={recalculating} className="bg-amber-500 hover:bg-amber-600 text-white rounded-lg" data-testid="brsf-recalculate-btn"
-            title={employeeId ? `Auto Calculate ${month} for the selected employee` : `Auto Calculate ${month} for all eligible employees`}>
+          <Button onClick={recalculate} disabled={recalculating || !monthCompleted} className="bg-amber-500 hover:bg-amber-600 text-white rounded-lg" data-testid="brsf-recalculate-btn"
+            title={!monthCompleted ? 'Star Rewards can be generated only after the selected month is completed'
+              : (employeeId ? `Auto Calculate ${month} for the selected employee` : `Auto Calculate ${month} for all eligible employees`)}>
             {recalculating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
             Auto Calculate
           </Button>
-          <BrsfExportImport month={month} headers={getAuthHeaders()}
+          <BrsfExportImport month={month} headers={getAuthHeaders()} importDisabled={!monthCompleted}
             onImported={() => { loadSummary(); loadStars(); }} />
           {employeeId && (
             <Button variant="outline" onClick={exportCsv} className="rounded-lg" data-testid="brsf-export-btn">
@@ -249,9 +253,16 @@ const BrsfFramework = () => {
           )}
         </div>
         <p className="text-xs text-slate-500 mt-3">
-          Eligibility: Research Unit · Full-time (non-intern) · Confirmed — from the confirmation month onwards
-          (the confirmation month is calculated from the confirmation date, not the 1st). Auto Calculate runs for the selected month only.
+          Eligibility: Research Unit · Full-time (non-intern) · Confirmed — from the confirmation month up to
+          the month before the employee went inactive. Auto Calculate runs for the selected month only.
         </p>
+        {!monthCompleted && (
+          <div className="mt-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800"
+            data-testid="brsf-incomplete-month-banner">
+            Star Rewards can be generated only after the selected month is completed. Viewing is allowed,
+            but Auto Calculate, manual entries, overrides and sheet import are disabled for this month.
+          </div>
+        )}
       </div>
 
       {loading && (
@@ -448,6 +459,12 @@ const BrsfFramework = () => {
                           </td>
                           <td className="px-3 py-3 text-right number-display text-slate-700">
                             {line.type === 'automated' ? fmt(line.system_value) : '--'}
+                            {line.child_aggregate !== null && line.child_aggregate !== undefined
+                              && line.child_aggregate !== line.system_value && (
+                              <span className="block text-[11px] text-amber-600" data-testid={`brsf-aggregate-${line.code}`}>
+                                child total {fmt(line.child_aggregate)}
+                              </span>
+                            )}
                           </td>
                           <td className="px-3 py-3 text-right number-display text-slate-700">{manualCol}</td>
                           <td className={`px-3 py-3 text-right number-display font-bold ${line.final_value > 0 ? 'text-emerald-600' : line.final_value < 0 ? 'text-rose-600' : 'text-slate-400'}`} data-testid={`brsf-final-${line.code}`}>
@@ -464,22 +481,22 @@ const BrsfFramework = () => {
                           <td className="px-3 py-3">
                             <div className="flex items-center justify-end gap-1">
                               {line.type === 'automated' && (
-                                <Button size="sm" variant="ghost" onClick={() => setOverrideLine(line)} title="Override" data-testid={`brsf-override-${line.code}`}>
+                                <Button size="sm" variant="ghost" disabled={!monthCompleted} onClick={() => setOverrideLine(line)} title="Override" data-testid={`brsf-override-${line.code}`}>
                                   <Pencil className="w-3.5 h-3.5" />
                                 </Button>
                               )}
                               {line.type === 'manual' && !['N07', 'N08'].includes(line.code) && (
-                                <Button size="sm" variant="ghost" onClick={() => setManualLine(line)} title="Manual entry" data-testid={`brsf-manual-${line.code}`}>
+                                <Button size="sm" variant="ghost" disabled={!monthCompleted} onClick={() => setManualLine(line)} title="Manual entry" data-testid={`brsf-manual-${line.code}`}>
                                   <Pencil className="w-3.5 h-3.5" />
                                 </Button>
                               )}
                               {['N07', 'N08'].includes(line.code) && (
-                                <Button size="sm" variant="ghost" onClick={() => setInstanceLine({ line, instance: null })} title="Add instance" data-testid={`brsf-add-instance-${line.code}`}>
+                                <Button size="sm" variant="ghost" disabled={!monthCompleted} onClick={() => setInstanceLine({ line, instance: null })} title="Add instance" data-testid={`brsf-add-instance-${line.code}`}>
                                   <Plus className="w-3.5 h-3.5" />
                                 </Button>
                               )}
                               {line.override_value !== null && line.override_value !== undefined && (
-                                <Button size="sm" variant="ghost" onClick={() => resetOverride(line)} title="Reset override" data-testid={`brsf-reset-${line.code}`}>
+                                <Button size="sm" variant="ghost" disabled={!monthCompleted} onClick={() => resetOverride(line)} title="Reset override" data-testid={`brsf-reset-${line.code}`}>
                                   <RotateCcw className="w-3.5 h-3.5" />
                                 </Button>
                               )}
@@ -492,6 +509,18 @@ const BrsfFramework = () => {
                               <BrsfChildTable
                                 line={line}
                                 rows={children}
+                                canEdit={monthCompleted}
+                                onEditChild={(child) => setChildEdit({ line, child })}
+                                onResetChild={async (child) => {
+                                  try {
+                                    const res = await axios.post(`${API}/brsf/stars/${line.id}/child-override/reset`,
+                                      { key: child.key }, { headers: getAuthHeaders() });
+                                    patchLine(res.data);
+                                    toast.success(`${line.code} record reset to the system value`);
+                                  } catch (e) {
+                                    toast.error(e.response?.data?.detail || 'Reset failed');
+                                  }
+                                }}
                                 onEditInstance={(inst) => setInstanceLine({ line, instance: inst })}
                                 onDeleteInstance={async (inst) => {
                                   try {
@@ -521,6 +550,9 @@ const BrsfFramework = () => {
       )}
       {manualLine && (
         <ManualDialog line={manualLine} weeks={data?.weeks || []} onClose={() => setManualLine(null)} onSaved={patchLine} headers={getAuthHeaders()} />
+      )}
+      {childEdit && (
+        <ChildOverrideDialog {...childEdit} onClose={() => setChildEdit(null)} onSaved={patchLine} headers={getAuthHeaders()} />
       )}
       {instanceLine && (
         <InstanceDialog {...instanceLine} onClose={() => setInstanceLine(null)} onSaved={patchLine} headers={getAuthHeaders()} />
@@ -740,6 +772,91 @@ const ManualDialog = ({ line, weeks, onClose, onSaved, headers }) => {
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button onClick={save} disabled={saving} className="bg-[#063c88] text-white" data-testid="brsf-manual-save">
+            {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+const ChildOverrideDialog = ({ line, child, onClose, onSaved, headers }) => {
+  const allowed = line.limits?.child?.allowed || [0, line.sign > 0 ? 1 : -1];
+  const current = child.override ?? child.system_value ?? child.value ?? 0;
+  const [value, setValue] = useState(allowed.includes(current) ? current : allowed[0]);
+  const [note, setNote] = useState(child.override_note || '');
+  const [saving, setSaving] = useState(false);
+  const label = child.week ? `Week ${child.week} (${child.start} → ${child.end})`
+    : (child.date || child.start || child.key);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const res = await axios.put(`${API}/brsf/stars/${line.id}/child-override`,
+        { key: child.key, value: Number(value), note }, { headers });
+      onSaved(res.data);
+      toast.success(`${line.code} · ${label} updated`);
+      onClose();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reset = async () => {
+    setSaving(true);
+    try {
+      const res = await axios.post(`${API}/brsf/stars/${line.id}/child-override/reset`,
+        { key: child.key }, { headers });
+      onSaved(res.data);
+      toast.success('Reset to the system calculated value');
+      onClose();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Reset failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="max-w-md" data-testid="brsf-child-dialog">
+        <DialogHeader>
+          <DialogTitle>{line.code} · {label}</DialogTitle>
+          <DialogDescription>
+            System calculated: <b>{fmt(child.system_value ?? child.value)}</b>
+            {child.leave_type ? ` · ${child.leave_type} · ${child.split}` : ''}
+            {child.avg_hhmm ? ` · average ${child.avg_hhmm}` : ''}
+            <span className="block mt-1">{line.limits?.weekly_message || line.limits?.message}</span>
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div>
+            <Label className="mb-1.5 block">Star value for this record</Label>
+            <Select value={String(value)} onValueChange={(v) => setValue(Number(v))}>
+              <SelectTrigger data-testid="brsf-child-value"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {allowed.map((v) => <SelectItem key={v} value={String(v)}>{fmt(v)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="mb-1.5 block">Override note</Label>
+            <Textarea value={note} onChange={(e) => setNote(e.target.value)} rows={3} data-testid="brsf-child-note" />
+          </div>
+          {child.leave_reason && (
+            <p className="text-xs text-slate-500">Employee's leave reason: “{child.leave_reason}”</p>
+          )}
+        </div>
+        <DialogFooter>
+          {child.override !== null && child.override !== undefined && (
+            <Button variant="outline" onClick={reset} disabled={saving} data-testid="brsf-child-reset-btn">
+              <RotateCcw className="w-4 h-4 mr-2" /> Reset to System
+            </Button>
+          )}
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={save} disabled={saving} className="bg-[#063c88] text-white" data-testid="brsf-child-save">
             {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />} Save
           </Button>
         </DialogFooter>

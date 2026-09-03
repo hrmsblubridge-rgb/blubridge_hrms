@@ -10,7 +10,7 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
 const monthLabel = (m) => new Date(`${m}-01T00:00:00`).toLocaleString('en-US', { month: 'long', year: 'numeric' });
 
-export const BrsfExportImport = ({ month, headers, onImported }) => {
+export const BrsfExportImport = ({ month, headers, onImported, importDisabled }) => {
   const fileRef = useRef(null);
   const [busy, setBusy] = useState('');
   const [preview, setPreview] = useState(null);
@@ -83,7 +83,9 @@ export const BrsfExportImport = ({ month, headers, onImported }) => {
         {busy === 'csv' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />}
         Export CSV
       </Button>
-      <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={!!busy} className="rounded-lg" data-testid="brsf-import-btn">
+      <Button variant="outline" onClick={() => fileRef.current?.click()} disabled={!!busy || importDisabled}
+        title={importDisabled ? 'Import is available only for completed months' : 'Import an edited BRSF sheet'}
+        className="rounded-lg" data-testid="brsf-import-btn">
         {busy === 'import' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />}
         Import Excel/CSV
       </Button>

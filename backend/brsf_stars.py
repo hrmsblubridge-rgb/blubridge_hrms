@@ -30,6 +30,7 @@ from server import (
 from brsf_validation import (
     limits_for,
     line_violation,
+    validate_child_override,
     validate_instance_value,
     validate_monthly_entry,
     validate_override,
@@ -40,6 +41,10 @@ from brsf_validation import (
 # same unit so a department rename in the employee master needs no code change.
 RESEARCH_DEPARTMENTS = ["Research Unit", "AI Search"]
 INTERN_TYPE = "Intern"
+MONTH_LABELS = ["January", "February", "March", "April", "May", "June", "July",
+                "August", "September", "October", "November", "December"]
+# criteria whose parent value is the aggregate of its child records
+CHILD_DRIVEN_CODES = {"P05", "P06", "N01", "N02", "N04", "N05"}
 
 # code, name, sign(+1/-1), type, frequency, cap(absolute)
 CRITERIA = [
@@ -160,22 +165,50 @@ def _week_buckets(start: date, end: date):
     return buckets
 
 
-async def eligible_employees(month: str) -> list:
-    _, m_end = _month_bounds(month)
-    rows = []
-    async for e in db.employees.find(
+async def _month_eligible_employees_raw() -> list:
+    """All BRSF-scope employees (any month) — used by range reports."""
+    return [e async for e in db.employees.find(
         {"is_deleted": {"$ne": True}, "department": {"$in": RESEARCH_DEPARTMENTS},
          "employment_type": {"$ne": INTERN_TYPE}, "confirmation_date": {"$nin": [None, ""]}},
         {"_id": 0, "id": 1, "full_name": 1, "custom_employee_id": 1, "emp_id": 1,
          "confirmation_date": 1, "employee_status": 1, "designation": 1,
-         "team": 1, "date_of_joining": 1, "email": 1},
-    ):
-        conf = _parse_iso(e.get("confirmation_date"))
-        if not conf or conf > m_end:
-            continue  # not yet confirmed in/ before this month
-        rows.append(e)
+         "team": 1, "date_of_joining": 1, "email": 1, "inactive_date": 1},
+    )]
+
+
+def _month_eligible(e: dict, month: str) -> bool:
+    """Month-effective eligibility: confirmation month .. month before inactive month."""
+    year, mon = int(month[:4]), int(month[5:7])
+    _, m_end = _month_bounds(month)
+    conf = _parse_iso(e.get("confirmation_date"))
+    if not conf or conf > m_end:
+        return False
+    inactive = _parse_iso(e.get("inactive_date"))
+    if inactive:
+        return (inactive.year, inactive.month) > (year, mon)
+    return (e.get("employee_status") or "Active") == "Active"
+
+
+async def eligible_employees(month: str) -> list:
+    """Month-effective eligibility — the ONE source of truth for every BRSF path."""
+    rows = [e for e in await _month_eligible_employees_raw() if _month_eligible(e, month)]
     rows.sort(key=lambda x: (x.get("full_name") or ""))
     return rows
+
+
+def _month_is_completed(month: str) -> bool:
+    now = get_ist_now()
+    return (int(month[:4]), int(month[5:7])) < (now.year, now.month)
+
+
+def _require_completed_month(month: str):
+    """Stars exist only for months that have fully ended."""
+    if not _month_is_completed(month):
+        label = f"{MONTH_LABELS[int(month[5:7]) - 1]} {month[:4]}"
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} is not a completed month. BRSF Star Rewards can only be "
+                   "generated or edited after the selected month is completed.")
 
 
 # --------------------------------------------------------------- engine
@@ -242,6 +275,7 @@ async def compute_system_values(employee: dict, month: str) -> dict:
             neg = -1 if avg < RESEARCH_NEGATIVE_MAX else 0
         capped = pos_total + pos > CRITERIA_MAP["P05"][5]
         row = {"week": b["week"], "start": b["start"], "end": b["end"],
+               "key": f"week:{b['start']}",
                "eligible_days": len(eligible), "avg_minutes": round(avg, 2),
                "avg_hhmm": _minutes_to_hhmm(avg),
                "total_minutes": total, "total_hhmm": _minutes_to_hhmm(total)}
@@ -259,7 +293,7 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     for iso, d in sorted(details.items()):
         if d["status"] in WORKED_HOLIDAY_CODES and (d.get("is_sunday") or d.get("is_holiday")):
             kind = "Sunday" if d.get("is_sunday") else "Fixed Holiday"
-            ee.append({"date": iso, "kind": kind,
+            ee.append({"date": iso, "kind": kind, "key": f"date:{iso}",
                        "work": "Full Day" if d["status"] == "FD" else "Half Day", "value": 1})
     out["P06"] = {"value": len(ee), "children": ee}
 
@@ -294,33 +328,45 @@ async def compute_system_values(employee: dict, month: str) -> dict:
                   "note": f"{equiv} absence-equivalent day(s); up to 4.0 allowed"}
 
     # ---- N01 Invalid Leave Request (-1 max per Sick / Pre-planned instance)
+    # Every leave record of the month is listed for transparency; leave types
+    # outside the N01 rule are shown as "not applicable" with a 0 star value.
     n01 = []
     for lv in leaves:
-        if not (_is_type(lv, "sick") or _is_type(lv, "preplan")):
-            continue
+        applicable = bool(_is_type(lv, "sick") or _is_type(lv, "preplan"))
         applied, split = _applied_at(lv), (lv.get("leave_split") or "Full Day")
         reasons = []
-        if not applied:
-            reasons.append("No HRMS application record")
-        elif _is_type(lv, "sick"):
-            if split == "Second Half":
-                if applied.date() > lv["_start"]:
-                    reasons.append("Second-half sick leave applied after the leave date")
-            else:
-                deadline = datetime.combine(lv["_start"], datetime.min.time(),
-                                            tzinfo=applied.tzinfo).replace(hour=7)
-                if applied > deadline:
-                    reasons.append(f"Applied {applied.strftime('%d-%b %H:%M')} — after 07:00 AM deadline")
-        else:  # pre-planned: at least 4 days in advance
-            if (lv["_start"] - applied.date()).days < 4:
-                reasons.append(f"Applied only {(lv['_start'] - applied.date()).days} day(s) in advance "
-                               "(4 days required)")
-        if reasons:
-            n01.append({"date": lv["start_date"], "leave_type": lv.get("leave_type"),
-                        "split": split, "applied_at": lv.get("created_at"),
-                        "reason": "; ".join(reasons), "value": -1})  # capped at -1 per instance
-    out["N01"] = {"value": -len(n01), "children": n01,
-                  "note": f"{len(n01)} invalid sick/pre-planned leave instance(s)"}
+        if applicable:
+            if not applied:
+                reasons.append("No HRMS application record")
+            elif _is_type(lv, "sick"):
+                if split == "Second Half":
+                    if applied.date() > lv["_start"]:
+                        reasons.append("Second-half sick leave applied after the leave date")
+                else:
+                    deadline = datetime.combine(lv["_start"], datetime.min.time(),
+                                                tzinfo=applied.tzinfo).replace(hour=7)
+                    if applied > deadline:
+                        reasons.append(f"Applied {applied.strftime('%d-%b %H:%M')} — after 07:00 AM deadline")
+            else:  # pre-planned: at least 4 days in advance
+                if (lv["_start"] - applied.date()).days < 4:
+                    reasons.append(f"Applied only {(lv['_start'] - applied.date()).days} day(s) in advance "
+                                   "(4 days required)")
+        n01.append({
+            "key": f"leave:{lv['id']}", "leave_id": lv["id"],
+            "date": lv["start_date"], "end_date": lv.get("end_date") or lv["start_date"],
+            "leave_type": lv.get("leave_type"), "split": split,
+            "applied_at": lv.get("created_at"),
+            "leave_reason": (lv.get("reason") or "").strip(),
+            "applicable": applicable,
+            "reason": ("; ".join(reasons) if reasons else
+                       ("Applied within the BRSF window" if applicable
+                        else "Not applicable to N01 — handled by its own criteria")),
+            "value": -1 if (applicable and reasons) else 0,   # capped at -1 per instance
+        })
+    invalid_count = sum(1 for c in n01 if c["value"])
+    out["N01"] = {"value": -invalid_count, "children": n01,
+                  "note": f"{invalid_count} invalid sick/pre-planned leave instance(s) "
+                          f"of {len(n01)} leave record(s) this month"}
 
     # ---- N02 Emergency Leave Violation (-2 max per emergency instance)
     n02 = []
@@ -342,7 +388,9 @@ async def compute_system_values(employee: dict, month: str) -> dict:
         if not (_has_proof(lv) or (lv.get("reason") or "").strip()):
             reasons.append("No proof or justification provided within 24 hours")
         if reasons:
-            n02.append({"date": lv["start_date"], "split": split, "applied_at": lv.get("created_at"),
+            n02.append({"key": f"leave:{lv['id']}", "leave_id": lv["id"],
+                        "date": lv["start_date"], "split": split, "applied_at": lv.get("created_at"),
+                        "leave_reason": (lv.get("reason") or "").strip(),
                         "reason": "; ".join(reasons), "value": -2})  # capped at -2 per instance
     out["N02"] = {"value": -2 * len(n02), "children": n02,
                   "note": f"{len(n02)} violating emergency leave instance(s)"}
@@ -367,6 +415,7 @@ async def compute_system_values(employee: dict, month: str) -> dict:
         seq_leaves = {lv["id"]: lv for d in seq for lv in by_date[d]}.values()
         proof = any(_has_proof(lv) for lv in seq_leaves)
         n05.append({
+            "key": f"seq:{_iso(seq[0])}",
             "start": _iso(seq[0]), "end": _iso(seq[-1]), "days": len(seq),
             "leave_types": sorted({lv.get("leave_type") for lv in seq_leaves}),
             "proof_uploaded": proof,
@@ -378,13 +427,39 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     return out
 
 
+def _apply_child_overrides(line: dict) -> Optional[float]:
+    """Stamp system/override/final on every automated child; return the aggregate.
+
+    Returns None for criteria whose parent is not child-driven (their children
+    are informational only).
+    """
+    co = line.get("child_overrides") or {}
+    total = 0.0
+    for ch in line.get("system_children") or []:
+        ch["system_value"] = ch.get("value", 0)
+        ov = co.get(ch.get("key"))
+        if ch.get("applicable") is False:
+            ov = None   # records outside the criteria rule can never carry a penalty
+        ch["override"] = ov.get("value") if ov else None
+        ch["override_note"] = ov.get("note") if ov else None
+        ch["override_by"] = ov.get("by") if ov else None
+        ch["override_at"] = ov.get("at") if ov else None
+        ch["final"] = ch["override"] if ov else ch["system_value"]
+        total += ch["final"] or 0
+    if line["code"] not in CHILD_DRIVEN_CODES:
+        return None
+    return round(total, 2)
+
+
 def _resolve_final(line: dict) -> float:
     code = line["code"]
     _, _, sign, ctype, _, cap = CRITERIA_MAP[code]
+    aggregate = _apply_child_overrides(line) if ctype == "automated" else None
+    line["child_aggregate"] = aggregate
     if line.get("override_value") is not None:
         val = float(line["override_value"])
     elif ctype == "automated":
-        val = float(line.get("system_value") or 0)
+        val = float(aggregate if aggregate is not None else (line.get("system_value") or 0))
     elif code in MANUAL_INSTANCE_CODES:
         val = float(sum(i.get("value", 0) for i in line.get("instances", [])))
     elif line.get("entry_mode") == "weekly":
@@ -418,6 +493,7 @@ async def sync_lines(employee: dict, month: str) -> list:
             "manual_value": existing.get("manual_value", 0),
             "weekly": existing.get("weekly", []),
             "instances": existing.get("instances", []),
+            "child_overrides": existing.get("child_overrides", {}),
             "override_value": existing.get("override_value"),
             "override_reason": existing.get("override_reason"),
             "changed_by": existing.get("changed_by"),
@@ -454,6 +530,7 @@ async def _get_line(line_id: str) -> dict:
     if not line:
         raise HTTPException(status_code=404, detail="Star line not found")
     month = f"{line['year']:04d}-{line['month']:02d}"
+    _require_completed_month(month)
     if not any(e["id"] == line["employee_id"] for e in await eligible_employees(month)):
         raise HTTPException(status_code=400,
                             detail="Employee is not eligible for BRSF stars in this month "
@@ -514,7 +591,7 @@ async def brsf_summary(month: str, current_user: dict = Depends(get_current_user
             "positive_total": pos, "negative_total": neg, "net_total": round(pos + neg, 2),
             "calculated": bool(t), "overrides": t["overrides"] if t else 0,
         })
-    return {"month": month, "rows": rows}
+    return {"month": month, "rows": rows, "month_completed": _month_is_completed(month)}
 
 
 @api_router.get("/brsf/stars")
@@ -532,7 +609,8 @@ async def brsf_stars(employee_id: str, month: str, current_user: dict = Depends(
     weeks = [{"week": b["week"], "start": b["start"], "end": b["end"]}
              for b in _week_buckets(win_start, m_end)]
     return {"employee": emp, "month": month, "lines": lines,
-            "weeks": weeks, "totals": _totals(lines)}
+            "weeks": weeks, "totals": _totals(lines),
+            "month_completed": _month_is_completed(month)}
 
 
 @api_router.post("/brsf/recalculate")
@@ -541,6 +619,7 @@ async def brsf_recalculate(payload: dict = Body(...), current_user: dict = Depen
     month, employee_id = payload.get("month"), payload.get("employee_id")
     if not month or len(str(month)) < 7:
         raise HTTPException(status_code=400, detail="A month (YYYY-MM) is required for Auto Calculate")
+    _require_completed_month(month)
     emps = await eligible_employees(month)
     if employee_id:
         emps = [e for e in emps if e["id"] == employee_id]
@@ -582,6 +661,58 @@ async def brsf_reset_override(line_id: str, current_user: dict = Depends(get_cur
                  "changed_at": _utc_now_iso()})
     line = await _save_line(line)
     await _audit(current_user, line, prev, line["final_value"], "Reset to system calculated value", "reset")
+    return line
+
+
+@api_router.put("/brsf/stars/{line_id}/child-override")
+async def brsf_child_override(line_id: str, payload: dict = Body(...),
+                              current_user: dict = Depends(get_current_user)):
+    """Override ONE child record (a P05/N04 week, a P06 date, an N01/N02 leave, an N05 sequence).
+
+    The system calculation is never modified — the parent simply re-aggregates.
+    """
+    _require_star_admin(current_user)
+    line = await _get_line(line_id)
+    if line["code"] not in CHILD_DRIVEN_CODES:
+        raise HTTPException(status_code=400,
+                            detail="This criteria does not support child-level overrides")
+    key = payload.get("key")
+    child = next((c for c in line.get("system_children") or [] if c.get("key") == key), None)
+    if not child:
+        raise HTTPException(status_code=404, detail="Child record not found for this criteria")
+    if child.get("applicable") is False:
+        raise HTTPException(status_code=400,
+                            detail=f"{child.get('leave_type') or 'This record'} is not covered by "
+                                   f"{line['code']} — it cannot carry a penalty here")
+    value = validate_child_override(line, payload.get("value"))
+    prev = line["final_value"]
+    co = dict(line.get("child_overrides") or {})
+    co[key] = {"value": value, "note": payload.get("note"),
+               "system_value": child.get("value", 0),
+               "by": current_user.get("full_name") or current_user.get("username"),
+               "at": _utc_now_iso()}
+    line["child_overrides"] = co
+    line = await _save_line(line)
+    await _audit(current_user, line, prev, line["final_value"], payload.get("note"),
+                 f"child override:{key}")
+    return line
+
+
+@api_router.post("/brsf/stars/{line_id}/child-override/reset")
+async def brsf_child_override_reset(line_id: str, payload: dict = Body(...),
+                                    current_user: dict = Depends(get_current_user)):
+    _require_star_admin(current_user)
+    line = await _get_line(line_id)
+    key = payload.get("key")
+    co = dict(line.get("child_overrides") or {})
+    if key not in co:
+        raise HTTPException(status_code=404, detail="No override on this child record")
+    prev = line["final_value"]
+    co.pop(key)
+    line["child_overrides"] = co
+    line = await _save_line(line)
+    await _audit(current_user, line, prev, line["final_value"],
+                 "Child reset to system calculated value", f"child reset:{key}")
     return line
 
 

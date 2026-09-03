@@ -16,6 +16,7 @@ import { MonthPicker } from '../components/ui/month-picker';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { PageSizeSelector } from '../components/PageSizeSelector';
 import BrsfFramework from '../components/brsf/BrsfFramework';
+import BrsfOverallStar from '../components/brsf/BrsfOverallStar';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -654,6 +655,9 @@ const StarReward = () => {
             <TabsTrigger value="teams" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm px-6" data-testid="tab-teams">
               <Award className="w-4 h-4 mr-2" /> Teams
             </TabsTrigger>
+            <TabsTrigger value="overall" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm px-6" data-testid="tab-overall-star">
+              <Sparkles className="w-4 h-4 mr-2" /> Overall Star
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="employees" className="mt-4">
@@ -690,6 +694,11 @@ const StarReward = () => {
               ))}
             </div>
           </TabsContent>
+
+          <TabsContent value="overall" className="mt-4">
+            <BrsfOverallStar />
+          </TabsContent>
+
         </Tabs>
       </div>
       {autoCalcEmp && (

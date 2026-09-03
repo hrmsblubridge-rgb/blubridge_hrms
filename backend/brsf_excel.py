@@ -21,6 +21,8 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 from server import api_router, db, get_current_user, get_ist_now
 from brsf_stars import (
+    _month_is_completed,
+    _require_completed_month,
     _require_star_admin,
     _save_line,
     _utc_now_iso,
@@ -199,6 +201,8 @@ async def brsf_export(month: str, format: str = "xlsx",
         raise HTTPException(status_code=400, detail="A month (YYYY-MM) is required for export")
     rows = await _month_rows(month)
     stem = f"BRSF_Star_Reward_{_month_label(month).replace(' ', '_')}"
+    if not _month_is_completed(month):
+        stem += "_INCOMPLETE_MONTH"
 
     if format == "csv":
         out = io.StringIO()
@@ -273,6 +277,7 @@ async def brsf_import_preview(month: str = Form(...), file: UploadFile = FastAPI
                               current_user: dict = Depends(get_current_user)):
     """Parse + validate the uploaded sheet. Nothing is written to the star lines."""
     _require_star_admin(current_user)
+    _require_completed_month(month)
     content = await file.read()
     name = (file.filename or "").lower()
     if name.endswith(".xlsx") or name.endswith(".xlsm"):
@@ -379,6 +384,7 @@ async def brsf_import_confirm(payload: dict = Body(...),
         raise HTTPException(status_code=404, detail="Import preview expired — upload the file again")
     if batch.get("applied"):
         raise HTTPException(status_code=400, detail="This import batch has already been applied")
+    _require_completed_month(batch["month"])
 
     applied, failed = 0, []
     for ch in batch["changes"]:

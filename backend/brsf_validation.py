@@ -191,6 +191,17 @@ def validate_instance_value(line: dict, raw) -> int:
     return value
 
 
+def validate_child_override(line: dict, raw) -> int:
+    """One week / date / leave / sequence may only carry its allowed child values."""
+    value = as_star_int(raw, f"{line['name']} record stars")
+    _sign_guard(line, value)
+    allowed = CHILD_ALLOWED.get(line["code"])
+    if allowed and value not in allowed:
+        _bad(MESSAGES.get(f"{line['code']}_weekly")
+             or MESSAGES.get(line["code"], f"Allowed values: {allowed}."))
+    return value
+
+
 def line_violation(line: dict):
     """Flag a stored value that breaks the rules — never auto-corrected."""
     code = line["code"]

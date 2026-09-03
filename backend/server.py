@@ -19390,6 +19390,7 @@ except Exception as _e:
 try:
     import brsf_stars  # noqa: F401
     import brsf_excel  # noqa: F401
+    import brsf_overall  # noqa: F401
 except Exception as _e:
     print(f"BRSF star module load failed: {_e}")
 
