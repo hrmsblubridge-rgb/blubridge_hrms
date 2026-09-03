@@ -28,7 +28,9 @@ from server import (
     get_ist_now,
 )
 
-RESEARCH_DEPARTMENT = "Research Unit"
+# Eligible departments — "AI Search" is accepted as the renamed form of the
+# same unit so a department rename in the employee master needs no code change.
+RESEARCH_DEPARTMENTS = ["Research Unit", "AI Search"]
 INTERN_TYPE = "Intern"
 
 # code, name, sign(+1/-1), type, frequency, cap(absolute)
@@ -154,7 +156,7 @@ async def eligible_employees(month: str) -> list:
     _, m_end = _month_bounds(month)
     rows = []
     async for e in db.employees.find(
-        {"is_deleted": {"$ne": True}, "department": RESEARCH_DEPARTMENT,
+        {"is_deleted": {"$ne": True}, "department": {"$in": RESEARCH_DEPARTMENTS},
          "employment_type": {"$ne": INTERN_TYPE}, "confirmation_date": {"$nin": [None, ""]}},
         {"_id": 0, "id": 1, "full_name": 1, "custom_employee_id": 1, "emp_id": 1,
          "confirmation_date": 1, "employee_status": 1, "designation": 1},
@@ -440,6 +442,11 @@ async def _get_line(line_id: str) -> dict:
     line = await db.brsf_star_lines.find_one({"id": line_id}, {"_id": 0})
     if not line:
         raise HTTPException(status_code=404, detail="Star line not found")
+    month = f"{line['year']:04d}-{line['month']:02d}"
+    if not any(e["id"] == line["employee_id"] for e in await eligible_employees(month)):
+        raise HTTPException(status_code=400,
+                            detail="Employee is not eligible for BRSF stars in this month "
+                                   "(Research Unit + confirmed full-time employees only).")
     return line
 
 
@@ -517,15 +524,22 @@ async def brsf_stars(employee_id: str, month: str, current_user: dict = Depends(
 async def brsf_recalculate(payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
     _require_star_admin(current_user)
     month, employee_id = payload.get("month"), payload.get("employee_id")
+    if not month or len(str(month)) < 7:
+        raise HTTPException(status_code=400, detail="A month (YYYY-MM) is required for Auto Calculate")
     emps = await eligible_employees(month)
     if employee_id:
         emps = [e for e in emps if e["id"] == employee_id]
+        if not emps:
+            raise HTTPException(status_code=400,
+                                detail="Employee is not eligible for BRSF stars in this month "
+                                       "(Research Unit + confirmed full-time employees only).")
     done = 0
     for e in emps:
         await sync_lines(e, month)
         done += 1
     return {"success": True, "recalculated": done,
-            "message": f"Automated stars recalculated for {done} employee(s). Manual overrides preserved."}
+            "message": f"Auto Calculate complete for {month} — {done} employee(s) processed. "
+                       "Manual entries and overrides preserved."}
 
 
 @api_router.put("/brsf/stars/{line_id}/override")

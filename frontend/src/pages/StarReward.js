@@ -612,65 +612,12 @@ const StarReward = () => {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Star Rewards</h1>
-              <p className="text-sm text-slate-500">Research Unit • {filters.month}</p>
+              <p className="text-sm text-slate-500">Research Unit • Confirmed employees</p>
             </div>
-          </div>
-          <div className="flex gap-2">
-            {canAddStars && (
-              <Button onClick={() => setShowBulkAuto(true)} className="rounded-xl bg-amber-500 hover:bg-amber-600 text-white" data-testid="bulk-auto-btn" title="Auto-Calculate stars for ALL Research Unit employees using each one's joining date">
-                <Zap className="w-4 h-4 mr-2" /> Auto-Calculate All
-              </Button>
-            )}
-            <Button onClick={handleExportCSV} variant="outline" className="rounded-xl" data-testid="export-csv-btn">
-              <Download className="w-4 h-4 mr-2" /> Export
-            </Button>
           </div>
         </div>
 
-        {/* Daily auto-recompute status strip */}
-        {canAddStars && schedulerStatus && (
-          <div className="rounded-xl border border-slate-200 bg-gradient-to-r from-amber-50 to-white px-4 py-2 flex items-center gap-3 text-xs flex-wrap" data-testid="scheduler-status-strip">
-            <span className={`w-2 h-2 rounded-full ${schedulerStatus.last_run_result === 'success' ? 'bg-emerald-500' : schedulerStatus.last_run_at ? 'bg-amber-500' : 'bg-slate-400'} animate-pulse`}/>
-            <span className="font-semibold text-slate-700">Auto-recompute:</span>
-            {schedulerStatus.last_run_at ? (
-              <>
-                <span className="text-slate-600">Last ran {new Date(schedulerStatus.last_run_at).toLocaleString('en-IN')}</span>
-                <span className="text-slate-400">·</span>
-                <span className="text-slate-600">Through <b>{schedulerStatus.last_run_end_date}</b></span>
-                <span className="text-slate-400">·</span>
-                <span className="text-slate-600"><b>{schedulerStatus.last_run_processed}</b> employees · <b>{schedulerStatus.last_run_entries}</b> entries · <b className={schedulerStatus.last_run_result === 'success' ? 'text-emerald-700' : 'text-amber-700'}>{schedulerStatus.last_run_result}</b></span>
-              </>
-            ) : (
-              <span className="text-slate-500">Not run yet — daily job runs at 02:00 IST. Click &ldquo;Auto-Calculate All&rdquo; for the first sync.</span>
-            )}
-            <span className="ml-auto text-[10px] text-slate-500 italic">Runs automatically every day at 02:00 IST · Manual awards never touched</span>
-          </div>
-        )}
-
-        {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          {[
-            { label: 'Total Stars', value: totalStars, icon: Star, gradient: 'from-amber-400 to-orange-500' },
-            { label: 'Total Employees', value: filteredEmployees.length, icon: Users, gradient: 'from-blue-500 to-indigo-600' },
-            { label: 'Teams', value: teams.length, icon: Users, gradient: 'from-emerald-500 to-teal-600' },
-            { label: 'Top Performer', value: topPerformer?.name?.split(' ')[0] || '-', icon: Trophy, gradient: 'from-purple-500 to-pink-500', subValue: topPerformer ? `${topPerformer.stars} stars` : '' },
-          ].map((stat, i) => (
-            <div key={i} className="stat-card">
-              <div className="flex items-center gap-4">
-                <div className={`w-12 h-12 rounded-xl bg-gradient-to-br ${stat.gradient} flex items-center justify-center shadow-lg`}>
-                  <stat.icon className="w-6 h-6 text-white" strokeWidth={1.5} />
-                </div>
-                <div>
-                  <p className="text-2xl font-bold text-slate-900 number-display">{stat.value}</p>
-                  <p className="text-xs text-slate-500">{stat.label}</p>
-                  {stat.subValue && <p className="text-xs text-amber-600 font-medium">{stat.subValue}</p>}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Filters */}
+        {activeTab === "teams" && (
         <div className="card-flat p-6">
           <div className="flex flex-wrap items-end gap-4">
             <div>
@@ -696,6 +643,7 @@ const StarReward = () => {
             </Button>
           </div>
         </div>
+        )}
 
         {/* Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
@@ -706,142 +654,10 @@ const StarReward = () => {
             <TabsTrigger value="teams" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm px-6" data-testid="tab-teams">
               <Award className="w-4 h-4 mr-2" /> Teams
             </TabsTrigger>
-            <TabsTrigger value="brsf" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm px-6" data-testid="tab-brsf">
-              <Sparkles className="w-4 h-4 mr-2" /> BRSF Framework
-            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="employees" className="mt-4">
-            {/* View Toggle */}
-            <div className="flex justify-end mb-4">
-              <div className="flex rounded-lg overflow-hidden border border-slate-200">
-                <Button variant={viewMode === 'table' ? 'default' : 'ghost'} onClick={() => setViewMode('table')} className={`rounded-none px-4 ${viewMode === 'table' ? 'bg-[#063c88] text-white' : ''}`} size="sm">Table</Button>
-                <Button variant={viewMode === 'grid' ? 'default' : 'ghost'} onClick={() => setViewMode('grid')} className={`rounded-none px-4 ${viewMode === 'grid' ? 'bg-[#063c88] text-white' : ''}`} size="sm">Grid</Button>
-              </div>
-            </div>
-
-            {viewMode === 'table' ? (
-              <div className="card-premium overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="table-premium">
-                    <thead>
-                      <tr>
-                        <th>Employee</th>
-                        <th>Email</th>
-                        <th>Team</th>
-                        <th className="text-center" title={filters.month ? `Stars earned in ${filters.month}` : 'Cumulative stars'}>
-                          Stars {filters.month && <span className="text-[10px] font-normal text-slate-500 block leading-none">({filters.month})</span>}
-                        </th>
-                        <th className="text-center">Unsafe</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {paginatedEmployees.length === 0 ? (
-                        <tr><td colSpan="6" className="text-center py-12 text-slate-500">No employees found</td></tr>
-                      ) : (
-                        paginatedEmployees.map((emp) => (
-                          <tr key={emp.id}>
-                            <td>
-                              <div className="flex items-center gap-3">
-                                <EmployeeAvatar employeeId={emp.id} name={emp.name} size="sm" shape="circle" />
-                                <span className="font-medium text-slate-900">{emp.name}</span>
-                              </div>
-                            </td>
-                            <td className="text-slate-600">{emp.email}</td>
-                            <td className="text-slate-600">{emp.team}</td>
-                            <td className="text-center">
-                              <Badge className={`${(emp.stars || 0) >= 0 ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-red-100 text-red-700 border-red-200'}`}>
-                                {emp.stars || 0} <Star className="w-3 h-3 ml-1 fill-current" />
-                              </Badge>
-                            </td>
-                            <td className="text-center">{emp.unsafe_count > 0 ? <Badge className="badge-error">{emp.unsafe_count}</Badge> : <span className="text-slate-400">0</span>}</td>
-                            <td>
-                              <div className="flex gap-1">
-                                <Button size="sm" variant="ghost" onClick={() => handleViewEmployee(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`view-history-${emp.id}`}>
-                                  <Eye className="w-4 h-4 text-slate-500" />
-                                </Button>
-                                {canAddStars && emp.department === 'Research Unit' && (
-                                  <Button size="sm" variant="ghost" onClick={() => setAutoCalcEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`auto-calc-${emp.id}`} title="Auto-Calculate stars per policy">
-                                    <Zap className="w-4 h-4 text-amber-500" />
-                                  </Button>
-                                )}
-                                {canAddStars && (
-                                  <Button size="sm" variant="ghost" onClick={() => setLeaveEditEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`leave-adjust-${emp.id}`} title="Adjust stars for a leave instance">
-                                    <CalendarClock className="w-4 h-4 text-blue-500" />
-                                  </Button>
-                                )}
-                                {canAddStars && (
-                                  <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`add-stars-${emp.id}`} title="Add manual reward">
-                                    <Plus className="w-4 h-4 text-amber-500" />
-                                  </Button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                {filteredEmployees.length > 0 && (
-                  <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
-                    <div className="flex items-center gap-4">
-                      <p className="text-sm text-slate-500">
-                        Showing {filteredEmployees.length === 0 ? 0 : ((currentPage - 1) * tableFilters.pageSize) + 1}–{Math.min(currentPage * tableFilters.pageSize, filteredEmployees.length)} of {filteredEmployees.length}
-                      </p>
-                      <PageSizeSelector
-                        value={tableFilters.pageSize}
-                        onChange={(v) => { setTableFilters(prev => ({ ...prev, pageSize: v })); setCurrentPage(1); }}
-                        testId="star-reward-rows-per-page"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" variant="outline" disabled={currentPage <= 1} onClick={() => setCurrentPage(p => p - 1)} className="rounded-lg">Prev</Button>
-                      <span className="text-sm text-slate-600 px-3">Page {currentPage} of {totalPages}</span>
-                      <Button size="sm" variant="outline" disabled={currentPage >= totalPages} onClick={() => setCurrentPage(p => p + 1)} className="rounded-lg">Next</Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {paginatedEmployees.map((emp, index) => (
-                  <div key={emp.id} className="p-5 rounded-xl bg-gradient-to-br from-[#fffdf7] to-amber-50/30 border border-amber-200/30 hover:border-amber-300 hover:shadow-lg transition-all animate-slide-up" style={{ animationDelay: `${index * 0.03}s` }}>
-                    <div className="flex items-start justify-between mb-4">
-                      <div className="flex items-center gap-3">
-                        <EmployeeAvatar employeeId={emp.id} name={emp.name} size="md" shape="square" className="shadow-lg" />
-                        <div>
-                          <p className="font-semibold text-slate-900">{emp.name}</p>
-                          <p className="text-xs text-slate-500">{emp.team}</p>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between pt-4 border-t border-amber-200/50">
-                      <div className="flex items-center gap-2">
-                        <Star className="w-5 h-5 text-amber-500 fill-amber-500" />
-                        <span className={`text-xl font-bold ${(emp.stars || 0) >= 0 ? 'text-amber-600' : 'text-red-600'}`}>{emp.stars || 0}</span>
-                      </div>
-                      <div className="flex gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => handleViewEmployee(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`grid-view-${emp.id}`}>
-                          <Eye className="w-4 h-4 text-slate-500" />
-                        </Button>
-                        {canAddStars && emp.department === 'Research Unit' && (
-                          <Button size="sm" variant="ghost" onClick={() => setAutoCalcEmp(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`grid-auto-${emp.id}`} title="Auto-Calculate">
-                            <Zap className="w-4 h-4 text-amber-500" />
-                          </Button>
-                        )}
-                        {canAddStars && (
-                          <Button size="sm" variant="ghost" onClick={() => handleAddStars(emp)} className="h-8 w-8 p-0 rounded-lg" data-testid={`grid-add-${emp.id}`}>
-                            <Plus className="w-4 h-4 text-amber-500" />
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            <BrsfFramework />
           </TabsContent>
 
           <TabsContent value="teams" className="mt-4">
@@ -873,10 +689,6 @@ const StarReward = () => {
                 </div>
               ))}
             </div>
-          </TabsContent>
-
-          <TabsContent value="brsf" className="mt-4">
-            <BrsfFramework />
           </TabsContent>
         </Tabs>
       </div>

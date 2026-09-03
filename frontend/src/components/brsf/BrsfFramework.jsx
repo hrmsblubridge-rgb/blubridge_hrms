@@ -10,7 +10,8 @@ import { Textarea } from '../ui/textarea';
 import { MonthPicker } from '../ui/month-picker';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../ui/dialog';
-import { ChevronDown, ChevronRight, RefreshCw, Loader2, Pencil, RotateCcw, Plus, Trash2, History, Star, TrendingDown, Sigma } from 'lucide-react';
+import { ChevronDown, ChevronRight, RefreshCw, Loader2, Pencil, RotateCcw, Plus, Trash2, History, Star, TrendingDown, Sigma, Download } from 'lucide-react';
+import EmployeeAvatar from '../EmployeeAvatar';
 import { BrsfChildTable, EXPANDABLE, childRowsFor } from './BrsfChildTable';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -49,6 +50,7 @@ const BrsfFramework = () => {
   const [instanceLine, setInstanceLine] = useState(null);
   const [auditOpen, setAuditOpen] = useState(false);
   const [audit, setAudit] = useState([]);
+  const [viewMode, setViewMode] = useState('table');
 
   const loadEmployees = useCallback(async () => {
     setLoadingEmp(true);
@@ -128,14 +130,49 @@ const BrsfFramework = () => {
     }
   };
 
-  const resetOverride = async (line) => {
-    try {
+  const resetOverride = async (line) => {    try {
       const res = await axios.post(`${API}/brsf/stars/${line.id}/reset-override`, {}, { headers: getAuthHeaders() });
       patchLine(res.data);
       toast.success(`${line.code} reset to system calculated value`);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Reset failed');
     }
+  };
+
+  const downloadCsv = (rows, filename) => {
+    const csv = rows.map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportCsv = () => {
+    if (employeeId && data) {
+      const rows = [['Code', 'Criteria', 'Type', 'Frequency', 'System Value', 'Manual Value',
+        'Override Value', 'Final Stars', 'Status', 'Note']];
+      data.lines.forEach((l) => rows.push([l.code, l.name, l.type, l.frequency,
+        l.type === 'automated' ? l.system_value : '',
+        l.type === 'manual' ? (l.entry_mode === 'weekly'
+          ? (l.weekly || []).reduce((s, w) => s + (Number(w.value) || 0), 0)
+          : (['N07', 'N08'].includes(l.code)
+            ? (l.instances || []).reduce((s, i) => s + (Number(i.value) || 0), 0)
+            : l.manual_value)) : '',
+        l.override_value ?? '', l.final_value, statusOf(l), l.system_note || '']));
+      rows.push([], ['Positive Total', data.totals.positive_total], ['Negative Total', data.totals.negative_total],
+        ['Net Total', data.totals.net_total]);
+      downloadCsv(rows, `brsf-${(data.employee.full_name || 'employee').replace(/\s+/g, '_')}-${month}.csv`);
+      toast.success('Criteria exported');
+      return;
+    }
+    if (!summary.length) { toast.error('Nothing to export for this month'); return; }
+    const rows = [['Employee', 'Employee ID', 'Designation', 'Confirmation Date',
+      'Positive Stars', 'Negative Stars', 'Net Stars', 'Status', 'Overrides']];
+    summary.forEach((r) => rows.push([r.full_name, r.custom_employee_id || r.emp_id, r.designation,
+      r.confirmation_date, r.positive_total, r.negative_total, r.net_total,
+      r.calculated ? 'Calculated' : 'Not calculated', r.overrides]));
+    downloadCsv(rows, `brsf-star-summary-${month}.csv`);
+    toast.success('Star summary exported');
   };
 
   const totals = data?.totals || { positive_total: 0, negative_total: 0, net_total: 0 };
@@ -164,12 +201,13 @@ const BrsfFramework = () => {
             <MonthPicker value={month} onChange={setMonth} className="w-36" />
           </div>
           <div>
-            <Label className="text-sm text-slate-600 mb-1.5 block">Employee (Research Unit · Confirmed)</Label>
-            <Select value={employeeId} onValueChange={setEmployeeId} disabled={loadingEmp || !employees.length}>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Employee</Label>
+            <Select value={employeeId || '__all__'} onValueChange={(v) => setEmployeeId(v === '__all__' ? '' : v)} disabled={loadingEmp}>
               <SelectTrigger className="w-72 rounded-lg" data-testid="brsf-employee-select">
-                <SelectValue placeholder={loadingEmp ? 'Loading...' : (employees.length ? 'Select employee' : 'No eligible employees')} />
+                <SelectValue placeholder={loadingEmp ? 'Loading...' : 'All Eligible Employees'} />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="__all__">All Eligible Employees</SelectItem>
                 {employees.map((e) => (
                   <SelectItem key={e.id} value={e.id}>
                     {e.full_name} {e.custom_employee_id ? `(${e.custom_employee_id})` : ''}
@@ -178,9 +216,21 @@ const BrsfFramework = () => {
               </SelectContent>
             </Select>
           </div>
-          <Button onClick={recalculate} disabled={recalculating} className="bg-[#063c88] hover:bg-[#052f6b] text-white rounded-lg" data-testid="brsf-recalculate-btn">
+          {!employeeId && (
+            <div className="flex rounded-lg overflow-hidden border border-slate-200 h-10">
+              <Button variant={viewMode === 'table' ? 'default' : 'ghost'} onClick={() => setViewMode('table')} size="sm"
+                className={`rounded-none px-4 h-full ${viewMode === 'table' ? 'bg-[#063c88] text-white hover:bg-[#052f6b]' : ''}`} data-testid="brsf-view-table">Table View</Button>
+              <Button variant={viewMode === 'grid' ? 'default' : 'ghost'} onClick={() => setViewMode('grid')} size="sm"
+                className={`rounded-none px-4 h-full ${viewMode === 'grid' ? 'bg-[#063c88] text-white hover:bg-[#052f6b]' : ''}`} data-testid="brsf-view-grid">Grid View</Button>
+            </div>
+          )}
+          <Button onClick={recalculate} disabled={recalculating} className="bg-amber-500 hover:bg-amber-600 text-white rounded-lg" data-testid="brsf-recalculate-btn"
+            title={employeeId ? `Auto Calculate ${month} for the selected employee` : `Auto Calculate ${month} for all eligible employees`}>
             {recalculating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
-            {employeeId ? 'Recalculate Automated Stars' : 'Recalculate All (Month)'}
+            Auto Calculate
+          </Button>
+          <Button variant="outline" onClick={exportCsv} className="rounded-lg" data-testid="brsf-export-btn">
+            <Download className="w-4 h-4 mr-2" /> Export
           </Button>
           {employeeId && (
             <Button variant="outline" onClick={openAudit} className="rounded-lg" data-testid="brsf-audit-btn">
@@ -189,12 +239,13 @@ const BrsfFramework = () => {
           )}
           {employeeId && (
             <Button variant="ghost" onClick={() => setEmployeeId('')} className="rounded-lg" data-testid="brsf-back-to-summary">
-              Back to Summary
+              Back to Employees
             </Button>
           )}
         </div>
         <p className="text-xs text-slate-500 mt-3">
-          Eligibility: Research Unit · Full-time (non-intern) · Confirmed — available from the confirmation month onwards.
+          Eligibility: Research Unit · Full-time (non-intern) · Confirmed — from the confirmation month onwards
+          (the confirmation month is calculated from the confirmation date, not the 1st). Auto Calculate runs for the selected month only.
         </p>
       </div>
 
@@ -204,7 +255,7 @@ const BrsfFramework = () => {
         </div>
       )}
 
-      {!loading && !employeeId && (
+      {!loading && !employeeId && viewMode === 'table' && (
         <div className="card-premium overflow-hidden" data-testid="brsf-summary">
           <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
             <div>
@@ -236,7 +287,12 @@ const BrsfFramework = () => {
                 {summary.map((r) => (
                   <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/70 cursor-pointer"
                     onClick={() => setEmployeeId(r.id)} data-testid={`brsf-summary-row-${r.id}`}>
-                    <td className="px-4 py-3 text-slate-900 font-medium">{r.full_name}</td>
+                    <td className="px-4 py-3 text-slate-900 font-medium">
+                      <div className="flex items-center gap-3">
+                        <EmployeeAvatar employeeId={r.id} name={r.full_name} size="sm" shape="circle" />
+                        <span>{r.full_name}</span>
+                      </div>
+                    </td>
                     <td className="px-4 py-3 text-slate-600">{r.custom_employee_id || r.emp_id || '--'}</td>
                     <td className="px-4 py-3 text-slate-600">{r.designation || '--'}</td>
                     <td className="px-4 py-3 text-right number-display text-emerald-600 font-semibold">{fmt(r.positive_total)}</td>
@@ -253,7 +309,7 @@ const BrsfFramework = () => {
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setEmployeeId(r.id); }} data-testid={`brsf-summary-view-${r.id}`}>
-                        View 14 Criteria
+                        <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit Stars
                       </Button>
                     </td>
                   </tr>
@@ -263,6 +319,53 @@ const BrsfFramework = () => {
           </div>
         </div>
       )}
+
+      {!loading && !employeeId && viewMode === 'grid' && (
+        <div data-testid="brsf-summary-grid">
+          {summary.length === 0 && !loadingSummary && (
+            <div className="card-flat p-10 text-center text-slate-500" data-testid="brsf-summary-grid-empty">
+              No eligible Research Unit employees for this month.
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {summary.map((r) => (
+              <div key={r.id} className="p-5 rounded-xl bg-white border border-slate-200 hover:border-[#063c88]/40 hover:shadow-lg transition-all cursor-pointer"
+                onClick={() => setEmployeeId(r.id)} data-testid={`brsf-grid-card-${r.id}`}>
+                <div className="flex items-center gap-3 mb-4">
+                  <EmployeeAvatar employeeId={r.id} name={r.full_name} size="md" shape="square" />
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-900 truncate">{r.full_name}</p>
+                    <p className="text-xs text-slate-500 truncate">{r.custom_employee_id || r.emp_id} · {r.designation || '--'}</p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  <div className="p-2 rounded-lg bg-emerald-50 text-center">
+                    <p className="text-[10px] uppercase text-emerald-700">Positive</p>
+                    <p className="text-lg font-bold text-emerald-600 number-display">{fmt(r.positive_total)}</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-rose-50 text-center">
+                    <p className="text-[10px] uppercase text-rose-700">Negative</p>
+                    <p className="text-lg font-bold text-rose-600 number-display">{fmt(r.negative_total)}</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-slate-100 text-center">
+                    <p className="text-[10px] uppercase text-slate-600">Net</p>
+                    <p className="text-lg font-bold text-slate-900 number-display">{fmt(r.net_total)}</p>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <Badge variant="outline" className={`text-xs ${r.calculated ? (r.overrides ? STATUS_STYLE.Overridden : STATUS_STYLE.Auto) : STATUS_STYLE['No Data']}`}>
+                    {r.calculated ? (r.overrides ? `${r.overrides} override(s)` : 'Calculated') : 'Not calculated'}
+                  </Badge>
+                  <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setEmployeeId(r.id); }} data-testid={`brsf-grid-edit-${r.id}`}>
+                    <Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit Stars
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
 
       {!loading && data && (
         <>
