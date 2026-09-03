@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { ChevronDown, ChevronRight, RefreshCw, Loader2, Pencil, RotateCcw, Plus, Trash2, History, Star, TrendingDown, Sigma, Download } from 'lucide-react';
 import EmployeeAvatar from '../EmployeeAvatar';
 import { BrsfChildTable, EXPANDABLE, childRowsFor } from './BrsfChildTable';
+import BrsfExportImport from './BrsfExportImport';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -229,9 +230,13 @@ const BrsfFramework = () => {
             {recalculating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
             Auto Calculate
           </Button>
-          <Button variant="outline" onClick={exportCsv} className="rounded-lg" data-testid="brsf-export-btn">
-            <Download className="w-4 h-4 mr-2" /> Export
-          </Button>
+          <BrsfExportImport month={month} headers={getAuthHeaders()}
+            onImported={() => { loadSummary(); loadStars(); }} />
+          {employeeId && (
+            <Button variant="outline" onClick={exportCsv} className="rounded-lg" data-testid="brsf-export-btn">
+              <Download className="w-4 h-4 mr-2" /> Export Criteria
+            </Button>
+          )}
           {employeeId && (
             <Button variant="outline" onClick={openAudit} className="rounded-lg" data-testid="brsf-audit-btn">
               <History className="w-4 h-4 mr-2" /> Audit Trail

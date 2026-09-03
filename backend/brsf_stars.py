@@ -167,7 +167,8 @@ async def eligible_employees(month: str) -> list:
         {"is_deleted": {"$ne": True}, "department": {"$in": RESEARCH_DEPARTMENTS},
          "employment_type": {"$ne": INTERN_TYPE}, "confirmation_date": {"$nin": [None, ""]}},
         {"_id": 0, "id": 1, "full_name": 1, "custom_employee_id": 1, "emp_id": 1,
-         "confirmation_date": 1, "employee_status": 1, "designation": 1},
+         "confirmation_date": 1, "employee_status": 1, "designation": 1,
+         "team": 1, "date_of_joining": 1, "email": 1},
     ):
         conf = _parse_iso(e.get("confirmation_date"))
         if not conf or conf > m_end:
@@ -683,3 +684,6 @@ async def ensure_brsf_indexes():
         [("employee_id", 1), ("year", 1), ("month", 1), ("code", 1)],
         unique=True, name="brsf_line_unique")
     await db.brsf_star_lines.create_index("id", name="brsf_line_id")
+    # import previews are short-lived working data
+    await db.brsf_import_batches.create_index("created_dt", name="brsf_batch_ttl",
+                                              expireAfterSeconds=7 * 24 * 3600)

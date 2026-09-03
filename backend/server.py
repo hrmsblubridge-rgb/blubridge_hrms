@@ -19389,6 +19389,7 @@ except Exception as _e:
 # BRSF — BluBridge Research Star Framework (14-criteria star engine)
 try:
     import brsf_stars  # noqa: F401
+    import brsf_excel  # noqa: F401
 except Exception as _e:
     print(f"BRSF star module load failed: {_e}")
 
