@@ -465,6 +465,36 @@ async def brsf_eligible_employees(month: str, current_user: dict = Depends(get_c
     return {"month": month, "employees": await eligible_employees(month)}
 
 
+@api_router.get("/brsf/summary")
+async def brsf_summary(month: str, current_user: dict = Depends(get_current_user)):
+    """One row per eligible employee with positive / negative / net stars."""
+    _require_star_admin(current_user)
+    year, mon = int(month[:4]), int(month[5:7])
+    emps = await eligible_employees(month)
+    totals = {}
+    async for l in db.brsf_star_lines.find(
+        {"year": year, "month": mon, "employee_id": {"$in": [e["id"] for e in emps]}},
+        {"_id": 0, "employee_id": 1, "sign": 1, "final_value": 1, "override_value": 1},
+    ):
+        t = totals.setdefault(l["employee_id"], {"positive_total": 0.0, "negative_total": 0.0,
+                                                 "lines": 0, "overrides": 0})
+        t["lines"] += 1
+        t["positive_total" if l["sign"] > 0 else "negative_total"] += (l.get("final_value") or 0)
+        if l.get("override_value") is not None:
+            t["overrides"] += 1
+    rows = []
+    for e in emps:
+        t = totals.get(e["id"])
+        pos = round(t["positive_total"], 2) if t else 0.0
+        neg = round(t["negative_total"], 2) if t else 0.0
+        rows.append({
+            **e,
+            "positive_total": pos, "negative_total": neg, "net_total": round(pos + neg, 2),
+            "calculated": bool(t), "overrides": t["overrides"] if t else 0,
+        })
+    return {"month": month, "rows": rows}
+
+
 @api_router.get("/brsf/stars")
 async def brsf_stars(employee_id: str, month: str, current_user: dict = Depends(get_current_user)):
     _require_star_admin(current_user)

@@ -38,6 +38,8 @@ const BrsfFramework = () => {
   const [employees, setEmployees] = useState([]);
   const [employeeId, setEmployeeId] = useState('');
   const [data, setData] = useState(null);
+  const [summary, setSummary] = useState([]);
+  const [loadingSummary, setLoadingSummary] = useState(false);
   const [loadingEmp, setLoadingEmp] = useState(false);
   const [loading, setLoading] = useState(false);
   const [recalculating, setRecalculating] = useState(false);
@@ -80,6 +82,21 @@ const BrsfFramework = () => {
   useEffect(() => { loadEmployees(); }, [loadEmployees]);
   useEffect(() => { loadStars(); }, [loadStars]);
 
+  const loadSummary = useCallback(async () => {
+    setLoadingSummary(true);
+    try {
+      const res = await axios.get(`${API}/brsf/summary`, { params: { month }, headers: getAuthHeaders() });
+      setSummary(res.data.rows || []);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to load star summary');
+      setSummary([]);
+    } finally {
+      setLoadingSummary(false);
+    }
+  }, [month, getAuthHeaders]);
+
+  useEffect(() => { loadSummary(); }, [loadSummary]);
+
   const patchLine = (line) => setData((d) => {
     if (!d) return d;
     const lines = d.lines.map((l) => (l.id === line.id ? line : l));
@@ -93,7 +110,7 @@ const BrsfFramework = () => {
     try {
       const res = await axios.post(`${API}/brsf/recalculate`, { month, employee_id: employeeId || undefined }, { headers: getAuthHeaders() });
       toast.success(res.data.message || 'Recalculated');
-      await loadStars();
+      await Promise.all([loadStars(), loadSummary()]);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Recalculation failed');
     } finally {
@@ -123,7 +140,7 @@ const BrsfFramework = () => {
 
   const totals = data?.totals || { positive_total: 0, negative_total: 0, net_total: 0 };
 
-  const summary = useMemo(() => ([
+  const totalCards = useMemo(() => ([
     { label: 'Positive Stars', value: fmt(totals.positive_total), icon: Star, cls: 'from-emerald-500 to-teal-500' },
     { label: 'Negative Stars', value: fmt(totals.negative_total), icon: TrendingDown, cls: 'from-rose-500 to-red-500' },
     { label: 'Net Stars', value: fmt(totals.net_total), icon: Sigma, cls: 'from-[#063c88] to-blue-600' },
@@ -170,6 +187,11 @@ const BrsfFramework = () => {
               <History className="w-4 h-4 mr-2" /> Audit Trail
             </Button>
           )}
+          {employeeId && (
+            <Button variant="ghost" onClick={() => setEmployeeId('')} className="rounded-lg" data-testid="brsf-back-to-summary">
+              Back to Summary
+            </Button>
+          )}
         </div>
         <p className="text-xs text-slate-500 mt-3">
           Eligibility: Research Unit · Full-time (non-intern) · Confirmed — available from the confirmation month onwards.
@@ -183,15 +205,69 @@ const BrsfFramework = () => {
       )}
 
       {!loading && !employeeId && (
-        <div className="card-flat p-10 text-center text-slate-500" data-testid="brsf-empty-state">
-          Select a month and an eligible employee to view the 14 BRSF star criteria.
+        <div className="card-premium overflow-hidden" data-testid="brsf-summary">
+          <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-slate-900">Monthly Star Summary</h3>
+              <p className="text-xs text-slate-500">One row per eligible employee — select a row to open the 14-criteria detail.</p>
+            </div>
+            {loadingSummary && <Loader2 className="w-4 h-4 animate-spin text-slate-400" />}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" data-testid="brsf-summary-table">
+              <thead className="bg-slate-50 border-b border-slate-200">
+                <tr className="text-left text-xs uppercase tracking-wide text-slate-500">
+                  <th className="px-4 py-3">Employee</th>
+                  <th className="px-4 py-3">Employee ID</th>
+                  <th className="px-4 py-3">Designation</th>
+                  <th className="px-4 py-3 text-right">Positive Stars</th>
+                  <th className="px-4 py-3 text-right">Negative Stars</th>
+                  <th className="px-4 py-3 text-right">Net Stars</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.length === 0 && !loadingSummary && (
+                  <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-500" data-testid="brsf-summary-empty">
+                    No eligible Research Unit employees for this month.
+                  </td></tr>
+                )}
+                {summary.map((r) => (
+                  <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/70 cursor-pointer"
+                    onClick={() => setEmployeeId(r.id)} data-testid={`brsf-summary-row-${r.id}`}>
+                    <td className="px-4 py-3 text-slate-900 font-medium">{r.full_name}</td>
+                    <td className="px-4 py-3 text-slate-600">{r.custom_employee_id || r.emp_id || '--'}</td>
+                    <td className="px-4 py-3 text-slate-600">{r.designation || '--'}</td>
+                    <td className="px-4 py-3 text-right number-display text-emerald-600 font-semibold">{fmt(r.positive_total)}</td>
+                    <td className="px-4 py-3 text-right number-display text-rose-600 font-semibold">{fmt(r.negative_total)}</td>
+                    <td className={`px-4 py-3 text-right number-display font-bold ${r.net_total > 0 ? 'text-emerald-600' : r.net_total < 0 ? 'text-rose-600' : 'text-slate-400'}`}>{fmt(r.net_total)}</td>
+                    <td className="px-4 py-3">
+                      {r.calculated ? (
+                        <Badge variant="outline" className={`text-xs ${r.overrides ? STATUS_STYLE.Overridden : STATUS_STYLE.Auto}`}>
+                          {r.overrides ? `${r.overrides} override(s)` : 'Calculated'}
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className={`text-xs ${STATUS_STYLE['No Data']}`}>Not calculated</Badge>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Button size="sm" variant="ghost" onClick={(e) => { e.stopPropagation(); setEmployeeId(r.id); }} data-testid={`brsf-summary-view-${r.id}`}>
+                        View 14 Criteria
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
       {!loading && data && (
         <>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" data-testid="brsf-totals">
-            {summary.map((s) => (
+            {totalCards.map((s) => (
               <div key={s.label} className="card-flat p-5 flex items-center gap-4">
                 <div className={`w-11 h-11 rounded-xl bg-gradient-to-br ${s.cls} flex items-center justify-center`}>
                   <s.icon className="w-5 h-5 text-white" strokeWidth={1.5} />
