@@ -35,10 +35,11 @@ const Leave = () => {
   const [showRejectDialog, setShowRejectDialog] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [lopChoice, setLopChoice] = useState('no_lop');
+  const [validityChoice, setValidityChoice] = useState('select');
   const [lopRemark, setLopRemark] = useState('');
   const [showApplyDialog, setShowApplyDialog] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
-  const [editForm, setEditForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '' });
+  const [editForm, setEditForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: 'no_lop', leave_validity: 'select' });
   const [employees, setEmployees] = useState([]);
   const [applyForm, setApplyForm] = useState({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false });
   const [adminPaidBalance, setAdminPaidBalance] = useState(null);
@@ -113,14 +114,18 @@ const Leave = () => {
 
   const handleReset = () => { setFilters({ empName: '', team: 'All', fromDate: '', toDate: '', leaveType: 'All', status: 'All' }); fetchData(); toast.info('Filters reset'); };
   const handleViewLeave = (leave) => { setSelectedLeave(leave); setShowDetailSheet(true); };
-  const openApproveDialog = (leave) => { setSelectedLeave(leave); setLopChoice('no_lop'); setLopRemark(''); setShowApproveDialog(true); };
+  const openApproveDialog = (leave) => { setSelectedLeave(leave); setLopChoice('no_lop'); setLopRemark(''); setValidityChoice('select'); setShowApproveDialog(true); };
   const openRejectDialog = (leave) => { setSelectedLeave(leave); setShowRejectDialog(true); };
 
   const confirmApprove = async () => {
     if (!selectedLeave) return;
+    if (validityChoice !== 'valid' && validityChoice !== 'invalid') {
+      toast.error('Please select whether this is a Valid Leave or Invalid Leave.');
+      return;
+    }
     setActionLoading(true);
     try {
-      await axios.put(`${API}/leaves/${selectedLeave.id}/approve`, { is_lop: lopChoice === 'lop', lop_remark: lopRemark || null }, { headers: getAuthHeaders() });
+      await axios.put(`${API}/leaves/${selectedLeave.id}/approve`, { is_lop: lopChoice === 'lop', lop_remark: lopRemark || null, leave_validity: validityChoice }, { headers: getAuthHeaders() });
       toast.success('Leave approved successfully!');
       setShowApproveDialog(false);
       setShowDetailSheet(false);
@@ -154,6 +159,8 @@ const Leave = () => {
       start_date: leave.start_date || '',
       end_date: leave.end_date || leave.start_date || '',
       reason: leave.reason || '',
+      is_lop: leave.is_lop === true ? 'lop' : 'no_lop',
+      leave_validity: leave.leave_validity || 'select',
     });
     setShowEditDialog(true);
   };
@@ -173,7 +180,11 @@ const Leave = () => {
         start_date: editForm.start_date,
         end_date: editForm.start_date,
         reason: editForm.reason,
+        is_lop: editForm.is_lop === 'lop',
       };
+      if (editForm.leave_validity === 'valid' || editForm.leave_validity === 'invalid') {
+        payload.leave_validity = editForm.leave_validity;
+      }
       await axios.put(`${API}/leaves/${selectedLeave.id}`, payload, { headers: getAuthHeaders() });
       toast.success('Leave updated');
       setShowEditDialog(false); setShowDetailSheet(false); fetchData();
@@ -639,6 +650,14 @@ const Leave = () => {
                   ];
                   if (isHalf) rows.push({ label: 'Session', value: split, isSession: true });
                   rows.push({ label: 'Status', value: selectedLeave.status, isBadge: true });
+                  if (selectedLeave.status === 'approved') {
+                    rows.push({ label: 'LOP Status', value: selectedLeave.is_lop === true ? 'LOP' : 'No LOP' });
+                    rows.push({
+                      label: 'Leave Validity',
+                      value: selectedLeave.leave_validity === 'valid' ? 'Valid Leave'
+                        : selectedLeave.leave_validity === 'invalid' ? 'Invalid Leave' : 'Not Set',
+                    });
+                  }
                   return rows;
                 })().map((item, i) => (
                   <div key={i} className="flex justify-between items-center py-3 border-b border-dashed border-slate-200">
@@ -705,6 +724,19 @@ const Leave = () => {
                   <SelectContent>
                     <SelectItem value="no_lop">No LOP</SelectItem>
                     <SelectItem value="lop">LOP (Loss of Pay)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-slate-700">
+                  Leave Validity <span className="text-rose-500">*</span>
+                </Label>
+                <Select value={validityChoice} onValueChange={setValidityChoice}>
+                  <SelectTrigger className="mt-1.5 rounded-lg" data-testid="approve-validity-select"><SelectValue placeholder="Select" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="select">Select</SelectItem>
+                    <SelectItem value="valid">Valid Leave</SelectItem>
+                    <SelectItem value="invalid">Invalid Leave</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1002,6 +1034,30 @@ const Leave = () => {
                 <Label>Leave Date</Label>
                 <DatePicker value={editForm.start_date} onChange={(val) => setEditForm({ ...editForm, start_date: val })} className="mt-1.5 rounded-lg" data-testid="edit-leave-date" />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label>LOP Status</Label>
+                  <Select value={editForm.is_lop} onValueChange={v => setEditForm({ ...editForm, is_lop: v })}>
+                    <SelectTrigger className="mt-1.5 rounded-lg" data-testid="edit-lop-select"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="no_lop">No LOP</SelectItem>
+                      <SelectItem value="lop">LOP (Loss of Pay)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label>Leave Validity</Label>
+                  <Select value={editForm.leave_validity} onValueChange={v => setEditForm({ ...editForm, leave_validity: v })}>
+                    <SelectTrigger className="mt-1.5 rounded-lg" data-testid="edit-validity-select"><SelectValue placeholder="Not Set" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="select">Not Set</SelectItem>
+                      <SelectItem value="valid">Valid Leave</SelectItem>
+                      <SelectItem value="invalid">Invalid Leave</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
               <div>
                 <Label>Reason (min 10 chars)</Label>
                 <Textarea value={editForm.reason} onChange={e => setEditForm({ ...editForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" data-testid="edit-leave-reason" />

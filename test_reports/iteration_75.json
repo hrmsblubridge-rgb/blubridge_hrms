@@ -1,0 +1,22 @@
+{
+  "summary": "Verified the Leave Validity classification feature end-to-end. Backend: 14/14 pytest cases passing (validity guards on approve + admin-edit endpoints, both success paths incl. No LOP + Invalid combo, employee RBAC 403, reset clears validity+is_lop, status untouched on edit, audit history written to db.leave_change_history with previous/new per field). Frontend: on /leave the Approve dialog exposes approve-lop-select + approve-validity-select (default Select, mandatory), client-side toast 'Please select whether this is a Valid Leave or Invalid Leave.' blocks confirm; the Edit dialog exposes edit-lop-select + edit-validity-select pre-filled from the stored record (legacy leaves show 'Not Set'); details sheet shows both LOP Status and Leave Validity rows. Audit records inserted correctly into MongoDB Atlas (verified via direct motor query — 5 leave_change_history docs written by the test run).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_leave_validity.py",
+    "/app/test_reports/pytest/iter75_leave_validity.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 19,918 lines — should be split into modules; this iteration adds ~110 lines to it (LeaveApproveRequest, LeaveAdminEdit, _clean_leave_validity, admin_edit_leave, approve_leave changes, reset unset). Not blocking but continues to worsen maintainability.",
+    "admin_edit_leave 'no fields to update' 400 fires BEFORE the RBAC 403 has a chance to matter when body is empty; not a bug but worth noting for consistency.",
+    "audit history is not exposed through any GET endpoint — only writeable. If the UI ever needs to show 'audit trail' this will need a route."
+  ],
+  "updated_files": ["/app/backend/tests/test_leave_validity.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin/HrAdmin786$ and user/pass123 both working (localhost:8001 used for backend tests to avoid intermittent Cloudflare 502s on the preview ingress; production URL used for UI tests and was fine).",
+  "seed_data_creation": "Test approves/edits/resets ~10 pending leaves for Rishi S Nayak on dates 2028-03-01..10; each is reset back to pending in teardown so no approved data leaks. 5 leave_change_history rows for employee 2ce742cb-... were written and left in place (audit records are meant to be immutable). Also two extra Sick Leaves on 2028-04-01 and 2028-04-15 for that employee from the audit-trace shell probe (still pending, both reset).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend Atlas Mongo — the local mongosh will NOT show data; use motor with MONGO_URL from /app/backend/.env. Preview URL sometimes returns Cloudflare 502; localhost:8001 is a reliable fallback for backend tests (env var TEST_BACKEND_URL in /app/backend/tests/test_leave_validity.py). POST /api/leaves is blocked for role=employee by rbac.py; tests create leaves as admin using employee_me['employee_id'] (not 'id')."
+}

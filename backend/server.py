@@ -9406,6 +9406,7 @@ async def bulk_import_leaves(
 class LeaveApproveRequest(BaseModel):
     is_lop: Optional[bool] = None  # True=LOP, False=No LOP
     lop_remark: Optional[str] = None
+    leave_validity: Optional[str] = None  # 'valid' | 'invalid' — mandatory on approval
 
 class LeaveAdminEdit(BaseModel):
     """Admin/HR-side edit payload for a leave record. All fields optional —
@@ -9417,6 +9418,28 @@ class LeaveAdminEdit(BaseModel):
     start_date: Optional[str] = None
     end_date: Optional[str] = None
     reason: Optional[str] = None
+    is_lop: Optional[bool] = None          # LOP Status, editable after approval
+    leave_validity: Optional[str] = None   # 'valid' | 'invalid'
+    lop_remark: Optional[str] = None
+
+
+LEAVE_VALIDITY_VALUES = ("valid", "invalid")
+
+
+def _clean_leave_validity(raw, required: bool):
+    """Leave Validity is a classification independent of LOP — never derived."""
+    value = (raw or "").strip().lower()
+    if value in ("", "select", "not set", "none"):
+        if required:
+            raise HTTPException(
+                status_code=400,
+                detail="Leave Validity is required. Please select whether this is a "
+                       "Valid Leave or Invalid Leave.")
+        return None
+    if value not in LEAVE_VALIDITY_VALUES:
+        raise HTTPException(status_code=400,
+                            detail="Leave Validity must be either 'valid' or 'invalid'.")
+    return value
 
 
 @api_router.put("/leaves/{leave_id}")
@@ -9433,6 +9456,9 @@ async def admin_edit_leave(leave_id: str, data: LeaveAdminEdit, current_user: di
     update = {k: v for k, v in data.model_dump().items() if v is not None}
     if not update:
         raise HTTPException(status_code=400, detail="No fields to update")
+
+    if "leave_validity" in update:
+        update["leave_validity"] = _clean_leave_validity(update["leave_validity"], required=True)
 
     # Recompute duration if dates / split changed
     new_split = update.get("leave_split", leave.get("leave_split", "Full Day"))
@@ -9469,6 +9495,21 @@ async def admin_edit_leave(leave_id: str, data: LeaveAdminEdit, current_user: di
 
     update["edited_by"] = current_user["id"]
     update["edited_at"] = get_ist_now().isoformat()
+
+    # Approved-leave classification changes are traceable field-by-field.
+    tracked = {"is_lop": "LOP Status", "leave_validity": "Leave Validity",
+               "lop_remark": "Remark"}
+    changes = [{"field": label, "previous": leave.get(k), "new": update[k]}
+               for k, label in tracked.items() if k in update and update[k] != leave.get(k)]
+    if changes:
+        await db.leave_change_history.insert_one({
+            "id": str(uuid.uuid4()), "leave_id": leave_id,
+            "employee_id": leave["employee_id"], "leave_status": leave.get("status"),
+            "changes": changes,
+            "changed_by": current_user["id"],
+            "changed_by_name": current_user.get("full_name") or current_user.get("username"),
+            "changed_at": get_ist_now().isoformat(),
+        })
 
     await db.leaves.update_one({"id": leave_id}, {"$set": update})
     await log_audit(current_user["id"], "edit", "leave", leave_id)
@@ -9508,7 +9549,9 @@ async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = Non
     update_fields = {
         "status": "approved",
         "approved_by": current_user["id"],
-        "approved_at": get_ist_now().isoformat()
+        "approved_at": get_ist_now().isoformat(),
+        "leave_validity": _clean_leave_validity(data.leave_validity if data else None,
+                                                required=True),
     }
     if data and data.is_lop is not None:
         update_fields["is_lop"] = data.is_lop
@@ -9671,6 +9714,7 @@ async def reset_leave(leave_id: str, body: RequestResetBody = RequestResetBody()
                 "approved_at": "",
                 "is_lop": "",
                 "lop_remark": "",
+                "leave_validity": "",
                 "rejection_reason": "",
             },
         },
