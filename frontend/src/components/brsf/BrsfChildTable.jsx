@@ -37,7 +37,7 @@ const INFO_HEADERS = {
   N02: ['Leave Date', 'Duration', 'Notified At', 'Violation'],
   N03: ['Emergency Leave Date', 'Duration', 'Equivalent'],
   N05: ['Sequence', 'Days', 'Leave Types', 'Proof Uploaded'],
-  N06: ['Date', 'Status', 'Absence Equivalent', 'Counted'],
+  N06: ['Date', 'Source', 'Type', 'Duration', 'Equivalent'],
   N07: ['Date', 'Time', 'Remarks', 'Star', 'Added By', 'Actions'],
   N08: ['Date', 'Time', 'Remarks', 'Star', 'Added By', 'Actions'],
 };
@@ -68,7 +68,7 @@ const infoCells = (code, r, onReason) => {
       return [`${fmtDate(r.start)} → ${fmtDate(r.end)}`, r.days, (r.leave_types || []).join(', ') || '--',
         r.proof_uploaded ? 'Yes' : 'No'];
     case 'N06':
-      return [fmtDate(r.date), r.status, r.equivalent, 'Yes'];
+      return [fmtDate(r.date), dash(r.source), dash(r.leave_type), dash(r.duration), r.equivalent];
     default:
       return [JSON.stringify(r)];
   }

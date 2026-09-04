@@ -1,5 +1,25 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-04 — N06 Frequent Absences: VERIFIED (no code changes needed)
+The N06 rule implemented in the previous session was verified end-to-end (it had never been
+confirmed because the testing agent timed out).
+
+**Rule as shipped (`backend/brsf_stars.py` ~L386-414):** absence equivalent is derived from the
+payroll day-status map (`attendance_details`), so a calendar day can contribute at most 1.0 —
+leave and attendance-absent can never double count. Full Day = 1.0, Half Day = 0.5.
+`equiv > 4.0 → -3 stars`, `equiv <= 4.0 → 0` (exactly 4.0 = 0 stars).
+
+**Verification (probe `/app/backend/tests/n06_probe.py`, all 41 employee-months with N06 records
+across 2026-05 + 2026-06):** 0 failures, 0 duplicate dates. Boundary cases confirmed —
+Sanjay Krishna MV May 5.0 → -3 · Gowtham S Jun 4.5 → -3 · Jenifa D / Goutham Kumar Reddy /
+Kota Dhanakumar 4.0 → 0.
+**Merge case confirmed:** Kota Dhanakumar Jun = 3 Leave days + 1 Attendance `A` day = 4.0 → 0 stars,
+child rows correctly show Source = Leave vs Attendance.
+**UI confirmed (screenshot, `/star-reward` → Employees → May 2026 → Sanjay Krishna MV):** N06 row
+shows note "5.0 absence-equivalent day(s) from leave + absent", final -3, expandable child table
+renders Date / Source / Type / Duration / Equivalent.
+
+
 ## Original Problem Statement
 Build and enhance a premium enterprise-grade HRMS web application with role-based access control, onboarding workflow, and notification system. The system must be scalable, modular, and production-ready with modules for employee onboarding, attendance tracking, leave management, payroll, teams, tickets, and more.
 

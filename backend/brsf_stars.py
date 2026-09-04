@@ -383,16 +383,35 @@ async def compute_system_values(employee: dict, month: str) -> dict:
                   "note": f"Emergency leave equivalent {em_equiv} day(s) "
                           f"(Full Day 1.0 / Half Day 0.5); up to 2.0 allowed"}
 
-    # ---- N06 Frequent Absences (>= 4.5 absence-equivalent days → one -3)
+    # ---- N06 Frequent Absences (leave + absent combined, > 4.0 equivalent → one -3)
+    # The payroll day status already reconciles leave vs attendance per date, so a
+    # single calendar day can never contribute more than 1.0.
+    leave_by_date = {}
+    for lv in leaves:
+        d = lv["_start"]
+        while d <= lv["_end"]:
+            leave_by_date.setdefault(_iso(d), lv)
+            d += timedelta(days=1)
     equiv, abs_children = 0.0, []
     for iso, d in sorted(details.items()):
-        w = 1.0 if d["status"] in FULL_LEAVE_CODES | ABSENT_CODES else (
-            0.5 if d["status"] in HALF_LEAVE_CODES else 0)
-        if w:
-            equiv += w
-            abs_children.append({"date": iso, "status": d["status"], "equivalent": w, "value": 0})
-    out["N06"] = {"value": -3 if equiv >= 4.5 else 0, "children": abs_children,
-                  "note": f"{equiv} absence-equivalent day(s); up to 4.0 allowed"}
+        status = d["status"]
+        w = 1.0 if status in FULL_LEAVE_CODES | ABSENT_CODES else (
+            0.5 if status in HALF_LEAVE_CODES else 0)
+        if not w:
+            continue
+        equiv += w
+        lv = leave_by_date.get(iso)
+        is_absent = status in ABSENT_CODES
+        abs_children.append({
+            "date": iso, "status": status, "equivalent": w, "value": 0,
+            "source": "Attendance" if (is_absent and not lv) else "Leave",
+            "leave_type": (lv.get("leave_type") if lv else None) or ("Absent" if is_absent else status),
+            "duration": ("Full Day" if w == 1.0 else (lv.get("leave_split") if lv else "Half Day")),
+        })
+    equiv = round(equiv, 2)
+    out["N06"] = {"value": -3 if equiv > 4.0 else 0, "children": abs_children,
+                  "note": f"{equiv} absence-equivalent day(s) from leave + absent "
+                          f"(Full Day 1.0 / Half Day 0.5); up to 4.0 allowed"}
 
     # ---- N01 Invalid Leave Request (-1 max per instance)
     # Every leave record of the month is listed and individually reviewable.

@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="9" failures="2" skipped="1" tests="17" time="621.763" timestamp="2026-09-04T10:20:01.343737+00:00" hostname="agent-env-d2b154a6-5072-46ae-9b41-0f74a8491535"><testcase classname="tests.test_brsf_iter77_n06" name="test_n06_value_matches_rule_across_employees" time="183.078" /><testcase classname="tests.test_brsf_iter77_n06" name="test_adwaid_suresh_high_total_gives_single_minus_three" time="9.101" /><testcase classname="tests.test_brsf_iter77_n06" name="test_aparna_a_low_total_gives_zero" time="9.283" /><testcase classname="tests.test_brsf_iter77_n06" name="test_no_double_counting_any_date_at_most_one_row_and_one_equivalent" time="185.616" /><testcase classname="tests.test_brsf_iter77_n06" name="test_children_have_all_required_fields" time="233.547" /><testcase classname="tests.test_brsf_iter77_n06" name="test_zero_case_no_leave_no_absence" time="0.910"><skipped type="pytest.skip" message="no zero-total employee found in first 25 rows">/app/backend/tests/test_brsf_iter77_n06.py:180: no zero-total employee found in first 25 rows</skipped></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_override_accepts_0_and_minus_3" time="0.043"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_override_rejects_disallowed_values[-1]" time="0.000"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_override_rejects_disallowed_values[-2]" time="0.000"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_override_rejects_disallowed_values[-4]" time="0.000"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_override_rejects_disallowed_values[1]" time="0.000"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_override_rejects_disallowed_values[3]" time="0.000"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_override_rejects_disallowed_values[0.5]" time="0.000"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_override_preserved_across_recalculate" time="0.000"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_reset_override_clears_it" time="0.000"><error message="failed on setup with &quot;AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code&quot;">backend/tests/test_brsf_iter77_n06.py:189: in override_target
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</error></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_n06_parent_limits_are_0_and_minus_3" time="0.003"><failure message="AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code">backend/tests/test_brsf_iter77_n06.py:251: in test_n06_parent_limits_are_0_and_minus_3
+    st = _stars(sess, emp["id"])
+         ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</failure></testcase><testcase classname="tests.test_brsf_iter77_n06" name="test_recalculate_idempotent_for_month" time="0.044"><failure message="AssertionError: {&quot;detail&quot;:&quot;Token expired&quot;}&#10;assert 401 == 200&#10; +  where 401 = &lt;Response [401]&gt;.status_code">backend/tests/test_brsf_iter77_n06.py:261: in test_recalculate_idempotent_for_month
+    st1 = _stars(sess, emp["id"])
+          ^^^^^^^^^^^^^^^^^^^^^^^
+backend/tests/test_brsf_iter77_n06.py:46: in _stars
+    assert r.status_code == 200, r.text[:400]
+E   AssertionError: {"detail":"Token expired"}
+E   assert 401 == 200
+E    +  where 401 = &lt;Response [401]&gt;.status_code</failure></testcase></testsuite></testsuites>
