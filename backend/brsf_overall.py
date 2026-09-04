@@ -107,10 +107,12 @@ async def _report(from_month: str, to_month: str, employee_id=None, team=None) -
             "team": e.get("team") or "", "date_of_joining": e.get("date_of_joining"),
             "confirmation_date": e.get("confirmation_date"),
             "inactive_date": e.get("inactive_date"),
-            "employee_status": e.get("employee_status"),
+            "employee_status": e.get("employee_status") or "Active",
+            "is_active": (e.get("employee_status") or "Active") == "Active",
             "cells": cells, "cash_total": cash_total,
         })
-    rows.sort(key=lambda r: (r["full_name"] or ""))
+    # currently active employees first, then inactive — name ascending inside each group
+    rows.sort(key=lambda r: (0 if r["is_active"] else 1, (r["full_name"] or "").lower()))
     return {
         "months": [{"key": m, "label": f"{MONTH_LABELS[int(m[5:7]) - 1][:3]} {m[:4]}"} for m in completed],
         "rows": rows, "skipped_months": skipped, "reward_bands": _bands_payload(),

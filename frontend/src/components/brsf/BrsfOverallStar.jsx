@@ -9,6 +9,7 @@ import { MonthPicker } from '../ui/month-picker';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Loader2, FileSpreadsheet, Download, RotateCcw, Search, ArrowUpDown, IndianRupee } from 'lucide-react';
 import BrsfExportImport from './BrsfExportImport';
+import { fmtDate } from './format';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -35,7 +36,7 @@ const BrsfOverallStar = () => {
   const [applied, setApplied] = useState(DEFAULTS);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [sort, setSort] = useState({ key: 'full_name', dir: 'asc' });
+  const [sort, setSort] = useState({ key: '', dir: 'asc' });
 
   const load = useCallback(async (f) => {
     if (f.from > f.to) { toast.error('From Month cannot be later than To Month.'); return; }
@@ -86,6 +87,7 @@ const BrsfOverallStar = () => {
   const rows = useMemo(() => {
     const list = [...(data?.rows || [])];
     const { key, dir } = sort;
+    if (!key) return list;   // backend order: active employees first, then inactive
     list.sort((a, b) => {
       const av = key === 'cash_total' ? a.cash_total : (a[key] || '');
       const bv = key === 'cash_total' ? b.cash_total : (b[key] || '');
@@ -231,15 +233,14 @@ const BrsfOverallStar = () => {
                 <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50/70" data-testid={`overall-row-${r.id}`}>
                   <td className="px-4 py-3 font-medium text-slate-900 sticky left-0 bg-white z-10">
                     {r.full_name}
-                    {r.inactive_date && (
-                      <Badge variant="outline" className="ml-2 text-[10px] bg-slate-100 text-slate-500 border-slate-200">
-                        inactive {r.inactive_date}
-                      </Badge>
-                    )}
+                    <Badge variant="outline" className={`ml-2 text-[10px] ${r.is_active ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}
+                      data-testid={`overall-status-${r.id}`}>
+                      {r.is_active ? 'Active' : `Inactive${r.inactive_date ? ` ${fmtDate(r.inactive_date)}` : ''}`}
+                    </Badge>
                   </td>
                   <td className="px-4 py-3 text-slate-600">{r.team || '--'}</td>
-                  <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{r.date_of_joining || '--'}</td>
-                  <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{r.confirmation_date || '--'}</td>
+                  <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{fmtDate(r.date_of_joining)}</td>
+                  <td className="px-4 py-3 text-slate-600 whitespace-nowrap">{fmtDate(r.confirmation_date)}</td>
                   {r.cells.map((c) => (
                     <React.Fragment key={c.month}>
                       <td className="px-3 py-3 text-center number-display" data-testid={`overall-stars-${r.id}-${c.month}`}

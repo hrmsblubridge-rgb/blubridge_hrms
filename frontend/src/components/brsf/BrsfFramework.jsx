@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { ChevronDown, ChevronRight, RefreshCw, Loader2, Pencil, RotateCcw, Plus, Trash2, History, Star, TrendingDown, Sigma, Download } from 'lucide-react';
 import EmployeeAvatar from '../EmployeeAvatar';
 import { BrsfChildTable, EXPANDABLE, childRowsFor } from './BrsfChildTable';
+import { fmtDate, fmtDateTime } from './format';
 import BrsfExportImport from './BrsfExportImport';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -583,7 +584,7 @@ const BrsfFramework = () => {
                 <tbody>
                   {audit.map((a) => (
                     <tr key={a.id} className="border-b border-slate-100">
-                      <td className="px-3 py-2 text-slate-500">{String(a.updated_at || '').slice(0, 16).replace('T', ' ')}</td>
+                      <td className="px-3 py-2 text-slate-500">{fmtDateTime(a.updated_at)}</td>
                       <td className="px-3 py-2">{a.code} · {a.criteria}</td>
                       <td className="px-3 py-2">{a.action}</td>
                       <td className="px-3 py-2 text-right number-display">{fmt(a.previous_value)}</td>
@@ -786,8 +787,8 @@ const ChildOverrideDialog = ({ line, child, onClose, onSaved, headers }) => {
   const [value, setValue] = useState(allowed.includes(current) ? current : allowed[0]);
   const [note, setNote] = useState(child.override_note || '');
   const [saving, setSaving] = useState(false);
-  const label = child.week ? `Week ${child.week} (${child.start} → ${child.end})`
-    : (child.date || child.start || child.key);
+  const label = child.week ? `Week ${child.week} (${fmtDate(child.start)} → ${fmtDate(child.end)})`
+    : (child.date ? fmtDate(child.date) : (child.start ? fmtDate(child.start) : child.key));
 
   const save = async () => {
     setSaving(true);

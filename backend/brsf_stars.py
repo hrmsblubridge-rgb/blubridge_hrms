@@ -230,6 +230,64 @@ async def _research_minutes(employee_id: str, start: date, end: date) -> dict:
     return out
 
 
+def calculate_invalid_leave_star(lv: dict) -> dict:
+    """THE N01 rule for one leave record — used by Auto Calculate, UI and exports.
+
+    1. Apply the existing HRMS timing rule for leave types that have one.
+    2. Only when the application itself is late, the Leave Module's
+       `leave_validity` decides: Valid Leave -> 0, Invalid Leave -> -1,
+       Not Set -> the timing result.
+    """
+    applied = _applied_at(lv)
+    split = lv.get("leave_split") or "Full Day"
+    has_rule = bool(_is_type(lv, "sick") or _is_type(lv, "preplan"))
+    validity = (lv.get("leave_validity") or "").strip().lower() or None
+
+    timing_ok, timing_note = True, ""
+    if has_rule:
+        if not applied:
+            timing_ok, timing_note = False, "No HRMS application record"
+        elif _is_type(lv, "sick"):
+            if split == "Second Half":
+                if applied.date() > lv["_start"]:
+                    timing_ok, timing_note = False, "Second-half sick leave applied after the leave date"
+            else:
+                deadline = datetime.combine(lv["_start"], datetime.min.time(),
+                                            tzinfo=applied.tzinfo).replace(hour=7)
+                if applied > deadline:
+                    timing_ok = False
+                    timing_note = f"Applied {applied.strftime('%d-%m-%Y %I:%M %p')} — after 07:00 AM deadline"
+        else:  # pre-planned: at least 4 days in advance
+            days = (lv["_start"] - applied.date()).days
+            if days < 4:
+                timing_ok = False
+                timing_note = f"Applied only {days} day(s) in advance (4 days required)"
+
+    if timing_ok:
+        value = 0
+        reason = ("Applied within the allowed time." if has_rule
+                  else f"No automatic N01 timing rule for {lv.get('leave_type')} leave.")
+    elif validity == "valid":
+        value, reason = 0, f"Late HRMS application but approved as Valid Leave ({timing_note})."
+    elif validity == "invalid":
+        value, reason = -1, f"{timing_note} and Leave Validity is Invalid Leave."
+    else:
+        value, reason = -1, f"{timing_note}; Leave Validity not set."
+
+    return {
+        "key": f"leave:{lv['id']}", "leave_id": lv["id"],
+        "date": lv["start_date"], "end_date": lv.get("end_date") or lv["start_date"],
+        "leave_type": lv.get("leave_type"), "split": split,
+        "applied_at": lv.get("created_at"),
+        "leave_reason": (lv.get("reason") or "").strip(),
+        "approval_remark": (lv.get("lop_remark") or "").strip(),
+        "leave_validity": validity,
+        "timing_valid": timing_ok, "has_rule": has_rule,
+        "applicable": True,        # every leave is individually reviewable
+        "reason": reason, "value": value,
+    }
+
+
 async def compute_system_values(employee: dict, month: str) -> dict:
     """Central automated calculation — the single source of truth."""
     m_start, m_end = _month_bounds(month)
@@ -302,7 +360,8 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     async for lv in db.leaves.find(
         {"employee_id": employee["id"], "status": "approved"},
         {"_id": 0, "id": 1, "leave_type": 1, "leave_split": 1, "start_date": 1, "end_date": 1,
-         "created_at": 1, "supporting_document_url": 1, "reason": 1},
+         "created_at": 1, "supporting_document_url": 1, "reason": 1,
+         "leave_validity": 1, "lop_remark": 1, "is_lop": 1},
     ):
         s, e = _parse_iso(lv.get("start_date")), _parse_iso(lv.get("end_date") or lv.get("start_date"))
         if s and e and not (e < win_start or s > m_end):
@@ -310,11 +369,19 @@ async def compute_system_values(employee: dict, month: str) -> dict:
             leaves.append(lv)
     leaves.sort(key=lambda x: x["_start"])
 
-    # ---- N03 Frequent Emergencies (> 2 instances in the month → one -3)
-    em = [{"date": lv["start_date"], "split": lv.get("leave_split"), "value": 0}
-          for lv in leaves if _is_type(lv, "emergency")]
-    out["N03"] = {"value": -3 if len(em) >= 3 else 0, "children": em,
-                  "note": f"{len(em)} emergency leave instance(s); up to 2 allowed"}
+    # ---- N03 Frequent Emergencies (duration equivalent > 2.0 in the month → one -3)
+    em = []
+    for lv in leaves:
+        if not _is_type(lv, "emergency"):
+            continue
+        split = lv.get("leave_split") or "Full Day"
+        eq = 0.5 if split in ("First Half", "Second Half") else 1.0
+        em.append({"key": f"leave:{lv['id']}", "leave_id": lv["id"], "date": lv["start_date"],
+                   "split": split, "equivalent": eq, "value": 0})
+    em_equiv = round(sum(c["equivalent"] for c in em), 2)
+    out["N03"] = {"value": -3 if em_equiv > 2.0 else 0, "children": em,
+                  "note": f"Emergency leave equivalent {em_equiv} day(s) "
+                          f"(Full Day 1.0 / Half Day 0.5); up to 2.0 allowed"}
 
     # ---- N06 Frequent Absences (>= 4.5 absence-equivalent days → one -3)
     equiv, abs_children = 0.0, []
@@ -327,45 +394,14 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     out["N06"] = {"value": -3 if equiv >= 4.5 else 0, "children": abs_children,
                   "note": f"{equiv} absence-equivalent day(s); up to 4.0 allowed"}
 
-    # ---- N01 Invalid Leave Request (-1 max per Sick / Pre-planned instance)
-    # Every leave record of the month is listed for transparency; leave types
-    # outside the N01 rule are shown as "not applicable" with a 0 star value.
-    n01 = []
-    for lv in leaves:
-        applicable = bool(_is_type(lv, "sick") or _is_type(lv, "preplan"))
-        applied, split = _applied_at(lv), (lv.get("leave_split") or "Full Day")
-        reasons = []
-        if applicable:
-            if not applied:
-                reasons.append("No HRMS application record")
-            elif _is_type(lv, "sick"):
-                if split == "Second Half":
-                    if applied.date() > lv["_start"]:
-                        reasons.append("Second-half sick leave applied after the leave date")
-                else:
-                    deadline = datetime.combine(lv["_start"], datetime.min.time(),
-                                                tzinfo=applied.tzinfo).replace(hour=7)
-                    if applied > deadline:
-                        reasons.append(f"Applied {applied.strftime('%d-%b %H:%M')} — after 07:00 AM deadline")
-            else:  # pre-planned: at least 4 days in advance
-                if (lv["_start"] - applied.date()).days < 4:
-                    reasons.append(f"Applied only {(lv['_start'] - applied.date()).days} day(s) in advance "
-                                   "(4 days required)")
-        n01.append({
-            "key": f"leave:{lv['id']}", "leave_id": lv["id"],
-            "date": lv["start_date"], "end_date": lv.get("end_date") or lv["start_date"],
-            "leave_type": lv.get("leave_type"), "split": split,
-            "applied_at": lv.get("created_at"),
-            "leave_reason": (lv.get("reason") or "").strip(),
-            "applicable": applicable,
-            "reason": ("; ".join(reasons) if reasons else
-                       ("Applied within the BRSF window" if applicable
-                        else "Not applicable to N01 — handled by its own criteria")),
-            "value": -1 if (applicable and reasons) else 0,   # capped at -1 per instance
-        })
+    # ---- N01 Invalid Leave Request (-1 max per instance)
+    # Every leave record of the month is listed and individually reviewable.
+    # Timing rule first; the Leave Module's Leave Validity only matters when the
+    # HRMS application itself broke the timing rule.
+    n01 = [calculate_invalid_leave_star(lv) for lv in leaves]
     invalid_count = sum(1 for c in n01 if c["value"])
     out["N01"] = {"value": -invalid_count, "children": n01,
-                  "note": f"{invalid_count} invalid sick/pre-planned leave instance(s) "
+                  "note": f"{invalid_count} invalid leave instance(s) "
                           f"of {len(n01)} leave record(s) this month"}
 
     # ---- N02 Emergency Leave Violation (-2 max per emergency instance)
