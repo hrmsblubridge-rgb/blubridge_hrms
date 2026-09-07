@@ -31,7 +31,8 @@ const INFO_HEADERS = {
   P02: ['Week', 'Date Range', 'Star'],
   P04: ['Week', 'Date Range', 'Star'],
   P05: ['Week', 'Date Range', 'Eligible Days', 'Total Research Hours', 'Average Research Hours'],
-  N04: ['Week', 'Date Range', 'Eligible Days', 'Total Research Hours', 'Average Research Hours'],
+  N04: ['Week', 'Date Range', 'Applicable Working Days', 'Excluded Leave Days',
+    'Eligible Research Days', 'Total Research Hours', 'Average Research Hours'],
   P06: ['Date', 'Holiday Type', 'Work'],
   N01: ['Leave Date', 'Leave Type', 'Duration', 'Applied Date', 'Applied Time', 'Leave Validity', 'Notes'],
   N02: ['Leave Date', 'Duration', 'Notified At', 'Violation'],
@@ -50,9 +51,12 @@ const infoCells = (code, r, onReason) => {
     case 'P04':
       return [`Week ${r.week}`, `${r.start} → ${r.end}`, star(r.value)];
     case 'P05':
-    case 'N04':
       return [`Week ${r.week}`, `${fmtDate(r.start)} → ${fmtDate(r.end)}`, r.eligible_days,
         dash(r.total_hhmm), dash(r.avg_hhmm)];
+    case 'N04':
+      return [`Week ${r.week}`, `${fmtDate(r.start)} → ${fmtDate(r.end)}`,
+        dash(r.applicable_days), dash(r.leave_days), r.eligible_days,
+        dash(r.total_hhmm), r.eligible_days ? dash(r.avg_hhmm) : 'N/A'];
     case 'P06':
       return [fmtDate(r.date), r.kind, r.work];
     case 'N01':
@@ -97,7 +101,8 @@ const NoteButtons = ({ row, onOpen }) => {
 const childStatus = (code, r) => {
   if (r.override !== null && r.override !== undefined) return 'Overridden';
   if (r.applicable === false) return 'Not Applicable';
-  if ((code === 'P05' || code === 'N04') && r.eligible_days === 0) return 'No Data';
+  if (code === 'N04' && r.eligible_days === 0) return 'No Eligible Research Days';
+  if (code === 'P05' && r.eligible_days === 0) return 'No Data';
   return 'Auto';
 };
 
@@ -105,6 +110,7 @@ const STATUS_STYLE = {
   Overridden: 'bg-amber-100 text-amber-700 border-amber-200',
   Auto: 'bg-blue-50 text-blue-700 border-blue-200',
   'No Data': 'bg-slate-100 text-slate-500 border-slate-200',
+  'No Eligible Research Days': 'bg-slate-100 text-slate-500 border-slate-200',
   'Not Applicable': 'bg-slate-100 text-slate-500 border-slate-200',
 };
 

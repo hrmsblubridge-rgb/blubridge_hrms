@@ -1,5 +1,34 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-07 — N04 Short Research Duration: leave-aware weekly average
+**Spec:** a valid Leave day must never drag the weekly Research average down, and a week whose
+applicable days are entirely covered by approved Leave must score 0 (never -1) while remaining
+manually overridable.
+
+**Engine (`backend/brsf_stars.py`, P05/N04 weekly block):** the two criteria now build their own
+denominators from the same weekly bucket.
+- Always excluded from both numerator and denominator: approved leave (PF/SF/EF/PA/OH/PH/SH/EH/PP,
+  valid **or** invalid — invalidity is penalised by N01) and non-working days (Su/WO/H/R/NA/blank).
+- **N04 denominator additionally INCLUDES absence days (A / LOP) at 0 research minutes**
+  (user decision 2026-09-07) — an unexcused absence therefore lowers the weekly average.
+  **P05's denominator is unchanged** (absence still excluded there).
+- Threshold stays minute-based: `avg < 570` → -1, `avg >= 570` → 0 (09:29 = -1, 09:30 = 0).
+- `eligible_days == 0` → total 00:00, `avg = null`, System Star **0** (never -1).
+- New per-week child fields: `applicable_days`, `leave_days`, `absent_days`, `eligible_days`,
+  `total_hhmm`, `avg_hhmm` (null when no eligible day).
+
+**UI (`components/brsf/BrsfChildTable.jsx`):** N04 child table now shows Week · Date Range ·
+Applicable Working Days · Excluded Leave Days · Eligible Research Days · Total Research Hours ·
+Average Research Hours (**N/A** when 0 eligible) · System Star · Override · Final Star ·
+Status (**No Eligible Research Days** on leave-only weeks) · Action. **P05 display untouched.**
+
+**Tests:** `/app/backend/tests/test_n04_weekly_average.py` — 11/11 pass (all 9 spec acceptance
+tests + non-working-day and parent-aggregation cases). Live-verified on May 2026 data; child
+override on a 0-eligible week (Goutham Kumar Reddy, Week 1) → System 0 / Override -1 / Final -1,
+parent re-aggregated, value -2 rejected (400), reset restored 0. Test override was reset afterwards
+— no test data left behind.
+
+
 ## 🆕 2026-09-04 — N06 Frequent Absences: VERIFIED (no code changes needed)
 The N06 rule implemented in the previous session was verified end-to-end (it had never been
 confirmed because the testing agent timed out).

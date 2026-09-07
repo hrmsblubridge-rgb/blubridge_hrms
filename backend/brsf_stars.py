@@ -318,33 +318,56 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     }
 
     # ---- P05 / N04 weekly research averages (minute based)
+    # P05 denominator: only worked/research-required days.
+    # N04 denominator: same PLUS unexcused absence days (A / LOP) counted at 0 minutes;
+    # approved leave (valid or invalid) and non-working days are always excluded from both.
     pos_children, neg_children, pos_total, neg_total = [], [], 0, 0
     for b in _week_buckets(win_start, m_end):
-        eligible = [d for d in b["days"]
-                    if details.get(_iso(d)) and details[_iso(d)]["status"] not in
-                    (FULL_LEAVE_CODES | HALF_LEAVE_CODES | ABSENT_CODES | NON_REQUIRED_CODES)]
-        if not eligible:
-            total, avg = 0, 0.0
-            pos, neg = 0, 0
-        else:
+        applicable = [d for d in b["days"]
+                      if details.get(_iso(d)) and details[_iso(d)]["status"] not in NON_REQUIRED_CODES]
+        leave_days = [d for d in applicable
+                      if details[_iso(d)]["status"] in FULL_LEAVE_CODES | HALF_LEAVE_CODES]
+        absent_days = [d for d in applicable if details[_iso(d)]["status"] in ABSENT_CODES]
+        eligible = [d for d in applicable
+                    if d not in leave_days and d not in absent_days]
+        n04_eligible = [d for d in applicable if d not in leave_days]
+
+        if eligible:
             total = sum(res_mins.get(_iso(d), 0) for d in eligible)
             avg = total / len(eligible)
             pos = 1 if avg >= RESEARCH_POSITIVE_MIN else 0
-            neg = -1 if avg < RESEARCH_NEGATIVE_MAX else 0
+        else:
+            total, avg, pos = 0, 0.0, 0
+        if n04_eligible:
+            n_total = sum(res_mins.get(_iso(d), 0) for d in n04_eligible)
+            n_avg = n_total / len(n04_eligible)
+            neg = -1 if n_avg < RESEARCH_NEGATIVE_MAX else 0
+        else:
+            n_total, n_avg, neg = 0, 0.0, 0
+
         capped = pos_total + pos > CRITERIA_MAP["P05"][5]
         row = {"week": b["week"], "start": b["start"], "end": b["end"],
-               "key": f"week:{b['start']}",
-               "eligible_days": len(eligible), "avg_minutes": round(avg, 2),
-               "avg_hhmm": _minutes_to_hhmm(avg),
-               "total_minutes": total, "total_hhmm": _minutes_to_hhmm(total)}
+               "key": f"week:{b['start']}"}
         pos_children.append({**row, "value": 0 if capped else pos,
-                             "capped": bool(capped and pos)})
-        neg_children.append({**row, "value": neg})
+                             "capped": bool(capped and pos),
+                             "eligible_days": len(eligible), "avg_minutes": round(avg, 2),
+                             "avg_hhmm": _minutes_to_hhmm(avg),
+                             "total_minutes": total, "total_hhmm": _minutes_to_hhmm(total)})
+        neg_children.append({**row, "value": neg,
+                             "applicable_days": len(applicable),
+                             "leave_days": len(leave_days),
+                             "absent_days": len(absent_days),
+                             "eligible_days": len(n04_eligible),
+                             "avg_minutes": round(n_avg, 2) if n04_eligible else None,
+                             "avg_hhmm": _minutes_to_hhmm(n_avg) if n04_eligible else None,
+                             "total_minutes": n_total, "total_hhmm": _minutes_to_hhmm(n_total)})
         if not capped:
             pos_total += pos
         neg_total += neg
     out["P05"] = {"value": pos_total, "children": pos_children}
-    out["N04"] = {"value": neg_total, "children": neg_children}
+    out["N04"] = {"value": neg_total, "children": neg_children,
+                  "note": "Weekly average over eligible research days only "
+                          "(approved leave days excluded); below 09:30 (570 min) → -1 per week"}
 
     # ---- P06 Extra Effort (+1 per worked Sunday / fixed holiday, once per date)
     ee = []
