@@ -14,9 +14,13 @@ import brsf_stars  # noqa: E402
 EMP = {"id": "n04-test-emp", "confirmation_date": None}
 
 
-def _run(days, month="2026-08"):
-    """days: {'YYYY-MM-DD': (status, research_minutes)}"""
+def _run(days, month="2026-08", leaves=None):
+    """days: {'YYYY-MM-DD': (status, research_minutes)}; leaves: list of ISO dates"""
     details = [{"date": f"{d[8:10]}-{d[5:7]}-{d[0:4]}", "status": v[0]} for d, v in days.items()]
+    leave_docs = [{"id": f"lv{i}", "leave_type": "Preplanned", "leave_split": "Full Day",
+                   "start_date": d, "end_date": d, "created_at": None, "reason": "",
+                   "leave_validity": "valid", "is_lop": False}
+                  for i, d in enumerate(leaves or [])]
 
     async def fake_payroll(emp_id, m, employee=None):
         return {"attendance_details": details}
@@ -25,19 +29,27 @@ def _run(days, month="2026-08"):
         return {d: v[1] for d, v in days.items() if v[1]}
 
     class _Cursor:
+        def __init__(self, rows):
+            self._rows = list(rows)
+
         def __aiter__(self):
             return self
 
         async def __anext__(self):
-            raise StopAsyncIteration
+            if not self._rows:
+                raise StopAsyncIteration
+            return self._rows.pop(0)
 
     class _Coll:
+        def __init__(self, rows):
+            self._rows = rows
+
         def find(self, *a, **k):
-            return _Cursor()
+            return _Cursor(self._rows)
 
     class _DB:
         def __getattr__(self, name):
-            return _Coll()
+            return _Coll(leave_docs if name == "leaves" else [])
 
     orig = (brsf_stars.calculate_payroll_for_employee, brsf_stars._research_minutes, brsf_stars.db)
     brsf_stars.calculate_payroll_for_employee = fake_payroll
@@ -144,6 +156,25 @@ def test_12_parent_is_sum_of_weeks():
     days2["2026-08-11"] = ("P", 100)
     n04b, _ = _run(days2)
     assert n04b["value"] == -2
+
+
+def test_13_approved_leave_stamped_present_is_still_excluded():
+    """Real bug (Ram Charan Golla, Apr 2026 W1): a non-LOP approved leave can remain "P"
+    in payroll, so the leave records — not the day status — decide the exclusion."""
+    days = {W1[0]: ("P", 0), W1[1]: ("P", 0), W1[2]: ("P", 0), W1[3]: ("PF", 0),
+            W1[4]: ("P", 600)}
+    n04, p05 = _run(days, leaves=[W1[0], W1[1], W1[2], W1[3]])
+    c = _week1(n04)
+    assert c["applicable_days"] == 5 and c["leave_days"] == 4 and c["eligible_days"] == 1
+    assert c["total_minutes"] == 600 and c["avg_hhmm"] == "10:00" and c["value"] == 0
+    p = next(x for x in p05["children"] if x["start"] == "2026-08-03")
+    assert p["eligible_days"] == 1 and p["value"] == 1
+
+
+def test_14_all_days_leave_stamped_present_gives_zero():
+    days = {W1[0]: ("P", 0), W1[1]: ("P", 0), W1[2]: ("P", 0)}
+    c = _week1(_run(days, leaves=[W1[0], W1[1], W1[2]])[0])
+    assert c["eligible_days"] == 0 and c["avg_hhmm"] is None and c["value"] == 0
 
 
 if __name__ == "__main__":

@@ -317,6 +317,30 @@ async def compute_system_values(employee: dict, month: str) -> dict:
                  ("Disqualified by leave/absence" if breaches else "All applicable working days attended")),
     }
 
+    # ---- Leaves overlapping the eligible window (single fetch, reused below)
+    leaves = []
+    async for lv in db.leaves.find(
+        {"employee_id": employee["id"], "status": "approved"},
+        {"_id": 0, "id": 1, "leave_type": 1, "leave_split": 1, "start_date": 1, "end_date": 1,
+         "created_at": 1, "supporting_document_url": 1, "reason": 1,
+         "leave_validity": 1, "lop_remark": 1, "is_lop": 1},
+    ):
+        s, e = _parse_iso(lv.get("start_date")), _parse_iso(lv.get("end_date") or lv.get("start_date"))
+        if s and e and not (e < win_start or s > m_end):
+            lv["_start"], lv["_end"] = s, e
+            leaves.append(lv)
+    leaves.sort(key=lambda x: x["_start"])
+
+    # Dates covered by an approved leave. The payroll day status is NOT reliable here
+    # (a non-LOP approved leave can still be stamped "P"), so the leave records are the
+    # source of truth for excluding a day from the research denominator.
+    approved_leave_dates = set()
+    for lv in leaves:
+        d = lv["_start"]
+        while d <= lv["_end"]:
+            approved_leave_dates.add(_iso(d))
+            d += timedelta(days=1)
+
     # ---- P05 / N04 weekly research averages (minute based)
     # P05 denominator: only worked/research-required days.
     # N04 denominator: same PLUS unexcused absence days (A / LOP) counted at 0 minutes;
@@ -326,8 +350,10 @@ async def compute_system_values(employee: dict, month: str) -> dict:
         applicable = [d for d in b["days"]
                       if details.get(_iso(d)) and details[_iso(d)]["status"] not in NON_REQUIRED_CODES]
         leave_days = [d for d in applicable
-                      if details[_iso(d)]["status"] in FULL_LEAVE_CODES | HALF_LEAVE_CODES]
-        absent_days = [d for d in applicable if details[_iso(d)]["status"] in ABSENT_CODES]
+                      if details[_iso(d)]["status"] in FULL_LEAVE_CODES | HALF_LEAVE_CODES
+                      or _iso(d) in approved_leave_dates]
+        absent_days = [d for d in applicable
+                       if d not in leave_days and details[_iso(d)]["status"] in ABSENT_CODES]
         eligible = [d for d in applicable
                     if d not in leave_days and d not in absent_days]
         n04_eligible = [d for d in applicable if d not in leave_days]
@@ -377,20 +403,6 @@ async def compute_system_values(employee: dict, month: str) -> dict:
             ee.append({"date": iso, "kind": kind, "key": f"date:{iso}",
                        "work": "Full Day" if d["status"] == "FD" else "Half Day", "value": 1})
     out["P06"] = {"value": len(ee), "children": ee}
-
-    # ---- Leaves overlapping the eligible window (single fetch, reused below)
-    leaves = []
-    async for lv in db.leaves.find(
-        {"employee_id": employee["id"], "status": "approved"},
-        {"_id": 0, "id": 1, "leave_type": 1, "leave_split": 1, "start_date": 1, "end_date": 1,
-         "created_at": 1, "supporting_document_url": 1, "reason": 1,
-         "leave_validity": 1, "lop_remark": 1, "is_lop": 1},
-    ):
-        s, e = _parse_iso(lv.get("start_date")), _parse_iso(lv.get("end_date") or lv.get("start_date"))
-        if s and e and not (e < win_start or s > m_end):
-            lv["_start"], lv["_end"] = s, e
-            leaves.append(lv)
-    leaves.sort(key=lambda x: x["_start"])
 
     # ---- N03 Frequent Emergencies (duration equivalent > 2.0 in the month → one -3)
     em = []

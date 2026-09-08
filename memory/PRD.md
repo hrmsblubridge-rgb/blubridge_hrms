@@ -1,5 +1,28 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-08 — N04 fix: approved leave stamped "P" was still penalised
+**Bug (Ram Charan Golla, Apr 2026 Week 1):** 4 approved Preplanned leaves (01–04 Apr) yet N04
+showed only 1 excluded leave day, 3 eligible days, 00:00 total → **-1 star**.
+
+**Root cause:** the weekly denominator identified leave days from the payroll day-status code only.
+A non-LOP approved leave can remain stamped `P` in payroll (only the LOP leave on 04-Apr became
+`PF`), so 3 genuine leave days were treated as zero-research working days.
+
+**Fix (`brsf_stars.py`):** the approved-leave fetch was moved above the P05/N04 weekly block and a
+`approved_leave_dates` set is now the source of truth — a date is excluded if the payroll status is
+a leave code **OR** an approved leave record covers it. `absent_days` no longer double-counts a
+date that is also covered by leave.
+
+**Side effect (intended, same principle):** P05 also stops counting those leave days in its
+denominator, so genuine leave weeks are no longer dragged below the +1 threshold. P05's *display*
+remains unchanged.
+
+**Verified:** Apr 2026 Ram Charan Golla → Week 1 = 4 applicable / 4 leave / 0 eligible / N/A /
+**0 stars**, parent N04 -3 → **-1** (Week 3 09:06 legitimately -1); P05 3. Tests
+`tests/test_n04_weekly_average.py` now 13/13 pass (added the "approved leave stamped P" and
+"all-days-leave stamped P" cases).
+
+
 ## 🆕 2026-09-07 — N04 Short Research Duration: leave-aware weekly average
 **Spec:** a valid Leave day must never drag the weekly Research average down, and a week whose
 applicable days are entirely covered by approved Leave must score 0 (never -1) while remaining
