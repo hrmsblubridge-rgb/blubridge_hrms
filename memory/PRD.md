@@ -1,5 +1,34 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-10 — P01 Full Attendance: any taken leave now disqualifies the +2
+**Bug (Madhumithaa G K, Apr 2026):** 3 approved Preplanned leaves (01 / 13 / 23-Apr) yet
+P01 = +2. Same root cause as the N04 bug — P01 detected leave from the payroll day-status
+code only, and a non-LOP approved leave can remain stamped `P`.
+
+**Fix (`brsf_stars.py::compute_system_values`):** the approved-leave fetch was moved to the top of
+the calculation and P01 now disqualifies on `approved leave date` **OR** leave/absence status code.
+- Leave Validity (valid / invalid / not set), LOP vs paid, half vs full day, proof — **none** of
+  them preserve eligibility; any taken leave → 0. Rejected/cancelled requests never count
+  (only `status == approved` is fetched).
+- Days whose status is non-working (Su / WO / H / R / NA) can never be a breach, so a leave that
+  only covers a Sunday/holiday does not disqualify.
+- Confirmation-month window preserved: only leaves inside `max(month start, confirmation date)`
+  → month end are considered.
+- P01 stays strictly 0 or +2 and now carries a clear reason: "All applicable working days attended
+  and no leave taken" · "Leave taken on 13-04-2026" · "3 leave record(s) found during the eligible
+  period" · "Absent on 13-04-2026".
+
+**Global repair (`backend/tests/brsf_repair_p01.py`):** re-ran the corrected service (`sync_lines`)
+over **all 136 stored employee+month records**. 61 lines updated, of which **11 P01 lines were
+corrected from +2 → 0**; manual overrides preserved (e.g. Anuj Kumar: system 2 → 0, final stayed 0);
+**0 duplicate (employee, month, code) rows**. Because Overall Star / Cash Reward read the stored
+finals, those reports now follow the corrected values.
+
+**Tests:** `backend/tests/test_p01_full_attendance.py` — **16/16 pass** (all 12 spec acceptance
+tests + Sunday-only leave, multi-day leave, leave status-code and no-attendance-data cases).
+`test_n04_weekly_average.py` still 13/13.
+
+
 ## 🆕 2026-09-08 — N04 fix: approved leave stamped "P" was still penalised
 **Bug (Ram Charan Golla, Apr 2026 Week 1):** 4 approved Preplanned leaves (01–04 Apr) yet N04
 showed only 1 excluded leave day, 3 eligible days, 00:00 total → **-1 star**.

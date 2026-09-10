@@ -142,6 +142,10 @@ def _leave_dates(leave: dict) -> list:
             for i in range((leave["_end"] - leave["_start"]).days + 1)]
 
 
+def _ddmmyyyy(iso: str) -> str:
+    return f"{iso[8:10]}-{iso[5:7]}-{iso[0:4]}" if iso and len(iso) >= 10 else (iso or "")
+
+
 def _minutes_to_hhmm(mins: float) -> str:
     total = int(round(mins))
     return f"{total // 60:02d}:{total % 60:02d}"
@@ -307,16 +311,6 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     res_mins = await _research_minutes(employee["id"], win_start, m_end)
     out = {}
 
-    # ---- P01 Full Attendance (+2 or 0) — ANY leave/absence disqualifies
-    breaches = [{"date": iso, "status": d["status"]} for iso, d in sorted(details.items())
-                if d["status"] in FULL_LEAVE_CODES | HALF_LEAVE_CODES | ABSENT_CODES]
-    out["P01"] = {
-        "value": 0 if (breaches or not details) else 2,
-        "children": breaches,
-        "note": ("No attendance data for this month" if not details else
-                 ("Disqualified by leave/absence" if breaches else "All applicable working days attended")),
-    }
-
     # ---- Leaves overlapping the eligible window (single fetch, reused below)
     leaves = []
     async for lv in db.leaves.find(
@@ -331,15 +325,47 @@ async def compute_system_values(employee: dict, month: str) -> dict:
             leaves.append(lv)
     leaves.sort(key=lambda x: x["_start"])
 
-    # Dates covered by an approved leave. The payroll day status is NOT reliable here
-    # (a non-LOP approved leave can still be stamped "P"), so the leave records are the
-    # source of truth for excluding a day from the research denominator.
-    approved_leave_dates = set()
+    # Dates inside the eligible window covered by an approved leave. The payroll day
+    # status is NOT reliable on its own (a non-LOP approved leave can still be stamped
+    # "P"), so the leave records are the source of truth for P01 and the research
+    # denominators.
+    approved_leave_dates = {}
     for lv in leaves:
-        d = lv["_start"]
-        while d <= lv["_end"]:
-            approved_leave_dates.add(_iso(d))
+        d = max(lv["_start"], win_start)
+        while d <= min(lv["_end"], m_end):
+            approved_leave_dates.setdefault(_iso(d), lv)
             d += timedelta(days=1)
+
+    # ---- P01 Full Attendance (+2 or 0) — ANY leave/absence disqualifies
+    breaches = [{"date": iso, "status": d["status"],
+                 "kind": ("Leave" if (iso in approved_leave_dates
+                                      or d["status"] in FULL_LEAVE_CODES | HALF_LEAVE_CODES)
+                          else "Absence")}
+                for iso, d in sorted(details.items())
+                if d["status"] not in NON_REQUIRED_CODES
+                and (iso in approved_leave_dates
+                     or d["status"] in FULL_LEAVE_CODES | HALF_LEAVE_CODES | ABSENT_CODES)]
+    leave_breaches = [b for b in breaches if b["kind"] == "Leave"]
+    absence_breaches = [b for b in breaches if b["kind"] == "Absence"]
+    if not details:
+        p01_note = "No attendance data for this month"
+    elif leave_breaches:
+        p01_note = (f"{len(leave_breaches)} leave record(s) found during the eligible period"
+                    if len(leave_breaches) > 1
+                    else f"Leave taken on {_ddmmyyyy(leave_breaches[0]['date'])}")
+        if absence_breaches:
+            p01_note += f"; {len(absence_breaches)} absence day(s)"
+    elif absence_breaches:
+        p01_note = (f"{len(absence_breaches)} absence day(s) during the eligible period"
+                    if len(absence_breaches) > 1
+                    else f"Absent on {_ddmmyyyy(absence_breaches[0]['date'])}")
+    else:
+        p01_note = "All applicable working days attended and no leave taken"
+    out["P01"] = {
+        "value": 0 if (breaches or not details) else 2,
+        "children": breaches,
+        "note": p01_note,
+    }
 
     # ---- P05 / N04 weekly research averages (minute based)
     # P05 denominator: only worked/research-required days.
