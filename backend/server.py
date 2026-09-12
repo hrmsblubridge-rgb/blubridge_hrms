@@ -7649,7 +7649,13 @@ async def import_biometric_attendance(
     bio_map = {}
     async for emp in emp_cursor:
         if emp.get("biometric_id"):
-            bio_map[str(emp["biometric_id"])] = emp
+            # Normalize the mapping key to match the already-stripped incoming
+            # deviceUserId. Some employee biometric_ids carry stray leading/
+            # trailing whitespace from data entry/imports; without stripping
+            # here the lookup silently fails and their punches go "unmapped".
+            bio_key = str(emp["biometric_id"]).strip()
+            if bio_key:
+                bio_map[bio_key] = emp
     
     # Group valid punches: { (employee_id, date_str) : [datetime, ...] }
     grouped = {}
