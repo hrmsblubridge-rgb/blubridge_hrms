@@ -194,6 +194,19 @@ def register(api_router, deps):
         )
         if not assignment:
             return None
+        # Prefer the FROZEN snapshot captured at assignment time. This is what
+        # preserves historical Late-In accuracy: editing the shift master later
+        # must never rewrite the timing that applied to past attendance dates.
+        if assignment.get("shift_start_time"):
+            return {
+                "shift_id": assignment.get("shift_id"),
+                "name": assignment.get("shift_name"),
+                "start_time": assignment["shift_start_time"],
+                "total_hours": float(assignment.get("shift_total_hours") or 0),
+                "late_grace_minutes": int(assignment.get("shift_late_grace_minutes", 0) or 0),
+                "early_out_grace_minutes": int(assignment.get("shift_early_out_grace_minutes", 0) or 0),
+            }
+        # Legacy assignment created before snapshots existed → best-effort live read.
         shift = await db.shifts.find_one({"id": assignment["shift_id"], "is_deleted": {"$ne": True}}, {"_id": 0})
         if not shift:
             return None
@@ -861,11 +874,12 @@ def register(api_router, deps):
             return serialize_doc(existing)
         updates["updated_at"] = _now_iso()
         await db.shifts.update_one({"id": shift_id}, {"$set": updates})
-        # Re-sync all employees currently on this shift (today's effective assignment)
-        merged = {**existing, **updates}
-        emps = await db.employees.find({"active_shift_id": shift_id}, {"_id": 0, "id": 1}).to_list(2000)
-        for e in emps:
-            await _sync_shift_to_employee(e["id"], merged)
+        # NOTE (req #7 — effective-dated shift history): editing the shift master
+        # intentionally does NOT re-sync the new timing onto employees already on
+        # this shift. Existing assignments keep their frozen snapshot, so a
+        # non-reassigned employee continues on their previous timing. The new
+        # timing takes effect ONLY when the shift is reassigned with an
+        # Effective From date (which captures a fresh snapshot).
         await log_audit(current_user["id"], "update_shift", "shift", shift_id)
         updated = await db.shifts.find_one({"id": shift_id}, {"_id": 0})
         return serialize_doc(updated)
@@ -920,9 +934,15 @@ def register(api_router, deps):
             }
             overlapping = await db.employee_shifts.find(overlap_query, {"_id": 0}).to_list(100)
             for ov in overlapping:
-                if ov["shift_id"] == shift_id and (ov.get("effective_to") or None) == (effective_to or None):
+                # Only PRIOR-starting assignments are historically closed the day
+                # before the new one begins. An assignment that starts on the same
+                # day is a same-day replace (handled by the idempotent insert
+                # below) and must never be inverted into a negative window. This
+                # correctly preserves effective-dated history when the SAME shift
+                # is reassigned with a later Effective From (req #5/#6).
+                if ov.get("effective_from", "") >= effective_from:
                     continue
-                # Update: end the old one the day before the new starts
+                # End the old one the day before the new starts
                 prev_end = (datetime.strptime(effective_from, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
                 await db.employee_shifts.update_one(
                     {"id": ov["id"]},
@@ -944,6 +964,14 @@ def register(api_router, deps):
                     "shift_id": shift_id,
                     "effective_from": effective_from,
                     "effective_to": effective_to,
+                    # FROZEN snapshot of the shift config at assignment time.
+                    # Late-In resolution reads this, so a later edit to the shift
+                    # master never rewrites the timing that applied historically.
+                    "shift_name": shift["name"],
+                    "shift_start_time": shift["start_time"],
+                    "shift_total_hours": float(shift["total_hours"]),
+                    "shift_late_grace_minutes": int(shift.get("late_grace_minutes", 0) or 0),
+                    "shift_early_out_grace_minutes": int(shift.get("early_out_grace_minutes", 0) or 0),
                     "assigned_by": assigned_by,
                     "is_deleted": False,
                     "created_at": _now_iso(),
@@ -1024,9 +1052,9 @@ def register(api_router, deps):
             e = emps.get(a["employee_id"], {})
             out.append({
                 **a,
-                "shift_name": s.get("name"),
-                "shift_start_time": s.get("start_time"),
-                "shift_total_hours": s.get("total_hours"),
+                "shift_name": a.get("shift_name") or s.get("name"),
+                "shift_start_time": a.get("shift_start_time") or s.get("start_time"),
+                "shift_total_hours": a.get("shift_total_hours") if a.get("shift_total_hours") is not None else s.get("total_hours"),
                 "employee_name": e.get("full_name"),
                 "emp_id": e.get("emp_id"),
                 "department": e.get("department"),

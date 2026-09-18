@@ -2190,6 +2190,90 @@ def get_shift_timings(employee: dict) -> dict:
     }
 
 
+# ============== EFFECTIVE-DATED SHIFT RESOLUTION (central Late-In source) ==============
+# Single source of truth for "which shift timing applied to THIS employee on
+# THIS attendance date". Resolves the effective-dated assignment snapshot stored
+# on `employee_shifts` (frozen at assignment time) so historical Late-In stays
+# correct even after the shift master is edited. Falls back to the employee's
+# current static shift when a date is not covered by any assignment (legacy).
+
+async def _load_employee_shift_assignments(employee_id: str) -> list:
+    """All non-deleted effective-dated shift assignments for an employee,
+    newest effective_from first. Each carries a frozen shift snapshot."""
+    if not employee_id:
+        return []
+    return await db.employee_shifts.find(
+        {"employee_id": employee_id, "is_deleted": {"$ne": True}},
+        {"_id": 0},
+    ).sort("effective_from", -1).to_list(500)
+
+
+def _ddmmyyyy_to_iso(date_str) -> Optional[str]:
+    """DD-MM-YYYY (or ISO/other tolerated) → YYYY-MM-DD for effective-date compare."""
+    d = _parse_date_flex(date_str)
+    return d.strftime("%Y-%m-%d") if d else None
+
+
+def _shift_snapshot_to_timings(snap: dict) -> Optional[dict]:
+    """Build the timings dict the attendance engine expects from a shift snapshot
+    (or live shift doc). Returns None when no usable start time is present."""
+    start = snap.get("shift_start_time") or snap.get("start_time")
+    if not start:
+        return None
+    total = float(snap.get("shift_total_hours") or snap.get("total_hours") or 0) or 0
+    login_mins = parse_time_24h_to_minutes(start) or 0
+    logout_mins = (login_mins + int(round(total * 60))) % (24 * 60)
+    logout = f"{logout_mins // 60:02d}:{logout_mins % 60:02d}"
+    return {
+        "login_time": start,
+        "logout_time": logout,
+        "total_hours": total,
+        "late_grace_minutes": int(snap.get("shift_late_grace_minutes", snap.get("late_grace_minutes", 0)) or 0),
+        "early_out_grace_minutes": int(snap.get("shift_early_out_grace_minutes", snap.get("early_out_grace_minutes", 0)) or 0),
+    }
+
+
+def _resolve_assignment_for_date(assignments: list, date_iso: str) -> Optional[dict]:
+    """Pick the assignment whose [effective_from, effective_to] window covers
+    date_iso. `assignments` must be sorted newest effective_from first."""
+    for a in assignments or []:
+        ef = a.get("effective_from")
+        et = a.get("effective_to")
+        if ef and ef <= date_iso and (not et or et >= date_iso):
+            return a
+    return None
+
+
+async def get_effective_shift_timings(employee: dict, attendance_date, assignments: Optional[list] = None) -> Optional[dict]:
+    """Central resolver used by ALL Late-In writers (attendance, biometric,
+    recompute, payroll, corrections). Returns the shift timings applicable to
+    this employee on this attendance date, honouring effective-dated assignment
+    snapshots. Falls back to the current static shift (get_shift_timings) when
+    the date is not covered by any assignment, preserving legacy behaviour.
+
+    Pass a preloaded `assignments` list (from _load_employee_shift_assignments)
+    inside per-date loops to avoid N+1 queries.
+    """
+    if employee and attendance_date:
+        date_iso = _ddmmyyyy_to_iso(attendance_date)
+        if date_iso:
+            if assignments is None:
+                assignments = await _load_employee_shift_assignments(employee.get("id"))
+            a = _resolve_assignment_for_date(assignments, date_iso)
+            if a:
+                timings = _shift_snapshot_to_timings(a)
+                if timings:
+                    return timings
+                # Legacy assignment without a snapshot → live shift (best effort)
+                shift = await db.shifts.find_one(
+                    {"id": a.get("shift_id"), "is_deleted": {"$ne": True}}, {"_id": 0}
+                )
+                if shift:
+                    return _shift_snapshot_to_timings(shift)
+    return get_shift_timings(employee)
+
+
+
 async def _apply_settings_shift_to_employee_payload(payload: dict, shift_identifier: Optional[str]) -> dict:
     """If `shift_identifier` matches a shift configured in Settings (by id OR
     by name), expand the payload with all the legacy fields the existing
@@ -2983,6 +3067,9 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
     lop = 0.0
     attendance_details = []
 
+    # Preload effective-dated shift assignments once (avoids N+1 in the day loop)
+    _payroll_shift_assignments = await _load_employee_shift_assignments(employee_id)
+
     for day in range(1, days_in_month + 1):
         current_date = date(year, month_num, day)
         date_dd = f"{day:02d}-{month_num:02d}-{year}"
@@ -3258,7 +3345,7 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                 # --- With Checkout ---
                 is_late = False
                 if ci24:
-                    shift_timings = get_shift_timings(employee)
+                    shift_timings = await get_effective_shift_timings(employee, date_iso, _payroll_shift_assignments)
                     exp_login = shift_timings.get("login_time") if shift_timings else None
                     if exp_login:
                         act_mins = parse_time_24h_to_minutes(ci24)
@@ -7469,8 +7556,8 @@ async def check_in(employee_id: str, current_user: dict = Depends(get_current_us
     check_in_time = now.strftime("%I:%M %p")
     check_in_24h = now.strftime("%H:%M")
     
-    # Get shift timings for the employee
-    shift_timings = get_shift_timings(employee)
+    # Get shift timings for the employee (effective-dated for today's date)
+    shift_timings = await get_effective_shift_timings(employee, today)
     expected_login = shift_timings.get("login_time") if shift_timings else None
     expected_logout = shift_timings.get("logout_time") if shift_timings else None
     
@@ -7523,7 +7610,7 @@ async def check_out(employee_id: str, current_user: dict = Depends(get_current_u
     
     # Get employee for shift info
     employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
-    shift_timings = get_shift_timings(employee) if employee else None
+    shift_timings = await get_effective_shift_timings(employee, today) if employee else None
     
     now = get_ist_now()
     check_out_time = now.strftime("%I:%M %p")
@@ -7735,6 +7822,7 @@ async def import_biometric_attendance(
         })
     
     # Process grouped punches - atomic upsert per employee+date
+    _bio_assign_cache: dict = {}
     for (emp_id, date_str), data in grouped.items():
         employee = data["employee"]
         device_ip = data["ip"]
@@ -7776,7 +7864,9 @@ async def import_biometric_attendance(
         unique = sorted({p.replace(second=0, microsecond=0) for p in all_punches_dt})
         if not unique:
             continue
-        shift_timings = get_shift_timings(employee)
+        if emp_id not in _bio_assign_cache:
+            _bio_assign_cache[emp_id] = await _load_employee_shift_assignments(emp_id)
+        shift_timings = await get_effective_shift_timings(employee, date_str, _bio_assign_cache[emp_id])
         if len(unique) == 1 and _single_punch_is_checkout(unique[0], date_str, shift_timings):
             # Single punch in the ENDING portion of the resolved shift window:
             # it is the Check-OUT — never fabricate a Check-In from it.
@@ -7973,6 +8063,7 @@ async def recompute_attendance_from_punches(
 
     # Pre-fetch employee data for shift recalculation
     emp_cache = {}
+    assign_cache: dict = {}
 
     updated = 0
     skipped_locked = 0
@@ -8012,7 +8103,9 @@ async def recompute_attendance_from_punches(
             if emp_id not in emp_cache:
                 emp_cache[emp_id] = await db.employees.find_one({"id": emp_id}, {"_id": 0}) or {}
             employee = emp_cache[emp_id]
-            shift_timings = get_shift_timings(employee) if employee else None
+            if emp_id not in assign_cache:
+                assign_cache[emp_id] = await _load_employee_shift_assignments(emp_id)
+            shift_timings = await get_effective_shift_timings(employee, date_str, assign_cache[emp_id]) if employee else None
             if len(unique) == 1 and _single_punch_is_checkout(unique[0], date_str, shift_timings):
                 # Shift-aware single-punch rule: an ending-portion punch is
                 # the Check-OUT — never fabricate a Check-In from it.
@@ -9823,7 +9916,7 @@ async def reset_missed_punch(request_id: str, body: RequestResetBody = RequestRe
         source_before = audit.get("source_before") or "biometric"
 
         employee = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
-        shift_timings = get_shift_timings(employee) if employee else None
+        shift_timings = await get_effective_shift_timings(employee, date) if employee else None
 
         # Recompute status / total_hours from the restored times so dashboards / payroll are consistent
         if old_in_24h:
@@ -12815,40 +12908,21 @@ async def get_employee_dashboard(current_user: dict = Depends(get_current_user))
     inactive_days = 0
     late_arrivals = 0
     early_outs = 0
-    
-    # Define late threshold (10:00 AM)
-    late_threshold_hour = 10
-    late_threshold_minute = 0
-    
+
     for record in attendance_records:
         status = record.get("status", "")
-        check_in = record.get("check_in", "")
-        
-        # Check if login was late (after 10 AM)
-        is_late_login = False
-        if check_in:
-            try:
-                # Parse check-in time (format: "10:30 AM" or "09:15 AM")
-                time_parts = check_in.upper().replace('.', ':').strip()
-                if 'AM' in time_parts or 'PM' in time_parts:
-                    is_pm = 'PM' in time_parts
-                    time_str = time_parts.replace('AM', '').replace('PM', '').strip()
-                    parts = time_str.split(':')
-                    hour = int(parts[0])
-                    minute = int(parts[1]) if len(parts) > 1 else 0
-                    
-                    # Convert to 24-hour format
-                    if is_pm and hour != 12:
-                        hour += 12
-                    elif not is_pm and hour == 12:
-                        hour = 0
-                    
-                    # Check if late (after 10 AM)
-                    if hour > late_threshold_hour or (hour == late_threshold_hour and minute > late_threshold_minute):
-                        is_late_login = True
-            except Exception:
-                pass
-        
+
+        # Late-In is derived from the STORED, effective-dated attendance status
+        # (already computed against the shift applicable on that date) — NOT a
+        # hardcoded clock time. A record is Late only when the engine recorded it
+        # as a Late Login, or an LOP whose root cause is a late login.
+        reason = (record.get("lop_reason") or "").lower()
+        is_late_login = (
+            status == AttendanceStatus.LATE_LOGIN
+            or status == "Late"
+            or (bool(record.get("is_lop")) and "late login" in reason)
+        )
+
         # Count based on status
         if status in ["Login", "Completed", "Present"]:
             active_days += 1
@@ -18267,7 +18341,7 @@ async def _update_attendance_from_missed_punch(rec):
         return
 
     # Recompute shift-aware status (handles cross-midnight, Sundays, LOP rules)
-    shift_timings = get_shift_timings(employee) if employee else None
+    shift_timings = await get_effective_shift_timings(employee, date) if employee else None
     status_result = (
         calculate_attendance_status(final_in_24h, final_out_24h, shift_timings or {}, attendance_date=date)
         if final_in_24h
