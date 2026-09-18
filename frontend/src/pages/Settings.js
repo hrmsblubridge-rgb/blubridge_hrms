@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -1217,15 +1217,14 @@ const AssignShiftsTab = ({ authHeaders }) => {
         axios.get(`${API}/settings/departments`, { headers: authHeaders }),
         axios.get(`${API}/settings/teams`, { headers: authHeaders }),
         axios.get(`${API}/settings/designations`, { headers: authHeaders }),
-        axios.get(`${API}/employees?limit=500`, { headers: authHeaders }),
-        axios.get(`${API}/settings/shifts/assignments?active_only=true`, { headers: authHeaders }),
+        axios.get(`${API}/settings/shifts/assignable-employees`, { headers: authHeaders }),
+        axios.get(`${API}/settings/shifts/assignments?active_only=true&latest_per_employee=true`, { headers: authHeaders }),
       ]);
       setShifts(s.data || []);
       setDepts(d.data || []);
       setTeams(t.data || []);
       setDesigs(dz.data || []);
-      const empList = Array.isArray(e.data) ? e.data : (e.data?.employees || []);
-      setEmployees(empList);
+      setEmployees(Array.isArray(e.data) ? e.data : []);
       setAssignments(a.data || []);
     } catch {
       toast.error('Failed to load assign shifts data');
@@ -1233,11 +1232,30 @@ const AssignShiftsTab = ({ authHeaders }) => {
   };
   useEffect(() => { fetchAll(); }, []); // eslint-disable-line
 
+  // Employee listing: default = Active only. A name search hits the backend and
+  // spans BOTH active + inactive; clearing the search returns to Active only.
+  const fetchEmployees = async (search) => {
+    try {
+      const r = await axios.get(`${API}/settings/shifts/assignable-employees`, {
+        headers: authHeaders,
+        params: search ? { search } : {},
+      });
+      setEmployees(Array.isArray(r.data) ? r.data : []);
+    } catch {
+      toast.error('Failed to load employees');
+    }
+  };
+  const firstRender = useRef(true);
+  useEffect(() => {
+    if (firstRender.current) { firstRender.current = false; return; }
+    const tmr = setTimeout(() => { fetchEmployees(empSearch.trim()); }, 350);
+    return () => clearTimeout(tmr);
+  }, [empSearch]); // eslint-disable-line
+
   const filteredEmployees = employees.filter((e) => {
     if (filterDept.length && !filterDept.includes(e.department)) return false;
     if (filterTeam.length && !filterTeam.includes(e.team)) return false;
     if (filterDesig.length && !filterDesig.includes(e.designation)) return false;
-    if (empSearch && !(e.full_name || '').toLowerCase().includes(empSearch.toLowerCase())) return false;
     return true;
   });
 
@@ -1427,13 +1445,20 @@ const AssignShiftsTab = ({ authHeaders }) => {
                 <TableCell>
                   <Checkbox checked={selectedEmps.includes(e.id)} onCheckedChange={() => toggleEmp(e.id)} data-testid={`assign-check-${e.id}`} />
                 </TableCell>
-                <TableCell className="font-medium">{e.full_name}</TableCell>
+                <TableCell className="font-medium">
+                  {e.full_name}
+                  {e.employee_status === 'Inactive' && (
+                    <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200" data-testid={`assign-inactive-badge-${e.id}`}>Inactive</span>
+                  )}
+                </TableCell>
                 <TableCell className="text-sm text-slate-600">{e.emp_id}</TableCell>
                 <TableCell className="text-sm">{e.department}</TableCell>
                 <TableCell className="text-sm">{e.team}</TableCell>
                 <TableCell className="text-sm">{e.designation}</TableCell>
-                <TableCell className="text-sm text-slate-600">
-                  {e.active_shift_name || e.shift_type || '—'}
+                <TableCell className="text-sm text-slate-600" data-testid={`assign-current-shift-${e.id}`}>
+                  {e.latest_shift_name
+                    ? <>{e.latest_shift_name}{e.latest_shift_start_time ? <span className="text-xs text-slate-400"> ({e.latest_shift_start_time})</span> : null}</>
+                    : (e.active_shift_name || e.shift_type || 'Not Assigned')}
                 </TableCell>
               </TableRow>
             ))}

@@ -160,6 +160,9 @@ def register(api_router, deps):
     parse_time_24h_to_minutes = deps["parse_time_24h_to_minutes"]
     SYSTEM_ROLES = deps["SYSTEM_ROLES"]
     EmployeeStatus = deps["EmployeeStatus"]
+    # Optional hook: recompute shift-dependent attendance fields immediately when
+    # an effective-dated assignment starts on/before today (same-day assignment).
+    recalc_attendance_for_shift_change = deps.get("recalc_attendance_for_shift_change")
 
     def _now_iso():
         return get_ist_now().isoformat()
@@ -921,10 +924,12 @@ def register(api_router, deps):
         created = 0
         updated = 0
         today = get_ist_now().strftime("%Y-%m-%d")
+        affected_ids = []
         for eid in employee_ids:
             emp = await db.employees.find_one({"id": eid, "is_deleted": {"$ne": True}}, {"_id": 0, "id": 1})
             if not emp:
                 continue
+            affected_ids.append(eid)
             # Close any open-ended overlapping assignment: set effective_to = effective_from - 1 day
             overlap_query = {
                 "employee_id": eid,
@@ -981,7 +986,18 @@ def register(api_router, deps):
             # If the assignment is active today, mirror to employee doc
             if effective_from <= today and (effective_to is None or effective_to >= today):
                 await _sync_shift_to_employee(eid, shift)
-        return {"created": created, "updated": updated, "shift_id": shift_id}
+        # SAME-DAY (or backfilled) assignment: immediately recompute the
+        # shift-dependent attendance already stored from effective_from onward so
+        # today's Late-In / LOP / Dashboard / Payroll reflect the new shift at
+        # once — no waiting for tomorrow, no re-punch, no biometric resync.
+        recalc = {"employees": 0, "recalculated": 0, "skipped": 0}
+        if recalc_attendance_for_shift_change and affected_ids and effective_from <= today:
+            try:
+                recalc = await recalc_attendance_for_shift_change(affected_ids, effective_from)
+            except Exception:
+                # Never fail the assignment because of a recalculation hiccup.
+                pass
+        return {"created": created, "updated": updated, "shift_id": shift_id, "recalc": recalc}
 
     @api_router.post("/settings/shifts/assign")
     async def settings_assign_shift(data: AssignShiftIn, current_user: dict = Depends(get_current_user)):
@@ -1028,6 +1044,7 @@ def register(api_router, deps):
     async def settings_list_assignments(employee_id: Optional[str] = None,
                                         shift_id: Optional[str] = None,
                                         active_only: bool = False,
+                                        latest_per_employee: bool = False,
                                         current_user: dict = Depends(get_current_user)):
         q = {"is_deleted": {"$ne": True}}
         if employee_id:
@@ -1038,7 +1055,20 @@ def register(api_router, deps):
             today = get_ist_now().strftime("%Y-%m-%d")
             q["effective_from"] = {"$lte": today}
             q["$or"] = [{"effective_to": None}, {"effective_to": {"$gte": today}}]
-        assignments = await db.employee_shifts.find(q, {"_id": 0}).sort("effective_from", -1).to_list(2000)
+        assignments = await db.employee_shifts.find(q, {"_id": 0}).sort([("effective_from", -1), ("created_at", -1)]).to_list(2000)
+        if latest_per_employee:
+            # Collapse multiple assignment history records into ONE row per
+            # employee (the latest by effective_from, then created_at). History
+            # is NOT deleted — this only affects what the listing displays.
+            seen = set()
+            deduped = []
+            for a in assignments:
+                eid = a.get("employee_id")
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                deduped.append(a)
+            assignments = deduped
         # Enrich with names
         shift_ids = {a["shift_id"] for a in assignments}
         emp_ids = {a["employee_id"] for a in assignments}
@@ -1061,6 +1091,78 @@ def register(api_router, deps):
                 "team": e.get("team"),
             })
         return [serialize_doc(a) for a in out]
+
+    @api_router.get("/settings/shifts/assignable-employees")
+    async def settings_assignable_employees(search: Optional[str] = None,
+                                            department: Optional[str] = None,
+                                            team: Optional[str] = None,
+                                            designation: Optional[str] = None,
+                                            current_user: dict = Depends(get_current_user)):
+        """Employee listing for the Assign Shift tab.
+
+        - No search  -> ACTIVE employees only.
+        - With search -> match name / emp id across BOTH active and inactive.
+        Always ONE row per employee, enriched with the employee's LATEST shift
+        assignment (resolved in a single aggregation — no N+1). Underlying shift
+        history is never modified.
+        """
+        import re as _re
+        q = {"is_deleted": {"$ne": True}}
+        s = (search or "").strip()
+        if s:
+            rx = {"$regex": _re.escape(s), "$options": "i"}
+            q["$or"] = [{"full_name": rx}, {"emp_id": rx}]
+        else:
+            q["employee_status"] = EmployeeStatus.ACTIVE
+        if department and department != "All":
+            q["department"] = department
+        if team and team != "All":
+            q["team"] = team
+        if designation and designation != "All":
+            q["designation"] = designation
+
+        employees = await db.employees.find(q, {
+            "_id": 0, "id": 1, "full_name": 1, "emp_id": 1, "department": 1, "team": 1,
+            "designation": 1, "employee_status": 1, "active_shift_name": 1, "shift_type": 1,
+        }).sort("full_name", 1).to_list(3000)
+        emp_ids = [e["id"] for e in employees]
+
+        # Latest assignment per employee (effective_from desc, then created_at desc)
+        latest = {}
+        if emp_ids:
+            pipeline = [
+                {"$match": {"employee_id": {"$in": emp_ids}, "is_deleted": {"$ne": True}}},
+                {"$sort": {"effective_from": -1, "created_at": -1}},
+                {"$group": {"_id": "$employee_id", "doc": {"$first": "$$ROOT"}}},
+            ]
+            async for row in db.employee_shifts.aggregate(pipeline):
+                latest[row["_id"]] = row["doc"]
+
+        # Fallback shift names for legacy assignments created before snapshots
+        missing = {d.get("shift_id") for d in latest.values() if d and not d.get("shift_start_time")}
+        shift_lookup = {}
+        if missing:
+            shift_lookup = {sh["id"]: sh async for sh in db.shifts.find({"id": {"$in": list(missing)}}, {"_id": 0})}
+
+        out = []
+        for e in employees:
+            a = latest.get(e["id"])
+            shift_name = shift_start = eff_from = None
+            if a:
+                sl = shift_lookup.get(a.get("shift_id"), {})
+                shift_name = a.get("shift_name") or sl.get("name")
+                shift_start = a.get("shift_start_time") or sl.get("start_time")
+                eff_from = a.get("effective_from")
+            out.append({
+                "id": e["id"], "full_name": e.get("full_name"), "emp_id": e.get("emp_id"),
+                "department": e.get("department"), "team": e.get("team"),
+                "designation": e.get("designation"),
+                "employee_status": e.get("employee_status") or EmployeeStatus.ACTIVE,
+                "latest_shift_name": shift_name, "latest_shift_start_time": shift_start,
+                "latest_effective_from": eff_from,
+                "active_shift_name": e.get("active_shift_name"), "shift_type": e.get("shift_type"),
+            })
+        return out
 
     @api_router.delete("/settings/shifts/assignments/{assignment_id}")
     async def settings_delete_assignment(assignment_id: str,

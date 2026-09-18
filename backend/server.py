@@ -19317,6 +19317,117 @@ async def download_help_guide(
 
 # Include router
 # Register centralized Settings module routes
+async def recalculate_attendance_for_shift_change(employee_ids, from_date_iso):
+    """Same-day / backfilled effective-dated shift (re)assignment hook.
+
+    Recomputes ONLY shift-dependent fields (status / late / LOP / expected
+    login+logout / total hours) on ALREADY-STORED attendance rows for the given
+    employees, for every date from ``from_date_iso`` (inclusive, YYYY-MM-DD)
+    through today (inclusive), using the shift effective on each date. It never
+    touches punch times, and preserves leave rows, manual overrides, approved
+    corrections and missed-punch corrections. It reproduces exactly the status a
+    fresh biometric import / recompute would produce for the same stored punches
+    under the newly effective shift — so today's Late-In / LOP / Dashboard /
+    Payroll reflect an effective-today assignment immediately.
+    """
+    if not employee_ids or not from_date_iso:
+        return {"employees": 0, "recalculated": 0, "skipped": 0}
+    today_iso = _ddmmyyyy_to_iso(get_ist_today())
+    if not today_iso or from_date_iso > today_iso:
+        # Effective date is in the future — no stored rows to fix yet.
+        return {"employees": 0, "recalculated": 0, "skipped": 0}
+
+    # Only rows whose status is derived from shift timing are recomputed.
+    SHIFT_DERIVED = {
+        AttendanceStatus.PRESENT, AttendanceStatus.LATE_LOGIN, AttendanceStatus.EARLY_OUT,
+        AttendanceStatus.LOSS_OF_PAY, AttendanceStatus.LOGIN, AttendanceStatus.COMPLETED,
+        AttendanceStatus.WORKED_ON_SUNDAY,
+    }
+    recalculated = skipped = emp_count = 0
+    for emp_id in employee_ids:
+        employee = await db.employees.find_one({"id": emp_id}, {"_id": 0})
+        if not employee:
+            continue
+        emp_count += 1
+        assignments = await _load_employee_shift_assignments(emp_id)
+        rows = await db.attendance.find({"employee_id": emp_id}, {"_id": 0}).to_list(3000)
+        for row in rows:
+            date_str = row.get("date")
+            date_iso = _ddmmyyyy_to_iso(date_str)
+            if not date_iso or date_iso < from_date_iso or date_iso > today_iso:
+                continue
+            # Never auto-touch human-authoritative rows.
+            if (row.get("is_manual_override") or row.get("is_approved_correction")
+                    or row.get("missed_punch_corrected")):
+                skipped += 1
+                continue
+            status_cur = row.get("status")
+            if status_cur not in SHIFT_DERIVED:
+                skipped += 1
+                continue
+            # A Loss of Pay that is NOT shift-timing derived (e.g. leave-based) is preserved.
+            if status_cur == AttendanceStatus.LOSS_OF_PAY:
+                reason = (row.get("lop_reason") or "").lower()
+                if not any(k in reason for k in ("late", "short", "early", "insufficient", "hours", "required")):
+                    skipped += 1
+                    continue
+            ci = row.get("check_in_24h")
+            co = row.get("check_out_24h")
+            shift_timings = await get_effective_shift_timings(employee, date_str, assignments)
+
+            # Mirror the biometric import / recompute status computation exactly.
+            total_hours_decimal = 0.0
+            total_hours_str = None
+            status = AttendanceStatus.LOGIN
+            is_lop = False
+            lop_reason = None
+            dynamic_expected_logout = None
+            if is_sunday_ddmmyyyy(date_str):
+                if ci and co:
+                    im = parse_time_24h_to_minutes(ci); om = parse_time_24h_to_minutes(co)
+                    total_hours_decimal = round((om - im) / 60, 2) if om > im else round((24 * 60 - im + om) / 60, 2)
+                    total_hours_str = calculate_total_hours_str(total_hours_decimal)
+                status = AttendanceStatus.WORKED_ON_SUNDAY if ci else AttendanceStatus.SUNDAY
+            elif ci and co:
+                sr = calculate_attendance_status(ci, co, shift_timings or {}, attendance_date=date_str)
+                status = sr.get("status")
+                is_lop = sr.get("is_lop", False)
+                lop_reason = sr.get("lop_reason")
+                dynamic_expected_logout = sr.get("expected_logout")
+                total_hours_decimal = sr.get("total_hours_decimal") or 0.0
+                total_hours_str = calculate_total_hours_str(total_hours_decimal) if total_hours_decimal else None
+            elif ci and not co:
+                if shift_timings:
+                    req_h = shift_timings.get("total_hours", 8)
+                    dynamic_expected_logout = add_hours_to_24h(ci, req_h)
+                    expected_login = shift_timings.get("login_time")
+                    status = AttendanceStatus.LOGIN
+                    if expected_login:
+                        em = parse_time_24h_to_minutes(expected_login); am = parse_time_24h_to_minutes(ci)
+                        if am > em:
+                            is_lop = True
+                            lop_reason = f"Late login by {am - em} minute(s). Expected: {expected_login}, Actual: {ci}"
+                            status = AttendanceStatus.LOSS_OF_PAY
+            elif co and not ci:
+                status = AttendanceStatus.NOT_LOGGED
+
+            await db.attendance.update_one(
+                {"employee_id": emp_id, "date": date_str},
+                {"$set": {
+                    "status": status,
+                    "is_lop": is_lop,
+                    "lop_reason": lop_reason,
+                    "total_hours": total_hours_str,
+                    "total_hours_decimal": total_hours_decimal,
+                    "expected_login": (shift_timings or {}).get("login_time"),
+                    "expected_logout": dynamic_expected_logout if dynamic_expected_logout else ((shift_timings or {}).get("logout_time")),
+                    "shift_recalc_at": get_ist_now().isoformat(),
+                }},
+            )
+            recalculated += 1
+    return {"employees": emp_count, "recalculated": recalculated, "skipped": skipped}
+
+
 settings_services = settings_module.register(api_router, {
     "db": db,
     "get_current_user": get_current_user,
@@ -19330,6 +19441,7 @@ settings_services = settings_module.register(api_router, {
     "EmployeeStatus": EmployeeStatus,
     "calculate_attendance_status": calculate_attendance_status,
     "get_shift_timings": get_shift_timings,
+    "recalc_attendance_for_shift_change": recalculate_attendance_for_shift_change,
 })
 
 
