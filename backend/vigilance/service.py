@@ -46,6 +46,7 @@ DEFAULT_BREAK_LABELS = ["Morning Break", "Lunch Break", "Evening Break", "Extra-
 BREAK_SUBS = ["From", "To", "Total"]
 
 VIGILANCE_DESIGNATION = "vigilance"
+VIGILANCE_TEAM = "vigilance"
 
 CLOCK_RE = re.compile(r"^(\d{1,2}):([0-5]\d)\s*(AM|PM)$", re.IGNORECASE)
 TWENTYFOUR_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")

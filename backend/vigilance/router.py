@@ -63,12 +63,17 @@ def get_vigilance_router(db, get_current_user):
         if role == "employee" and current_user.get("employee_id"):
             emp = await db.employees.find_one(
                 {"id": current_user["employee_id"]},
-                {"_id": 0, "id": 1, "full_name": 1, "designation": 1},
+                {"_id": 0, "id": 1, "full_name": 1, "designation": 1, "team": 1},
             )
-            if emp and (emp.get("designation") or "").strip().lower() == svc.VIGILANCE_DESIGNATION:
-                return {"is_admin": False, "is_vigilance": True,
-                        "employee_id": emp["id"], "name": emp.get("full_name")}
-        raise HTTPException(status_code=403, detail="Access restricted to Admins and Vigilance-designation employees.")
+            if emp:
+                desig = (emp.get("designation") or "").strip().lower()
+                team = (emp.get("team") or "").strip().lower()
+                # Authorized when Designation == Vigilance OR Team == Vigilance
+                # (both resolved from trusted DB values, never from the client).
+                if desig == svc.VIGILANCE_DESIGNATION or team == svc.VIGILANCE_TEAM:
+                    return {"is_admin": False, "is_vigilance": True,
+                            "employee_id": emp["id"], "name": emp.get("full_name")}
+        raise HTTPException(status_code=403, detail="Access restricted to Admins and Vigilance-team/designation employees.")
 
     # ---------------------------------------------------------------- access
     @router.get("/access")

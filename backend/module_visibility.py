@@ -71,6 +71,23 @@ def _is_admin(user) -> bool:
     return user.get("role") in ALL_ADMIN_ROLES
 
 
+async def _has_vigilance_access(user: dict) -> bool:
+    """Vigilance module authorization (single source of truth): Admin, OR an
+    employee whose Designation == 'Vigilance' OR Team == 'Vigilance' (both
+    resolved from the trusted employees collection, case-insensitive)."""
+    if _is_admin(user):
+        return True
+    emp_id = user.get("employee_id")
+    if not emp_id:
+        return False
+    emp = await db.employees.find_one({"id": emp_id}, {"_id": 0, "designation": 1, "team": 1})
+    if not emp:
+        return False
+    desig = (emp.get("designation") or "").strip().lower()
+    team = (emp.get("team") or "").strip().lower()
+    return desig == "vigilance" or team == "vigilance"
+
+
 # ---------------------------------------------------------------------------
 # Public helper used by other backend routes to enforce access.
 # ---------------------------------------------------------------------------
@@ -85,6 +102,12 @@ async def check_module_access(user: dict, module_key: str) -> bool:
     if module_key not in _VALID_KEYS:
         # Unknown module → no restriction (defensive default)
         return True
+
+    # Vigilance is governed by its own team/designation rule (not the generic
+    # admin-selected visibility list), so the API guard stays consistent with
+    # the Vigilance router's access check.
+    if module_key == "vigilance":
+        return await _has_vigilance_access(user)
 
     setting = await db.module_visibility_settings.find_one(
         {"module_key": module_key}, {"_id": 0}

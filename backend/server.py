@@ -4181,11 +4181,12 @@ async def login(request: LoginRequest, http_request: Request):
         )
         user_response["is_first_login"] = user.get("is_first_login", True)
         user_response["onboarding_completed"] = user_response["onboarding_status"] == OnboardingStatus.APPROVED
-        emp = await db.employees.find_one({"id": user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1})
+        emp = await db.employees.find_one({"id": user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1, "team": 1})
         if emp:
             if emp.get("avatar"):
                 user_response["avatar"] = emp["avatar"]
             user_response["designation"] = emp.get("designation")
+            user_response["team"] = emp.get("team")
     
     return {"token": token, "refresh_token": refresh_token, "user": user_response}
 
@@ -4288,12 +4289,13 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     # Enrich with employee avatar + designation so sidebar/header + route guards
     # (e.g. the Vigilance module access exception) work after a page refresh.
     if current_user.get("role") == UserRole.EMPLOYEE and current_user.get("employee_id"):
-        emp = await db.employees.find_one({"id": current_user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1, "employment_type": 1})
+        emp = await db.employees.find_one({"id": current_user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1, "employment_type": 1, "team": 1})
         if emp:
             if emp.get("avatar"):
                 out["avatar"] = emp["avatar"]
             out["designation"] = emp.get("designation")
             out["employment_type"] = emp.get("employment_type")
+            out["team"] = emp.get("team")
         # ACCESS gating uses the USER record's onboarding_status (not the
         # document-derived Verification record). Keep onboarding_completed in sync.
         out["onboarding_completed"] = out.get("onboarding_status") == OnboardingStatus.APPROVED

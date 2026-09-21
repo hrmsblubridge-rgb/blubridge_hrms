@@ -101,7 +101,8 @@ const EmployeeRoute = ({ children }) => {
   // part of their job — they must reach /employee/vigilance even when their
   // onboarding is not yet approved. The page has its own access guard
   // (GET /api/vigilance/access) so authorization is still enforced.
-  const isVigilanceEmployee = (user?.designation || '').toLowerCase() === 'vigilance';
+  const isVigilanceEmployee = (user?.designation || '').toLowerCase() === 'vigilance'
+    || (user?.team || '').toLowerCase() === 'vigilance';
   const onVigilancePath = location.pathname.startsWith('/employee/vigilance');
   const allowVigilanceBypass = isVigilanceEmployee && onVigilancePath;
 

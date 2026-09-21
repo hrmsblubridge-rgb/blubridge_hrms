@@ -1,18 +1,21 @@
 # HRMS Test Credentials
 
-> 🔒🔒🔒 **PINNED ADMIN CREDENTIAL — DO NOT CHANGE (user mandate 2026-06-05)** 🔒🔒🔒
-> The user has fixed the HR admin login to **`admin` / `HrAdmin786$`**.
-> AGENTS MUST NOT re-sync, reset, or "verify" this to any other value
-> (no `pass123`, no `MyPermanent#2026A`, nothing else). It is set in Mongo
-> with `password_updated_method='user_fixed_credential'` and verified to
-> PERSIST across a full backend restart (startup seed only sets a password
-> when none exists, so it never overwrites this). If admin login ever fails,
-> re-set it to EXACTLY `HrAdmin786$` — never invent a new password.
+> 🔒🔒🔒 **PINNED ADMIN CREDENTIAL (updated by user mandate 2026-09-21)** 🔒🔒🔒
+> The user has RESET the HR admin login to **`admin` / `HrAdmin@2109`** (this
+> explicitly overrides the earlier `HrAdmin786$` pin). Stored in Mongo with
+> `password_updated_method='user_fixed_credential_2026_09_21'`. If admin login
+> ever fails, re-set it to EXACTLY `HrAdmin@2109` (SHA256 `password_hash`) —
+> never invent a new password.
 
 ## Admin Accounts
-- **HR Admin**: `admin` / `HrAdmin786$` (role: hr) — 🔒 PINNED, VERIFIED WORKING + PERSISTS ACROSS RESTART (2026-06-05). DO NOT CHANGE.
+- **HR Admin**: `admin` / `HrAdmin@2109` (role: hr) — 🔒 PINNED (user mandate 2026-09-21, was `HrAdmin786$`). VERIFIED WORKING.
 - **System Admin**: `sysadmin` / `pass123` (role: system_admin)
 - **Office Admin**: `workforce` / `Pass@123#` (role: office_admin — renamed from `offadmin` on 2026-05-13)
+
+## Vigilance access (updated 2026-09-21)
+- Vigilance Module is accessible to: Admin (full), and employees with **Team == "Vigilance"** OR **Designation == "Vigilance"** (own `uploaded_by` records only). Everyone else → 403 + menu hidden + Vigilance URL redirects to their Dashboard.
+- `madhan.s` / `Vigil@123` and `dinesh.t` / `Vigil@123` are Vigilance (team+designation). `user` / `pass123` is a NORMAL employee → must be DENIED vigilance.
+- Access verified by `/app/backend/tests/test_vigilance_access_matrix.py` (13/13).
 
 
 > ⚠️ **NOTE (2026-05-17 TRUE ROOT CAUSE FIX):** The "admin password

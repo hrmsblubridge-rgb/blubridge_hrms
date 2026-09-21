@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import axios from 'axios';
 import { toast } from 'sonner';
+import { Navigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -147,7 +148,7 @@ const sortRows = (rows, sort) => {
 };
 
 export default function OperationalVigilance() {
-  const { getAuthHeaders } = useAuth();
+  const { getAuthHeaders, user } = useAuth();
   const [access, setAccess] = useState(null);
   const [meta, setMeta] = useState({ departments: [], teams: [], designations: [], employees: [] });
   const [filters, setFilters] = useState({
@@ -467,13 +468,11 @@ export default function OperationalVigilance() {
     return <div className="flex items-center justify-center h-64"><Loader2 className="w-7 h-7 animate-spin text-slate-400" /></div>;
   }
   if (!access.has_access) {
-    return (
-      <div className="flex flex-col items-center justify-center h-[60vh] text-center" data-testid="vigilance-no-access">
-        <ShieldAlert className="w-14 h-14 text-amber-500 mb-4" />
-        <h2 className="text-xl font-bold text-slate-800">Access Restricted</h2>
-        <p className="text-slate-500 mt-2 max-w-md">The Operational Vigilance Report is available only to Admins and employees with the <span className="font-semibold">Vigilance</span> designation.</p>
-      </div>
-    );
+    // Unauthorized users must NOT see the Vigilance page — redirect straight to
+    // their Dashboard (admins to /dashboard, employees to /employee/dashboard).
+    const adminRoles = ['hr', 'system_admin', 'office_admin'];
+    const dashboard = adminRoles.includes(user?.role) ? '/dashboard' : '/employee/dashboard';
+    return <Navigate to={dashboard} replace />;
   }
 
   return (
