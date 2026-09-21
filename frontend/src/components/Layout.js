@@ -39,7 +39,8 @@ import {
   Shield,
   HelpCircle,
   FileSpreadsheet,
-  Receipt
+  Receipt,
+  HardDrive
 } from 'lucide-react';
 import { Button } from './ui/button';
 import EmployeeAvatar from './EmployeeAvatar';
@@ -81,6 +82,7 @@ const allNavItems = [
   { path: '/role-management', label: 'Role Management', icon: Shield, roles: ['hr', 'system_admin'] },
   { path: '/audit-logs', label: 'Audit Logs', icon: ScrollText, roles: ['hr', 'system_admin'] },
   { path: '/settings', label: 'Settings', icon: Settings, roles: ['hr', 'system_admin'] },
+  { path: '/it-management', label: 'IT Management', icon: HardDrive, roles: ['hr', 'system_admin', 'office_admin'] },
   { path: '/settings/cron-management', label: 'Cron Management', icon: MailIcon, roles: ['hr', 'system_admin'] },
 ];
 

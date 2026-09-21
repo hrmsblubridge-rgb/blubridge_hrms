@@ -29,6 +29,7 @@ import {
   AlertTriangle,
   Star,
   Receipt,
+  HardDrive,
 } from 'lucide-react';
 import { Button } from './ui/button';
 import EmployeeAvatar from './EmployeeAvatar';
@@ -54,6 +55,7 @@ const navItems = [
   { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap, moduleKey: 'education_experience' },
   { path: '/employee/documents', label: 'My Documents', icon: FileText, moduleKey: 'documents' },
   { path: '/employee/tickets', label: 'Support Tickets', icon: MessageSquarePlus, moduleKey: 'tickets' },
+  { path: '/employee/it-assets', label: 'My IT Assets', icon: HardDrive, moduleKey: null },
   { path: '/employee/profile', label: 'Profile', icon: User, moduleKey: null }, // always visible
 ];
 

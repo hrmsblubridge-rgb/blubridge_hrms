@@ -49,6 +49,8 @@ import AdminMissedPunch from "./pages/AdminMissedPunch";
 import RoleManagement from "./pages/RoleManagement";
 import OperationalChecklist from "./pages/OperationalChecklist";
 import Settings from "./pages/Settings";
+import ITManagement from "./pages/ITManagement";
+import EmployeeITAssets from "./pages/EmployeeITAssets";
 import CronManagement from "./pages/CronManagement";
 import PolicyAcknowledgements from "./pages/PolicyAcknowledgements";
 import OperationalVigilance from "./pages/OperationalVigilance";
@@ -182,6 +184,7 @@ function App() {
           
           {/* Admin Routes */}
           <Route path="/dashboard" element={<AdminRoute><Dashboard /></AdminRoute>} />
+          <Route path="/it-management" element={<AdminRoute><ITManagement /></AdminRoute>} />
           <Route path="/employees" element={<AdminRoute><Employees /></AdminRoute>} />
           <Route path="/employees/photo-wall" element={<AdminRoute><EmployeePhotoWall /></AdminRoute>} />
           <Route path="/onboarding-completion" element={<AdminRoute><OnboardingCompletion /></AdminRoute>} />
@@ -216,6 +219,7 @@ function App() {
           <Route path="/employee/onboarding" element={<OnboardingRoute><EmployeeOnboarding /></OnboardingRoute>} />
           <Route path="/employee/dashboard" element={<EmployeeRoute><EmployeeDashboard /></EmployeeRoute>} />
           <Route path="/employee/attendance" element={<EmployeeRoute><EmployeeAttendance /></EmployeeRoute>} />
+          <Route path="/employee/it-assets" element={<EmployeeRoute><EmployeeITAssets /></EmployeeRoute>} />
           <Route path="/employee/leave" element={<EmployeeRoute><EmployeeLeave /></EmployeeRoute>} />
           <Route path="/employee/holidays" element={<EmployeeRoute><EmployeeHolidays /></EmployeeRoute>} />
           <Route path="/employee/education-experience" element={<EmployeeRoute><EmployeeEducationExperience /></EmployeeRoute>} />

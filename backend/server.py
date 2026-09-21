@@ -19446,6 +19446,16 @@ settings_services = settings_module.register(api_router, {
     "recalc_attendance_for_shift_change": recalculate_attendance_for_shift_change,
 })
 
+import it_asset  # noqa: E402
+it_asset.register(api_router, {
+    "db": db,
+    "get_current_user": get_current_user,
+    "log_audit": log_audit,
+    "get_ist_now": get_ist_now,
+    "ADMIN_ROLES": ADMIN_ROLES,
+})
+
+
 
 # ============== HRMS EMAIL MANUAL TRIGGER (HR-only, testing / on-demand) ==============
 @api_router.post("/email-jobs/{job_name}/run")
