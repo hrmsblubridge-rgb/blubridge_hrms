@@ -13,6 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Laptop, Package, CheckCircle2, Wrench, AlertTriangle, Search, Plus, Upload, Download, History, ArrowRightLeft, UserPlus, Undo2, Archive, Eye } from 'lucide-react';
+import { ComponentsTab, AssetComponentsSection, ComponentDashboardCards } from './ITComponents';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -52,17 +53,19 @@ export default function ITManagement() {
         <TabsList data-testid="it-tabs">
           <TabsTrigger value="dashboard" data-testid="it-tab-dashboard">Dashboard</TabsTrigger>
           <TabsTrigger value="assets" data-testid="it-tab-assets">Assets</TabsTrigger>
+          <TabsTrigger value="components" data-testid="it-tab-components">Components</TabsTrigger>
           <TabsTrigger value="import" data-testid="it-tab-import">Import</TabsTrigger>
         </TabsList>
-        <TabsContent value="dashboard" className="mt-4"><DashboardTab dash={dash} /></TabsContent>
+        <TabsContent value="dashboard" className="mt-4"><DashboardTab dash={dash} authHeaders={authHeaders} /></TabsContent>
         <TabsContent value="assets" className="mt-4"><AssetsTab authHeaders={authHeaders} meta={meta} onChange={loadDash} /></TabsContent>
+        <TabsContent value="components" className="mt-4"><ComponentsTab authHeaders={authHeaders} onChange={loadDash} /></TabsContent>
         <TabsContent value="import" className="mt-4"><ImportTab authHeaders={authHeaders} onDone={loadDash} /></TabsContent>
       </Tabs>
     </div>
   );
 }
 
-function DashboardTab({ dash }) {
+function DashboardTab({ dash, authHeaders }) {
   if (!dash) return <div className="text-slate-400 text-sm">Loading…</div>;
   const cards = [
     { label: 'Total Assets', value: dash.total, icon: Package, color: 'text-slate-700' },
@@ -100,6 +103,7 @@ function DashboardTab({ dash }) {
           </CardContent>
         </Card>
       </div>
+      <ComponentDashboardCards authHeaders={authHeaders} />
     </div>
   );
 }
@@ -370,6 +374,10 @@ function AssetDetail({ authHeaders, assetId, onClose }) {
             <div className="text-xs font-semibold text-slate-500 uppercase mb-1">Specifications</div>
             <div className="grid grid-cols-2 gap-2 text-sm">{Object.entries(d.asset.specs).map(([k, v]) => v && <div key={k} className="flex justify-between border-b border-slate-100 py-1"><span className="text-slate-500">{k}</span><span>{v}</span></div>)}</div>
           </div>}
+          <div>
+            <div className="text-xs font-semibold text-slate-500 uppercase mb-2">Components</div>
+            <AssetComponentsSection authHeaders={authHeaders} assetId={assetId} />
+          </div>
           <div>
             <div className="text-xs font-semibold text-slate-500 uppercase mb-2 flex items-center gap-1"><History className="w-3.5 h-3.5" />Timeline</div>
             <div className="space-y-2" data-testid="it-history">

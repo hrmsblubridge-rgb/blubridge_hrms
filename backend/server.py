@@ -19454,6 +19454,13 @@ it_asset.register(api_router, {
     "get_ist_now": get_ist_now,
     "ADMIN_ROLES": ADMIN_ROLES,
 })
+it_asset.register_components(api_router, {
+    "db": db,
+    "get_current_user": get_current_user,
+    "log_audit": log_audit,
+    "get_ist_now": get_ist_now,
+    "ADMIN_ROLES": ADMIN_ROLES,
+})
 
 
 

@@ -11,11 +11,18 @@ export default function EmployeeITAssets() {
   const { token } = useAuth();
   const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
   const [items, setItems] = useState([]);
+  const [config, setConfig] = useState({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     axios.get(`${API}/employee/it-assets`, { headers: authHeaders })
       .then(r => setItems(r.data.items || [])).catch(() => {}).finally(() => setLoading(false));
+    axios.get(`${API}/employee/it-components`, { headers: authHeaders })
+      .then(r => {
+        const map = {};
+        (r.data.assets || []).forEach(a => { map[a.asset_id] = a.configuration?.by_type || {}; });
+        setConfig(map);
+      }).catch(() => {});
   }, [authHeaders]);
 
   return (
@@ -34,16 +41,32 @@ export default function EmployeeITAssets() {
             <TableBody>
               {loading && <TableRow><TableCell colSpan={6} className="text-center text-slate-400 py-8">Loading…</TableCell></TableRow>}
               {!loading && items.length === 0 && <TableRow><TableCell colSpan={6} className="text-center text-slate-400 py-8">No IT assets are assigned to you.</TableCell></TableRow>}
-              {items.map(a => (
-                <TableRow key={a.asset_id} data-testid={`my-asset-${a.asset_id}`}>
-                  <TableCell className="font-medium">{a.asset_id}</TableCell>
-                  <TableCell>{a.category}</TableCell>
-                  <TableCell className="text-sm">{[a.brand, a.model].filter(Boolean).join(' ') || '—'}</TableCell>
-                  <TableCell className="text-sm text-slate-500">{a.serial_number || '—'}</TableCell>
-                  <TableCell className="text-sm">{a.condition || '—'}</TableCell>
-                  <TableCell className="text-sm">{a.assigned_date || '—'}</TableCell>
-                </TableRow>
-              ))}
+              {items.map(a => {
+                const cfg = config[a.asset_id] || {};
+                const hasCfg = Object.keys(cfg).length > 0;
+                return [
+                  <TableRow key={a.asset_id} data-testid={`my-asset-${a.asset_id}`}>
+                    <TableCell className="font-medium">{a.asset_id}</TableCell>
+                    <TableCell>{a.category}</TableCell>
+                    <TableCell className="text-sm">{[a.brand, a.model].filter(Boolean).join(' ') || '—'}</TableCell>
+                    <TableCell className="text-sm text-slate-500">{a.serial_number || '—'}</TableCell>
+                    <TableCell className="text-sm">{a.condition || '—'}</TableCell>
+                    <TableCell className="text-sm">{a.assigned_date || '—'}</TableCell>
+                  </TableRow>,
+                  hasCfg && (
+                    <TableRow key={`${a.asset_id}-cfg`} className="bg-slate-50/60">
+                      <TableCell colSpan={6} className="py-2">
+                        <div className="text-xs text-slate-500 uppercase font-semibold mb-1">Configuration</div>
+                        <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                          {Object.entries(cfg).map(([type, list]) => (
+                            <span key={type} className="text-slate-600"><b>{type}:</b> {list.map(i => i.display).join(', ')}</span>
+                          ))}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ),
+                ];
+              })}
             </TableBody>
           </Table>
         </CardContent>
