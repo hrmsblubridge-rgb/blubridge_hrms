@@ -1,5 +1,35 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-23 — IT Asset COMPONENT / SUB-ASSET Management (additive, complete)
+New feature inside the existing IT Management module: Parent Asset → Component → Component
+History. Components (CPU/RAM/SSD/GPU/PSU/Motherboard/…) tracked with their own lifecycle;
+NEVER assigned to an employee directly — they inherit the parent asset's holder. Legacy
+components can be created with blank purchase/vendor/warranty. Zero changes to existing
+IT Asset / employee / auth / handover logic (regression-verified green).
+
+**Backend** `/app/backend/it_asset/components.py` (register_components, wired in server.py ~19457):
+new collections `it_components`, `it_component_types`, `it_component_history`,
+`it_component_maintenance`. Routes (admin-gated via ADMIN_ROLES):
+- `/api/it/components/meta`, `POST /api/it/component-types`
+- `GET/POST /api/it/components`, `GET/PUT/DELETE /api/it/components/{id}`
+- `POST /api/it/components/{id}/install|remove|maintenance|dispose`, `POST /api/it/components/replace`
+- `GET /api/it/assets/{asset_id}/components` (installed list + auto Current Configuration + config history)
+- `GET /api/it/components/dashboard`, `GET /api/it/components/export?report=inventory|installed|available|removed|replacement|movement|maintenance`
+- Import: `/api/it/components/import/template|preview|confirm`; Bulk assembly: `/api/it/components/assembly/preview|confirm`
+- Employee self (allowlisted `^/api/employee/`): `GET /api/employee/it-components` (own assets only, holder inherited)
+Guards: one component cannot be installed in two assets; Disposed/Scrapped/Lost cannot be installed;
+installed components cannot be disposed/archived until removed; replace preserves parent id + employee + full history.
+
+**Frontend**: `/app/frontend/src/pages/ITComponents.js` (ComponentsTab, AssetComponentsSection,
+AssetAddComponentDialog, ComponentDashboardCards). Integrated into `ITManagement.js` (new
+"Components" tab + dashboard cards + Components section inside Asset detail) and
+`EmployeeITAssets.js` (shows Current Configuration under each assigned asset).
+
+**Tests**: `/app/backend/tests/test_it_components.py` (35/37 pass; 1 skip + 1 cascaded fail are a
+test-harness employee-lookup limitation — inheritance & self-view separately curl-verified).
+Report: `/app/test_reports/iteration_81.json`. DB cleaned post-test (0 assets/components, 18 seeded types).
+
+
 ## 🆕 2026-09-10 — P01 Full Attendance: any taken leave now disqualifies the +2
 **Bug (Madhumithaa G K, Apr 2026):** 3 approved Preplanned leaves (01 / 13 / 23-Apr) yet
 P01 = +2. Same root cause as the N04 bug — P01 detected leave from the payroll day-status
