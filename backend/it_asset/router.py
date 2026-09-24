@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional, List
@@ -296,6 +297,47 @@ def register(api_router, deps: dict):
         await _history(asset_id, "Updated", current_user, note or "Asset details updated")
         await log_audit(current_user["id"], "it_asset_updated", "it_asset", asset_id)
         return {"success": True}
+
+    # ---------------- EMPLOYEE ASSETS (employees + current asset counts) ----------------
+    @api_router.get("/it/employee-assets")
+    async def it_employee_assets(
+        search: Optional[str] = None, department: Optional[str] = None,
+        has_assets: Optional[str] = None, page: int = 1, page_size: int = 25,
+        current_user: dict = Depends(get_current_user),
+    ):
+        await _require_admin(current_user)
+        counts = {}
+        async for row in db.it_assets.aggregate([
+            {"$match": {"is_deleted": {"$ne": True}, "assigned_to.employee_id": {"$ne": None}}},
+            {"$group": {"_id": "$assigned_to.employee_id", "n": {"$sum": 1}}},
+        ]):
+            if row["_id"]:
+                counts[row["_id"]] = row["n"]
+        q = {"is_deleted": {"$ne": True}, "employee_status": "Active"}
+        if department and department != "All":
+            q["department"] = department
+        if search:
+            rx = {"$regex": re.escape(search.strip()), "$options": "i"}
+            q["$or"] = [{"full_name": rx}, {"emp_id": rx}, {"department": rx}, {"designation": rx}]
+        if has_assets == "with":
+            q["id"] = {"$in": list(counts.keys())}
+        elif has_assets == "without":
+            q["id"] = {"$nin": list(counts.keys())}
+        total = await db.employees.count_documents(q)
+        page = max(1, page)
+        page_size = min(max(1, page_size), 200)
+        cur = db.employees.find(q, {"_id": 0, "id": 1, "full_name": 1, "emp_id": 1, "department": 1,
+                                    "designation": 1, "location": 1, "team": 1, "employee_status": 1}) \
+            .sort("full_name", 1).skip((page - 1) * page_size).limit(page_size)
+        items = [{**e, "asset_count": counts.get(e["id"], 0)} async for e in cur]
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    @api_router.get("/it/employee-assets/{employee_id}")
+    async def it_employee_asset_detail(employee_id: str, current_user: dict = Depends(get_current_user)):
+        await _require_admin(current_user)
+        assets = [_clean(a) async for a in db.it_assets.find(
+            {"assigned_to.employee_id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0}).sort("asset_id", 1)]
+        return {"employee_id": employee_id, "assets": assets}
 
     # ---------------- ASSIGN ----------------
     @api_router.post("/it/assets/{asset_id}/assign")

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, Fragment } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { toast } from 'sonner';
@@ -12,7 +12,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { Laptop, Package, CheckCircle2, Wrench, AlertTriangle, Search, Plus, Upload, Download, History, ArrowRightLeft, UserPlus, Undo2, Archive, Eye, Server, X, ClipboardList } from 'lucide-react';
+import { Laptop, Package, CheckCircle2, Wrench, AlertTriangle, Search, Plus, Upload, Download, History, ArrowRightLeft, UserPlus, Undo2, Archive, Eye, Server, X, ClipboardList, Pencil, Users, ChevronRight, ChevronDown } from 'lucide-react';
 import { ComponentsTab, AssetComponentsSection, ComponentDashboardCards, AssetCreateComponents } from './ITComponents';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -72,11 +72,13 @@ export default function ITManagement() {
           <TabsTrigger value="dashboard" data-testid="it-tab-dashboard" className={tabCls}>Dashboard</TabsTrigger>
           <TabsTrigger value="assets" data-testid="it-tab-assets" className={tabCls}>Assets</TabsTrigger>
           <TabsTrigger value="components" data-testid="it-tab-components" className={tabCls}>Components</TabsTrigger>
+          <TabsTrigger value="employees" data-testid="it-tab-employees" className={tabCls}>Employee Assets</TabsTrigger>
           <TabsTrigger value="import" data-testid="it-tab-import" className={tabCls}>Import</TabsTrigger>
         </TabsList>
         <TabsContent value="dashboard" className="mt-5"><DashboardTab dash={dash} authHeaders={authHeaders} /></TabsContent>
         <TabsContent value="assets" className="mt-5"><AssetsTab authHeaders={authHeaders} meta={meta} onChange={loadDash} /></TabsContent>
         <TabsContent value="components" className="mt-5"><ComponentsTab authHeaders={authHeaders} onChange={loadDash} /></TabsContent>
+        <TabsContent value="employees" className="mt-5"><EmployeeAssetsTab authHeaders={authHeaders} meta={meta} onChange={loadDash} /></TabsContent>
         <TabsContent value="import" className="mt-5"><ImportTab authHeaders={authHeaders} onDone={loadDash} /></TabsContent>
       </Tabs>
     </div>
@@ -141,6 +143,7 @@ function AssetsTab({ authHeaders, meta, onChange }) {
   const [showForm, setShowForm] = useState(false);
   const [detail, setDetail] = useState(null);
   const [action, setAction] = useState(null);
+  const [editId, setEditId] = useState(null);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -241,6 +244,7 @@ function AssetsTab({ authHeaders, meta, onChange }) {
                   <TableCell className="text-sm">{a.assigned_to?.employee_name || <span className="text-slate-400">Unassigned</span>}</TableCell>
                   <TableCell className="text-right whitespace-nowrap">
                     <Button size="icon" variant="ghost" className="rounded-lg hover:bg-[#063c88]/10 hover:text-[#063c88]" title="View" onClick={() => setDetail(a.asset_id)} data-testid={`it-view-${a.asset_id}`}><Eye className="w-4 h-4" /></Button>
+                    <Button size="icon" variant="ghost" className="rounded-lg hover:bg-[#063c88]/10 hover:text-[#063c88]" title="Edit" onClick={() => setEditId(a.asset_id)} data-testid={`it-edit-${a.asset_id}`}><Pencil className="w-4 h-4" /></Button>
                     {!a.assigned_to && <Button size="icon" variant="ghost" className="rounded-lg hover:bg-[#063c88]/10 hover:text-[#063c88]" title="Assign" onClick={() => setAction({ type: 'assign', asset: a })} data-testid={`it-assign-${a.asset_id}`}><UserPlus className="w-4 h-4" /></Button>}
                     {a.assigned_to && <Button size="icon" variant="ghost" className="rounded-lg hover:bg-[#063c88]/10 hover:text-[#063c88]" title="Transfer" onClick={() => setAction({ type: 'transfer', asset: a })}><ArrowRightLeft className="w-4 h-4" /></Button>}
                     {a.assigned_to && <Button size="icon" variant="ghost" className="rounded-lg hover:bg-[#063c88]/10 hover:text-[#063c88]" title="Return" onClick={() => setAction({ type: 'return', asset: a })}><Undo2 className="w-4 h-4" /></Button>}
@@ -270,7 +274,8 @@ function AssetsTab({ authHeaders, meta, onChange }) {
       </div>
 
       {showForm && <AssetForm authHeaders={authHeaders} meta={meta} onClose={() => setShowForm(false)} onSaved={() => { setShowForm(false); load(); onChange(); }} />}
-      {detail && <AssetDetail authHeaders={authHeaders} assetId={detail} onClose={() => setDetail(null)} />}
+      {editId && <EditAssetLoader authHeaders={authHeaders} meta={meta} assetId={editId} onClose={() => setEditId(null)} onSaved={() => { setEditId(null); load(); onChange(); }} />}
+      {detail && <AssetDetail authHeaders={authHeaders} assetId={detail} onClose={() => setDetail(null)} onEdit={(id) => { setDetail(null); setEditId(id); }} />}
       {action && <AssetActionDialog authHeaders={authHeaders} meta={meta} action={action} onClose={() => setAction(null)} onDone={() => { setAction(null); load(); onChange(); }} />}
     </div>
   );
@@ -280,11 +285,14 @@ const SectionTitle = ({ children }) => (
   <div className="text-xs font-semibold uppercase tracking-wide text-[#063c88] pt-1">{children}</div>
 );
 
-function AssetForm({ authHeaders, meta, onClose, onSaved }) {
-  const [f, setF] = useState({ category: '', status: 'In Stock', asset_id: '', name: '', brand: '', model: '', serial_number: '', condition: '', source: '', location: '', department: '', remarks: '' });
-  const [purchase, setPurchase] = useState({ purchase_date: '', purchase_cost: '', vendor: '', invoice_number: '' });
-  const [warranty, setWarranty] = useState({ warranty_end: '', amc_end: '' });
-  const [specs, setSpecs] = useState({});
+function AssetForm({ authHeaders, meta, existing, onClose, onSaved }) {
+  const isEdit = !!existing;
+  const [f, setF] = useState(existing
+    ? { category: existing.category || '', status: existing.status || 'In Stock', asset_id: existing.asset_id || '', name: existing.name || '', asset_tag: existing.asset_tag || '', brand: existing.brand || '', model: existing.model || '', serial_number: existing.serial_number || '', condition: existing.condition || '', source: existing.source || '', location: existing.location || '', department: existing.department || '', remarks: existing.remarks || '' }
+    : { category: '', status: 'In Stock', asset_id: '', name: '', brand: '', model: '', serial_number: '', condition: '', source: '', location: '', department: '', remarks: '' });
+  const [purchase, setPurchase] = useState(existing?.purchase || { purchase_date: '', purchase_cost: '', vendor: '', invoice_number: '' });
+  const [warranty, setWarranty] = useState(existing?.warranty || { warranty_end: '', amc_end: '' });
+  const [specs, setSpecs] = useState(existing?.specs || {});
   const [components, setComponents] = useState([]);
   const [assignEmp, setAssignEmp] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -293,6 +301,13 @@ function AssetForm({ authHeaders, meta, onClose, onSaved }) {
   const save = () => {
     if (!f.category) { toast.error('Category is required'); return; }
     setSaving(true);
+    if (isEdit) {
+      axios.put(`${API}/it/assets/${existing.asset_id}`, { ...f, purchase, warranty, specs }, { headers: authHeaders })
+        .then(() => { toast.success('Asset updated'); onSaved(); })
+        .catch(e => toast.error(e.response?.data?.detail || 'Failed to update'))
+        .finally(() => setSaving(false));
+      return;
+    }
     const payload = { ...f, purchase, warranty, specs };
     if (assignEmp) payload.assign_employee_id = assignEmp.id;
     axios.post(`${API}/it/assets`, payload, { headers: authHeaders })
@@ -318,7 +333,7 @@ function AssetForm({ authHeaders, meta, onClose, onSaved }) {
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className={DIALOG} data-testid="it-asset-form">
-        <DialogHeader><DialogTitle style={font}>Add Asset</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle style={font}>{isEdit ? `Edit Asset — ${existing.asset_id}` : 'Add Asset'}</DialogTitle></DialogHeader>
         <div className="space-y-5">
           <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4 space-y-3">
             <SectionTitle>Basic Information</SectionTitle>
@@ -333,7 +348,7 @@ function AssetForm({ authHeaders, meta, onClose, onSaved }) {
                   <SelectTrigger data-testid="it-form-status" className="rounded-xl"><SelectValue /></SelectTrigger>
                   <SelectContent>{meta.statuses.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
                 </Select></div>
-              <div><Label>Asset ID (blank = auto)</Label><Input className="rounded-xl" value={f.asset_id} onChange={e => set('asset_id', e.target.value)} placeholder="Auto-generated" data-testid="it-form-assetid" /></div>
+              <div><Label>Asset ID{isEdit ? '' : ' (blank = auto)'}</Label><Input className="rounded-xl" value={f.asset_id} onChange={e => set('asset_id', e.target.value)} placeholder="Auto-generated" disabled={isEdit} data-testid="it-form-assetid" /></div>
               <div><Label>Asset Tag</Label><Input className="rounded-xl" value={f.asset_tag || ''} onChange={e => set('asset_tag', e.target.value)} /></div>
               <div><Label>Brand</Label><Input className="rounded-xl" value={f.brand} onChange={e => set('brand', e.target.value)} /></div>
               <div><Label>Model</Label><Input className="rounded-xl" value={f.model} onChange={e => set('model', e.target.value)} /></div>
@@ -353,11 +368,13 @@ function AssetForm({ authHeaders, meta, onClose, onSaved }) {
             </div>
           </div>
 
-          <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4 space-y-3">
-            <SectionTitle>Assignment (optional)</SectionTitle>
-            <ActiveEmployeePicker authHeaders={authHeaders} value={assignEmp} onSelect={setAssignEmp} />
-            {!assignEmp && <p className="text-xs text-slate-500">Asset will remain unassigned and can be assigned later.</p>}
-          </div>
+          {!isEdit && (
+            <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4 space-y-3">
+              <SectionTitle>Assignment (optional)</SectionTitle>
+              <ActiveEmployeePicker authHeaders={authHeaders} value={assignEmp} onSelect={setAssignEmp} />
+              {!assignEmp && <p className="text-xs text-slate-500">Asset will remain unassigned and can be assigned later.</p>}
+            </div>
+          )}
 
           {catFields.length > 0 && (
             <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4 space-y-3">
@@ -383,57 +400,72 @@ function AssetForm({ authHeaders, meta, onClose, onSaved }) {
           </div>
 
           <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4 space-y-3">
-            <SectionTitle>Components (optional)</SectionTitle>
-            <p className="text-xs text-slate-500">Attach available components now, or add them later from the asset's detail view. Pick a type to see only components that are currently free.</p>
-            <AssetCreateComponents authHeaders={authHeaders} selected={components} onChange={setComponents} />
+            <SectionTitle>Components{isEdit ? '' : ' (optional)'}</SectionTitle>
+            {isEdit ? (
+              <AssetComponentsSection authHeaders={authHeaders} assetId={existing.asset_id} />
+            ) : (<>
+              <p className="text-xs text-slate-500">Attach available components now, or add them later from the asset's detail view. Pick a type to see only components that are currently free.</p>
+              <AssetCreateComponents authHeaders={authHeaders} selected={components} onChange={setComponents} />
+            </>)}
           </div>
 
           <div><Label>Remarks</Label><Textarea className="rounded-xl" value={f.remarks} onChange={e => set('remarks', e.target.value)} /></div>
         </div>
         <DialogFooter>
           <Button variant="outline" className={OUTLINE} onClick={onClose}>Cancel</Button>
-          <Button className={PRIMARY} onClick={save} disabled={saving} data-testid="it-form-save">{saving ? 'Saving…' : 'Create Asset'}</Button>
+          <Button className={PRIMARY} onClick={save} disabled={saving} data-testid="it-form-save">{saving ? 'Saving…' : (isEdit ? 'Save Changes' : 'Create Asset')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
-// Active-only employee picker (used by the Create-Asset assignment shortcut)
+// Active-only employee picker with proper open/close behavior (Feature 3 fix)
 function ActiveEmployeePicker({ authHeaders, value, onSelect }) {
   const [q, setQ] = useState('');
   const [opts, setOpts] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
+    if (!open) return;
     const t = setTimeout(() => {
       setLoading(true);
       axios.get(`${API}/employees`, { headers: authHeaders, params: { search: q, status: 'Active', limit: 20 } })
         .then(r => setOpts(Array.isArray(r.data) ? r.data : (r.data?.employees || []))).catch(() => {}).finally(() => setLoading(false));
     }, 300);
     return () => clearTimeout(t);
-  }, [q]); // eslint-disable-line
+  }, [q, open]); // eslint-disable-line
+
+  // Collapsed selected state — only shows the picked employee (Feature 3 requirement)
+  if (value && !open) {
+    return (
+      <div className="flex items-center justify-between rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2.5" data-testid="it-active-emp-selected">
+        <button type="button" className="text-left flex-1" onClick={() => { setOpen(true); setQ(''); }} data-testid="it-active-emp-change">
+          <div className="text-sm font-medium text-emerald-800">{value.full_name}</div>
+          <div className="text-emerald-600 text-xs">{value.emp_id}{value.department ? ` • ${value.department}` : ''}</div>
+        </button>
+        <button type="button" onClick={() => { onSelect(null); setOpen(false); }} className="text-emerald-700 hover:text-emerald-900" data-testid="it-active-emp-clear"><X className="w-4 h-4" /></button>
+      </div>
+    );
+  }
   return (
     <div>
       <div className="relative">
         <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
-        <Input className="pl-9 rounded-xl bg-white" placeholder="Search active employee by name, ID, department…" value={q} onChange={e => setQ(e.target.value)} data-testid="it-active-emp-search" />
+        <Input className="pl-9 rounded-xl bg-white" placeholder="Search active employee by name, ID, department…"
+          value={q} onFocus={() => setOpen(true)} onChange={e => { setQ(e.target.value); setOpen(true); }} data-testid="it-active-emp-search" />
       </div>
-      {(q || value) && (
-        <div className="max-h-44 overflow-y-auto mt-1.5 border rounded-xl bg-white">
+      {open && (
+        <div className="max-h-44 overflow-y-auto mt-1.5 border rounded-xl bg-white shadow-sm">
           {loading && <div className="px-3 py-2 text-xs text-slate-400">Searching…</div>}
           {!loading && opts.length === 0 && <div className="px-3 py-2 text-xs text-slate-400" data-testid="it-active-emp-none">No active employees found.</div>}
           {opts.map(e => (
-            <button key={e.id} type="button" onClick={() => { onSelect(e); setQ(''); }} className={`w-full text-left px-3 py-2 text-sm hover:bg-[#063c88]/5 ${value?.id === e.id ? 'bg-[#063c88]/10' : ''}`} data-testid={`it-active-emp-opt-${e.id}`}>
+            <button key={e.id} type="button" onClick={() => { onSelect(e); setQ(''); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 text-sm hover:bg-[#063c88]/5 ${value?.id === e.id ? 'bg-[#063c88]/10' : ''}`} data-testid={`it-active-emp-opt-${e.id}`}>
               <div className="font-medium text-slate-800">{e.full_name}</div>
               <div className="text-slate-400 text-xs">{e.emp_id}{e.department ? ` · ${e.department}` : ''}{e.designation ? ` · ${e.designation}` : ''}</div>
             </button>
           ))}
-        </div>
-      )}
-      {value && (
-        <div className="mt-2 flex items-center justify-between rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2" data-testid="it-active-emp-selected">
-          <div className="text-sm"><span className="font-medium text-emerald-800">{value.full_name}</span> <span className="text-emerald-600 text-xs">{value.emp_id}</span></div>
-          <button type="button" onClick={() => onSelect(null)} className="text-emerald-700 hover:text-emerald-900"><X className="w-4 h-4" /></button>
         </div>
       )}
     </div>
@@ -512,7 +544,14 @@ function AssetActionDialog({ authHeaders, meta, action, onClose, onDone }) {
   );
 }
 
-function AssetDetail({ authHeaders, assetId, onClose }) {
+function EditAssetLoader({ authHeaders, meta, assetId, onClose, onSaved }) {
+  const [asset, setAsset] = useState(null);
+  useEffect(() => { axios.get(`${API}/it/assets/${assetId}`, { headers: authHeaders }).then(r => setAsset(r.data.asset)).catch(() => { toast.error('Failed to load asset'); onClose(); }); }, [assetId]); // eslint-disable-line
+  if (!asset) return null;
+  return <AssetForm authHeaders={authHeaders} meta={meta} existing={asset} onClose={onClose} onSaved={onSaved} />;
+}
+
+function AssetDetail({ authHeaders, assetId, onClose, onEdit }) {
   const [d, setD] = useState(null);
   useEffect(() => { axios.get(`${API}/it/assets/${assetId}`, { headers: authHeaders }).then(r => setD(r.data)).catch(() => {}); }, [assetId]); // eslint-disable-line
   const quick = d ? [['Assigned To', d.asset.assigned_to?.employee_name], ['Department', d.asset.department], ['Location', d.asset.location], ['Serial', d.asset.serial_number], ['Condition', d.asset.condition]] : [];
@@ -528,6 +567,7 @@ function AssetDetail({ authHeaders, assetId, onClose }) {
               </div>
               <StatusBadge status={d.asset.status} />
             </div>
+            {onEdit && <div className="pt-1"><Button size="sm" variant="outline" className={OUTLINE} onClick={() => onEdit(d.asset.asset_id)} data-testid="it-detail-edit"><Pencil className="w-3.5 h-3.5 mr-1.5" />Edit Asset</Button></div>}
           </DialogHeader>
 
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -563,6 +603,152 @@ function AssetDetail({ authHeaders, assetId, onClose }) {
         </div>}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function EmployeeAssetsTab({ authHeaders, meta, onChange }) {
+  const [data, setData] = useState({ items: [], total: 0 });
+  const [search, setSearch] = useState('');
+  const [hasAssets, setHasAssets] = useState('All');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [loading, setLoading] = useState(true);
+  const [expanded, setExpanded] = useState({});
+  const [detail, setDetail] = useState(null);
+  const [editId, setEditId] = useState(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    const params = { page, page_size: pageSize };
+    if (search) params.search = search;
+    if (hasAssets !== 'All') params.has_assets = hasAssets;
+    axios.get(`${API}/it/employee-assets`, { headers: authHeaders, params }).then(r => setData(r.data)).catch(() => toast.error('Failed to load employees')).finally(() => setLoading(false));
+  }, [authHeaders, page, pageSize, search, hasAssets]);
+  useEffect(() => { load(); }, [load]);
+
+  const toggle = (emp) => {
+    setExpanded(prev => {
+      if (prev[emp.id]) { const c = { ...prev }; delete c[emp.id]; return c; }
+      axios.get(`${API}/it/employee-assets/${emp.id}`, { headers: authHeaders })
+        .then(r => setExpanded(p => ({ ...p, [emp.id]: { loading: false, assets: r.data.assets } })))
+        .catch(() => setExpanded(p => ({ ...p, [emp.id]: { loading: false, assets: [] } })));
+      return { ...prev, [emp.id]: { loading: true, assets: [] } };
+    });
+  };
+  const totalPages = Math.max(1, Math.ceil(data.total / pageSize));
+
+  return (
+    <div className="space-y-4">
+      <div className={`${CARD} p-4`}>
+        <div className="flex flex-wrap gap-2 items-center">
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+            <Input data-testid="empasset-search" className="pl-9 rounded-xl bg-white" placeholder="Search employee name, ID, department…" value={search} onChange={e => { setPage(1); setSearch(e.target.value); }} />
+          </div>
+          <Select value={hasAssets} onValueChange={v => { setPage(1); setHasAssets(v); }}>
+            <SelectTrigger className="w-44 rounded-xl bg-white" data-testid="empasset-filter"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="All">All Employees</SelectItem>
+              <SelectItem value="with">With Assets</SelectItem>
+              <SelectItem value="without">Without Assets</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className={`${CARD} overflow-hidden`}>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-[#063c88]/[0.04] hover:bg-[#063c88]/[0.04]">
+                <TableHead className="w-8"></TableHead>
+                <TableHead className="font-semibold text-slate-600">Employee</TableHead>
+                <TableHead className="font-semibold text-slate-600">Employee ID</TableHead>
+                <TableHead className="font-semibold text-slate-600">Department</TableHead>
+                <TableHead className="font-semibold text-slate-600">Designation</TableHead>
+                <TableHead className="font-semibold text-slate-600 text-center">Assets</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loading && <TableRow><TableCell colSpan={6}><Spinner /></TableCell></TableRow>}
+              {!loading && data.items.length === 0 && (
+                <TableRow><TableCell colSpan={6}>
+                  <div className="flex flex-col items-center justify-center py-14 text-center">
+                    <div className="w-14 h-14 rounded-2xl bg-[#063c88]/10 flex items-center justify-center mb-3"><Users className="w-7 h-7 text-[#063c88]" /></div>
+                    <div className="font-semibold" style={{ ...font, color: NAVY }}>No employees found</div>
+                    <div className="text-sm text-slate-500 mt-1">Try changing your search or filter.</div>
+                  </div>
+                </TableCell></TableRow>
+              )}
+              {!loading && data.items.map(emp => {
+                const ex = expanded[emp.id];
+                return (
+                  <Fragment key={emp.id}>
+                    <TableRow data-testid={`empasset-row-${emp.id}`} className="hover:bg-[#063c88]/[0.03] transition-colors cursor-pointer" onClick={() => toggle(emp)}>
+                      <TableCell>{ex ? <ChevronDown className="w-4 h-4 text-[#063c88]" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}</TableCell>
+                      <TableCell className="font-medium text-slate-800">{emp.full_name}</TableCell>
+                      <TableCell className="text-sm text-[#063c88] font-medium">{emp.emp_id || '—'}</TableCell>
+                      <TableCell className="text-sm">{emp.department || '—'}</TableCell>
+                      <TableCell className="text-sm">{emp.designation || '—'}</TableCell>
+                      <TableCell className="text-center">
+                        <span className={`inline-flex items-center justify-center min-w-[28px] px-2 py-0.5 rounded-full text-xs font-semibold ${emp.asset_count > 0 ? 'bg-[#063c88]/10 text-[#063c88]' : 'bg-slate-100 text-slate-500'}`} data-testid={`empasset-count-${emp.id}`}>{emp.asset_count}</span>
+                      </TableCell>
+                    </TableRow>
+                    {ex && (
+                      <TableRow key={`${emp.id}-x`} className="bg-slate-50/60 hover:bg-slate-50/60">
+                        <TableCell></TableCell>
+                        <TableCell colSpan={5} className="py-3">
+                          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Assets Held by {emp.full_name}</div>
+                          {ex.loading && <div className="text-sm text-slate-400">Loading…</div>}
+                          {!ex.loading && ex.assets.length === 0 && <div className="text-sm text-slate-400" data-testid={`empasset-none-${emp.id}`}>No assets currently assigned.</div>}
+                          {!ex.loading && ex.assets.length > 0 && (
+                            <div className="rounded-xl border border-slate-200/70 bg-white overflow-hidden">
+                              <Table>
+                                <TableHeader><TableRow><TableHead className="text-xs">Category</TableHead><TableHead className="text-xs">Asset ID</TableHead><TableHead className="text-xs">Location</TableHead><TableHead className="text-xs">Status</TableHead><TableHead className="text-xs text-right">Action</TableHead></TableRow></TableHeader>
+                                <TableBody>
+                                  {ex.assets.map(a => (
+                                    <TableRow key={a.asset_id} className="hover:bg-[#063c88]/[0.03] cursor-pointer" onClick={() => setDetail(a.asset_id)} data-testid={`empasset-asset-${a.asset_id}`}>
+                                      <TableCell className="text-sm">{a.category}</TableCell>
+                                      <TableCell className="text-sm font-medium text-[#063c88]">{a.asset_id}</TableCell>
+                                      <TableCell className="text-sm">{a.location || '—'}</TableCell>
+                                      <TableCell><StatusBadge status={a.status} /></TableCell>
+                                      <TableCell className="text-right"><Button size="sm" variant="ghost" className="rounded-lg hover:bg-[#063c88]/10 hover:text-[#063c88] h-7" onClick={(e) => { e.stopPropagation(); setDetail(a.asset_id); }}><Eye className="w-3.5 h-3.5 mr-1" />View</Button></TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )}
+                  </Fragment>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-t border-slate-200/70 text-sm text-slate-500">
+          <div className="flex items-center gap-2">
+            <span>{data.total} employee{data.total === 1 ? '' : 's'}</span>
+            <span className="text-slate-300">·</span>
+            <span>Rows</span>
+            <Select value={String(pageSize)} onValueChange={v => { setPage(1); setPageSize(Number(v)); }}>
+              <SelectTrigger className="h-7 w-16 rounded-lg bg-white" data-testid="empasset-page-size"><SelectValue /></SelectTrigger>
+              <SelectContent>{[10, 25, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div className="flex gap-2 items-center">
+            <Button size="sm" variant="outline" className={OUTLINE} disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</Button>
+            <span>Page {page} / {totalPages}</span>
+            <Button size="sm" variant="outline" className={OUTLINE} disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
+          </div>
+        </div>
+      </div>
+
+      {detail && <AssetDetail authHeaders={authHeaders} assetId={detail} onClose={() => setDetail(null)} onEdit={(id) => { setDetail(null); setEditId(id); }} />}
+      {editId && <EditAssetLoader authHeaders={authHeaders} meta={meta} assetId={editId} onClose={() => setEditId(null)} onSaved={() => { setEditId(null); load(); onChange && onChange(); }} />}
+    </div>
   );
 }
 
