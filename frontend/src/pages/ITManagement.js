@@ -13,7 +13,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '.
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Laptop, Package, CheckCircle2, Wrench, AlertTriangle, Search, Plus, Upload, Download, History, ArrowRightLeft, UserPlus, Undo2, Archive, Eye } from 'lucide-react';
-import { ComponentsTab, AssetComponentsSection, ComponentDashboardCards } from './ITComponents';
+import { ComponentsTab, AssetComponentsSection, ComponentDashboardCards, AssetCreateComponents } from './ITComponents';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -207,6 +207,7 @@ function AssetForm({ authHeaders, meta, onClose, onSaved }) {
   const [purchase, setPurchase] = useState({ purchase_date: '', purchase_cost: '', vendor: '', invoice_number: '' });
   const [warranty, setWarranty] = useState({ warranty_end: '', amc_end: '' });
   const [specs, setSpecs] = useState({});
+  const [components, setComponents] = useState([]);
   const [saving, setSaving] = useState(false);
   const catFields = (meta.categories.find(c => c.name === f.category)?.fields) || [];
 
@@ -214,7 +215,20 @@ function AssetForm({ authHeaders, meta, onClose, onSaved }) {
     if (!f.category) { toast.error('Category is required'); return; }
     setSaving(true);
     axios.post(`${API}/it/assets`, { ...f, purchase, warranty, specs }, { headers: authHeaders })
-      .then(() => { toast.success('Asset created'); onSaved(); })
+      .then(async (res) => {
+        const assetId = res.data.asset_id;
+        if (components.length > 0 && assetId) {
+          try {
+            await axios.post(`${API}/it/assets/${assetId}/install-components`,
+              { items: components.map(c => ({ component_id: c.component_id, slot: c.slot })) },
+              { headers: authHeaders });
+          } catch (e) {
+            toast.error(e.response?.data?.detail || 'Asset created but some components could not be installed');
+          }
+        }
+        toast.success('Asset created');
+        onSaved();
+      })
       .catch(e => toast.error(e.response?.data?.detail || 'Failed to create'))
       .finally(() => setSaving(false));
   };
@@ -278,6 +292,10 @@ function AssetForm({ authHeaders, meta, onClose, onSaved }) {
             <div><Label>AMC End</Label><Input type="date" value={warranty.amc_end} onChange={e => setWarranty(p => ({ ...p, amc_end: e.target.value }))} /></div>
           </div>
           <div><Label>Remarks</Label><Textarea value={f.remarks} onChange={e => set('remarks', e.target.value)} /></div>
+
+          <div className="text-xs font-semibold text-slate-500 uppercase">Components (optional)</div>
+          <p className="text-xs text-slate-500 -mt-2">Attach available components now, or add them later from the asset's detail view. Pick a type to see only components that are currently free.</p>
+          <AssetCreateComponents authHeaders={authHeaders} selected={components} onChange={setComponents} />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>

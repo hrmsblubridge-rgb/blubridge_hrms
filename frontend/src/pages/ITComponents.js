@@ -33,6 +33,96 @@ function useCompMeta(authHeaders) {
   return meta;
 }
 
+// Availability-driven selector: type-first, shows live counts + "No X available"
+function AvailableComponentSelector({ authHeaders, meta, type, setType, exclude = [], value, onSelect }) {
+  const [q, setQ] = useState('');
+  const [data, setData] = useState({ counts: null, available_items: [], message: null });
+  const load = useCallback(() => {
+    if (!type) { setData({ counts: null, available_items: [], message: null }); return; }
+    axios.get(`${API}/it/components/availability`, { headers: authHeaders, params: { type, search: q, exclude: exclude.join(',') } })
+      .then(r => setData(r.data)).catch(() => {});
+  }, [authHeaders, type, q, exclude]); // eslint-disable-line
+  useEffect(() => { const t = setTimeout(load, 250); return () => clearTimeout(t); }, [load]);
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 gap-2">
+        <div><Label>Component Type</Label>
+          <Select value={type || ''} onValueChange={v => { onSelect(null); setType(v); }}>
+            <SelectTrigger data-testid="avail-type-select"><SelectValue placeholder="Select type" /></SelectTrigger>
+            <SelectContent>{meta.types.map(t => <SelectItem key={t.id} value={t.name}>{t.name}</SelectItem>)}</SelectContent>
+          </Select></div>
+        <div><Label>Search</Label><Input value={q} onChange={e => setQ(e.target.value)} placeholder="id, serial, brand…" disabled={!type} data-testid="avail-search" /></div>
+      </div>
+      {type && data.counts && (
+        <div className="flex gap-2 text-xs" data-testid="avail-counts">
+          <Badge variant="secondary">Total {data.counts.total}</Badge>
+          <Badge className="bg-blue-100 text-blue-700">Used {data.counts.used}</Badge>
+          <Badge className="bg-emerald-100 text-emerald-700">Available {data.counts.available}</Badge>
+          {data.counts.under_repair > 0 && <Badge className="bg-amber-100 text-amber-700">Repair {data.counts.under_repair}</Badge>}
+        </div>
+      )}
+      {type && (
+        <div className="max-h-44 overflow-y-auto border rounded">
+          {data.available_items.length === 0 && <div className="px-3 py-2 text-xs text-slate-400" data-testid="avail-none">{data.message || 'No components available.'}</div>}
+          {data.available_items.map(c => (
+            <button key={c.component_id} type="button" onClick={() => onSelect(c)}
+              className={`w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50 ${value?.component_id === c.component_id ? 'bg-blue-50' : ''}`}
+              data-testid={`avail-opt-${c.component_id}`}>
+              {c.component_id} <span className="text-slate-400 text-xs">{[c.capacity, c.brand, c.model].filter(Boolean).join(' ')}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Components picker used INSIDE the Create-Asset form. Manages a local selected list.
+export function AssetCreateComponents({ authHeaders, selected, onChange }) {
+  const meta = useCompMeta(authHeaders);
+  const [type, setType] = useState('');
+  const [pick, setPick] = useState(null);
+  const [slot, setSlot] = useState('');
+  const excludeIds = selected.map(s => s.component_id);
+
+  const add = () => {
+    if (!pick) { toast.error('Select an available component'); return; }
+    onChange([...selected, { ...pick, slot }]);
+    setPick(null); setSlot('');
+  };
+  const remove = (cid) => onChange(selected.filter(s => s.component_id !== cid));
+
+  return (
+    <div className="space-y-3" data-testid="asset-create-components">
+      <AvailableComponentSelector authHeaders={authHeaders} meta={meta} type={type} setType={setType}
+        exclude={excludeIds} value={pick} onSelect={setPick} />
+      <div className="flex items-end gap-2">
+        <div className="flex-1"><Label>Slot / Position (optional)</Label><Input value={slot} onChange={e => setSlot(e.target.value)} placeholder="e.g. DIMM 1" /></div>
+        <Button type="button" onClick={add} disabled={!pick} data-testid="asset-create-comp-add"><Plus className="w-4 h-4 mr-1" />Add</Button>
+      </div>
+      {selected.length > 0 && (
+        <div className="border rounded overflow-hidden">
+          <Table><TableHeader><TableRow>
+            <TableHead>Type</TableHead><TableHead>Component</TableHead><TableHead>Details</TableHead><TableHead>Slot</TableHead><TableHead></TableHead>
+          </TableRow></TableHeader>
+            <TableBody>
+              {selected.map(c => (
+                <TableRow key={c.component_id} data-testid={`asset-create-comp-row-${c.component_id}`}>
+                  <TableCell>{c.type}</TableCell>
+                  <TableCell className="font-medium">{c.component_id}</TableCell>
+                  <TableCell className="text-sm">{[c.capacity, c.brand, c.model].filter(Boolean).join(' ') || '—'}</TableCell>
+                  <TableCell className="text-sm text-slate-500">{c.slot || '—'}</TableCell>
+                  <TableCell><Button type="button" size="icon" variant="ghost" onClick={() => remove(c.component_id)}><Trash2 className="w-4 h-4 text-red-500" /></Button></TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------- Pickers ----------
 function AssetPicker({ authHeaders, value, onSelect }) {
   const [q, setQ] = useState('');
@@ -296,6 +386,21 @@ function ComponentDetail({ authHeaders, componentId, onClose }) {
             <div className="space-y-1 text-sm">{d.maintenance.map(m => (
               <div key={m.id} className="border-b border-slate-100 py-1"><span className="font-medium">{m.issue || '—'}</span> <span className="text-slate-500 text-xs">· {m.status} · {m.reported_date} · {m.vendor || ''}</span></div>
             ))}</div>
+          </div>}
+          {d.assignments && d.assignments.length > 0 && <div>
+            <div className="text-xs font-semibold text-slate-500 uppercase mb-1">Employee Assignment History</div>
+            <div className="border rounded overflow-hidden" data-testid="comp-assignment-history">
+              <Table><TableHeader><TableRow><TableHead>Employee</TableHead><TableHead>Asset</TableHead><TableHead>From</TableHead><TableHead>To</TableHead><TableHead>Reason</TableHead></TableRow></TableHeader>
+                <TableBody>{d.assignments.map(a => (
+                  <TableRow key={a.id}>
+                    <TableCell className="text-sm font-medium">{a.employee_name || '—'}</TableCell>
+                    <TableCell className="text-sm">{a.asset_id || '—'}</TableCell>
+                    <TableCell className="text-xs text-slate-500">{a.from ? new Date(a.from).toLocaleDateString() : '—'}</TableCell>
+                    <TableCell className="text-xs text-slate-500">{a.to ? new Date(a.to).toLocaleDateString() : <Badge className="bg-emerald-100 text-emerald-700">Present</Badge>}</TableCell>
+                    <TableCell className="text-xs">{a.reason || '—'}</TableCell>
+                  </TableRow>
+                ))}</TableBody></Table>
+            </div>
           </div>}
           <div>
             <div className="text-xs font-semibold text-slate-500 uppercase mb-2 flex items-center gap-1"><History className="w-3.5 h-3.5" />Component Timeline</div>
@@ -564,6 +669,21 @@ export function AssetComponentsSection({ authHeaders, assetId }) {
         </div>
       </div>}
 
+      {d.assignment_history && d.assignment_history.length > 0 && <div>
+        <div className="text-xs font-semibold text-slate-500 uppercase mb-1">Asset Assignment History</div>
+        <div className="border rounded overflow-hidden" data-testid="asset-assignment-history">
+          <Table><TableHeader><TableRow><TableHead>Employee</TableHead><TableHead>From</TableHead><TableHead>To</TableHead><TableHead>Reason</TableHead></TableRow></TableHeader>
+            <TableBody>{d.assignment_history.map(a => (
+              <TableRow key={a.id}>
+                <TableCell className="text-sm font-medium">{a.employee_name || '—'}</TableCell>
+                <TableCell className="text-xs text-slate-500">{a.from ? new Date(a.from).toLocaleDateString() : '—'}</TableCell>
+                <TableCell className="text-xs text-slate-500">{a.to ? new Date(a.to).toLocaleDateString() : <Badge className="bg-emerald-100 text-emerald-700">Present</Badge>}</TableCell>
+                <TableCell className="text-xs">{a.reason || '—'}</TableCell>
+              </TableRow>
+            ))}</TableBody></Table>
+        </div>
+      </div>}
+
       {action && <ComponentActionDialog authHeaders={authHeaders} meta={meta} action={action}
         onClose={() => setAction(null)} onDone={() => { setAction(null); load(); }} />}
       {addOpen && <AssetAddComponentDialog authHeaders={authHeaders} assetId={assetId}
@@ -575,6 +695,8 @@ export function AssetComponentsSection({ authHeaders, assetId }) {
 
 // Add-to-asset flow needs component selection: wrap install with a component picker when adding from asset
 export function AssetAddComponentDialog({ authHeaders, assetId, onClose, onDone }) {
+  const meta = useCompMeta(authHeaders);
+  const [type, setType] = useState('');
   const [comp, setComp] = useState(null);
   const [slot, setSlot] = useState('');
   const [busy, setBusy] = useState(false);
@@ -590,13 +712,13 @@ export function AssetAddComponentDialog({ authHeaders, assetId, onClose, onDone 
       <DialogContent data-testid="asset-add-comp-dialog">
         <DialogHeader><DialogTitle>Add Component to {assetId}</DialogTitle></DialogHeader>
         <div className="space-y-3">
-          <div><Label>Component (from inventory) *</Label><ComponentPicker authHeaders={authHeaders} value={comp} onSelect={setComp} /></div>
+          <AvailableComponentSelector authHeaders={authHeaders} meta={meta} type={type} setType={setType} value={comp} onSelect={setComp} />
           <div><Label>Slot / Position</Label><Input value={slot} onChange={e => setSlot(e.target.value)} placeholder="e.g. DIMM 1" data-testid="asset-add-slot" /></div>
-          <p className="text-xs text-slate-500">Only components not currently installed elsewhere are listed. The component inherits this asset's employee assignment.</p>
+          <p className="text-xs text-slate-500">Select a type first — only components not installed elsewhere appear. The component inherits this asset's employee assignment.</p>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={busy} data-testid="asset-add-comp-confirm">{busy ? '…' : 'Install'}</Button>
+          <Button onClick={submit} disabled={busy || !comp} data-testid="asset-add-comp-confirm">{busy ? '…' : 'Install'}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

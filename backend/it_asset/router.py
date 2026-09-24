@@ -63,6 +63,10 @@ def register(api_router, deps: dict):
     get_ist_now = deps["get_ist_now"]
     ADMIN_ROLES = deps["ADMIN_ROLES"]
 
+    from .assignment_history import (
+        open_asset_assignment, close_asset_assignment, sync_components_on_asset_reassign,
+    )
+
     def _now():
         return datetime.now(timezone.utc).isoformat()
 
@@ -283,6 +287,9 @@ def register(api_router, deps: dict):
         await _history(asset_id, "Assigned", current_user,
                        f"Assigned to {snap['employee_name']} ({snap.get('emp_code') or snap['employee_id']})",
                        {"employee_id": snap["employee_id"]})
+        by_name = current_user.get("name") or current_user.get("username")
+        await open_asset_assignment(db, asset_id, snap, "Assigned", by_name)
+        await sync_components_on_asset_reassign(db, asset_id, snap, "Asset assigned", by_name)
         await log_audit(current_user["id"], "it_asset_assigned", "it_asset", asset_id)
         return {"success": True}
 
@@ -308,6 +315,9 @@ def register(api_router, deps: dict):
         if payload.get("remarks"):
             note += f". {payload['remarks']}"
         await _history(asset_id, "Returned", current_user, note, {"employee_id": prev.get("employee_id")})
+        by_name = current_user.get("name") or current_user.get("username")
+        await close_asset_assignment(db, asset_id, "Returned", by_name)
+        await sync_components_on_asset_reassign(db, asset_id, None, "Asset returned", by_name)
         await log_audit(current_user["id"], "it_asset_returned", "it_asset", asset_id)
         return {"success": True}
 
@@ -328,6 +338,10 @@ def register(api_router, deps: dict):
         frm = prev.get("employee_name") if prev else (asset.get("location") or "Stock")
         await _history(asset_id, "Transferred", current_user,
                        f"Transferred from {frm} → {snap['employee_name']}", {"employee_id": snap["employee_id"]})
+        by_name = current_user.get("name") or current_user.get("username")
+        await close_asset_assignment(db, asset_id, "Transferred", by_name)
+        await open_asset_assignment(db, asset_id, snap, "Transferred", by_name)
+        await sync_components_on_asset_reassign(db, asset_id, snap, "Asset transferred", by_name)
         await log_audit(current_user["id"], "it_asset_transferred", "it_asset", asset_id)
         return {"success": True}
 

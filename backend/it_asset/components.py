@@ -25,6 +25,13 @@ from typing import Optional, List
 from fastapi import Depends, HTTPException, UploadFile, File, Body
 from fastapi.responses import StreamingResponse
 
+from .assignment_history import (
+    open_asset_assignment, close_asset_assignment,
+    open_component_assignment, close_component_assignment,
+    sync_components_on_asset_reassign,
+    asset_assignment_history, component_assignment_history,
+)
+
 # Lifecycle states for a component
 C_STATUSES = ["Available", "Installed", "Reserved", "Under Repair",
               "Damaged", "Lost", "Scrapped", "Disposed"]
@@ -340,6 +347,46 @@ def register(api_router, deps: dict):
         return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
                                  headers={"Content-Disposition": f"attachment; filename=it_components_{report}.csv"})
 
+    # ================= AVAILABILITY (literal route — declared before /{component_id}) =================
+    async def _availability_counts(type_name: str = None) -> dict:
+        base = {"is_deleted": {"$ne": True}}
+        if type_name and type_name != "All":
+            base["type"] = type_name
+        total = await db.it_components.count_documents(base)
+        used = await db.it_components.count_documents({**base, "parent_asset_id": {"$ne": None}})
+        available = await db.it_components.count_documents({**base, "parent_asset_id": None, "status": "Available"})
+        under_repair = await db.it_components.count_documents({**base, "status": "Under Repair"})
+        damaged = await db.it_components.count_documents({**base, "status": "Damaged"})
+        disposed = await db.it_components.count_documents({**base, "status": {"$in": ["Disposed", "Scrapped", "Lost"]}})
+        return {"total": total, "used": used, "available": available,
+                "under_repair": under_repair, "damaged": damaged, "disposed": disposed}
+
+    @api_router.get("/it/components/availability")
+    async def comp_availability(
+        type: Optional[str] = None, search: Optional[str] = None,
+        exclude: Optional[str] = None, current_user: dict = Depends(get_current_user),
+    ):
+        """Real-time availability. `exclude` is a comma-separated list of component_ids
+        to hide (e.g. already picked in the current Create-Asset form)."""
+        await _require_admin(current_user)
+        await _ensure_types()
+        counts = await _availability_counts(type)
+        q = {"is_deleted": {"$ne": True}, "parent_asset_id": None, "status": "Available"}
+        if type and type != "All":
+            q["type"] = type
+        if search:
+            rx = {"$regex": re.escape(search.strip()), "$options": "i"}
+            q["$or"] = [{"component_id": rx}, {"serial_number": rx}, {"brand": rx},
+                        {"model": rx}, {"part_number": rx}, {"capacity": rx}]
+        ex = set((exclude or "").split(",")) if exclude else set()
+        items = []
+        async for c in db.it_components.find(q, {"_id": 0}).sort("component_id", 1).limit(100):
+            if c["component_id"] in ex:
+                continue
+            items.append(c)
+        return {"type": type, "counts": counts, "available_items": items,
+                "message": None if items else f"No {type or 'matching'} components are currently available."}
+
     # ================= DETAIL =================
     @api_router.get("/it/components/{component_id}")
     async def comp_detail(component_id: str, current_user: dict = Depends(get_current_user)):
@@ -350,7 +397,9 @@ def register(api_router, deps: dict):
         history = [_clean(h) async for h in db.it_component_history.find({"component_id": component_id}).sort("at", 1)]
         maint = [_clean(m) async for m in db.it_component_maintenance.find({"component_id": component_id}).sort("created_at", -1)]
         holder = await _holder_for(doc.get("parent_asset_id"))
-        return {"component": doc, "history": history, "maintenance": maint, "current_holder": holder}
+        assignments = await component_assignment_history(db, component_id)
+        return {"component": doc, "history": history, "maintenance": maint,
+                "current_holder": holder, "assignments": assignments}
 
     # ================= UPDATE =================
     @api_router.put("/it/components/{component_id}")
@@ -386,9 +435,10 @@ def register(api_router, deps: dict):
 
     # ================= INSTALL =================
     async def _do_install(component: dict, asset_id: str, user: dict, payload: dict):
+        cid = component["component_id"]
         if component.get("parent_asset_id"):
             raise HTTPException(status_code=400,
-                                detail=f"{component['component_id']} is already installed in {component['parent_asset_id']}. Remove it first.")
+                                detail=f"{cid} is already installed in {component['parent_asset_id']}. Remove it first.")
         if component.get("status") in C_BLOCKED_INSTALL:
             raise HTTPException(status_code=400,
                                 detail=f"Component status is '{component['status']}' and cannot be installed.")
@@ -402,16 +452,28 @@ def register(api_router, deps: dict):
                    "installed_by": installed_by, "status": "Installed", "updated_at": _now()}
         if payload.get("condition"):
             updates["condition"] = payload["condition"]
-        await db.it_components.update_one({"component_id": component["component_id"]}, {"$set": updates})
+        # Concurrency-safe: only install if STILL free (no parent, not blocked). Prevents
+        # two saves grabbing the same physical component.
+        res = await db.it_components.find_one_and_update(
+            {"component_id": cid, "is_deleted": {"$ne": True},
+             "parent_asset_id": None, "status": {"$nin": list(C_BLOCKED_INSTALL)}},
+            {"$set": updates})
+        if not res:
+            raise HTTPException(status_code=409,
+                                detail=f"{cid} is no longer available — it may have just been assigned to another asset.")
         holder = parent.get("assigned_to")
         note = f"Installed in {asset_id}" + (f" (slot {slot})" if slot else "")
         if holder:
             note += f" · holder {holder.get('employee_name')}"
         if payload.get("remarks"):
             note += f". {payload['remarks']}"
-        await _history(component["component_id"], "Installed", user, note, parent_asset_id=asset_id,
-                       extra={"slot": slot})
-        await log_audit(user["id"], "it_component_installed", "it_component", component["component_id"])
+        await _history(cid, "Installed", user, note, parent_asset_id=asset_id, extra={"slot": slot})
+        # Open a component-level employee assignment period if the asset is assigned
+        if holder and holder.get("employee_id"):
+            await open_component_assignment(db, cid, asset_id, holder,
+                                            payload.get("assign_reason") or "Installed in assigned asset",
+                                            user.get("name") or user.get("username"))
+        await log_audit(user["id"], "it_component_installed", "it_component", cid)
 
     @api_router.post("/it/components/{component_id}/install")
     async def comp_install(component_id: str, payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
@@ -442,6 +504,9 @@ def register(api_router, deps: dict):
         if payload.get("condition"):
             updates["condition"] = payload["condition"]
         await db.it_components.update_one({"component_id": component["component_id"]}, {"$set": updates})
+        # Close any open component-level employee assignment period
+        await close_component_assignment(db, component["component_id"], reason,
+                                         user.get("name") or user.get("username"))
         note = f"Removed from {asset_id} · reason {reason} → status {new_status}"
         if payload.get("remarks"):
             note += f". {payload['remarks']}"
@@ -599,9 +664,55 @@ def register(api_router, deps: dict):
         # Configuration history from install/remove events on this parent
         events = [_clean(h) async for h in db.it_component_history.find(
             {"parent_asset_id": asset_id, "action": {"$in": ["Installed", "Removed", "Replaced"]}}).sort("at", 1)]
+        assignments = await asset_assignment_history(db, asset_id)
         return {"asset_id": asset_id, "assigned_to": parent.get("assigned_to"),
                 "components": items, "current_configuration": _build_config(items),
-                "config_history": events}
+                "config_history": events, "assignment_history": assignments}
+
+    # ================= BULK INSTALL (used by Create/Edit-Asset component picker) =================
+    @api_router.post("/it/assets/{asset_id}/install-components")
+    async def asset_install_components(asset_id: str, payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
+        """Install a batch of components into an asset with transaction-style safety:
+        pre-validate all, install atomically one-by-one, and roll back everything
+        already installed if any single install fails."""
+        await _require_admin(current_user)
+        parent = await _parent_asset(asset_id)
+        if not parent:
+            raise HTTPException(status_code=404, detail="Asset not found.")
+        items = payload.get("items") or payload.get("components") or []
+        if not items:
+            return {"installed": 0}
+        # Pre-validate (fast fail) — no duplicates in request, all exist and free
+        seen = set()
+        for it in items:
+            cid = (it.get("component_id") or "").strip()
+            if not cid:
+                raise HTTPException(status_code=400, detail="A component_id is missing.")
+            if cid in seen:
+                raise HTTPException(status_code=400, detail=f"{cid} listed more than once.")
+            seen.add(cid)
+            c = await db.it_components.find_one({"component_id": cid, "is_deleted": {"$ne": True}})
+            if not c:
+                raise HTTPException(status_code=400, detail=f"Component {cid} not found.")
+            if c.get("parent_asset_id"):
+                raise HTTPException(status_code=400, detail=f"{cid} is already installed in {c['parent_asset_id']}.")
+            if c.get("status") in C_BLOCKED_INSTALL:
+                raise HTTPException(status_code=400, detail=f"{cid} status '{c['status']}' cannot be installed.")
+        installed = []
+        try:
+            for it in items:
+                cid = it["component_id"].strip()
+                comp = await db.it_components.find_one({"component_id": cid, "is_deleted": {"$ne": True}})
+                await _do_install(comp, asset_id, current_user, {"slot": it.get("slot")})
+                installed.append(cid)
+        except HTTPException:
+            # Roll back everything we installed in this batch
+            for cid in installed:
+                comp = await db.it_components.find_one({"component_id": cid, "is_deleted": {"$ne": True}})
+                if comp and comp.get("parent_asset_id") == asset_id:
+                    await _do_remove(comp, current_user, {"reason": "Rollback", "new_status": "Available", "remarks": "Batch install rolled back"})
+            raise
+        return {"installed": len(installed), "component_ids": installed}
 
     # ================= IMPORT =================
     @api_router.get("/it/components/import/template")
