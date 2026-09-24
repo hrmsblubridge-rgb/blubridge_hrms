@@ -1,5 +1,15 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-24 — IT Module: Edit Asset + Employee Assets tab + employee-search dropdown fix
+Additive; no existing feature changed (13/13 backend tests + all 3 frontend features verified).
+- **Edit Asset (Feature 1)**: Edit icon on each Assets row (`it-edit-{id}`) + "Edit Asset" in Asset Detail (`it-detail-edit`). `AssetForm` now supports edit mode (prefilled, Asset ID disabled, embeds live `AssetComponentsSection` for add/replace/remove) → `PUT /api/it/assets/{id}` (existing endpoint; dedups serial, writes "Updated" history + audit). Component edit/replace/remove already existed.
+- **Employee Assets tab (Feature 2)**: new tab `it-tab-employees`. Backend `GET /api/it/employee-assets` (active employees once + current asset count via aggregation on `it_assets.assigned_to.employee_id`; filters search/department/has_assets=with|without; paginated) and `GET /api/it/employee-assets/{employee_id}` (current assets). Frontend: accordion rows (one per employee, count badge), expand → assets list, click asset → existing Asset Detail. Counts are dynamic (assign↑/return↓/transfer moves). Empty state "No assets currently assigned."
+- **Employee search dropdown fix (Feature 3)**: `ActiveEmployeePicker` rewritten with open/close state — after selecting, it collapses to a chip (`it-active-emp-selected` + change/clear); the full list no longer stays visible; reopens only on explicit click; active-only; assignment stays optional.
+- Tests: `/app/backend/tests/test_it_edit_and_employee_assets.py` (13/13). Report `/app/test_reports/iteration_84.json`. DB cleaned (only pre-existing PH-0001 remains).
+- Pre-existing dataset note (NOT from this work): two employees share code EMP0108.
+- **Still pending** (big component brief): Phase 2 Accessories (per-asset-type defaults, trackable/non-trackable, SIM/Charger); Phase 3 component reports/exports.
+
+
 ## 🆕 2026-09-24 — IT Module: Assign-on-Create (active-only) + full HRMS-style UI/UX re-skin
 Additive; no existing feature changed (regression 20/20 backend, 100% frontend).
 - **Optional assign-on-create**: `POST /api/it/assets` now accepts `assign_employee_id`. New helper `_emp_snapshot_active` validates `employee_status=='Active'` (else 400 "Selected employee is no longer active."), then reuses the existing assign primitives (`open_asset_assignment` + `sync_components_on_asset_reassign`) so history & component inheritance match the "assign later" flow. Asset still creates fine with no employee (status In Stock / unassigned). Existing assign/transfer/return unchanged.
