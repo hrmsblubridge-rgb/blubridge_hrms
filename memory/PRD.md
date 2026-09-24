@@ -1,5 +1,13 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-24 — IT Module: Assign-on-Create (active-only) + full HRMS-style UI/UX re-skin
+Additive; no existing feature changed (regression 20/20 backend, 100% frontend).
+- **Optional assign-on-create**: `POST /api/it/assets` now accepts `assign_employee_id`. New helper `_emp_snapshot_active` validates `employee_status=='Active'` (else 400 "Selected employee is no longer active."), then reuses the existing assign primitives (`open_asset_assignment` + `sync_components_on_asset_reassign`) so history & component inheritance match the "assign later" flow. Asset still creates fine with no employee (status In Stock / unassigned). Existing assign/transfer/return unchanged.
+- **Frontend**: `ITManagement.js` fully re-skinned to the HRMS design system (`#063c88` primary, `#fffdf7` surfaces, Outfit headings, rounded-2xl cards, StatCards, styled tabs). New `ActiveEmployeePicker` (source `GET /api/employees?status=Active`) in the Add-Asset "Assignment (optional)" section. Assets tab: card toolbar, removable filter chips, page-size selector, loading spinner + rich empty state, hover rows, sectioned Create form, redesigned Asset-detail (header + quick-info cards + components/assignment + timeline). Components tab primary button restyled for consistency. Existing `EmployeePicker` (all employees) kept for assign/transfer to preserve behavior.
+- Tests: `/app/backend/tests/test_it_asset_assign_on_create.py` (10/10) + phase-1 (10/10). Report `/app/test_reports/iteration_83.json`. Fixed a11y: Asset-detail dialog always renders a DialogTitle. DB cleaned post-test (only pre-existing PH-0001 remains).
+- **Still pending** (from the big component brief): Phase 2 Accessories (configurable default accessories per asset type; trackable vs non-trackable; SIM/Charger) and Phase 3 component reports/exports.
+
+
 ## 🆕 2026-09-24 — IT Component ENHANCEMENT Phase 1 (availability + create-time picking + dual assignment history)
 Additive Phase 1 of the big component enhancement. No existing feature changed (regression 100% green).
 - **Live availability**: `GET /api/it/components/availability?type=&search=&exclude=` → `{counts:{total,used,available,under_repair,damaged,disposed}, available_items, message}`. Type-first, lists ONLY free components (status Available + no parent), "No X available" message. (literal route declared before `/it/components/{id}`)

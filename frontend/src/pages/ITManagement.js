@@ -519,7 +519,7 @@ function AssetDetail({ authHeaders, assetId, onClose }) {
   return (
     <Dialog open onOpenChange={onClose}>
       <DialogContent className={DIALOG} data-testid="it-asset-detail">
-        {!d ? <Spinner /> : <div className="space-y-5">
+        {!d ? <><DialogHeader><DialogTitle style={font}>{assetId}</DialogTitle></DialogHeader><Spinner /></> : <div className="space-y-5">
           <DialogHeader>
             <div className="flex items-start justify-between gap-3">
               <div>
