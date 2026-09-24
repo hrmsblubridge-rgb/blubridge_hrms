@@ -24,9 +24,10 @@ import {
   Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
 } from '../components/ui/tooltip';
 import {
-  ShieldAlert, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
+  ShieldCheck, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText, BookOpen,
-  UploadCloud, CheckCircle2, AlertCircle,
+  UploadCloud, CheckCircle2, AlertCircle, ChevronRight as CaretRight, RotateCcw, Search,
+  Users, CalendarDays, TrendingUp, LayoutGrid,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -34,6 +35,21 @@ const today = () => new Date().toISOString().split('T')[0];
 // Default the date range to the start of the current month so freshly uploaded
 // data is visible on load (a Today→Today default hid earlier-in-month uploads).
 const monthStart = () => `${today().slice(0, 8)}01`;
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// Format an ISO date (YYYY-MM-DD) to a compact display like 01-Sep-2026.
+const fmtDisplayDate = (iso) => {
+  if (!iso) return '—';
+  const [y, m, d] = String(iso).split('-');
+  if (!y || !m || !d) return iso;
+  return `${d}-${MONTHS[(+m) - 1] || m}-${y}`;
+};
+// Derive two-letter initials from a name (visual avatar only).
+const initialsOf = (name) => {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '–';
+  return ((parts[0][0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+};
 
 // Auto-calculate a break Total = (To − From). Overnight allowed (wraps midnight).
 // Mirrors the backend `compute_break_total`; the Total field is read-only in the UI.
@@ -145,6 +161,13 @@ const sortRows = (rows, sort) => {
     if (A.v > B.v) return 1 * mul;
     return 0;
   });
+};
+
+// A duration value counts as a "research entry" when it is present and non-zero.
+const hasResearch = (v) => {
+  if (!v) return false;
+  const s = String(v).trim();
+  return s !== '' && s !== '—' && s !== '00:00' && s !== '00:00:00' && s !== '0';
 };
 
 export default function OperationalVigilance() {
@@ -281,9 +304,30 @@ export default function OperationalVigilance() {
   const totalRows = sortedRows.length;
   const pagedRows = sortedRows.slice((page - 1) * rowsPerPage, page * rowsPerPage);
 
+  // Compact summary metrics — derived purely from already-loaded rows (no API calls).
+  const summary = useMemo(() => {
+    const rows = data.rows || [];
+    const emps = new Set(rows.map(r => r.target_employee_id));
+    let research = 0;
+    rows.forEach(r => {
+      const hit = isAdmin
+        ? (r.submissions || []).some(s => hasResearch(s.total_research_hours))
+        : hasResearch(r.total_research_hours);
+      if (hit) research += 1;
+    });
+    return { total: rows.length, employees: emps.size, research };
+  }, [data.rows, isAdmin]);
+
   const handleApplyFilter = () => {
     if (!validRange) { toast.error('Select a valid date range (To Date ≥ From Date).'); return; }
     loadEntries(filters);
+  };
+
+  // Reset clears the filter fields back to their defaults and reloads (client-side only).
+  const handleReset = () => {
+    const def = { fromDate: monthStart(), toDate: today(), employeeName: '', department: 'All', designation: 'All', team: 'All' };
+    setFilters(def);
+    loadEntries(def);
   };
 
   const blobDownload = async (url, params, fname) => {
@@ -476,38 +520,72 @@ export default function OperationalVigilance() {
   }
 
   return (
-    <div className="space-y-6" data-testid="vigilance-page">
-      {/* Header */}
-      <div className="flex items-start gap-3">
-        <div className="w-12 h-12 rounded-2xl bg-[#0b1f3b] flex items-center justify-center shrink-0">
-          <ShieldAlert className="w-6 h-6 text-white" />
+    <div className="space-y-5" data-testid="vigilance-page">
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-1.5 text-xs font-medium text-slate-400" data-testid="vig-breadcrumb" aria-label="Breadcrumb">
+        <span className="uppercase tracking-wide">Vigilance</span>
+        <CaretRight className="w-3.5 h-3.5 text-slate-300" />
+        <span className="text-slate-600">Operational Report</span>
+      </nav>
+
+      {/* Page header */}
+      <div className="flex items-start gap-4">
+        <div className="w-12 h-12 rounded-2xl bg-[#0b1f3b]/10 flex items-center justify-center shrink-0 ring-1 ring-[#0b1f3b]/10">
+          <ShieldCheck className="w-6 h-6 text-[#0b1f3b]" />
         </div>
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Operational Vigilance Report</h1>
-          <p className="text-sm text-slate-500">{isAdmin ? 'View, compare & export all vigilance submissions (merged by employee/day).' : 'Download the template, fill your observations, upload & manage your own entries.'}</p>
+        <div className="min-w-0">
+          <h1 className="text-[26px] sm:text-[28px] leading-tight font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Operational Vigilance Report</h1>
+          <p className="text-sm text-slate-500 mt-0.5">{isAdmin ? 'View, compare & export all vigilance submissions (merged by employee/day).' : 'Download the template, fill your observations, upload & manage your own entries.'}</p>
         </div>
       </div>
 
-      {/* Toolbar */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      {/* Filter card */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-sm space-y-5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Filters</span>
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={handleReset} className="inline-flex items-center gap-1.5 text-sm font-medium text-[#0b1f3b] hover:text-[#0b1f3b]/70 transition-colors" data-testid="vig-reset-btn">
+                  <RotateCcw className="w-4 h-4" /> Reset
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Reset all filters to defaults</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+
+        {/* Row 1 */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <Label className="text-sm text-slate-600 mb-1.5 block">Employee Name</Label>
-            <Input list="vig-emp-list" value={filters.employeeName} onChange={(e) => setFilters({ ...filters, employeeName: e.target.value })} placeholder="Search…" className="rounded-lg" data-testid="vig-filter-employee" />
-            <datalist id="vig-emp-list">
-              {meta.employees.map(e => <option key={e.id} value={e.name} />)}
-            </datalist>
+            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">Employee Name</Label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <Input list="vig-emp-list" value={filters.employeeName} onChange={(e) => setFilters({ ...filters, employeeName: e.target.value })} placeholder="Search employee…" className="rounded-lg pl-9 pr-8" data-testid="vig-filter-employee" />
+              {filters.employeeName && (
+                <button onClick={() => setFilters({ ...filters, employeeName: '' })} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" aria-label="Clear employee" data-testid="vig-filter-employee-clear">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+              <datalist id="vig-emp-list">
+                {meta.employees.map(e => <option key={e.id} value={e.name} />)}
+              </datalist>
+            </div>
           </div>
           <div>
-            <Label className="text-sm text-slate-600 mb-1.5 block">From Date</Label>
+            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">From Date</Label>
             <DatePicker value={filters.fromDate} onChange={(v) => setFilters({ ...filters, fromDate: v })} className="rounded-lg" data-testid="vig-filter-from" />
           </div>
           <div>
-            <Label className="text-sm text-slate-600 mb-1.5 block">To Date</Label>
+            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">To Date</Label>
             <DatePicker value={filters.toDate} onChange={(v) => setFilters({ ...filters, toDate: v })} className="rounded-lg" data-testid="vig-filter-to" />
           </div>
+        </div>
+
+        {/* Row 2 */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <Label className="text-sm text-slate-600 mb-1.5 block">Department</Label>
+            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">Department</Label>
             <Select value={filters.department} onValueChange={(v) => setFilters({ ...filters, department: v })}>
               <SelectTrigger className="rounded-lg" data-testid="vig-filter-department"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -517,7 +595,7 @@ export default function OperationalVigilance() {
             </Select>
           </div>
           <div>
-            <Label className="text-sm text-slate-600 mb-1.5 block">Designation</Label>
+            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">Designation</Label>
             <Select value={filters.designation} onValueChange={(v) => setFilters({ ...filters, designation: v })}>
               <SelectTrigger className="rounded-lg" data-testid="vig-filter-designation"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -527,7 +605,7 @@ export default function OperationalVigilance() {
             </Select>
           </div>
           <div>
-            <Label className="text-sm text-slate-600 mb-1.5 block">Team</Label>
+            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">Team</Label>
             <Select value={filters.team} onValueChange={(v) => setFilters({ ...filters, team: v })}>
               <SelectTrigger className="rounded-lg" data-testid="vig-filter-team"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -538,8 +616,9 @@ export default function OperationalVigilance() {
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <Button onClick={handleApplyFilter} className="rounded-lg bg-[#0b1f3b] hover:bg-[#0b1f3b]/90" data-testid="vig-filter-btn">
+        {/* Action toolbar */}
+        <div className="flex flex-wrap items-center gap-2 pt-4 border-t border-slate-100">
+          <Button onClick={handleApplyFilter} className="rounded-lg bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 shadow-sm" data-testid="vig-filter-btn">
             <Filter className="w-4 h-4 mr-2" /> Filter
           </Button>
           <Button onClick={handleDownloadTemplate} disabled={!validRange || downloading} variant="outline" className="rounded-lg" data-testid="vig-download-template-btn">
@@ -548,7 +627,7 @@ export default function OperationalVigilance() {
           <label className="inline-flex">
             <input type="file" accept=".xlsx" className="hidden" data-testid="vig-upload-input"
               onChange={(e) => { handleUpload(e.target.files[0]); e.target.value = ''; }} />
-            <span className={`inline-flex items-center px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium cursor-pointer hover:bg-slate-50 ${uploading ? 'opacity-60 pointer-events-none' : ''}`} data-testid="vig-upload-btn">
+            <span className={`inline-flex items-center px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium cursor-pointer hover:bg-slate-50 transition-colors ${uploading ? 'opacity-60 pointer-events-none' : ''}`} data-testid="vig-upload-btn">
               {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />} Upload Filled Sheet
             </span>
           </label>
@@ -594,6 +673,9 @@ export default function OperationalVigilance() {
         </div>
       </div>
 
+      {/* Summary */}
+      <SummaryCards summary={summary} fromDate={filters.fromDate} toDate={filters.toDate} />
+
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         {/* Premium synchronized TOP horizontal scrollbar */}
@@ -638,6 +720,40 @@ export default function OperationalVigilance() {
   );
 }
 
+// ===================== Avatar (visual initials only) =====================
+function Avatar({ name }) {
+  return (
+    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[11px] font-semibold text-[#0b1f3b]" aria-hidden="true">
+      {initialsOf(name)}
+    </div>
+  );
+}
+
+// ===================== Summary cards =====================
+function SummaryCards({ summary, fromDate, toDate }) {
+  const cells = [
+    { icon: LayoutGrid, label: 'Total Records', value: String(summary.total), testid: 'vig-summary-total' },
+    { icon: Users, label: 'Employees', value: String(summary.employees), testid: 'vig-summary-employees' },
+    { icon: CalendarDays, label: 'Date Range', value: `${fmtDisplayDate(fromDate)} → ${fmtDisplayDate(toDate)}`, testid: 'vig-summary-range', small: true },
+    { icon: TrendingUp, label: 'Research Entries', value: String(summary.research), testid: 'vig-summary-research' },
+  ];
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" data-testid="vig-summary">
+      {cells.map(({ icon: Icon, label, value, testid, small }) => (
+        <div key={label} className="bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-4 flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#0b1f3b]/[0.06] text-[#0b1f3b] shrink-0">
+            <Icon className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">{label}</div>
+            <div className={`font-bold text-slate-900 tabular-nums truncate ${small ? 'text-sm' : 'text-2xl leading-tight'}`} data-testid={testid} title={value}>{value}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ===================== Sortable header cell =====================
 function SortHeader({ label, sortKey, sort, onSort, className, align = 'left', rowSpan, colSpan }) {
   const active = sort.key === sortKey;
@@ -646,43 +762,80 @@ function SortHeader({ label, sortKey, sort, onSort, className, align = 'left', r
     <th rowSpan={rowSpan} colSpan={colSpan} className={`${className} cursor-pointer select-none`} onClick={() => onSort(sortKey)} data-testid={`vig-sort-${sortKey}`} title="Click to sort">
       <div className={`flex items-center gap-1 ${align === 'center' ? 'justify-center' : ''}`}>
         <span>{label}</span>
-        <Icon className={`w-3 h-3 shrink-0 ${active ? 'text-slate-700' : 'text-slate-300'}`} />
+        <Icon className={`w-3 h-3 shrink-0 ${active ? 'text-[#0b1f3b]' : 'text-slate-300'}`} />
       </div>
     </th>
   );
 }
 
-// ===================== Vigilance own-view table =====================
+// Row-action icon buttons (View / Edit / Delete) with tooltips.
+function RowActions({ row, submission, onView, onEdit, onDelete, canView = true, viewTestId = 'vig-view-btn', editTestId = 'vig-edit-btn', deleteTestId = 'vig-delete-btn', editTitle }) {
+  const btn = 'inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent transition-colors';
+  return (
+    <TooltipProvider delayDuration={150}>
+      <div className="flex items-center justify-center gap-1">
+        {canView && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button className={`${btn} text-slate-500 hover:bg-slate-100 hover:text-slate-800`} onClick={() => onView(submission, row)} data-testid={viewTestId} aria-label="View"><Eye className="w-4 h-4" /></button>
+            </TooltipTrigger>
+            <TooltipContent>View</TooltipContent>
+          </Tooltip>
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button className={`${btn} text-[#0b1f3b] hover:bg-[#0b1f3b]/10`} onClick={() => onEdit(submission, row)} data-testid={editTestId} aria-label={editTitle || 'Edit'}><Pencil className="w-4 h-4" /></button>
+          </TooltipTrigger>
+          <TooltipContent>{editTitle || 'Edit'}</TooltipContent>
+        </Tooltip>
+        {canView && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button className={`${btn} text-red-500 hover:bg-red-50 hover:text-red-600`} onClick={() => onDelete(submission.id)} data-testid={deleteTestId} aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+            </TooltipTrigger>
+            <TooltipContent>Delete</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+    </TooltipProvider>
+  );
+}
+
+// ===================== Vigilance own-view table (grouped headers) =====================
 function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete }) {
   const labels = data.break_labels || [];
-  const colCount = 11 + labels.length * 3 + 1;
-  const scalars = [['Email-id', 'email'], ['Team', 'team'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours'], ['System Login', 'system_login'], ['System Logout', 'system_logout'], ['Research Hrs', 'total_research_hours'], ['Break Hrs', 'total_break_hours']];
+  const colCount = 12 + labels.length * 3;
+  const bandTh = 'vig-sticky-h1 top-0 z-30 bg-[#eef2f9] px-3 py-2.5 text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-slate-200';
+  const labelTh = 'vig-sticky-h2 z-20 bg-slate-50 px-3 py-2.5 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap border-b border-slate-200';
+  const td = 'px-3 py-3 text-[13px] text-slate-600 whitespace-nowrap';
+  const empScalars = [['Email-id', 'email'], ['Team', 'team']];
+  const attScalars = [['Date', 'date'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
+  const vigScalars = [['Sys In', 'system_login'], ['Sys Out', 'system_logout'], ['Research', 'total_research_hours'], ['Break Hrs', 'total_break_hours']];
+
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-own-table">
       <thead>
-        <tr className="bg-slate-100 text-slate-600">
-          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[180px]" />
-          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} className="vig-sticky-h1 left-[180px] z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[120px]" />
-          {scalars.map(([h, k]) => (
-            <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className="vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left font-semibold whitespace-nowrap" />
-          ))}
+        {/* Group band row */}
+        <tr>
+          <th colSpan={3} className={`${bandTh} text-left`}>Employee</th>
+          <th colSpan={4} className={`${bandTh} text-left border-l border-slate-200`}>Attendance</th>
+          <th colSpan={4} className={`${bandTh} text-left border-l border-slate-200`}>Vigilance / Research</th>
           {labels.map(l => (
-            <th key={l} colSpan={3} className="vig-sticky-h1 z-30 px-3 py-2 text-center font-semibold border-l border-slate-200 whitespace-nowrap bg-emerald-50">{l}</th>
+            <th key={l} colSpan={3} className={`${bandTh} text-center border-l border-slate-200 bg-emerald-50/70 text-emerald-800`}>{l}</th>
           ))}
-          <th className="vig-sticky-h1 right-0 z-40 bg-slate-100 px-3 py-3 text-center font-semibold min-w-[130px]">Actions</th>
+          <th rowSpan={2} className="vig-sticky-h1 top-0 z-40 bg-[#eef2f9] px-3 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-l border-slate-200 min-w-[130px]">Actions</th>
         </tr>
-        {labels.length > 0 && (
-        <tr className="bg-slate-50 text-[11px] text-slate-500">
-          <th className="vig-sticky-h2 left-0 z-40 bg-slate-50" />
-          <th className="vig-sticky-h2 left-[180px] z-40 bg-slate-50" />
-          {scalars.map(([, k]) => <th key={k} className="vig-sticky-h2 z-30 bg-slate-50" />)}
+        {/* Column label row */}
+        <tr>
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} className={`${labelTh} min-w-[200px]`} />
+          {empScalars.map(([h, k]) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={labelTh} />)}
+          {attScalars.map(([h, k], i) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={`${labelTh} ${i === 0 ? 'border-l border-slate-200' : ''}`} />)}
+          {vigScalars.map(([h, k], i) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={`${labelTh} ${i === 0 ? 'border-l border-slate-200' : ''}`} />)}
           {labels.map(l => ['From', 'To', 'Total'].map((s, i) => (
             <SortHeader key={l + s} label={s} sortKey={`break:${l}:${s.toLowerCase()}`} sort={sort} onSort={onSort} align="center"
-              className={`vig-sticky-h2 z-30 bg-slate-50 px-2 py-1.5 text-center ${i === 0 ? 'border-l border-slate-200' : ''}`} />
+              className={`vig-sticky-h2 z-20 bg-slate-50 px-2 py-2.5 text-center text-[12px] font-semibold text-slate-600 border-b border-slate-200 ${i === 0 ? 'border-l border-slate-200' : ''}`} />
           )))}
-          <th className="vig-sticky-h2 right-0 z-40 bg-slate-50" />
         </tr>
-        )}
       </thead>
       <tbody>
         {loading ? (
@@ -692,34 +845,35 @@ function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, 
         ) : rows.map(row => {
           const bmap = Object.fromEntries((row.breaks || []).map(b => [b.label, b]));
           return (
-            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-own-row">
-              <td className="sticky left-0 bg-white z-20 px-3 py-2.5 font-medium text-slate-800 min-w-[180px]">{row.target_employee_name}</td>
-              <td className="sticky left-[180px] bg-white z-20 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_email || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.total_hours || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.system_login || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.system_logout || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.total_research_hours || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-700 whitespace-nowrap">{row.total_break_hours || '—'}</td>
+            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-own-row">
+              <td className="px-3 py-2.5 min-w-[200px]">
+                <div className="flex items-center gap-2.5">
+                  <Avatar name={row.target_employee_name} />
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
+                    {row.target_email && <div className="text-[11px] text-slate-400 truncate">{row.target_email}</div>}
+                  </div>
+                </div>
+              </td>
+              <td className={`${td} text-slate-400`}>{row.target_email || '—'}</td>
+              <td className={td}>{row.target_team || '—'}</td>
+              <td className={`${td} border-l border-slate-100`}>{row.date_display}</td>
+              <td className={td}>{row.punch_in || '—'}</td>
+              <td className={td}>{row.punch_out || '—'}</td>
+              <td className="px-3 py-3 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{row.total_hours || '—'}</td>
+              <td className={`px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap border-l border-slate-100`}>{row.system_login || '—'}</td>
+              <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap">{row.system_logout || '—'}</td>
+              <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap">{row.total_research_hours || '—'}</td>
+              <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap">{row.total_break_hours || '—'}</td>
               {labels.map(l => {
                 const b = bmap[l] || {};
                 return ['from', 'to', 'total'].map((k, i) => (
-                  <td key={l + k} className={`px-2 py-2.5 text-center text-slate-600 whitespace-nowrap ${i === 0 ? 'border-l border-slate-100' : ''}`}>{b[k] || '—'}</td>
+                  <td key={l + k} className={`px-2 py-3 text-center text-[13px] text-slate-600 whitespace-nowrap ${i === 0 ? 'border-l border-slate-100' : ''}`}>{b[k] || '—'}</td>
                 ));
               })}
-              <td className="sticky right-0 bg-white z-20 px-3 py-2.5 border-l border-slate-100">
-                <div className="flex items-center justify-center gap-1">
-                  {row.id && (
-                    <Button size="icon" variant="ghost" className="h-8 w-8 text-slate-500 hover:text-slate-800" onClick={() => onView(row, row)} data-testid="vig-view-btn" title="View"><Eye className="w-4 h-4" /></Button>
-                  )}
-                  <Button size="icon" variant="ghost" className="h-8 w-8 text-blue-600" onClick={() => onEdit({ ...row }, row)} data-testid="vig-edit-btn" title={row.id ? 'Edit' : 'Add observation'}><Pencil className="w-4 h-4" /></Button>
-                  {row.id && (
-                    <Button size="icon" variant="ghost" className="h-8 w-8 text-red-600" onClick={() => onDelete(row.id)} data-testid="vig-delete-btn" title="Delete"><Trash2 className="w-4 h-4" /></Button>
-                  )}
-                </div>
+              <td className="px-3 py-2.5 border-l border-slate-100">
+                <RowActions row={row} submission={row} onView={onView} onEdit={onEdit} onDelete={onDelete}
+                  canView={!!row.id} editTitle={row.id ? 'Edit' : 'Add observation'} />
               </td>
             </tr>
           );
@@ -735,23 +889,23 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
   const uploaders = data.uploaders || [];
   const perUploaderCols = 4 + labels.length * 3; // sys login/out, research, break + breaks
   const colCount = 7 + Math.max(uploaders.length, 0) * perUploaderCols + 1;
-  const baseTh = 'vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left font-semibold whitespace-nowrap';
+  const baseTh = 'vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap';
   const baseScalars = [['Email-id', 'email'], ['Team', 'team'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-admin-table">
       <thead>
         <tr className="bg-slate-100 text-slate-600">
-          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[170px]" />
-          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-[170px] z-40 bg-slate-100 px-3 py-3 text-left font-semibold min-w-[115px]" />
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold min-w-[210px]" />
+          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-[210px] z-40 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold min-w-[115px]" />
           {baseScalars.map(([h, k]) => (
             <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} rowSpan={2} className={baseTh} />
           ))}
           {uploaders.map((u, idx) => (
-            <th key={u.employee_id} colSpan={perUploaderCols} className={`vig-sticky-h1 z-30 px-3 py-2 text-center font-semibold border-l-2 border-slate-300 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50' : 'bg-amber-50'}`}>
+            <th key={u.employee_id} colSpan={perUploaderCols} className={`vig-sticky-h1 z-30 px-3 py-2 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-l-2 border-slate-300 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50' : 'bg-[#eef2f9]'}`}>
               {u.name}
             </th>
           ))}
-          <th rowSpan={2} className="vig-sticky-h1 right-0 z-40 bg-slate-100 px-3 py-3 text-center font-semibold min-w-[150px]">Actions</th>
+          <th rowSpan={2} className="vig-sticky-h1 right-0 z-40 bg-slate-100 px-3 py-3 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] min-w-[150px]">Actions</th>
         </tr>
         <tr className="bg-slate-50 text-[11px] text-slate-500">
           {uploaders.map((u) => (
@@ -767,14 +921,22 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
         ) : rows.map(row => {
           const subByUp = Object.fromEntries((row.submissions || []).map(s => [s.uploaded_by_employee_id, s]));
           return (
-            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/50" data-testid="vig-admin-row">
-              <td className="sticky left-0 bg-white z-20 px-3 py-2.5 font-medium text-slate-800 min-w-[170px]">{row.target_employee_name}</td>
-              <td className="sticky left-[170px] bg-white z-20 px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.date_display}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_email || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
-              <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{row.total_hours || '—'}</td>
+            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-admin-row">
+              <td className="sticky left-0 bg-white z-20 px-3 py-2.5 min-w-[210px]">
+                <div className="flex items-center gap-2.5">
+                  <Avatar name={row.target_employee_name} />
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
+                    {row.target_email && <div className="text-[11px] text-slate-400 truncate">{row.target_email}</div>}
+                  </div>
+                </div>
+              </td>
+              <td className="sticky left-[210px] bg-white z-20 px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-400 whitespace-nowrap">{row.target_email || '—'}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
+              <td className="px-3 py-2.5 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{row.total_hours || '—'}</td>
               {uploaders.map((u) => {
                 const s = subByUp[u.employee_id];
                 const bmap = s ? Object.fromEntries((s.breaks || []).map(b => [b.label, b])) : {};
@@ -786,16 +948,33 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
                 {(row.submissions || []).length === 0 ? (
                   <span className="block text-center text-slate-300">—</span>
                 ) : (
-                  <div className="flex flex-col gap-1.5">
-                    {(row.submissions || []).map(s => (
-                      <div key={s.id} className="flex items-center justify-end gap-1.5">
-                        <span className="text-[10px] text-slate-400 mr-0.5 truncate max-w-[64px]" title={s.uploaded_by_name}>{s.uploaded_by_name}</span>
-                        <button onClick={() => onView(s, row)} className="text-slate-400 hover:text-slate-800" title="View" data-testid="vig-admin-view-btn"><Eye className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => onEdit(s, row)} className="text-slate-400 hover:text-blue-600" title="Edit" data-testid="vig-admin-edit-btn"><Pencil className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => onDelete(s.id)} className="text-slate-400 hover:text-red-600" title="Delete" data-testid="vig-admin-delete-btn"><Trash2 className="w-3.5 h-3.5" /></button>
-                      </div>
-                    ))}
-                  </div>
+                  <TooltipProvider delayDuration={150}>
+                    <div className="flex flex-col gap-1.5">
+                      {(row.submissions || []).map(s => (
+                        <div key={s.id} className="flex items-center justify-end gap-1">
+                          <span className="text-[10px] text-slate-400 mr-0.5 truncate max-w-[64px]" title={s.uploaded_by_name}>{s.uploaded_by_name}</span>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button onClick={() => onView(s, row)} className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-800 transition-colors" data-testid="vig-admin-view-btn" aria-label="View"><Eye className="w-3.5 h-3.5" /></button>
+                            </TooltipTrigger>
+                            <TooltipContent>View</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button onClick={() => onEdit(s, row)} className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[#0b1f3b] hover:bg-[#0b1f3b]/10 transition-colors" data-testid="vig-admin-edit-btn" aria-label="Edit"><Pencil className="w-3.5 h-3.5" /></button>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit</TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button onClick={() => onDelete(s.id)} className="inline-flex h-7 w-7 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-600 transition-colors" data-testid="vig-admin-delete-btn" aria-label="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
+                            </TooltipTrigger>
+                            <TooltipContent>Delete</TooltipContent>
+                          </Tooltip>
+                        </div>
+                      ))}
+                    </div>
+                  </TooltipProvider>
                 )}
               </td>
             </tr>
@@ -822,7 +1001,7 @@ function FragmentCols({ labels, firstClass, ukey, sort, onSort }) {
 }
 
 function FragmentData({ s, bmap, labels, firstClass, ukey }) {
-  const cell = (v, extra = '') => <td className={`px-2 py-2.5 text-center text-slate-700 whitespace-nowrap ${extra}`}>{v || '—'}</td>;
+  const cell = (v, extra = '') => <td className={`px-2 py-2.5 text-center text-[13px] text-slate-700 whitespace-nowrap ${extra}`}>{v || '—'}</td>;
   if (!s) {
     return (
       <>
@@ -839,7 +1018,7 @@ function FragmentData({ s, bmap, labels, firstClass, ukey }) {
       {labels.map(l => {
         const b = bmap[l] || {};
         return ['from', 'to', 'total'].map(k => (
-          <td key={`${ukey}-${l}-${k}`} className="px-2 py-2.5 text-center text-slate-700 whitespace-nowrap">{b[k] || '—'}</td>
+          <td key={`${ukey}-${l}-${k}`} className="px-2 py-2.5 text-center text-[13px] text-slate-700 whitespace-nowrap">{b[k] || '—'}</td>
         ));
       })}
     </>
@@ -858,35 +1037,41 @@ function PaginationBar({ page, setPage, rowsPerPage, setRowsPerPage, total }) {
   for (let p = Math.max(1, current - win); p <= Math.min(totalPages, current + win); p++) pageNumbers.push(p);
 
   return (
-    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 bg-slate-50/50" data-testid="vig-pagination">
-      <div className="flex items-center gap-2 text-sm text-slate-600">
-        <span>Rows per page</span>
-        <Select value={String(rowsPerPage)} onValueChange={(v) => setRowsPerPage(Number(v))}>
-          <SelectTrigger className="h-8 w-[78px] rounded-lg" data-testid="vig-rows-per-page"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            {[10, 25, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
-          </SelectContent>
-        </Select>
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3.5 border-t border-slate-100 bg-slate-50/60" data-testid="vig-pagination">
+      <div className="text-[13px] text-slate-500" data-testid="vig-record-count">
+        Showing <span className="font-semibold text-slate-700">{start.toLocaleString()}</span> to <span className="font-semibold text-slate-700">{end.toLocaleString()}</span> of <span className="font-semibold text-slate-700">{total.toLocaleString()}</span> records
       </div>
-      <div className="text-sm text-slate-500" data-testid="vig-record-count">
-        Showing <span className="font-medium text-slate-700">{start.toLocaleString()}–{end.toLocaleString()}</span> of <span className="font-medium text-slate-700">{total.toLocaleString()}</span> records
-      </div>
-      <div className="flex items-center gap-1">
-        <Button variant="outline" size="icon" className="h-8 w-8 rounded-lg" disabled={current <= 1} onClick={() => setPage(current - 1)} data-testid="vig-prev-page"><ChevronLeft className="w-4 h-4" /></Button>
-        {pageNumbers[0] > 1 && <span className="px-1 text-slate-400">…</span>}
-        {pageNumbers.map(p => (
-          <Button key={p} variant={p === current ? 'default' : 'outline'} size="icon"
-            className={`h-8 w-8 rounded-lg ${p === current ? 'bg-[#0b1f3b] hover:bg-[#0b1f3b]/90' : ''}`}
-            onClick={() => setPage(p)} data-testid={`vig-page-${p}`}>{p}</Button>
-        ))}
-        {pageNumbers[pageNumbers.length - 1] < totalPages && <span className="px-1 text-slate-400">…</span>}
-        <Button variant="outline" size="icon" className="h-8 w-8 rounded-lg" disabled={current >= totalPages} onClick={() => setPage(current + 1)} data-testid="vig-next-page"><ChevronRight className="w-4 h-4" /></Button>
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1">
+          <Button variant="outline" size="sm" className="h-8 px-3 rounded-lg text-[13px]" disabled={current <= 1} onClick={() => setPage(current - 1)} data-testid="vig-prev-page">
+            <ChevronLeft className="w-4 h-4 mr-1" /> Previous
+          </Button>
+          {pageNumbers[0] > 1 && <span className="px-1 text-slate-400">…</span>}
+          {pageNumbers.map(p => (
+            <Button key={p} variant={p === current ? 'default' : 'outline'} size="icon"
+              className={`h-8 w-8 rounded-lg text-[13px] ${p === current ? 'bg-[#0b1f3b] hover:bg-[#0b1f3b]/90' : ''}`}
+              onClick={() => setPage(p)} data-testid={`vig-page-${p}`}>{p}</Button>
+          ))}
+          {pageNumbers[pageNumbers.length - 1] < totalPages && <span className="px-1 text-slate-400">…</span>}
+          <Button variant="outline" size="sm" className="h-8 px-3 rounded-lg text-[13px]" disabled={current >= totalPages} onClick={() => setPage(current + 1)} data-testid="vig-next-page">
+            Next <ChevronRight className="w-4 h-4 ml-1" />
+          </Button>
+        </div>
+        <div className="flex items-center gap-2 text-[13px] text-slate-500 border-l border-slate-200 pl-3">
+          <span className="hidden sm:inline">Rows</span>
+          <Select value={String(rowsPerPage)} onValueChange={(v) => setRowsPerPage(Number(v))}>
+            <SelectTrigger className="h-8 w-[72px] rounded-lg" data-testid="vig-rows-per-page"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {[10, 25, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
     </div>
   );
 }
 
-// ===================== Add / Edit / View dialog =====================
+// ===================== Upload progress overlay =====================
 function UploadProgressOverlay({ upload, onClose }) {
   const { phase, percent = 0, status, result, message, errors } = upload;
   const inProgress = phase === 'uploading' || phase === 'processing';
@@ -976,6 +1161,7 @@ function UploadProgressOverlay({ upload, onClose }) {
   );
 }
 
+// ===================== Add / Edit / View dialog =====================
 function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
   if (!draft) return null;
   const ro = !!draft.readOnly;
