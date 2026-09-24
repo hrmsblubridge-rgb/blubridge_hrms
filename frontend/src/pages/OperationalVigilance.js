@@ -327,6 +327,9 @@ export default function OperationalVigilance() {
   const handleReset = () => {
     const def = { fromDate: monthStart(), toDate: today(), employeeName: '', department: 'All', designation: 'All', team: 'All' };
     setFilters(def);
+    setRowsPerPage(25);
+    setSort({ key: null, dir: null });
+    setPage(1);
     loadEntries(def);
   };
 
