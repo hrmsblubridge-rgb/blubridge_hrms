@@ -1,5 +1,16 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-24 — IT Component ENHANCEMENT Phase 1 (availability + create-time picking + dual assignment history)
+Additive Phase 1 of the big component enhancement. No existing feature changed (regression 100% green).
+- **Live availability**: `GET /api/it/components/availability?type=&search=&exclude=` → `{counts:{total,used,available,under_repair,damaged,disposed}, available_items, message}`. Type-first, lists ONLY free components (status Available + no parent), "No X available" message. (literal route declared before `/it/components/{id}`)
+- **Create-time component picking**: Add-Asset form has a Components section (`AssetCreateComponents`); on save it calls `POST /api/it/assets/{asset_id}/install-components` (batch, pre-validate + **rollback** if any fails). No in-form duplicates.
+- **Concurrency-safe install**: `_do_install` now uses `find_one_and_update` guarded by `parent_asset_id null` + status-not-blocked → a component can never be in two assets (409 on race).
+- **Dual assignment history** (`it_asset/assignment_history.py`, collections `it_asset_assignments` + `it_component_assignments`): asset-level and component-level employee periods (from→to). Reassigning a parent asset (`assign`/`transfer`/`return` in router.py, additively hooked) mirrors the employee change onto every installed component's history **WITHOUT** any physical remove/install event; physically moving a component still records remove+install. Return closes periods but keeps components installed.
+- UI: assignment-history tables in Component detail (`comp-assignment-history`) and Asset detail (`asset-assignment-history`); Add-Component dialog is now type-first with live counts.
+- Tests: `/app/backend/tests/test_it_components_phase1.py` (10/10). Report `/app/test_reports/iteration_82.json`. DB cleaned post-test.
+- **Pending Phase 2** = Accessories (configurable default accessories per Asset Type: required/optional, trackable vs non-trackable, SIM/Charger). **Phase 3** = 12–15 new reports + exports.
+
+
 ## 🆕 2026-09-23 — IT Asset COMPONENT / SUB-ASSET Management (additive, complete)
 New feature inside the existing IT Management module: Parent Asset → Component → Component
 History. Components (CPU/RAM/SSD/GPU/PSU/Motherboard/…) tracked with their own lifecycle;
