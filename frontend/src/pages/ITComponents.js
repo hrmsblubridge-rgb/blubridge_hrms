@@ -550,10 +550,10 @@ export function ComponentsTab({ authHeaders, onChange }) {
         </Select>
         <Button variant="outline" onClick={exportCsv} data-testid="comp-export-btn"><Download className="w-4 h-4 mr-1" />Export</Button>
         <Button variant="outline" onClick={() => setShowImport(true)} data-testid="comp-import-btn"><Upload className="w-4 h-4 mr-1" />Import</Button>
-        <Button onClick={() => setForm({})} data-testid="comp-add-btn"><Plus className="w-4 h-4 mr-1" />Add Component</Button>
+        <Button onClick={() => setForm({})} data-testid="comp-add-btn" className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-sm shadow-[#063c88]/20"><Plus className="w-4 h-4 mr-1" />Add Component</Button>
       </div>
 
-      <div className="border rounded-lg overflow-hidden">
+      <div className="border border-slate-200/70 rounded-2xl overflow-hidden bg-[#fffdf7] shadow-sm">
         <Table>
           <TableHeader><TableRow>
             <TableHead>Component ID</TableHead><TableHead>Type</TableHead><TableHead>Details</TableHead>

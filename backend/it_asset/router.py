@@ -127,6 +127,18 @@ def register(api_router, deps: dict):
                 "emp_code": emp.get("emp_id"), "department": emp.get("department"),
                 "designation": emp.get("designation"), "location": emp.get("location") or emp.get("team")}
 
+    async def _emp_snapshot_active(employee_id: str) -> dict:
+        """Snapshot that additionally requires the employee to be currently Active.
+        Used by the optional assign-on-create shortcut."""
+        emp = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}},
+                                          {"_id": 0, "id": 1, "employee_status": 1})
+        if not emp:
+            raise HTTPException(status_code=400, detail="Selected employee was not found in the HRMS Employee Master.")
+        if (emp.get("employee_status") or "Active") != "Active":
+            raise HTTPException(status_code=400,
+                                detail="Selected employee is no longer active. Please select another employee.")
+        return await _emp_snapshot(employee_id)
+
     # ---------------- META / CATEGORIES ----------------
     @api_router.get("/it/meta")
     async def it_meta(current_user: dict = Depends(get_current_user)):
@@ -225,6 +237,24 @@ def register(api_router, deps: dict):
         await db.it_assets.insert_one(doc)
         await _history(asset_id, "Created", current_user, f"Asset created with status {status}")
         await log_audit(current_user["id"], "it_asset_created", "it_asset", asset_id)
+
+        # OPTIONAL assign-on-create shortcut — reuses the same assignment logic/history.
+        assign_emp = (payload.get("assign_employee_id") or "").strip()
+        if assign_emp:
+            snap = await _emp_snapshot_active(assign_emp)
+            assigned_date = payload.get("assigned_date") or get_ist_now().strftime("%d-%m-%Y")
+            by_name = current_user.get("name") or current_user.get("username")
+            await db.it_assets.update_one({"asset_id": asset_id}, {"$set": {
+                "assigned_to": snap, "assigned_date": assigned_date, "assigned_by": by_name,
+                "status": "Assigned", "updated_at": _now(),
+            }})
+            await _history(asset_id, "Assigned", current_user,
+                           f"Assigned to {snap['employee_name']} ({snap.get('emp_code') or snap['employee_id']}) on creation",
+                           {"employee_id": snap["employee_id"]})
+            await open_asset_assignment(db, asset_id, snap, "Assigned on creation", by_name)
+            await sync_components_on_asset_reassign(db, asset_id, snap, "Asset assigned on creation", by_name)
+            await log_audit(current_user["id"], "it_asset_assigned", "it_asset", asset_id)
+            doc = await db.it_assets.find_one({"asset_id": asset_id}, {"_id": 0})
         return _clean(doc)
 
     # ---------------- DETAIL ----------------
