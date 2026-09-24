@@ -11,6 +11,13 @@ import csv
 import io
 import re
 import uuid
+
+ACCESSORY_DEFAULTS = {
+    "Mobile Phone": [("charger", "Charger", True), ("sim", "SIM", False), ("usb_cable", "USB Cable", False), ("earphones", "Earphones", False), ("case", "Mobile Case", False)],
+    "Laptop": [("charger", "Charger", True), ("laptop_bag", "Laptop Bag", False), ("mouse", "Mouse", False), ("keyboard", "Keyboard", False), ("docking_station", "Docking Station", False)],
+    "Desktop": [("keyboard", "Keyboard", False), ("mouse", "Mouse", False), ("monitor", "Monitor", False), ("ups", "UPS", False)],
+    "Server": [("rack_rails", "Rack Rails", False), ("power_cable", "Power Cable", False)],
+}
 from datetime import datetime, timezone
 from typing import Optional, List
 
@@ -203,6 +210,44 @@ def register(api_router, deps: dict):
         items = [d async for d in cur]
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
+    # ---------------- ACCESSORIES (config + normalize/validate) ----------------
+    async def _accessories_for_category(category: str):
+        cfg = await db.it_accessory_config.find_one({"category": category}, {"_id": 0})
+        if cfg:
+            return cfg.get("accessories", [])
+        cl = (category or "").lower()
+        key = None
+        if "mobile" in cl or "phone" in cl:
+            key = "Mobile Phone"
+        elif "laptop" in cl or "notebook" in cl:
+            key = "Laptop"
+        elif "desktop" in cl or "workstation" in cl or cl == "pc":
+            key = "Desktop"
+        elif "server" in cl:
+            key = "Server"
+        items = [{"key": k, "label": lbl, "required": req} for (k, lbl, req) in ACCESSORY_DEFAULTS.get(key, [])]
+        await db.it_accessory_config.insert_one({"category": category, "accessories": items, "created_at": _now()})
+        return items
+
+    async def _normalize_accessories(category: str, provided_list):
+        config = await _accessories_for_category(category)
+        provided = {a.get("key"): a for a in (provided_list or []) if a.get("key")}
+        result = []
+        for a in config:
+            p = provided.get(a["key"], {})
+            given = bool(p.get("given"))
+            if a.get("required") and not given:
+                raise HTTPException(status_code=400,
+                                    detail=f"{a['label']} is required for this asset type. Please mark it as Given, or update the accessory configuration.")
+            result.append({"key": a["key"], "label": a["label"], "required": bool(a.get("required")),
+                           "given": given, "serial": (p.get("serial") or None), "note": (p.get("note") or None)})
+        return result
+
+    @api_router.get("/it/accessory-config")
+    async def it_accessory_config(category: str, current_user: dict = Depends(get_current_user)):
+        await _require_admin(current_user)
+        return {"category": category, "accessories": await _accessories_for_category(category)}
+
     # ---------------- CREATE ----------------
     @api_router.post("/it/assets")
     async def it_create_asset(payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
@@ -235,6 +280,10 @@ def register(api_router, deps: dict):
             "assigned_by": None, "is_deleted": False, "created_at": _now(), "updated_at": _now(),
             "created_by": current_user.get("id"),
         }
+        if "accessories" in payload:
+            doc["accessories"] = await _normalize_accessories(category, payload.get("accessories"))
+        else:
+            doc["accessories"] = []
         await db.it_assets.insert_one(doc)
         await _history(asset_id, "Created", current_user, f"Asset created with status {status}")
         await log_audit(current_user["id"], "it_asset_created", "it_asset", asset_id)
@@ -289,11 +338,17 @@ def register(api_router, deps: dict):
         if new_serial and new_serial != existing.get("serial_number"):
             if await db.it_assets.find_one({"serial_number": new_serial, "is_deleted": {"$ne": True}, "asset_id": {"$ne": asset_id}}):
                 raise HTTPException(status_code=400, detail=f"Serial Number {new_serial} already exists.")
+        if "accessories" in payload:
+            cat = updates.get("category") or existing.get("category")
+            updates["accessories"] = await _normalize_accessories(cat, payload.get("accessories"))
         updates["updated_at"] = _now()
         await db.it_assets.update_one({"asset_id": asset_id}, {"$set": updates})
         note = ""
         if "status" in updates and updates["status"] != existing.get("status"):
             note = f"Status: {existing.get('status')} → {updates['status']}"
+        elif "accessories" in updates:
+            given = [a["label"] for a in updates["accessories"] if a["given"]]
+            note = "Accessories updated: " + (", ".join(given) if given else "none marked given")
         await _history(asset_id, "Updated", current_user, note or "Asset details updated")
         await log_audit(current_user["id"], "it_asset_updated", "it_asset", asset_id)
         return {"success": True}

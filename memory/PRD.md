@@ -1,5 +1,13 @@
 # HRMS Application - Product Requirements Document
 
+## 🆕 2026-09-24 — IT Module: Conditional Accessories per Asset Type (Charger/SIM/Bag/Mouse…)
+Additive; no existing feature changed. Verified via curl (config, required-validation, create+serial, edit+history, backward-compat) and screenshot (dynamic UI + conditional serial/note).
+- **Backend** (`it_asset/router.py`): new collection `it_accessory_config` (per-category accessory list, seeded on first read from `ACCESSORY_DEFAULTS`: Mobile Phone→Charger*,SIM,USB Cable,Earphones,Case; Laptop→Charger*,Laptop Bag,Mouse,Keyboard,Docking Station; Desktop→Keyboard,Mouse,Monitor,UPS; Server→Rack Rails,Power Cable; *=required, matched by category keyword). New `GET /api/it/accessory-config?category=`. `POST /it/assets` and `PUT /it/assets/{id}` now accept `accessories: [{key,given,serial,note}]`, normalized+validated against config (required accessory must be Given → 400 else), stored on the asset; edit writes an "Accessories updated: …" history note. Backward-compatible: if payload omits `accessories`, none are required/stored.
+- **Frontend** (`ITManagement.js`): `AssetAccessories` component renders dynamically from the category's config (checkbox per accessory; required marked *; on-check reveals optional Serial + Note). Wired into Create + Edit AssetForm (`accessories` state → payload). `AccessorySummary` shows Given/Not-Given in Asset Detail; Employee Assets accordion shows an "Acc: …" line per asset. Given yes/no + serial/note only this pass; individually-tracked charger inventory (CHG-001 dropdown) deferred to a later phase per the brief's gating.
+- DB cleaned post-test (only pre-existing PH-0001 remains; 2 accessory configs seeded).
+- **Still pending**: inventory-tracked accessories (availability dropdown/replacement); admin UI for the Asset Type→accessory mapping; Phase 3 component reports/exports.
+
+
 ## 🆕 2026-09-24 — IT Module: Edit Asset + Employee Assets tab + employee-search dropdown fix
 Additive; no existing feature changed (13/13 backend tests + all 3 frontend features verified).
 - **Edit Asset (Feature 1)**: Edit icon on each Assets row (`it-edit-{id}`) + "Edit Asset" in Asset Detail (`it-detail-edit`). `AssetForm` now supports edit mode (prefilled, Asset ID disabled, embeds live `AssetComponentsSection` for add/replace/remove) → `PUT /api/it/assets/{id}` (existing endpoint; dedups serial, writes "Updated" history + audit). Component edit/replace/remove already existed.

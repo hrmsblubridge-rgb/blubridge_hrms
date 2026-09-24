@@ -8,6 +8,7 @@ import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
 import { Badge } from '../components/ui/badge';
 import { Card, CardContent } from '../components/ui/card';
+import { Checkbox } from '../components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../components/ui/dialog';
@@ -285,6 +286,62 @@ const SectionTitle = ({ children }) => (
   <div className="text-xs font-semibold uppercase tracking-wide text-[#063c88] pt-1">{children}</div>
 );
 
+// Dynamic, per-asset-type accessory section (Given yes/no + optional serial/note)
+function AssetAccessories({ authHeaders, category, value, onChange }) {
+  const [config, setConfig] = useState([]);
+  useEffect(() => {
+    if (!category) { setConfig([]); return; }
+    axios.get(`${API}/it/accessory-config`, { headers: authHeaders, params: { category } })
+      .then(r => setConfig(r.data.accessories || [])).catch(() => setConfig([]));
+  }, [category]); // eslint-disable-line
+  const byKey = Object.fromEntries((value || []).map(a => [a.key, a]));
+  const upd = (key, patch) => {
+    const next = { ...byKey, [key]: { ...(byKey[key] || {}), ...patch, key } };
+    onChange(config.map(c => ({ key: c.key, label: c.label, given: !!(next[c.key]?.given), serial: next[c.key]?.serial || '', note: next[c.key]?.note || '' })));
+  };
+  if (!category) return <p className="text-xs text-slate-400">Select an asset category to see its accessories.</p>;
+  if (config.length === 0) return <p className="text-xs text-slate-400">No accessories configured for this asset type.</p>;
+  return (
+    <div className="space-y-2" data-testid="asset-accessories">
+      {config.map(a => {
+        const v = byKey[a.key] || {};
+        return (
+          <div key={a.key} className="rounded-xl border border-slate-200/70 bg-white/60 p-3">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <Checkbox checked={!!v.given} onCheckedChange={ch => upd(a.key, { given: !!ch })} data-testid={`acc-${a.key}`} />
+              <span className="text-sm font-medium text-slate-800">{a.label} Given{a.required && <span className="text-red-500"> *</span>}</span>
+            </label>
+            {v.given && (
+              <div className="grid grid-cols-2 gap-2 mt-2 pl-6">
+                <Input className="rounded-lg h-8 text-sm" placeholder="Serial (optional)" value={v.serial || ''} onChange={e => upd(a.key, { serial: e.target.value })} data-testid={`acc-serial-${a.key}`} />
+                <Input className="rounded-lg h-8 text-sm" placeholder="Note (optional)" value={v.note || ''} onChange={e => upd(a.key, { note: e.target.value })} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const AccessorySummary = ({ accessories }) => {
+  if (!accessories || accessories.length === 0) return null;
+  return (
+    <div data-testid="accessory-summary">
+      <SectionTitle>Accessories</SectionTitle>
+      <div className="grid grid-cols-2 gap-2 text-sm mt-2">
+        {accessories.map(a => (
+          <div key={a.key} className="flex justify-between border-b border-slate-100 py-1">
+            <span className="text-slate-500">{a.label}{a.serial ? ` · ${a.serial}` : ''}</span>
+            <span className={`font-medium ${a.given ? 'text-emerald-600' : 'text-slate-400'}`}>{a.given ? 'Given' : 'Not Given'}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+
 function AssetForm({ authHeaders, meta, existing, onClose, onSaved }) {
   const isEdit = !!existing;
   const [f, setF] = useState(existing
@@ -295,6 +352,7 @@ function AssetForm({ authHeaders, meta, existing, onClose, onSaved }) {
   const [specs, setSpecs] = useState(existing?.specs || {});
   const [components, setComponents] = useState([]);
   const [assignEmp, setAssignEmp] = useState(null);
+  const [accessories, setAccessories] = useState(existing?.accessories || []);
   const [saving, setSaving] = useState(false);
   const catFields = (meta.categories.find(c => c.name === f.category)?.fields) || [];
 
@@ -302,13 +360,13 @@ function AssetForm({ authHeaders, meta, existing, onClose, onSaved }) {
     if (!f.category) { toast.error('Category is required'); return; }
     setSaving(true);
     if (isEdit) {
-      axios.put(`${API}/it/assets/${existing.asset_id}`, { ...f, purchase, warranty, specs }, { headers: authHeaders })
+      axios.put(`${API}/it/assets/${existing.asset_id}`, { ...f, purchase, warranty, specs, accessories }, { headers: authHeaders })
         .then(() => { toast.success('Asset updated'); onSaved(); })
         .catch(e => toast.error(e.response?.data?.detail || 'Failed to update'))
         .finally(() => setSaving(false));
       return;
     }
-    const payload = { ...f, purchase, warranty, specs };
+    const payload = { ...f, purchase, warranty, specs, accessories };
     if (assignEmp) payload.assign_employee_id = assignEmp.id;
     axios.post(`${API}/it/assets`, payload, { headers: authHeaders })
       .then(async (res) => {
@@ -375,6 +433,11 @@ function AssetForm({ authHeaders, meta, existing, onClose, onSaved }) {
               {!assignEmp && <p className="text-xs text-slate-500">Asset will remain unassigned and can be assigned later.</p>}
             </div>
           )}
+
+          <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4 space-y-3">
+            <SectionTitle>Accessories</SectionTitle>
+            <AssetAccessories authHeaders={authHeaders} category={f.category} value={accessories} onChange={setAccessories} />
+          </div>
 
           {catFields.length > 0 && (
             <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4 space-y-3">
@@ -584,6 +647,10 @@ function AssetDetail({ authHeaders, assetId, onClose, onEdit }) {
             <div className="grid grid-cols-2 gap-2 text-sm mt-2">{Object.entries(d.asset.specs).map(([k, v]) => v && <div key={k} className="flex justify-between border-b border-slate-100 py-1"><span className="text-slate-500">{k}</span><span className="font-medium">{v}</span></div>)}</div>
           </div>}
 
+          {d.asset.accessories && d.asset.accessories.length > 0 && <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4">
+            <AccessorySummary accessories={d.asset.accessories} />
+          </div>}
+
           <div className="rounded-xl border border-slate-200/70 bg-white/60 p-4">
             <SectionTitle>Components &amp; Assignment</SectionTitle>
             <div className="mt-2"><AssetComponentsSection authHeaders={authHeaders} assetId={assetId} /></div>
@@ -708,7 +775,12 @@ function EmployeeAssetsTab({ authHeaders, meta, onChange }) {
                                 <TableBody>
                                   {ex.assets.map(a => (
                                     <TableRow key={a.asset_id} className="hover:bg-[#063c88]/[0.03] cursor-pointer" onClick={() => setDetail(a.asset_id)} data-testid={`empasset-asset-${a.asset_id}`}>
-                                      <TableCell className="text-sm">{a.category}</TableCell>
+                                      <TableCell className="text-sm">
+                                        {a.category}
+                                        {a.accessories && a.accessories.some(x => x.given) && (
+                                          <div className="text-[11px] text-slate-400 mt-0.5">Acc: {a.accessories.filter(x => x.given).map(x => x.label).join(', ')}</div>
+                                        )}
+                                      </TableCell>
                                       <TableCell className="text-sm font-medium text-[#063c88]">{a.asset_id}</TableCell>
                                       <TableCell className="text-sm">{a.location || '—'}</TableCell>
                                       <TableCell><StatusBadge status={a.status} /></TableCell>
