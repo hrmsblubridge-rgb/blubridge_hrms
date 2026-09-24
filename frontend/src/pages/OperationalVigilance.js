@@ -27,7 +27,6 @@ import {
   ShieldCheck, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText, BookOpen,
   UploadCloud, CheckCircle2, AlertCircle, ChevronRight as CaretRight, RotateCcw, Search,
-  Users, CalendarDays, TrendingUp, LayoutGrid,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -163,13 +162,6 @@ const sortRows = (rows, sort) => {
   });
 };
 
-// A duration value counts as a "research entry" when it is present and non-zero.
-const hasResearch = (v) => {
-  if (!v) return false;
-  const s = String(v).trim();
-  return s !== '' && s !== '—' && s !== '00:00' && s !== '00:00:00' && s !== '0';
-};
-
 export default function OperationalVigilance() {
   const { getAuthHeaders, user } = useAuth();
   const [access, setAccess] = useState(null);
@@ -228,6 +220,30 @@ export default function OperationalVigilance() {
   }, [handleScrollSync]);
 
   useEffect(() => () => clearTimeout(scrollIdle.current), []);
+
+  // Shift + mouse-wheel => horizontal scroll of the table body. Browsers only do
+  // this natively in some cases; a non-passive listener lets us preventDefault and
+  // translate vertical wheel delta into horizontal scroll reliably. Horizontal
+  // trackpad deltas (deltaX) are passed through too. The scroll event then syncs
+  // the top scrollbar via onBodyScroll.
+  useEffect(() => {
+    const el = bodyScrollRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      const dx = e.deltaX;
+      const dy = e.deltaY;
+      const wantsHorizontal = e.shiftKey && dy !== 0;
+      if (wantsHorizontal) {
+        el.scrollLeft += dy;
+        e.preventDefault();
+      } else if (Math.abs(dx) > Math.abs(dy) && dx !== 0) {
+        el.scrollLeft += dx;
+        e.preventDefault();
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [data]);
 
   useEffect(() => {
     const measure = () => {
@@ -303,20 +319,6 @@ export default function OperationalVigilance() {
   const sortedRows = useMemo(() => sortRows(data.rows, sort), [data.rows, sort]);
   const totalRows = sortedRows.length;
   const pagedRows = sortedRows.slice((page - 1) * rowsPerPage, page * rowsPerPage);
-
-  // Compact summary metrics — derived purely from already-loaded rows (no API calls).
-  const summary = useMemo(() => {
-    const rows = data.rows || [];
-    const emps = new Set(rows.map(r => r.target_employee_id));
-    let research = 0;
-    rows.forEach(r => {
-      const hit = isAdmin
-        ? (r.submissions || []).some(s => hasResearch(s.total_research_hours))
-        : hasResearch(r.total_research_hours);
-      if (hit) research += 1;
-    });
-    return { total: rows.length, employees: emps.size, research };
-  }, [data.rows, isAdmin]);
 
   const handleApplyFilter = () => {
     if (!validRange) { toast.error('Select a valid date range (To Date ≥ From Date).'); return; }
@@ -676,9 +678,6 @@ export default function OperationalVigilance() {
         </div>
       </div>
 
-      {/* Summary */}
-      <SummaryCards summary={summary} fromDate={filters.fromDate} toDate={filters.toDate} />
-
       {/* Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         {/* Premium synchronized TOP horizontal scrollbar */}
@@ -728,31 +727,6 @@ function Avatar({ name }) {
   return (
     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[11px] font-semibold text-[#0b1f3b]" aria-hidden="true">
       {initialsOf(name)}
-    </div>
-  );
-}
-
-// ===================== Summary cards =====================
-function SummaryCards({ summary, fromDate, toDate }) {
-  const cells = [
-    { icon: LayoutGrid, label: 'Total Records', value: String(summary.total), testid: 'vig-summary-total' },
-    { icon: Users, label: 'Employees', value: String(summary.employees), testid: 'vig-summary-employees' },
-    { icon: CalendarDays, label: 'Date Range', value: `${fmtDisplayDate(fromDate)} → ${fmtDisplayDate(toDate)}`, testid: 'vig-summary-range', small: true },
-    { icon: TrendingUp, label: 'Research Entries', value: String(summary.research), testid: 'vig-summary-research' },
-  ];
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" data-testid="vig-summary">
-      {cells.map(({ icon: Icon, label, value, testid, small }) => (
-        <div key={label} className="bg-white rounded-2xl border border-slate-200 shadow-sm px-4 py-4 flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#0b1f3b]/[0.06] text-[#0b1f3b] shrink-0">
-            <Icon className="w-5 h-5" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">{label}</div>
-            <div className={`font-bold text-slate-900 tabular-nums truncate ${small ? 'text-sm' : 'text-2xl leading-tight'}`} data-testid={testid} title={value}>{value}</div>
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
