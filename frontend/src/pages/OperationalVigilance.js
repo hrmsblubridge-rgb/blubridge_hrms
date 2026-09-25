@@ -182,6 +182,7 @@ export default function OperationalVigilance() {
   const [saving, setSaving] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null); // {id, employeeName, date, submitter}
   const [detailRow, setDetailRow] = useState(null);        // admin: row whose submissions are shown in the centered modal
+  const reopenDetailKey = useRef(null);                    // row.key to reopen in the detail modal after a save from it
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [sort, setSort] = useState({ key: null, dir: null });
@@ -310,6 +311,14 @@ export default function OperationalVigilance() {
     }
   }, [upload?.phase]);
   useEffect(() => () => { if (procTimer.current) clearInterval(procTimer.current); }, []);
+
+  // After a save that originated from the detail modal, reopen that row's modal with fresh values.
+  useEffect(() => {
+    if (!reopenDetailKey.current) return;
+    const r = (data.rows || []).find(x => x.key === reopenDetailKey.current);
+    reopenDetailKey.current = null;
+    if (r) setDetailRow(r);
+  }, [data]);
 
   const validRange = filters.fromDate && filters.toDate && filters.toDate >= filters.fromDate;
 
@@ -451,12 +460,17 @@ export default function OperationalVigilance() {
     }
   };
 
-  const openEdit = (submission, row) => {
+  const openEdit = (submission, row, fromDetailKey) => {
     setDraft({
       id: submission.id,
+      fromDetailKey: fromDetailKey || null,
       target_employee_id: row.target_employee_id,
       target_employee_name: row.target_employee_name,
+      target_email: row.target_email || '',
       date: row.date,
+      date_display: row.date_display,
+      uploaded_by_name: submission.uploaded_by_name || null,
+      uploaded_by_employee_id: submission.uploaded_by_employee_id || null,
       system_login: submission.system_login || '',
       system_logout: submission.system_logout || '',
       total_research_hours: submission.total_research_hours || '',
@@ -470,7 +484,11 @@ export default function OperationalVigilance() {
       id: submission.id, readOnly: true,
       target_employee_id: row.target_employee_id,
       target_employee_name: row.target_employee_name,
+      target_email: row.target_email || '',
       date: row.date,
+      date_display: row.date_display,
+      uploaded_by_name: submission.uploaded_by_name || null,
+      uploaded_by_employee_id: submission.uploaded_by_employee_id || null,
       system_login: submission.system_login || '',
       system_logout: submission.system_logout || '',
       total_research_hours: submission.total_research_hours || '',
@@ -481,8 +499,9 @@ export default function OperationalVigilance() {
 
   // Admin: open the centered modal with ALL vigilance submissions for a row.
   const openDetail = (row) => setDetailRow(row);
-  // Edit a specific submission from within the detail modal (closes the modal first).
-  const editFromDetail = (submission, row) => { setDetailRow(null); openEdit(submission, row); };
+  // Edit a specific submission from within the detail modal (closes the modal first,
+  // remembers the row so we can reopen it with refreshed values after a save).
+  const editFromDetail = (submission, row) => { setDetailRow(null); openEdit(submission, row, row.key); };
   // Request deletion of a specific submission (with full context for the confirm dialog).
   const openDelete = (submission, row) => {
     setDetailRow(null);
@@ -514,6 +533,7 @@ export default function OperationalVigilance() {
         }, { headers: getAuthHeaders() });
         toast.success('Entry created');
       }
+      if (draft.fromDetailKey) reopenDetailKey.current = draft.fromDetailKey;  // return to the detail modal
       setDraft(null);
       loadEntries(filters);
     } catch (e) {
@@ -776,6 +796,24 @@ function BannerAvatar({ name, src }) {
   return (
     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">
       {initialsOf(name)}
+    </div>
+  );
+}
+
+// Labelled context card distinguishing the reported employee vs. the vigilance submitter.
+function ContextCard({ icon: Icon, label, name, sub, avatar, accent }) {
+  return (
+    <div className={`rounded-xl border px-3.5 py-3 ${accent ? 'border-[#0b1f3b]/25 bg-[#0b1f3b]/[0.04]' : 'border-slate-200 bg-slate-50'}`}>
+      <div className={`flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide ${accent ? 'text-[#0b1f3b]' : 'text-slate-400'}`}>
+        <Icon className="w-3.5 h-3.5" /> {label}
+      </div>
+      <div className="mt-1.5 flex items-center gap-2 min-w-0">
+        {avatar !== undefined && <Avatar name={name} src={avatar} className="h-7 w-7" />}
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-slate-800 truncate">{name || '—'}</div>
+          {sub && <div className="text-[11px] text-slate-400 truncate">{sub}</div>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1317,33 +1355,26 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees, avatarOf }) {
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0 bg-white rounded-2xl border-0 shadow-2xl [&>button]:text-white/70 [&>button]:hover:text-white [&>button]:z-10" data-testid="vig-entry-dialog">
           {/* Header — navy banner */}
           <div className="relative bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
-            <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">Vigilance Entry</DialogTitle>
+            <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">{draft.uploaded_by_name ? 'Vigilance Submission' : 'Vigilance Entry'}</DialogTitle>
             <div className="mt-3 flex items-start gap-3.5">
               <BannerAvatar name={draft.target_employee_name} src={avatarOf?.(draft.target_employee_id)} />
               <div className="min-w-0 flex-1">
                 <div className="text-lg font-bold leading-tight truncate">{draft.target_employee_name || 'Vigilance Entry'}</div>
-                <DialogDescription className="text-[13px] text-white/60 mt-0.5">Read-only view of this vigilance entry</DialogDescription>
+                <DialogDescription className="text-[13px] text-white/60 mt-0.5">
+                  {draft.uploaded_by_name ? <>Submitted by <span className="font-semibold text-white/80">{draft.uploaded_by_name}</span> · {draft.date_display || fmtDisplayDate(draft.date)}</> : 'Read-only view of this vigilance entry'}
+                </DialogDescription>
               </div>
             </div>
           </div>
 
           <div className="px-6 py-5 space-y-5 bg-slate-50/40">
-            {/* Employee / Date strip */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
-                <User className="w-4 h-4 text-slate-400 shrink-0" />
-                <div className="min-w-0">
-                  <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Employee</div>
-                  <div className="text-sm font-semibold text-slate-800 truncate">{draft.target_employee_name || '—'}</div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
-                <CalendarDays className="w-4 h-4 text-slate-400 shrink-0" />
-                <div className="min-w-0">
-                  <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Date</div>
-                  <div className="text-sm font-semibold text-slate-800 truncate">{fmtDisplayDate(draft.date)}</div>
-                </div>
-              </div>
+            {/* Reported employee vs. vigilance submitter context */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <ContextCard icon={User} label="Reported Employee" name={draft.target_employee_name} sub={draft.target_email} avatar={avatarOf?.(draft.target_employee_id) || null} />
+              {draft.uploaded_by_name && (
+                <ContextCard icon={ShieldCheck} label="Vigilance Team Member" name={draft.uploaded_by_name} sub="Submitted by" avatar={avatarOf?.(draft.uploaded_by_employee_id) || null} accent />
+              )}
+              <ContextCard icon={CalendarDays} label="Date" name={draft.date_display || fmtDisplayDate(draft.date)} />
             </div>
 
             {/* Metric cards */}
@@ -1419,14 +1450,16 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees, avatarOf }) {
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0 bg-white rounded-2xl border-0 shadow-2xl [&>button]:text-white/70 [&>button]:hover:text-white [&>button]:z-10" data-testid="vig-entry-dialog">
         {/* Header — navy banner */}
         <div className="relative bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
-          <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">{isEdit ? 'Edit Vigilance Entry' : 'Add Vigilance Entry'}</DialogTitle>
+          <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">{isEdit ? (draft.uploaded_by_name ? 'Edit Vigilance Submission' : 'Edit Vigilance Entry') : 'Add Vigilance Entry'}</DialogTitle>
           <div className="mt-3 flex items-start gap-3.5">
             {draft.target_employee_id
               ? <BannerAvatar name={draft.target_employee_name} src={avatarOf?.(draft.target_employee_id)} />
               : <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/20"><ShieldCheck className="w-5 h-5" /></div>}
             <div className="min-w-0 flex-1">
               <div className="text-lg font-bold leading-tight truncate">{draft.target_employee_name || (isEdit ? 'Vigilance Entry' : 'New Vigilance Entry')}</div>
-              <DialogDescription className="text-[13px] text-white/60 mt-0.5">Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.</DialogDescription>
+              <DialogDescription className="text-[13px] text-white/60 mt-0.5">
+                {draft.uploaded_by_name ? <>Submitted by <span className="font-semibold text-white/80">{draft.uploaded_by_name}</span> · {draft.date_display || fmtDisplayDate(draft.date)}</> : 'Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.'}
+              </DialogDescription>
             </div>
           </div>
         </div>
@@ -1451,15 +1484,12 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees, avatarOf }) {
             </div>
           )}
           {isEdit && (
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
-                <User className="w-4 h-4 text-slate-400 shrink-0" />
-                <div className="min-w-0"><div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Employee</div><div className="text-sm font-semibold text-slate-800 truncate">{draft.target_employee_name || '—'}</div></div>
-              </div>
-              <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
-                <CalendarDays className="w-4 h-4 text-slate-400 shrink-0" />
-                <div className="min-w-0"><div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Date</div><div className="text-sm font-semibold text-slate-800 truncate">{fmtDisplayDate(draft.date)}</div></div>
-              </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <ContextCard icon={User} label="Reported Employee" name={draft.target_employee_name} sub={draft.target_email} avatar={avatarOf?.(draft.target_employee_id) || null} />
+              {draft.uploaded_by_name && (
+                <ContextCard icon={ShieldCheck} label="Vigilance Team Member" name={draft.uploaded_by_name} sub="Submitted by" avatar={avatarOf?.(draft.uploaded_by_employee_id) || null} accent />
+              )}
+              <ContextCard icon={CalendarDays} label="Date" name={draft.date_display || fmtDisplayDate(draft.date)} />
             </div>
           )}
 
