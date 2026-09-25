@@ -164,7 +164,7 @@ const sortRows = (rows, sort) => {
 };
 
 export default function OperationalVigilance() {
-  const { getAuthHeaders, user } = useAuth();
+  const { getAuthHeaders, user, getAvatarById, refreshAvatars } = useAuth();
   const [access, setAccess] = useState(null);
   const [meta, setMeta] = useState({ departments: [], teams: [], designations: [], employees: [] });
   const [filters, setFilters] = useState({
@@ -292,13 +292,14 @@ export default function OperationalVigilance() {
         if (a.data.has_access) {
           const m = await axios.get(`${API}/vigilance/filters-meta`, { headers: getAuthHeaders() });
           setMeta(m.data);
+          refreshAvatars();  // ensure employee photos are available for the table/modals
           loadEntries({ fromDate: monthStart(), toDate: today(), employeeName: '', department: 'All', designation: 'All', team: 'All' });
         }
       } catch {
         setAccess({ has_access: false });
       }
     })();
-  }, [getAuthHeaders, loadEntries]);
+  }, [getAuthHeaders, loadEntries, refreshAvatars]);
 
   // Auto-close the upload overlay a few seconds after success; clean up the
   // processing timer on unmount so it never leaks.
@@ -709,9 +710,9 @@ export default function OperationalVigilance() {
         <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-auto scroll-premium"
              style={{ maxHeight: '68vh', '--vig-h1': `${row1H || 44}px`, '--vig-h2': `${row2H || 36}px` }} data-testid="vig-table-scroll">
           {isAdmin ? (
-            <AdminMergedTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onOpenDetail={openDetail} />
+            <AdminMergedTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onOpenDetail={openDetail} avatarOf={getAvatarById} />
           ) : (
-            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onView={openView} onEdit={openEdit} onDelete={openDelete} />
+            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onView={openView} onEdit={openEdit} onDelete={openDelete} avatarOf={getAvatarById} />
           )}
         </div>
         <PaginationBar page={page} setPage={setPage} rowsPerPage={rowsPerPage} setRowsPerPage={(v) => { setRowsPerPage(v); setPage(1); }} total={totalRows} />
@@ -720,13 +721,13 @@ export default function OperationalVigilance() {
       {/* Edit / Add dialog */}
       <EntryDialog
         draft={draft} setDraft={setDraft} onSave={saveDraft} saving={saving}
-        employees={meta.employees}
+        employees={meta.employees} avatarOf={getAvatarById}
       />
 
       {upload && <UploadProgressOverlay upload={upload} onClose={() => setUpload(null)} />}
 
       {/* Admin: centered modal with all vigilance submissions for the selected row */}
-      <VigilanceDetailModal row={detailRow} onClose={() => setDetailRow(null)} onEdit={editFromDetail} onDelete={openDelete} />
+      <VigilanceDetailModal row={detailRow} onClose={() => setDetailRow(null)} onEdit={editFromDetail} onDelete={openDelete} avatarOf={getAvatarById} />
 
       <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
@@ -751,10 +752,29 @@ export default function OperationalVigilance() {
   );
 }
 
-// ===================== Avatar (visual initials only) =====================
-function Avatar({ name }) {
+// ===================== Avatar (employee photo with initials fallback) =====================
+function Avatar({ name, src, className = 'h-8 w-8' }) {
+  const [failed, setFailed] = useState(false);
+  if (src && !failed) {
+    return <img src={src} alt={name || 'avatar'} onError={() => setFailed(true)}
+      className={`${className} shrink-0 rounded-full object-cover ring-1 ring-slate-200 bg-slate-100`} />;
+  }
   return (
-    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[11px] font-semibold text-[#0b1f3b]" aria-hidden="true">
+    <div className={`flex ${className} shrink-0 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[11px] font-semibold text-[#0b1f3b]`} aria-hidden="true">
+      {initialsOf(name)}
+    </div>
+  );
+}
+
+// Avatar sized for the navy modal/dialog banners (white ring, initials on translucent white).
+function BannerAvatar({ name, src }) {
+  const [failed, setFailed] = useState(false);
+  if (src && !failed) {
+    return <img src={src} alt={name || 'avatar'} onError={() => setFailed(true)}
+      className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-white/30 bg-white/10" />;
+  }
+  return (
+    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">
       {initialsOf(name)}
     </div>
   );
@@ -811,7 +831,7 @@ function RowActions({ row, submission, onView, onEdit, onDelete, canView = true,
 // Own view has a single vigilance author (the viewer), so it collapses to a flat
 // table showing only Research Hours + Total Break Hours. Detailed break rows remain
 // available via the View / Edit dialog.
-function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete }) {
+function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete, avatarOf }) {
   const colCount = 9;
   const bandTh = 'vig-sticky-h1 top-0 z-30 bg-[#eef2f9] px-3 py-2.5 text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-slate-200';
   const labelTh = 'vig-sticky-h2 z-20 bg-slate-50 px-3 py-2.5 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap border-b border-slate-200';
@@ -847,7 +867,7 @@ function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, 
           <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-own-row">
             <td className="px-3 py-2.5 min-w-[220px]">
               <div className="flex items-center gap-2.5">
-                <Avatar name={row.target_employee_name} />
+                <Avatar name={row.target_employee_name} src={avatarOf?.(row.target_employee_id)} />
                 <div className="min-w-0">
                   <div className="text-[13px] font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
                   {row.target_email && <div className="text-[11px] text-slate-400 truncate">{row.target_email}</div>}
@@ -878,7 +898,7 @@ function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, 
 // A single View (eye) button per row opens the centered detail modal with every
 // submission for that employee/day. No frozen columns — the synced top scrollbar
 // handles horizontal scroll when many members exist.
-function AdminMergedTable({ data, rows, loading, sort, onSort, onOpenDetail }) {
+function AdminMergedTable({ data, rows, loading, sort, onSort, onOpenDetail, avatarOf }) {
   const uploaders = data.uploaders || [];
   const colCount = 6 + uploaders.length * 2 + 1;
   const base = 'vig-sticky-h2 z-20 bg-slate-50 px-3 py-2.5 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap border-b border-slate-200';
@@ -905,7 +925,10 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onOpenDetail }) {
           ))}
           {uploaders.map((u, idx) => (
             <th key={u.employee_id} colSpan={2} className={`vig-sticky-h2 z-20 px-3 py-2 text-center text-[12px] font-bold text-[#0b1f3b] border-l-2 border-b border-slate-200 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50/70' : 'bg-[#eef2f9]'}`} data-testid="vig-member-band">
-              {u.name}
+              <span className="inline-flex items-center gap-1.5">
+                <Avatar name={u.name} src={avatarOf?.(u.employee_id)} className="h-5 w-5" />
+                {u.name}
+              </span>
             </th>
           ))}
         </tr>
@@ -927,7 +950,7 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onOpenDetail }) {
             <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-admin-row">
               <td className="px-3 py-2.5 min-w-[220px]">
                 <div className="flex items-center gap-2.5">
-                  <Avatar name={row.target_employee_name} />
+                  <Avatar name={row.target_employee_name} src={avatarOf?.(row.target_employee_id)} />
                   <div className="min-w-0">
                     <div className="text-[13px] font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
                     {row.target_email && <div className="text-[11px] text-slate-400 truncate">{row.target_email}</div>}
@@ -979,7 +1002,7 @@ function FragmentData({ s, firstClass }) {
 }
 
 // ===================== Centered vigilance detail modal =====================
-function VigilanceDetailModal({ row, onClose, onEdit, onDelete }) {
+function VigilanceDetailModal({ row, onClose, onEdit, onDelete, avatarOf }) {
   if (!row) return null;
   const subs = row.submissions || [];
   const att = [
@@ -994,7 +1017,7 @@ function VigilanceDetailModal({ row, onClose, onEdit, onDelete }) {
         <div className="relative shrink-0 bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
           <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">Vigilance Details</DialogTitle>
           <div className="mt-3 flex items-start gap-3.5">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">{initialsOf(row.target_employee_name)}</div>
+            <BannerAvatar name={row.target_employee_name} src={avatarOf?.(row.target_employee_id)} />
             <div className="min-w-0 flex-1">
               <div className="text-lg font-bold leading-tight truncate">{row.target_employee_name}</div>
               {row.target_email && <div className="text-[13px] text-white/60 truncate">{row.target_email}</div>}
@@ -1029,7 +1052,7 @@ function VigilanceDetailModal({ row, onClose, onEdit, onDelete }) {
               <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-400">No vigilance submissions for this employee/date.</div>
             ) : (
               <div className="space-y-3.5">
-                {subs.map(s => <SubmissionCard key={s.id} s={s} row={row} onEdit={onEdit} onDelete={onDelete} />)}
+                {subs.map(s => <SubmissionCard key={s.id} s={s} row={row} onEdit={onEdit} onDelete={onDelete} avatarOf={avatarOf} />)}
               </div>
             )}
           </div>
@@ -1044,7 +1067,7 @@ function VigilanceDetailModal({ row, onClose, onEdit, onDelete }) {
   );
 }
 
-function SubmissionCard({ s, row, onEdit, onDelete }) {
+function SubmissionCard({ s, row, onEdit, onDelete, avatarOf }) {
   const [open, setOpen] = useState(false);
   const breaks = s.breaks || [];
   return (
@@ -1052,7 +1075,7 @@ function SubmissionCard({ s, row, onEdit, onDelete }) {
       {/* Card header */}
       <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[11px] font-bold text-[#0b1f3b]">{initialsOf(s.uploaded_by_name)}</div>
+          <Avatar name={s.uploaded_by_name} src={avatarOf?.(s.uploaded_by_employee_id)} className="h-9 w-9" />
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-800 truncate">{s.uploaded_by_name || 'Vigilance member'}</div>
             <div className="text-[11px] text-slate-400 truncate">Submitted by {s.uploaded_by_name || '—'}</div>
@@ -1263,7 +1286,7 @@ function UploadProgressOverlay({ upload, onClose }) {
 }
 
 // ===================== Add / Edit / View dialog =====================
-function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
+function EntryDialog({ draft, setDraft, onSave, saving, employees, avatarOf }) {
   if (!draft) return null;
   const ro = !!draft.readOnly;
   const isEdit = !!draft.id;
@@ -1296,7 +1319,7 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
           <div className="relative bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
             <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">Vigilance Entry</DialogTitle>
             <div className="mt-3 flex items-start gap-3.5">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">{initialsOf(draft.target_employee_name)}</div>
+              <BannerAvatar name={draft.target_employee_name} src={avatarOf?.(draft.target_employee_id)} />
               <div className="min-w-0 flex-1">
                 <div className="text-lg font-bold leading-tight truncate">{draft.target_employee_name || 'Vigilance Entry'}</div>
                 <DialogDescription className="text-[13px] text-white/60 mt-0.5">Read-only view of this vigilance entry</DialogDescription>
@@ -1398,9 +1421,9 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
         <div className="relative bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
           <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">{isEdit ? 'Edit Vigilance Entry' : 'Add Vigilance Entry'}</DialogTitle>
           <div className="mt-3 flex items-start gap-3.5">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">
-              {draft.target_employee_name ? initialsOf(draft.target_employee_name) : <ShieldCheck className="w-5 h-5" />}
-            </div>
+            {draft.target_employee_id
+              ? <BannerAvatar name={draft.target_employee_name} src={avatarOf?.(draft.target_employee_id)} />
+              : <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/20"><ShieldCheck className="w-5 h-5" /></div>}
             <div className="min-w-0 flex-1">
               <div className="text-lg font-bold leading-tight truncate">{draft.target_employee_name || (isEdit ? 'Vigilance Entry' : 'New Vigilance Entry')}</div>
               <DialogDescription className="text-[13px] text-white/60 mt-0.5">Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.</DialogDescription>
