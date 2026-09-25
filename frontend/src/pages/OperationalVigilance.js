@@ -28,6 +28,7 @@ import {
   ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText, BookOpen,
   UploadCloud, CheckCircle2, AlertCircle, ChevronRight as CaretRight, RotateCcw, Search,
   LogIn, LogOut, Coffee, Microscope, CalendarDays, User, Clock, ChevronDown,
+  SlidersHorizontal, Building2, Briefcase, Users,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -338,6 +339,12 @@ export default function OperationalVigilance() {
   const sortedRows = useMemo(() => sortRows(data.rows, sort), [data.rows, sort]);
   const totalRows = sortedRows.length;
   const pagedRows = sortedRows.slice((page - 1) * rowsPerPage, page * rowsPerPage);
+  const activeFilterCount = [
+    filters.employeeName && filters.employeeName.trim(),
+    filters.department !== 'All',
+    filters.designation !== 'All',
+    filters.team !== 'All',
+  ].filter(Boolean).length;
 
   const handleApplyFilter = () => {
     if (!validRange) { toast.error('Select a valid date range (To Date ≥ From Date).'); return; }
@@ -590,28 +597,31 @@ export default function OperationalVigilance() {
       </div>
 
       {/* Filter card */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-sm space-y-5">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">Filters</span>
-          <TooltipProvider delayDuration={200}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button onClick={handleReset} className="inline-flex items-center gap-1.5 text-sm font-medium text-[#0b1f3b] hover:text-[#0b1f3b]/70 transition-colors" data-testid="vig-reset-btn">
-                  <RotateCcw className="w-4 h-4" /> Reset
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Reset all filters to defaults</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between gap-3 px-5 sm:px-6 py-4 border-b border-slate-100 bg-slate-50/40">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0b1f3b]/[0.07] text-[#0b1f3b] shrink-0"><SlidersHorizontal className="w-4 h-4" /></span>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-slate-800 leading-tight">Filters</div>
+              <div className="text-[11px] text-slate-400 leading-tight">Refine the vigilance report</div>
+            </div>
+            {activeFilterCount > 0 && (
+              <span className="ml-1 inline-flex items-center rounded-full bg-[#0b1f3b] px-2 py-0.5 text-[11px] font-semibold text-white" data-testid="vig-active-filter-count">{activeFilterCount} active</span>
+            )}
+          </div>
+          <button onClick={handleReset} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-white hover:text-[#0b1f3b] hover:border-[#0b1f3b]/30 transition-colors shrink-0" data-testid="vig-reset-btn">
+            <RotateCcw className="w-4 h-4" /> Reset
+          </button>
         </div>
 
+        <div className="p-5 sm:p-6 space-y-5">
         {/* Row 1 */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">Employee Name</Label>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><User className="w-3.5 h-3.5 text-slate-400" /> Employee Name</Label>
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <Input list="vig-emp-list" value={filters.employeeName} onChange={(e) => setFilters({ ...filters, employeeName: e.target.value })} placeholder="Search employee…" className="rounded-lg pl-9 pr-8" data-testid="vig-filter-employee" />
+              <Input list="vig-emp-list" value={filters.employeeName} onChange={(e) => setFilters({ ...filters, employeeName: e.target.value })} placeholder="Search employee…" className="rounded-lg h-11 pl-9 pr-8" data-testid="vig-filter-employee" />
               {filters.employeeName && (
                 <button onClick={() => setFilters({ ...filters, employeeName: '' })} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" aria-label="Clear employee" data-testid="vig-filter-employee-clear">
                   <X className="w-4 h-4" />
@@ -623,21 +633,21 @@ export default function OperationalVigilance() {
             </div>
           </div>
           <div>
-            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">From Date</Label>
-            <DatePicker value={filters.fromDate} onChange={(v) => setFilters({ ...filters, fromDate: v })} className="rounded-lg" data-testid="vig-filter-from" />
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><CalendarDays className="w-3.5 h-3.5 text-slate-400" /> From Date</Label>
+            <DatePicker value={filters.fromDate} onChange={(v) => setFilters({ ...filters, fromDate: v })} className="rounded-lg h-11" data-testid="vig-filter-from" />
           </div>
           <div>
-            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">To Date</Label>
-            <DatePicker value={filters.toDate} onChange={(v) => setFilters({ ...filters, toDate: v })} className="rounded-lg" data-testid="vig-filter-to" />
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><CalendarDays className="w-3.5 h-3.5 text-slate-400" /> To Date</Label>
+            <DatePicker value={filters.toDate} onChange={(v) => setFilters({ ...filters, toDate: v })} className="rounded-lg h-11" data-testid="vig-filter-to" />
           </div>
         </div>
 
         {/* Row 2 */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
-            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">Department</Label>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><Building2 className="w-3.5 h-3.5 text-slate-400" /> Department</Label>
             <Select value={filters.department} onValueChange={(v) => setFilters({ ...filters, department: v })}>
-              <SelectTrigger className="rounded-lg" data-testid="vig-filter-department"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="rounded-lg h-11" data-testid="vig-filter-department"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
                 {meta.departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
@@ -645,9 +655,9 @@ export default function OperationalVigilance() {
             </Select>
           </div>
           <div>
-            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">Designation</Label>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><Briefcase className="w-3.5 h-3.5 text-slate-400" /> Designation</Label>
             <Select value={filters.designation} onValueChange={(v) => setFilters({ ...filters, designation: v })}>
-              <SelectTrigger className="rounded-lg" data-testid="vig-filter-designation"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="rounded-lg h-11" data-testid="vig-filter-designation"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
                 {meta.designations.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
@@ -655,9 +665,9 @@ export default function OperationalVigilance() {
             </Select>
           </div>
           <div>
-            <Label className="text-xs font-medium text-slate-600 mb-1.5 block">Team</Label>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><Users className="w-3.5 h-3.5 text-slate-400" /> Team</Label>
             <Select value={filters.team} onValueChange={(v) => setFilters({ ...filters, team: v })}>
-              <SelectTrigger className="rounded-lg" data-testid="vig-filter-team"><SelectValue /></SelectTrigger>
+              <SelectTrigger className="rounded-lg h-11" data-testid="vig-filter-team"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All</SelectItem>
                 {meta.teams.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
@@ -668,23 +678,25 @@ export default function OperationalVigilance() {
 
         {/* Action toolbar */}
         <div className="flex flex-wrap items-center gap-2 pt-4 border-t border-slate-100">
-          <Button onClick={handleApplyFilter} className="rounded-lg bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 shadow-sm" data-testid="vig-filter-btn">
+          <Button onClick={handleApplyFilter} className="rounded-lg h-10 px-5 bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 shadow-sm" data-testid="vig-filter-btn">
             <Filter className="w-4 h-4 mr-2" /> Filter
           </Button>
-          <Button onClick={handleDownloadTemplate} disabled={!validRange || downloading} variant="outline" className="rounded-lg" data-testid="vig-download-template-btn">
+          <div className="hidden sm:block h-6 w-px bg-slate-200 mx-1" />
+          <Button onClick={handleDownloadTemplate} disabled={!validRange || downloading} variant="outline" className="rounded-lg h-10" data-testid="vig-download-template-btn">
             {downloading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />} Download Sample Template
           </Button>
           <label className="inline-flex">
             <input type="file" accept=".xlsx" className="hidden" data-testid="vig-upload-input"
               onChange={(e) => { handleUpload(e.target.files[0]); e.target.value = ''; }} />
-            <span className={`inline-flex items-center px-4 py-2 rounded-lg border border-slate-200 text-sm font-medium cursor-pointer hover:bg-slate-50 transition-colors ${uploading ? 'opacity-60 pointer-events-none' : ''}`} data-testid="vig-upload-btn">
+            <span className={`inline-flex items-center h-10 px-4 rounded-lg border border-slate-200 text-sm font-medium cursor-pointer hover:bg-slate-50 transition-colors ${uploading ? 'opacity-60 pointer-events-none' : ''}`} data-testid="vig-upload-btn">
               {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />} Upload Filled Sheet
             </span>
           </label>
-          <Button onClick={() => setDraft(emptyDraft())} variant="outline" className="rounded-lg" data-testid="vig-add-entry-btn">
+          <Button onClick={() => setDraft(emptyDraft())} variant="outline" className="rounded-lg h-10" data-testid="vig-add-entry-btn">
             <Plus className="w-4 h-4 mr-2" /> Add Entry
           </Button>
-          <Button onClick={handleExport} variant="outline" className="rounded-lg ml-auto" data-testid="vig-export-btn">
+          <div className="ml-auto flex items-center gap-2">
+          <Button onClick={handleExport} variant="outline" className="rounded-lg h-10" data-testid="vig-export-btn">
             <FileSpreadsheet className="w-4 h-4 mr-2" /> Export
           </Button>
           {!isAdmin && (
@@ -692,7 +704,7 @@ export default function OperationalVigilance() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button onClick={handleUserGuide} variant="outline"
-                  className="rounded-lg border-[#0b1f3b]/30 text-[#0b1f3b] hover:bg-[#0b1f3b]/5"
+                  className="rounded-lg h-10 border-[#0b1f3b]/30 text-[#0b1f3b] hover:bg-[#0b1f3b]/5"
                   data-testid="vig-user-guide-btn">
                   <BookOpen className="w-4 h-4 mr-2" /> Download User Guide
                 </Button>
@@ -706,7 +718,7 @@ export default function OperationalVigilance() {
           {isAdmin && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" className="rounded-lg" data-testid="vig-help-btn">
+              <Button variant="outline" className="rounded-lg h-10" data-testid="vig-help-btn">
                 <HelpCircle className="w-4 h-4 mr-2" /> Help Guide
               </Button>
             </DropdownMenuTrigger>
@@ -720,6 +732,8 @@ export default function OperationalVigilance() {
             </DropdownMenuContent>
           </DropdownMenu>
           )}
+          </div>
+        </div>
         </div>
       </div>
 
