@@ -1291,17 +1291,20 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
     ];
     return (
       <Dialog open onOpenChange={(o) => !o && setDraft(null)}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0" data-testid="vig-entry-dialog">
-          {/* Header */}
-          <div className="flex items-start gap-3.5 px-6 pt-6 pb-5 border-b border-slate-100">
-            <Avatar name={draft.target_employee_name} />
-            <div className="min-w-0 flex-1">
-              <DialogTitle className="text-lg font-bold text-slate-900 leading-tight">{draft.target_employee_name || 'Vigilance Entry'}</DialogTitle>
-              <DialogDescription className="text-sm text-slate-500 mt-0.5">Read-only view of this vigilance entry</DialogDescription>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0 bg-white rounded-2xl border-0 shadow-2xl [&>button]:text-white/70 [&>button]:hover:text-white [&>button]:z-10" data-testid="vig-entry-dialog">
+          {/* Header — navy banner */}
+          <div className="relative bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
+            <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">Vigilance Entry</DialogTitle>
+            <div className="mt-3 flex items-start gap-3.5">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">{initialsOf(draft.target_employee_name)}</div>
+              <div className="min-w-0 flex-1">
+                <div className="text-lg font-bold leading-tight truncate">{draft.target_employee_name || 'Vigilance Entry'}</div>
+                <DialogDescription className="text-[13px] text-white/60 mt-0.5">Read-only view of this vigilance entry</DialogDescription>
+              </div>
             </div>
           </div>
 
-          <div className="px-6 py-5 space-y-5">
+          <div className="px-6 py-5 space-y-5 bg-slate-50/40">
             {/* Employee / Date strip */}
             <div className="grid grid-cols-2 gap-3">
               <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
@@ -1373,8 +1376,8 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
             </div>
           </div>
 
-          <div className="flex justify-end px-6 py-4 border-t border-slate-100 bg-slate-50/60">
-            <Button onClick={() => setDraft(null)} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg" data-testid="vig-dialog-close">Close</Button>
+          <div className="flex justify-end px-6 py-4 border-t border-slate-100 bg-white">
+            <Button onClick={() => setDraft(null)} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg px-6" data-testid="vig-dialog-close">Close</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -1390,19 +1393,22 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
 
   return (
     <Dialog open onOpenChange={(o) => !o && setDraft(null)}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0" data-testid="vig-entry-dialog">
-        {/* Header */}
-        <div className="flex items-start gap-3.5 px-6 pt-6 pb-5 border-b border-slate-100">
-          {draft.target_employee_name
-            ? <Avatar name={draft.target_employee_name} />
-            : <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[#0b1f3b]"><ShieldCheck className="w-4 h-4" /></div>}
-          <div className="min-w-0 flex-1">
-            <DialogTitle className="text-lg font-bold text-slate-900 leading-tight">{isEdit ? `Edit Vigilance Entry` : 'Add Vigilance Entry'}{draft.target_employee_name ? ` — ${draft.target_employee_name}` : ''}</DialogTitle>
-            <DialogDescription className="text-sm text-slate-500 mt-0.5">Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.</DialogDescription>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0 bg-white rounded-2xl border-0 shadow-2xl [&>button]:text-white/70 [&>button]:hover:text-white [&>button]:z-10" data-testid="vig-entry-dialog">
+        {/* Header — navy banner */}
+        <div className="relative bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
+          <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">{isEdit ? 'Edit Vigilance Entry' : 'Add Vigilance Entry'}</DialogTitle>
+          <div className="mt-3 flex items-start gap-3.5">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">
+              {draft.target_employee_name ? initialsOf(draft.target_employee_name) : <ShieldCheck className="w-5 h-5" />}
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-lg font-bold leading-tight truncate">{draft.target_employee_name || (isEdit ? 'Vigilance Entry' : 'New Vigilance Entry')}</div>
+              <DialogDescription className="text-[13px] text-white/60 mt-0.5">Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.</DialogDescription>
+            </div>
           </div>
         </div>
 
-        <div className="px-6 py-5 space-y-5">
+        <div className="px-6 py-5 space-y-5 bg-slate-50/40">
           {/* Employee + Date (add mode) */}
           {!isEdit && (
             <div className="grid grid-cols-2 gap-3">
@@ -1487,9 +1493,9 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 px-6 py-4 border-t border-slate-100 bg-slate-50/60">
+        <div className="flex justify-end gap-2 px-6 py-4 border-t border-slate-100 bg-white">
           <Button variant="outline" onClick={() => setDraft(null)} className="rounded-lg">Cancel</Button>
-          <Button onClick={onSave} disabled={saving} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg" data-testid="vig-dialog-save">
+          <Button onClick={onSave} disabled={saving} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg px-6" data-testid="vig-dialog-save">
             {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null} Save
           </Button>
         </div>
