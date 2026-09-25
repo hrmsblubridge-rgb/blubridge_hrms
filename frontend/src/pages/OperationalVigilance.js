@@ -778,16 +778,18 @@ function RowActions({ row, submission, onView, onEdit, onDelete, canView = true,
   );
 }
 
-// ===================== Vigilance own-view table (grouped headers) =====================
+// ===================== Vigilance own-view table (compact, grouped headers) =====================
+// Own view has a single vigilance author (the viewer), so it collapses to a flat
+// table showing only Research Hours + Total Break Hours. Detailed break rows remain
+// available via the View / Edit dialog.
 function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete }) {
-  const labels = data.break_labels || [];
-  const colCount = 12 + labels.length * 3;
+  const colCount = 9;
   const bandTh = 'vig-sticky-h1 top-0 z-30 bg-[#eef2f9] px-3 py-2.5 text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-slate-200';
   const labelTh = 'vig-sticky-h2 z-20 bg-slate-50 px-3 py-2.5 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap border-b border-slate-200';
   const td = 'px-3 py-3 text-[13px] text-slate-600 whitespace-nowrap';
-  const empScalars = [['Email-id', 'email'], ['Team', 'team']];
-  const attScalars = [['Date', 'date'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
-  const vigScalars = [['Sys In', 'system_login'], ['Sys Out', 'system_logout'], ['Research', 'total_research_hours'], ['Break Hrs', 'total_break_hours']];
+  const empCols = [['Date', 'date'], ['Team', 'team']];
+  const attCols = [['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
+  const vigCols = [['Research Hours', 'total_research_hours'], ['Total Break', 'total_break_hours']];
 
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-own-table">
@@ -795,23 +797,16 @@ function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, 
         {/* Group band row */}
         <tr>
           <th colSpan={3} className={`${bandTh} text-left`}>Employee</th>
-          <th colSpan={4} className={`${bandTh} text-left border-l border-slate-200`}>Attendance</th>
-          <th colSpan={4} className={`${bandTh} text-left border-l border-slate-200`}>Vigilance / Research</th>
-          {labels.map(l => (
-            <th key={l} colSpan={3} className={`${bandTh} text-center border-l border-slate-200 bg-emerald-50/70 text-emerald-800`}>{l}</th>
-          ))}
+          <th colSpan={3} className={`${bandTh} text-left border-l border-slate-200`}>Attendance</th>
+          <th colSpan={2} className={`${bandTh} text-left border-l border-slate-200`}>Vigilance</th>
           <th rowSpan={2} className="vig-sticky-h1 top-0 z-40 bg-[#eef2f9] px-3 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-l border-slate-200 min-w-[130px]">Actions</th>
         </tr>
         {/* Column label row */}
         <tr>
-          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} className={`${labelTh} min-w-[200px]`} />
-          {empScalars.map(([h, k]) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={labelTh} />)}
-          {attScalars.map(([h, k], i) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={`${labelTh} ${i === 0 ? 'border-l border-slate-200' : ''}`} />)}
-          {vigScalars.map(([h, k], i) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={`${labelTh} ${i === 0 ? 'border-l border-slate-200' : ''}`} />)}
-          {labels.map(l => ['From', 'To', 'Total'].map((s, i) => (
-            <SortHeader key={l + s} label={s} sortKey={`break:${l}:${s.toLowerCase()}`} sort={sort} onSort={onSort} align="center"
-              className={`vig-sticky-h2 z-20 bg-slate-50 px-2 py-2.5 text-center text-[12px] font-semibold text-slate-600 border-b border-slate-200 ${i === 0 ? 'border-l border-slate-200' : ''}`} />
-          )))}
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} className={`${labelTh} min-w-[220px]`} />
+          {empCols.map(([h, k]) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={labelTh} />)}
+          {attCols.map(([h, k], i) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={`${labelTh} ${i === 0 ? 'border-l border-slate-200' : ''}`} />)}
+          {vigCols.map(([h, k], i) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={`${labelTh} ${i === 0 ? 'border-l border-slate-200' : ''}`} />)}
         </tr>
       </thead>
       <tbody>
@@ -819,61 +814,51 @@ function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, 
           <tr><td colSpan={colCount} className="text-center py-16"><Loader2 className="w-6 h-6 animate-spin text-slate-400 inline" /></td></tr>
         ) : rows.length === 0 ? (
           <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No active employees for the selected date range.</td></tr>
-        ) : rows.map(row => {
-          const bmap = Object.fromEntries((row.breaks || []).map(b => [b.label, b]));
-          return (
-            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-own-row">
-              <td className="px-3 py-2.5 min-w-[200px]">
-                <div className="flex items-center gap-2.5">
-                  <Avatar name={row.target_employee_name} />
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
-                    {row.target_email && <div className="text-[11px] text-slate-400 truncate">{row.target_email}</div>}
-                  </div>
+        ) : rows.map(row => (
+          <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-own-row">
+            <td className="px-3 py-2.5 min-w-[220px]">
+              <div className="flex items-center gap-2.5">
+                <Avatar name={row.target_employee_name} />
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
+                  {row.target_email && <div className="text-[11px] text-slate-400 truncate">{row.target_email}</div>}
                 </div>
-              </td>
-              <td className={`${td} text-slate-400`}>{row.target_email || '—'}</td>
-              <td className={td}>{row.target_team || '—'}</td>
-              <td className={`${td} border-l border-slate-100`}>{row.date_display}</td>
-              <td className={td}>{row.punch_in || '—'}</td>
-              <td className={td}>{row.punch_out || '—'}</td>
-              <td className="px-3 py-3 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{row.total_hours || '—'}</td>
-              <td className={`px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap border-l border-slate-100`}>{row.system_login || '—'}</td>
-              <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap">{row.system_logout || '—'}</td>
-              <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap">{row.total_research_hours || '—'}</td>
-              <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap">{row.total_break_hours || '—'}</td>
-              {labels.map(l => {
-                const b = bmap[l] || {};
-                return ['from', 'to', 'total'].map((k, i) => (
-                  <td key={l + k} className={`px-2 py-3 text-center text-[13px] text-slate-600 whitespace-nowrap ${i === 0 ? 'border-l border-slate-100' : ''}`}>{b[k] || '—'}</td>
-                ));
-              })}
-              <td className="px-3 py-2.5 border-l border-slate-100">
-                <RowActions row={row} submission={row} onView={onView} onEdit={onEdit} onDelete={onDelete}
-                  canView={!!row.id} editTitle={row.id ? 'Edit' : 'Add observation'} />
-              </td>
-            </tr>
-          );
-        })}
+              </div>
+            </td>
+            <td className={td}>{row.date_display}</td>
+            <td className={td}>{row.target_team || '—'}</td>
+            <td className={`${td} border-l border-slate-100`}>{row.punch_in || '—'}</td>
+            <td className={td}>{row.punch_out || '—'}</td>
+            <td className="px-3 py-3 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{row.total_hours || '—'}</td>
+            <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap border-l border-slate-100">{row.total_research_hours || '—'}</td>
+            <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap">{row.total_break_hours || '—'}</td>
+            <td className="px-3 py-2.5 border-l border-slate-100">
+              <RowActions row={row} submission={row} onView={onView} onEdit={onEdit} onDelete={onDelete}
+                canView={!!row.id} editTitle={row.id ? 'Edit' : 'Add observation'} />
+            </td>
+          </tr>
+        ))}
       </tbody>
     </table>
   );
 }
 
-// ===================== Admin merged table =====================
+// ===================== Admin merged table (compact, dynamic vigilance-team columns) =====================
+// Each vigilance team member (dynamic, from data.uploaders) gets exactly two columns:
+// Research Hours + Total Break Hours. Raw break From/To/Total and Sys In/Out are no
+// longer shown in the main table — they stay accessible via the View / Edit dialog.
 function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete }) {
-  const labels = data.break_labels || [];
   const uploaders = data.uploaders || [];
-  const perUploaderCols = 4 + labels.length * 3; // sys login/out, research, break + breaks
-  const colCount = 7 + Math.max(uploaders.length, 0) * perUploaderCols + 1;
+  const perUploaderCols = 2; // Research Hours, Total Break Hours
+  const colCount = 6 + uploaders.length * perUploaderCols + 1;
   const baseTh = 'vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap';
-  const baseScalars = [['Email-id', 'email'], ['Team', 'team'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
+  const baseScalars = [['Team', 'team'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-admin-table">
       <thead>
         <tr className="bg-slate-100 text-slate-600">
-          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold min-w-[210px]" />
-          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-[210px] z-40 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold min-w-[115px]" />
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold min-w-[220px]" />
+          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-[220px] z-40 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold min-w-[115px]" />
           {baseScalars.map(([h, k]) => (
             <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} rowSpan={2} className={baseTh} />
           ))}
@@ -886,7 +871,7 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
         </tr>
         <tr className="bg-slate-50 text-[11px] text-slate-500">
           {uploaders.map((u) => (
-            <FragmentCols key={u.employee_id} ukey={u.employee_id} labels={labels} sort={sort} onSort={onSort} firstClass="border-l-2 border-slate-300" />
+            <FragmentCols key={u.employee_id} ukey={u.employee_id} sort={sort} onSort={onSort} firstClass="border-l-2 border-slate-300" />
           ))}
         </tr>
       </thead>
@@ -899,7 +884,7 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
           const subByUp = Object.fromEntries((row.submissions || []).map(s => [s.uploaded_by_employee_id, s]));
           return (
             <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-admin-row">
-              <td className="sticky left-0 bg-white z-20 px-3 py-2.5 min-w-[210px]">
+              <td className="sticky left-0 bg-white z-20 px-3 py-2.5 min-w-[220px]">
                 <div className="flex items-center gap-2.5">
                   <Avatar name={row.target_employee_name} />
                   <div className="min-w-0">
@@ -908,19 +893,14 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
                   </div>
                 </div>
               </td>
-              <td className="sticky left-[210px] bg-white z-20 px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.date_display}</td>
-              <td className="px-3 py-2.5 text-[13px] text-slate-400 whitespace-nowrap">{row.target_email || '—'}</td>
+              <td className="sticky left-[220px] bg-white z-20 px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.date_display}</td>
               <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
               <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
               <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
               <td className="px-3 py-2.5 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{row.total_hours || '—'}</td>
-              {uploaders.map((u) => {
-                const s = subByUp[u.employee_id];
-                const bmap = s ? Object.fromEntries((s.breaks || []).map(b => [b.label, b])) : {};
-                return (
-                  <FragmentData key={u.employee_id} ukey={u.employee_id} s={s} bmap={bmap} labels={labels} firstClass="border-l-2 border-slate-200" />
-                );
-              })}
+              {uploaders.map((u) => (
+                <FragmentData key={u.employee_id} ukey={u.employee_id} s={subByUp[u.employee_id]} firstClass="border-l-2 border-slate-200" />
+              ))}
               <td className="sticky right-0 bg-white z-20 px-2 py-2 border-l border-slate-100 min-w-[150px]" data-testid="vig-admin-actions">
                 {(row.submissions || []).length === 0 ? (
                   <span className="block text-center text-slate-300">—</span>
@@ -962,45 +942,24 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
   );
 }
 
-function FragmentCols({ labels, firstClass, ukey, sort, onSort }) {
-  const th = 'vig-sticky-h2 z-30 bg-slate-50 px-2 py-1.5 text-center';
-  const subs = [['Sys In', `up:${ukey}:system_login`], ['Sys Out', `up:${ukey}:system_logout`], ['Research', `up:${ukey}:total_research_hours`], ['Break', `up:${ukey}:total_break_hours`]];
+function FragmentCols({ firstClass, ukey, sort, onSort }) {
+  const th = 'vig-sticky-h2 z-30 bg-slate-50 px-3 py-1.5 text-center whitespace-nowrap';
+  const subs = [['Research', `up:${ukey}:total_research_hours`], ['Total Break', `up:${ukey}:total_break_hours`]];
   return (
     <>
       {subs.map(([label, key], i) => (
         <SortHeader key={key} label={label} sortKey={key} sort={sort} onSort={onSort} align="center" className={`${th} ${i === 0 ? firstClass : ''}`} />
       ))}
-      {labels.map(l => ['From', 'To', 'Total'].map(s => (
-        <SortHeader key={`${ukey}-${l}-${s}`} label={`${l.replace('Break', 'Brk')} ${s}`} sortKey={`up:${ukey}:break:${l}:${s.toLowerCase()}`} sort={sort} onSort={onSort} align="center" className={`${th} whitespace-nowrap`} />
-      )))}
     </>
   );
 }
 
-function FragmentData({ s, bmap, labels, firstClass, ukey }) {
-  const cell = (v, extra = '') => <td className={`px-2 py-2.5 text-center text-[13px] text-slate-700 whitespace-nowrap ${extra}`}>{v || '—'}</td>;
-  if (!s) {
-    return (
-      <>
-        {cell('', firstClass)}{cell('')}{cell('')}{cell('')}
-        {labels.map(l => ['from', 'to', 'total'].map(k => (
-          <td key={`${ukey}-${l}-${k}`} className="px-2 py-2.5 text-center text-slate-400 whitespace-nowrap">—</td>
-        )))}
-      </>
-    );
-  }
-  return (
-    <>
-      {cell(s.system_login, firstClass)}{cell(s.system_logout)}{cell(s.total_research_hours)}{cell(s.total_break_hours)}
-      {labels.map(l => {
-        const b = bmap[l] || {};
-        return ['from', 'to', 'total'].map(k => (
-          <td key={`${ukey}-${l}-${k}`} className="px-2 py-2.5 text-center text-[13px] text-slate-700 whitespace-nowrap">{b[k] || '—'}</td>
-        ));
-      })}
-    </>
-  );
+function FragmentData({ s, firstClass }) {
+  const cell = (v, extra = '') => <td className={`px-3 py-2.5 text-center text-[13px] whitespace-nowrap ${v ? 'text-slate-700' : 'text-slate-400'} ${extra}`}>{v || '—'}</td>;
+  if (!s) return (<>{cell('', firstClass)}{cell('')}</>);
+  return (<>{cell(s.total_research_hours, firstClass)}{cell(s.total_break_hours)}</>);
 }
+
 
 // ===================== Pagination bar =====================
 function PaginationBar({ page, setPage, rowsPerPage, setRowsPerPage, total }) {
