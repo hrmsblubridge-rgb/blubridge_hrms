@@ -11,7 +11,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import {
-  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+  Dialog, DialogContent, DialogTitle, DialogDescription,
 } from '../components/ui/dialog';
 import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
@@ -1116,8 +1116,6 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
   };
   const addBreak = () => update({ breaks: [...draft.breaks, { label: `Extra-Break${draft.breaks.length + 1}`, from: '', to: '', total: '' }] });
   const removeBreak = (i) => update({ breaks: draft.breaks.filter((_, idx) => idx !== i) });
-  const title = ro ? `View Vigilance Entry — ${draft.target_employee_name || ''}`
-    : isEdit ? `Edit Vigilance Entry — ${draft.target_employee_name || ''}` : 'Add Vigilance Entry';
 
   // ---------- Polished read-only VIEW ----------
   if (ro) {
@@ -1219,75 +1217,118 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
     );
   }
 
+  const fields = [
+    { key: 'system_login', label: 'System Login', hint: '24h e.g. 13:45', ph: '13:45', icon: LogIn, tint: 'text-emerald-600 bg-emerald-50', testid: 'vig-dialog-sys-login' },
+    { key: 'system_logout', label: 'System Logout', hint: '24h e.g. 18:30', ph: '18:30', icon: LogOut, tint: 'text-rose-600 bg-rose-50', testid: 'vig-dialog-sys-logout' },
+    { key: 'total_research_hours', label: 'Total Research Hours', hint: 'HH:MM or HH:MM:SS', ph: '10:00', icon: Microscope, tint: 'text-[#0b1f3b] bg-[#0b1f3b]/[0.07]', testid: 'vig-dialog-research' },
+    { key: 'total_break_hours', label: 'Total Break Hours', hint: 'HH:MM or HH:MM:SS', ph: '01:00', icon: Coffee, tint: 'text-amber-600 bg-amber-50', testid: 'vig-dialog-break' },
+  ];
+
   return (
     <Dialog open onOpenChange={(o) => !o && setDraft(null)}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto" data-testid="vig-entry-dialog">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{ro ? 'Read-only view of this vigilance entry.' : 'Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.'}</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0" data-testid="vig-entry-dialog">
+        {/* Header */}
+        <div className="flex items-start gap-3.5 px-6 pt-6 pb-5 border-b border-slate-100">
+          {draft.target_employee_name
+            ? <Avatar name={draft.target_employee_name} />
+            : <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[#0b1f3b]"><ShieldCheck className="w-4 h-4" /></div>}
+          <div className="min-w-0 flex-1">
+            <DialogTitle className="text-lg font-bold text-slate-900 leading-tight">{isEdit ? `Edit Vigilance Entry` : 'Add Vigilance Entry'}{draft.target_employee_name ? ` — ${draft.target_employee_name}` : ''}</DialogTitle>
+            <DialogDescription className="text-sm text-slate-500 mt-0.5">Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.</DialogDescription>
+          </div>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          {/* Employee + Date (add mode) */}
           {!isEdit && (
             <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="text-sm mb-1.5 block">Employee</Label>
+              <div className="rounded-xl border border-slate-200 bg-white p-3.5">
+                <Label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"><User className="w-3.5 h-3.5" /> Employee</Label>
                 <Select value={draft.target_employee_id} onValueChange={(v) => update({ target_employee_id: v })}>
-                  <SelectTrigger data-testid="vig-dialog-employee"><SelectValue placeholder="Select employee" /></SelectTrigger>
+                  <SelectTrigger className="rounded-lg" data-testid="vig-dialog-employee"><SelectValue placeholder="Select employee" /></SelectTrigger>
                   <SelectContent className="max-h-64">
                     {employees.map(e => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
-              <div>
-                <Label className="text-sm mb-1.5 block">Date</Label>
-                <DatePicker value={draft.date} onChange={(v) => update({ date: v })} data-testid="vig-dialog-date" />
+              <div className="rounded-xl border border-slate-200 bg-white p-3.5">
+                <Label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"><CalendarDays className="w-3.5 h-3.5" /> Date</Label>
+                <DatePicker value={draft.date} onChange={(v) => update({ date: v })} className="rounded-lg" data-testid="vig-dialog-date" />
               </div>
             </div>
           )}
-          {ro && (
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div><Label className="text-xs text-slate-500 mb-0.5 block">Employee</Label><div className="font-medium text-slate-800">{draft.target_employee_name || '—'}</div></div>
-              <div><Label className="text-xs text-slate-500 mb-0.5 block">Date</Label><div className="font-medium text-slate-800">{draft.date || '—'}</div></div>
+          {isEdit && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
+                <User className="w-4 h-4 text-slate-400 shrink-0" />
+                <div className="min-w-0"><div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Employee</div><div className="text-sm font-semibold text-slate-800 truncate">{draft.target_employee_name || '—'}</div></div>
+              </div>
+              <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
+                <CalendarDays className="w-4 h-4 text-slate-400 shrink-0" />
+                <div className="min-w-0"><div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Date</div><div className="text-sm font-semibold text-slate-800 truncate">{fmtDisplayDate(draft.date)}</div></div>
+              </div>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
-            <div><Label className="text-sm mb-1.5 block">System Login <span className="text-slate-400">(24h e.g. 13:45)</span></Label>
-              <Input value={draft.system_login} disabled={ro} onChange={(e) => update({ system_login: e.target.value })} placeholder="13:45" data-testid="vig-dialog-sys-login" /></div>
-            <div><Label className="text-sm mb-1.5 block">System Logout <span className="text-slate-400">(24h e.g. 18:30)</span></Label>
-              <Input value={draft.system_logout} disabled={ro} onChange={(e) => update({ system_logout: e.target.value })} placeholder="18:30" data-testid="vig-dialog-sys-logout" /></div>
-            <div><Label className="text-sm mb-1.5 block">Total Research Hours <span className="text-slate-400">(HH:MM or HH:MM:SS)</span></Label>
-              <Input value={draft.total_research_hours} disabled={ro} onChange={(e) => update({ total_research_hours: e.target.value })} placeholder="10:00" data-testid="vig-dialog-research" /></div>
-            <div><Label className="text-sm mb-1.5 block">Total Break Hours <span className="text-slate-400">(HH:MM or HH:MM:SS)</span></Label>
-              <Input value={draft.total_break_hours} disabled={ro} onChange={(e) => update({ total_break_hours: e.target.value })} placeholder="01:00" data-testid="vig-dialog-break" /></div>
+
+          {/* Metric fields */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {fields.map(({ key, label, hint, ph, icon: Icon, tint, testid }) => (
+              <div key={key} className="rounded-xl border border-slate-200 bg-white p-3.5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`inline-flex h-7 w-7 items-center justify-center rounded-lg ${tint}`}><Icon className="w-3.5 h-3.5" /></span>
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-semibold text-slate-700 leading-tight">{label}</div>
+                    <div className="text-[10px] text-slate-400 leading-tight">{hint}</div>
+                  </div>
+                </div>
+                <Input value={draft[key]} onChange={(e) => update({ [key]: e.target.value })} placeholder={ph} className="rounded-lg tabular-nums" data-testid={testid} />
+              </div>
+            ))}
           </div>
 
+          {/* Breaks editor */}
           <div>
-            <div className="flex items-center justify-between mb-2">
-              <Label className="text-sm font-semibold">Breaks</Label>
-              {!ro && <Button size="sm" variant="outline" onClick={addBreak} className="h-8" data-testid="vig-dialog-add-break"><Plus className="w-3.5 h-3.5 mr-1" /> Add Break</Button>}
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-slate-400" />
+                <h4 className="text-sm font-semibold text-slate-700">Breaks</h4>
+                <span className="text-xs text-slate-400">({draft.breaks.length})</span>
+              </div>
+              <Button size="sm" variant="outline" onClick={addBreak} className="h-8 rounded-lg" data-testid="vig-dialog-add-break"><Plus className="w-3.5 h-3.5 mr-1" /> Add Break</Button>
             </div>
-            <div className="space-y-2">
-              {draft.breaks.length === 0 && <p className="text-xs text-slate-400">No breaks added.</p>}
-              {draft.breaks.map((b, i) => (
-                <div key={i} className="grid grid-cols-12 gap-2 items-center">
-                  <Input className="col-span-4 h-9" disabled={ro} value={b.label} onChange={(e) => updateBreak(i, { label: e.target.value })} placeholder="Break label" />
-                  <Input className="col-span-3 h-9" disabled={ro} value={b.from || ''} onChange={(e) => updateBreak(i, { from: e.target.value })} placeholder="From 13:00" />
-                  <Input className="col-span-2 h-9" disabled={ro} value={b.to || ''} onChange={(e) => updateBreak(i, { to: e.target.value })} placeholder="To 13:15" />
-                  <Input className="col-span-2 h-9 bg-slate-50 text-slate-600" disabled value={computeBreakTotal(b.from, b.to)} placeholder="auto" title="Auto-calculated: To − From" data-testid={`vig-dialog-break-total-${i}`} />
-                  {!ro && <button onClick={() => removeBreak(i)} className="col-span-1 text-slate-400 hover:text-red-600"><X className="w-4 h-4" /></button>}
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                <div className="col-span-4">Break</div>
+                <div className="col-span-3">From</div>
+                <div className="col-span-2">To</div>
+                <div className="col-span-2">Total</div>
+                <div className="col-span-1" />
+              </div>
+              {draft.breaks.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm text-slate-400">No breaks added. Use “Add Break” to record one.</div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {draft.breaks.map((b, i) => (
+                    <div key={i} className="grid grid-cols-12 gap-2 items-center px-3 py-2.5">
+                      <Input className="col-span-4 h-9 rounded-lg" value={b.label} onChange={(e) => updateBreak(i, { label: e.target.value })} placeholder="Break label" />
+                      <Input className="col-span-3 h-9 rounded-lg tabular-nums" value={b.from || ''} onChange={(e) => updateBreak(i, { from: e.target.value })} placeholder="13:00" />
+                      <Input className="col-span-2 h-9 rounded-lg tabular-nums" value={b.to || ''} onChange={(e) => updateBreak(i, { to: e.target.value })} placeholder="13:15" />
+                      <Input className="col-span-2 h-9 rounded-lg bg-slate-50 text-[#0b1f3b] font-semibold tabular-nums" disabled value={computeBreakTotal(b.from, b.to)} placeholder="auto" title="Auto-calculated: To − From" data-testid={`vig-dialog-break-total-${i}`} />
+                      <button onClick={() => removeBreak(i)} className="col-span-1 flex items-center justify-center text-slate-400 hover:text-red-600 transition-colors" aria-label="Remove break"><X className="w-4 h-4" /></button>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
           </div>
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setDraft(null)}>{ro ? 'Close' : 'Cancel'}</Button>
-          {!ro && (
-            <Button onClick={onSave} disabled={saving} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90" data-testid="vig-dialog-save">
-              {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null} Save
-            </Button>
-          )}
-        </DialogFooter>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t border-slate-100 bg-slate-50/60">
+          <Button variant="outline" onClick={() => setDraft(null)} className="rounded-lg">Cancel</Button>
+          <Button onClick={onSave} disabled={saving} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg" data-testid="vig-dialog-save">
+            {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null} Save
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   );
