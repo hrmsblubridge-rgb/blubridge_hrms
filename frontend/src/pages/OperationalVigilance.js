@@ -1086,7 +1086,7 @@ function SubmissionCard({ s, row, onEdit, onDelete }) {
           </button>
           <div className={`grid transition-all duration-200 ease-out ${open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
             <div className="overflow-hidden">
-              <div className="px-4 pb-3 pt-1" data-testid="vig-break-details">
+              <div className="px-4 pb-3 pt-1" data-testid="vig-break-details" aria-hidden={!open}>
                 {breaks.length === 0 ? (
                   <div className="text-sm text-slate-400 py-2">No individual breaks recorded.</div>
                 ) : (

@@ -1,5 +1,28 @@
 # HRMS Changelog
 
+## 2026-09-25 — Vigilance admin table 3-tier header + centered detail modal (frontend-only)
+Redesigned the admin Operational Vigilance table and its detail experience in
+`OperationalVigilance.js`. No backend/API/DB/calculation/permission changes.
+- **3-tier grouped header**: Tier1 bands = Employee | Attendance | centered light-blue
+  **Vigilance Team** | Actions; Tier2 = base labels + each member's name centered
+  spanning its two columns; Tier3 = Research / Break. Members are dynamic from
+  `data.uploaders` (never hardcoded). New `.vig-sticky-h3` CSS + measured `--vig-h2`
+  drive the 3-tier sticky header; frozen columns dropped (synced top scrollbar handles
+  horizontal scroll).
+- **Single View (eye) button** per employee/day row (`vig-view-detail-btn`) replaces the
+  old stacked per-submission View/Edit/Delete.
+- New **centered modal** (`vig-detail-modal`, not a right drawer): sticky header
+  (employee/email/date•team), Attendance summary, and "Vigilance Team Submissions (N)"
+  — one card per submitter with Research Hours and a **Total Break Hours accordion**
+  (collapsed by default; expands to per-break From→To + Duration). Each card has its
+  own Edit and Delete. Edit closes the modal and opens the pre-filled entry dialog;
+  Delete opens a confirm naming employee/date/submitter. ESC + scroll-lock handled;
+  collapsed accordion content marked `aria-hidden`.
+Verification: testing_agent iteration_87 — **100%** of executable checks (header tiers,
+dynamic members, single view, centered modal, accordion, per-submitter mapping,
+edit/delete, ESC/scroll-lock, sorts, permissions, 390px). Own-view (/employee/vigilance)
+not re-exercised due to vigilance-user password drift (unchanged code path).
+
 ## 2026-09-25 — Vigilance "View Entry" dialog redesign (frontend-only)
 Redesigned the read-only View dialog in `OperationalVigilance.js`: avatar header,
 Employee/Date info strip, four icon metric cards (System Login/Logout, Total Research,

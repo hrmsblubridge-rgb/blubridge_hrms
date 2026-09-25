@@ -1,0 +1,45 @@
+{
+  "summary": "Frontend-only verification of the OperationalVigilance admin redesign (3-tier grouped header + single-eye action + centered VigilanceDetailModal + per-submission accordion). Executed via Playwright against the preview URL as admin/HrAdmin@2109. All redesign requirements verified end-to-end. One environmental blocker: vigilance employee logins (madhan.s / dinesh.t with Vigil@123) both return 'Invalid credentials' so the own-view (/employee/vigilance) UI could not be actively exercised this iteration. Credentials file itself flags these accounts as 'drifts frequently' — this is NOT a regression of the current change (own view code was not touched).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "verified": {
+    "tier1_bands": "Employee | Attendance | centered Vigilance Team (vig-team-band count=1) | Actions",
+    "tier2_member_bands": "vig-member-band count=2 — 'Dinesh T', 'Madhan S' (dynamic from data.uploaders)",
+    "tier3_research_break": "Under each member (visible in screenshot)",
+    "dynamic_member_count": "2 uploaders => 4 vigilance columns; per-member sort testids vig-sort-up:*:total_research_hours and vig-sort-up:*:total_break_hours count=4",
+    "single_view_button": "25 admin rows -> 25 vig-view-detail-btn eye icons; OLD vig-admin-view-btn / vig-admin-edit-btn / vig-admin-delete-btn all absent (count=0)",
+    "no_summary_cards": "vig-summary count=0 (correctly removed)",
+    "modal_centered": "At 1920x1080, vig-detail-modal bbox x=530 w=860 => center=960 = viewport center (NOT a right drawer)",
+    "modal_content": "Header shows employee (Adari Rama Sukanya / rama.sukanya@blubridge.com / 01-Sep-2026 • Trainee), Attendance (Punch-In 08:24 AM, Punch-Out 10:13 PM, Total 13:48), 'Vigilance Team Submissions (2)' with one card per submitter (Madhan S, Dinesh T) — no cross-contamination",
+    "accordion_collapsed_by_default": "aria-expanded=false initially; toggling flips aria-expanded true/false correctly; chevron gains/loses rotate-180; content wrapper uses grid-rows-[0fr]->1fr transition (visually collapsed at 390px screenshot confirmed)",
+    "edit_flow": "Clicking vig-submission-edit closes vig-detail-modal and opens vig-entry-dialog (pre-filled for that submitter)",
+    "delete_flow": "Clicking vig-submission-delete opens vig-confirm-delete with text: 'You are about to delete a vigilance submission for Adari Rama Sukanya on 01-Sep-2026 submitted by Madhan S.' — cancel works, no data mutated",
+    "modal_dismissal": "ESC closes modal; body overflow=hidden while modal open (page behind does not scroll)",
+    "regression_sorts": "All base header sorts (name/date/team/punch_in/punch_out/total_hours) plus per-member sorts clickable/present",
+    "responsive_390": "Table wrapper scrolls horizontally within a 356px viewport; documentElement.scrollWidth <= innerWidth (no page overflow); centered modal near-full width x=10 w=370 (=390-20 padding)",
+    "permissions": "Normal user 'user/pass123' redirected from /vigilance -> /employee/dashboard; /employee/vigilance shows 'Checking access…' (no vig-own-table rendered)"
+  },
+  "not_verified": [
+    "Vigilance own view (/employee/vigilance) live check with madhan.s or dinesh.t: BOTH accounts respond 'Invalid credentials' at login. The credentials file (/app/memory/test_credentials.md) already notes these accounts 'drift frequently'. Own-view code path was NOT changed in this iteration, but a fresh password re-sync (SHA256 Vigil@123) is needed before regression can be re-exercised."
+  ],
+  "test_report_links": [],
+  "action_items": [
+    "Environmental (not this iteration's redesign): re-sync madhan.s and dinesh.t passwords to Vigil@123 so /employee/vigilance regression can be re-verified next run."
+  ],
+  "critical_code_review_comments": [
+    "OperationalVigilance.js is 1487 lines — well over the 700-line soft cap. Recommend splitting into AdminMergedTable.jsx, OwnTable.jsx, VigilanceDetailModal.jsx, SubmissionCard.jsx, EntryDialog.jsx to improve maintainability. Non-blocking.",
+    "vig-break-details node is always mounted (inside overflow-hidden grid) — screen readers may still expose collapsed content. Consider adding hidden={!open} or aria-hidden when collapsed for a11y."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped)", "frontend": "100% of redesign checks that could be executed; own-view live check blocked by credential drift"},
+  "test_credentials": "admin/HrAdmin@2109 works. madhan.s/Vigil@123 and dinesh.t/Vigil@123 both return 'Invalid credentials' in this environment.",
+  "seed_data_creation": "None. No data was created or deleted. Delete confirms were opened then cancelled.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Redesign passes. If retesting the /employee/vigilance own view, first restore the vigilance user passwords (Vigil@123) via the standard SHA256 hash_password reset for madhan.s/dinesh.t. Admin login is stable at admin/HrAdmin@2109.",
+  "rca of the issue": "N/A — no bugs found in this iteration's frontend redesign scope."
+}
