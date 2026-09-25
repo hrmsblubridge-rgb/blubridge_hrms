@@ -183,6 +183,7 @@ export default function OperationalVigilance() {
   const [deleteTarget, setDeleteTarget] = useState(null); // {id, employeeName, date, submitter}
   const [detailRow, setDetailRow] = useState(null);        // admin: row whose submissions are shown in the centered modal
   const reopenDetailKey = useRef(null);                    // row.key to reopen in the detail modal after a save from it
+  const reopenDetailMatch = useRef(null);                  // {key, empId, date} fallback matcher for the reopen
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [sort, setSort] = useState({ key: null, dir: null });
@@ -315,8 +316,12 @@ export default function OperationalVigilance() {
   // After a save that originated from the detail modal, reopen that row's modal with fresh values.
   useEffect(() => {
     if (!reopenDetailKey.current) return;
-    const r = (data.rows || []).find(x => x.key === reopenDetailKey.current);
+    const m = reopenDetailMatch.current || {};
+    const rows = data.rows || [];
+    const r = rows.find(x => x.key === reopenDetailKey.current)
+      || rows.find(x => x.target_employee_id === m.empId && x.date === m.date);
     reopenDetailKey.current = null;
+    reopenDetailMatch.current = null;
     if (r) setDetailRow(r);
   }, [data]);
 
@@ -501,7 +506,7 @@ export default function OperationalVigilance() {
   const openDetail = (row) => setDetailRow(row);
   // Edit a specific submission from within the detail modal (closes the modal first,
   // remembers the row so we can reopen it with refreshed values after a save).
-  const editFromDetail = (submission, row) => { setDetailRow(null); openEdit(submission, row, row.key); };
+  const editFromDetail = (submission, row) => { reopenDetailMatch.current = { key: row.key, empId: row.target_employee_id, date: row.date }; setDetailRow(null); openEdit(submission, row, row.key); };
   // Request deletion of a specific submission (with full context for the confirm dialog).
   const openDelete = (submission, row) => {
     setDetailRow(null);

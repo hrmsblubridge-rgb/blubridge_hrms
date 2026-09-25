@@ -1,5 +1,19 @@
 # HRMS Changelog
 
+## 2026-09-25 — Vigilance Edit/View: identify the submitter (Reported Employee vs Vigilance Team Member)
+Fixed the ambiguity when editing a submission from the admin Vigilance Details modal.
+The Edit/View dialog now clearly distinguishes two people via labelled ContextCards:
+**Reported Employee** (User icon — name, email, photo) and **Vigilance Team Member**
+(ShieldCheck icon, accent — the submitter, "Submitted by"), plus a Date card. Banner
+title reads "Edit Vigilance Submission" with subtitle "Submitted by <member> · <date>".
+The correct submission is loaded/saved per click (keyed by `submission.id`, unchanged) —
+editing one member never touches another, no duplicates. After a save launched from the
+modal, the detail modal auto-reopens for the same employee/day with refreshed values
+(match by row.key with employee_id+date fallback). Employee photos show in the modal
+header, submission cards and the dialog context cards. No backend/API/permission changes.
+Verification: testing_agent iteration_88 — **100%** (per-click identity, save isolation
+with data restored, reopen-after-save, avatars, 390px, permissions).
+
 ## 2026-09-25 — Vigilance admin table 3-tier header + centered detail modal (frontend-only)
 Redesigned the admin Operational Vigilance table and its detail experience in
 `OperationalVigilance.js`. No backend/API/DB/calculation/permission changes.
