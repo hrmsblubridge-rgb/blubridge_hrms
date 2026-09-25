@@ -983,40 +983,40 @@ function VigilanceDetailModal({ row, onClose, onEdit, onDelete }) {
   if (!row) return null;
   const subs = row.submissions || [];
   const att = [
-    ['Punch-In', row.punch_in],
-    ['Punch-Out', row.punch_out],
-    ['Total Hours', row.total_hours],
+    { label: 'Punch-In', value: row.punch_in, icon: LogIn, tint: 'text-emerald-600 bg-emerald-50' },
+    { label: 'Punch-Out', value: row.punch_out, icon: LogOut, tint: 'text-rose-600 bg-rose-50' },
+    { label: 'Total Hours', value: row.total_hours, icon: Clock, tint: 'text-[#0b1f3b] bg-[#0b1f3b]/[0.08]', strong: true },
   ];
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-[860px] w-[95vw] max-h-[85vh] p-0 gap-0 overflow-hidden flex flex-col" data-testid="vig-detail-modal">
-        {/* Sticky header */}
-        <div className="px-6 pt-6 pb-4 border-b border-slate-100 shrink-0">
-          <DialogTitle className="text-lg font-bold text-slate-900 leading-tight">Vigilance Details</DialogTitle>
-          <div className="mt-3 flex items-start gap-3">
-            <Avatar name={row.target_employee_name} />
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
-              {row.target_email && <div className="text-xs text-slate-400 truncate">{row.target_email}</div>}
-              <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
-                <CalendarDays className="w-3.5 h-3.5 text-slate-400" />
-                <span>{row.date_display}</span>
-                {row.target_team && <><span className="text-slate-300">•</span><span>{row.target_team}</span></>}
+      <DialogContent className="max-w-[840px] w-[95vw] max-h-[86vh] p-0 gap-0 overflow-hidden flex flex-col bg-white rounded-2xl border-0 shadow-2xl [&>button]:text-white/70 [&>button]:hover:text-white [&>button]:z-10" data-testid="vig-detail-modal">
+        {/* Sticky header — navy banner */}
+        <div className="relative shrink-0 bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
+          <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">Vigilance Details</DialogTitle>
+          <div className="mt-3 flex items-start gap-3.5">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">{initialsOf(row.target_employee_name)}</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-lg font-bold leading-tight truncate">{row.target_employee_name}</div>
+              {row.target_email && <div className="text-[13px] text-white/60 truncate">{row.target_email}</div>}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-white/90"><CalendarDays className="w-3.5 h-3.5" />{row.date_display}</span>
+                {row.target_team && <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-white/90"><User className="w-3.5 h-3.5" />{row.target_team}</span>}
               </div>
             </div>
           </div>
         </div>
 
         {/* Scrollable content */}
-        <div className="px-6 py-5 space-y-5 overflow-y-auto scroll-premium">
+        <div className="px-6 py-5 space-y-6 overflow-y-auto scroll-premium bg-slate-50/40">
           {/* Attendance */}
           <div>
-            <h4 className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-2">Attendance</h4>
-            <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
-              {att.map(([label, value]) => (
-                <div key={label} className="flex items-center justify-between px-4 py-2.5">
-                  <span className="text-sm text-slate-500">{label}</span>
-                  <span className={`text-sm tabular-nums ${label === 'Total Hours' ? 'font-bold text-slate-900' : 'font-medium text-slate-700'}`}>{value || '—'}</span>
+            <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2.5">Attendance</h4>
+            <div className="grid grid-cols-3 gap-3">
+              {att.map(({ label, value, icon: Icon, tint, strong }) => (
+                <div key={label} className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
+                  <div className={`inline-flex h-8 w-8 items-center justify-center rounded-lg ${tint}`}><Icon className="w-4 h-4" /></div>
+                  <div className="mt-2.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">{label}</div>
+                  <div className={`mt-0.5 tabular-nums ${strong ? 'text-xl font-bold text-slate-900' : 'text-base font-semibold text-slate-700'}`}>{value || '—'}</div>
                 </div>
               ))}
             </div>
@@ -1024,11 +1024,11 @@ function VigilanceDetailModal({ row, onClose, onEdit, onDelete }) {
 
           {/* Vigilance submissions */}
           <div>
-            <h4 className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-2">Vigilance Team Submissions ({subs.length})</h4>
+            <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2.5">Vigilance Team Submissions ({subs.length})</h4>
             {subs.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-sm text-slate-400">No vigilance submissions for this employee/date.</div>
+              <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-400">No vigilance submissions for this employee/date.</div>
             ) : (
-              <div className="space-y-3">
+              <div className="space-y-3.5">
                 {subs.map(s => <SubmissionCard key={s.id} s={s} row={row} onEdit={onEdit} onDelete={onDelete} />)}
               </div>
             )}
@@ -1036,8 +1036,8 @@ function VigilanceDetailModal({ row, onClose, onEdit, onDelete }) {
         </div>
 
         {/* Sticky footer */}
-        <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/60 flex justify-end shrink-0">
-          <Button onClick={onClose} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg" data-testid="vig-detail-close">Close</Button>
+        <div className="px-6 py-4 border-t border-slate-100 bg-white flex justify-end shrink-0">
+          <Button onClick={onClose} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg px-6" data-testid="vig-detail-close">Close</Button>
         </div>
       </DialogContent>
     </Dialog>
@@ -1048,64 +1048,76 @@ function SubmissionCard({ s, row, onEdit, onDelete }) {
   const [open, setOpen] = useState(false);
   const breaks = s.breaks || [];
   return (
-    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden" data-testid="vig-submission-card">
-      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100 bg-slate-50/50">
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden transition-shadow hover:shadow-md" data-testid="vig-submission-card">
+      {/* Card header */}
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100">
         <div className="flex items-center gap-2.5 min-w-0">
-          <Avatar name={s.uploaded_by_name} />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[11px] font-bold text-[#0b1f3b]">{initialsOf(s.uploaded_by_name)}</div>
           <div className="min-w-0">
             <div className="text-sm font-semibold text-slate-800 truncate">{s.uploaded_by_name || 'Vigilance member'}</div>
             <div className="text-[11px] text-slate-400 truncate">Submitted by {s.uploaded_by_name || '—'}</div>
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <Button size="sm" variant="outline" className="h-8 rounded-lg" onClick={() => onEdit(s, row)} data-testid="vig-submission-edit"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit</Button>
-          <Button size="sm" variant="outline" className="h-8 rounded-lg text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700" onClick={() => onDelete(s, row)} data-testid="vig-submission-delete"><Trash2 className="w-3.5 h-3.5" /></Button>
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={() => onEdit(s, row)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-[13px] font-medium text-[#0b1f3b] hover:bg-[#0b1f3b]/5 transition-colors" data-testid="vig-submission-edit"><Pencil className="w-3.5 h-3.5" /> Edit</button>
+              </TooltipTrigger>
+              <TooltipContent>Edit this submission</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={() => onDelete(s, row)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 hover:text-red-600 transition-colors" data-testid="vig-submission-delete" aria-label="Delete submission"><Trash2 className="w-3.5 h-3.5" /></button>
+              </TooltipTrigger>
+              <TooltipContent>Delete this submission</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
-      <div className="divide-y divide-slate-100">
-        {/* Research */}
-        <div className="flex items-center justify-between px-4 py-3">
-          <span className="text-sm text-slate-500">Research Hours</span>
-          <span className="text-sm font-semibold text-slate-900 tabular-nums">{s.total_research_hours || '—'}</span>
+
+      {/* Stat tiles */}
+      <div className="grid grid-cols-2 gap-3 p-3">
+        <div className="rounded-lg bg-slate-50 px-3.5 py-3">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400"><Microscope className="w-3.5 h-3.5" /> Research Hours</div>
+          <div className="mt-1 text-lg font-bold text-slate-900 tabular-nums">{s.total_research_hours || '—'}</div>
         </div>
-        {/* Total Break — accordion */}
-        <div>
-          <button
-            className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50/60 transition-colors text-left"
-            onClick={() => setOpen(o => !o)}
-            aria-expanded={open}
-            data-testid="vig-break-accordion-toggle">
-            <span className="flex items-center gap-1.5 text-sm text-slate-500">
-              Total Break Hours
-              {breaks.length > 0 && <span className="text-[11px] text-slate-400">({breaks.length})</span>}
-            </span>
-            <span className="flex items-center gap-2">
-              <span className="text-sm font-semibold text-slate-900 tabular-nums">{s.total_break_hours || '—'}</span>
-              <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
-            </span>
-          </button>
-          <div className={`grid transition-all duration-200 ease-out ${open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
-            <div className="overflow-hidden">
-              <div className="px-4 pb-3 pt-1" data-testid="vig-break-details" aria-hidden={!open}>
-                {breaks.length === 0 ? (
-                  <div className="text-sm text-slate-400 py-2">No individual breaks recorded.</div>
-                ) : (
-                  <div className="rounded-lg border border-slate-100 divide-y divide-slate-100">
-                    {breaks.map((b, i) => (
-                      <div key={i} className="flex items-center justify-between gap-3 px-3 py-2.5">
-                        <div className="min-w-0">
-                          <div className="text-[13px] font-medium text-slate-700 truncate">{b.label || `Break ${i + 1}`}</div>
-                          <div className="text-[12px] text-slate-400 tabular-nums">{b.from || '—'} <span className="text-slate-300">→</span> {b.to || '—'}</div>
-                        </div>
-                        <span className="inline-flex items-center rounded-md bg-[#0b1f3b]/[0.06] px-2 py-0.5 text-[13px] font-semibold text-[#0b1f3b] tabular-nums shrink-0">
-                          {b.total || computeBreakTotal(b.from, b.to) || '—'}
-                        </span>
-                      </div>
-                    ))}
+        {/* Break tile — toggles accordion */}
+        <button
+          type="button"
+          onClick={() => setOpen(o => !o)}
+          aria-expanded={open}
+          data-testid="vig-break-accordion-toggle"
+          className={`text-left rounded-lg px-3.5 py-3 transition-colors ${open ? 'bg-[#0b1f3b]/[0.06] ring-1 ring-[#0b1f3b]/15' : 'bg-slate-50 hover:bg-slate-100'}`}>
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400"><Coffee className="w-3.5 h-3.5" /> Total Break {breaks.length > 0 && <span className="text-slate-400">({breaks.length})</span>}</span>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${open ? 'rotate-180 text-[#0b1f3b]' : ''}`} />
+          </div>
+          <div className="mt-1 text-lg font-bold text-slate-900 tabular-nums">{s.total_break_hours || '—'}</div>
+        </button>
+      </div>
+
+      {/* Break details accordion */}
+      <div className={`grid transition-all duration-200 ease-out ${open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+        <div className="overflow-hidden">
+          <div className="px-3 pb-3.5 pt-0.5" data-testid="vig-break-details" aria-hidden={!open}>
+            {breaks.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-3 py-4 text-center text-sm text-slate-400">No individual breaks recorded.</div>
+            ) : (
+              <div className="rounded-lg border border-slate-100 overflow-hidden divide-y divide-slate-100">
+                {breaks.map((b, i) => (
+                  <div key={i} className="flex items-center justify-between gap-3 px-3.5 py-2.5 hover:bg-slate-50/60 transition-colors">
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium text-slate-700 truncate">{b.label || `Break ${i + 1}`}</div>
+                      <div className="text-[12px] text-slate-400 tabular-nums">{b.from || '—'} <span className="text-slate-300">→</span> {b.to || '—'}</div>
+                    </div>
+                    <span className="inline-flex items-center rounded-md bg-[#0b1f3b]/[0.06] px-2 py-0.5 text-[13px] font-semibold text-[#0b1f3b] tabular-nums shrink-0">
+                      {b.total || computeBreakTotal(b.from, b.to) || '—'}
+                    </span>
                   </div>
-                )}
+                ))}
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>
