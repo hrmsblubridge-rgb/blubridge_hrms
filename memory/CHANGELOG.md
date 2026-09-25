@@ -1,5 +1,24 @@
 # HRMS Changelog
 
+## 2026-09-25 — Vigilance Report table: compact dynamic per-member columns (frontend-only)
+Restructured the Operational Vigilance Report data table (`OperationalVigilance.js`)
+so the wide raw columns (Sys In/Out, per-break Morning/Lunch From/To/Total) are gone
+from the main view. No backend/API/DB/calculation/permission changes.
+- Each vigilance team member is now derived dynamically from `data.uploaders` (never
+  hardcoded) and shown as a group with exactly two columns: **Research** and
+  **Total Break** (dynamic count = uploaders × 2).
+- Admin column order: Name (sticky, email under) · Date (sticky) · Team · Punch-In ·
+  Punch-Out · Total Hours · [member: Research, Total Break]… · Actions (sticky right).
+- Own view collapsed to a flat compact table: Name · Date · Team · Punch-In ·
+  Punch-Out · Total Hours · Research · Total Break · Actions.
+- Detailed break data is untouched and still fully accessible via the View/Edit dialog.
+- Sorting on the new per-member columns + base columns preserved; per-member data is
+  mapped strictly by `subByUp[uploader.employee_id]` (no cross-contamination); empty
+  cells show a muted "—".
+Verification: testing_agent iteration_86 — frontend **100%** (dynamic column count,
+correct data mapping, detail preserved in dialog, no regressions, permission denial,
+390px no overflow).
+
 ## 2026-09-24 — Vigilance Report UI/UX Redesign (frontend-only)
 Redesigned `/app/frontend/src/pages/OperationalVigilance.js` (both `/vigilance` admin
 and `/employee/vigilance` own-view) into a modern enterprise layout. **No** backend,

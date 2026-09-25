@@ -1,0 +1,37 @@
+{
+  "summary": "Frontend-only verification of the compact per-member Vigilance Report table restructure. Verified as ADMIN (admin/HrAdmin@2109) at /vigilance and as Vigilance Employee (madhan.s/Vigil@123) at /employee/vigilance for date range 2026-09-01..2026-09-30, plus normal-employee denial (user/pass123). All acceptance criteria met.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "OperationalVigilance.js is now 1193 lines — approaching the 700-line guideline for splitting. Consider extracting AdminMergedTable, VigilanceOwnTable, FragmentCols/FragmentData, PaginationBar and the Add/Edit dialog into separate files under /pages/vigilance/ for maintainability. No functional impact this iteration."
+  ],
+  "verifications": {
+    "admin_table_present_data-testid_vig-admin-table": true,
+    "admin_base_columns_order": "Name, Date, Team, Punch-In, Punch-Out, Total Hours (all rowSpan=2) then per-uploader group headers then Actions",
+    "admin_dynamic_uploader_groups": "2 groups rendered (Dinesh T, Madhan S) — exactly matches uploaders returned by GET /api/vigilance/entries. Nothing hardcoded (uploaders come from data.uploaders).",
+    "admin_per_member_subcols": "Each group has exactly 2 sub-columns labelled 'Research' and 'Total Break'. Total per-uploader sort headers = 4 (2 uploaders x 2). Matches formula 6 + uploaders*2 + 1.",
+    "old_wide_columns_gone_admin": "No 'Sys In', 'Sys Out', 'Morning', 'Lunch', 'From' text found in vig-admin-table header.",
+    "data_mapping_correct": "Screenshot verified: e.g., Suyash Pandey 07-Sep-2026 row shows Dinesh T (01:25 / 01:07) and Madhan S (01:25 / 01:07) each under its own group; Mannan Pathak 04-Sep shows Dinesh T (02:38 / 00:00) and Madhan S (02:38 / 00:00). Values displayed are drawn from subByUp[uploader.employee_id] — one member's data does not appear under another. Empty submissions render '—' (muted).",
+    "sorting_works": "Base sort headers vig-sort-name/date/team/punch_in/punch_out/total_hours all present. Per-member sort headers (data-testid vig-sort-up:<uid>:total_research_hours and vig-sort-up:<uid>:total_break_hours) present for both uploaders and clickable (verified click).",
+    "view_edit_dialog_detail_preserved": "Admin vig-admin-view-btn opens vig-entry-dialog with a 'Breaks' section and full form controls (System Login, System Logout, Total Research Hours, Total Break Hours, Breaks list). Own view vig-view-btn/vig-edit-btn also opens vig-entry-dialog with 'Breaks' section — detailed break data was NOT deleted, only hidden from main table.",
+    "delete_confirm_still_opens": "vig-admin-delete-btn opens vig-confirm-delete dialog (cancelled without deleting).",
+    "own_view_layout": "vig-own-table headers: band row [Employee, Attendance, Vigilance, Actions] + labels [Name, Date, Team, Punch-In, Punch-Out, Total Hours, Research Hours, Total Break]. No Sys In/Out or break From/To/Total columns. colCount=9. Row actions vig-view-btn/vig-edit-btn/vig-delete-btn all present.",
+    "regression_buttons": "vig-filter-btn, vig-reset-btn, vig-filter-employee, vig-export-btn, vig-download-template-btn, vig-help-btn, vig-add-entry-btn, vig-prev-page, vig-next-page, vig-rows-per-page — all present.",
+    "permissions_denial": "Normal user (user/pass123): /vigilance -> /employee/dashboard (no vig-admin-table); /employee/vigilance -> /employee/dashboard (no vig-own-table). Redirect + hidden data confirmed.",
+    "responsive_390px": "At 390px viewport, document.documentElement.scrollWidth == innerWidth (390) — no page-level horizontal overflow. Table itself is inside a horizontal scroll container.",
+    "shift_wheel_horizontal_scroll": "Non-passive wheel handler is registered (onWheel with { passive: false } in useEffect at line ~232-245 of OperationalVigilance.js). Interactive dispatch of a synthetic WheelEvent from an already-authenticated context could not be re-verified after session drift, but code path is present and correctly attached.",
+    "console_errors": "Only benign pre-login 403 notification-bell noise (expected per agent note), no runtime errors on Vigilance page."
+  },
+  "success_rate": {"backend": "N/A (skipped)", "frontend": "100%"},
+  "test_credentials": "admin/HrAdmin@2109, madhan.s/Vigil@123, user/pass123 (all worked as documented)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Vigilance table compact restructure passes end-to-end. If future iterations touch OperationalVigilance.js, re-run the header-structure + data-mapping assertions and the permission denial checks. Login form uses placeholder-based selectors: input[placeholder*='username' i] and input[type='password']; there is no name='username' attribute."
+}
