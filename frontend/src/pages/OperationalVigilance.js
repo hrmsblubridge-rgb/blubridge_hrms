@@ -27,6 +27,7 @@ import {
   ShieldCheck, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText, BookOpen,
   UploadCloud, CheckCircle2, AlertCircle, ChevronRight as CaretRight, RotateCcw, Search,
+  LogIn, LogOut, Coffee, Microscope, CalendarDays, User, Clock,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -1117,6 +1118,106 @@ function EntryDialog({ draft, setDraft, onSave, saving, employees }) {
   const removeBreak = (i) => update({ breaks: draft.breaks.filter((_, idx) => idx !== i) });
   const title = ro ? `View Vigilance Entry — ${draft.target_employee_name || ''}`
     : isEdit ? `Edit Vigilance Entry — ${draft.target_employee_name || ''}` : 'Add Vigilance Entry';
+
+  // ---------- Polished read-only VIEW ----------
+  if (ro) {
+    const metrics = [
+      { icon: LogIn, label: 'System Login', value: draft.system_login, tint: 'text-emerald-600 bg-emerald-50' },
+      { icon: LogOut, label: 'System Logout', value: draft.system_logout, tint: 'text-rose-600 bg-rose-50' },
+      { icon: Microscope, label: 'Total Research Hours', value: draft.total_research_hours, tint: 'text-[#0b1f3b] bg-[#0b1f3b]/[0.07]' },
+      { icon: Coffee, label: 'Total Break Hours', value: draft.total_break_hours, tint: 'text-amber-600 bg-amber-50' },
+    ];
+    return (
+      <Dialog open onOpenChange={(o) => !o && setDraft(null)}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0" data-testid="vig-entry-dialog">
+          {/* Header */}
+          <div className="flex items-start gap-3.5 px-6 pt-6 pb-5 border-b border-slate-100">
+            <Avatar name={draft.target_employee_name} />
+            <div className="min-w-0 flex-1">
+              <DialogTitle className="text-lg font-bold text-slate-900 leading-tight">{draft.target_employee_name || 'Vigilance Entry'}</DialogTitle>
+              <DialogDescription className="text-sm text-slate-500 mt-0.5">Read-only view of this vigilance entry</DialogDescription>
+            </div>
+          </div>
+
+          <div className="px-6 py-5 space-y-5">
+            {/* Employee / Date strip */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
+                <User className="w-4 h-4 text-slate-400 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Employee</div>
+                  <div className="text-sm font-semibold text-slate-800 truncate">{draft.target_employee_name || '—'}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2.5 rounded-xl bg-slate-50 px-3.5 py-3">
+                <CalendarDays className="w-4 h-4 text-slate-400 shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Date</div>
+                  <div className="text-sm font-semibold text-slate-800 truncate">{fmtDisplayDate(draft.date)}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Metric cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {metrics.map(({ icon: Icon, label, value, tint }) => (
+                <div key={label} className="rounded-xl border border-slate-200 bg-white p-3.5">
+                  <div className={`inline-flex h-8 w-8 items-center justify-center rounded-lg ${tint}`}>
+                    <Icon className="w-4 h-4" />
+                  </div>
+                  <div className="mt-2.5 text-[11px] font-medium uppercase tracking-wide text-slate-400 leading-tight">{label}</div>
+                  <div className="mt-0.5 text-lg font-bold text-slate-900 tabular-nums">{value || '—'}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Breaks */}
+            <div>
+              <div className="flex items-center gap-2 mb-2.5">
+                <Clock className="w-4 h-4 text-slate-400" />
+                <h4 className="text-sm font-semibold text-slate-700">Breaks</h4>
+                <span className="text-xs text-slate-400">({draft.breaks.length})</span>
+              </div>
+              {draft.breaks.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-6 text-center text-sm text-slate-400">No breaks recorded for this entry.</div>
+              ) : (
+                <div className="rounded-xl border border-slate-200 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                        <th className="text-left px-4 py-2.5">Break</th>
+                        <th className="text-left px-4 py-2.5">From</th>
+                        <th className="text-left px-4 py-2.5">To</th>
+                        <th className="text-right px-4 py-2.5">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {draft.breaks.map((b, i) => (
+                        <tr key={i} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="px-4 py-3 font-medium text-slate-700">{b.label || `Break ${i + 1}`}</td>
+                          <td className="px-4 py-3 text-slate-600 tabular-nums">{b.from || '—'}</td>
+                          <td className="px-4 py-3 text-slate-600 tabular-nums">{b.to || '—'}</td>
+                          <td className="px-4 py-3 text-right">
+                            <span className="inline-flex items-center rounded-md bg-[#0b1f3b]/[0.06] px-2 py-0.5 text-[13px] font-semibold text-[#0b1f3b] tabular-nums">
+                              {b.total || computeBreakTotal(b.from, b.to) || '—'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end px-6 py-4 border-t border-slate-100 bg-slate-50/60">
+            <Button onClick={() => setDraft(null)} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg" data-testid="vig-dialog-close">Close</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog open onOpenChange={(o) => !o && setDraft(null)}>

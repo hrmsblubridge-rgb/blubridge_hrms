@@ -1,5 +1,11 @@
 # HRMS Changelog
 
+## 2026-09-25 — Vigilance "View Entry" dialog redesign (frontend-only)
+Redesigned the read-only View dialog in `OperationalVigilance.js`: avatar header,
+Employee/Date info strip, four icon metric cards (System Login/Logout, Total Research,
+Total Break), and a clean Breaks table (Break/From/To/Total with navy Total pills) plus
+an empty-state. Edit/Add form and all handlers unchanged; no logic/API/data changes.
+
 ## 2026-09-25 — Vigilance Report table: compact dynamic per-member columns (frontend-only)
 Restructured the Operational Vigilance Report data table (`OperationalVigilance.js`)
 so the wide raw columns (Sys In/Out, per-break Morning/Lunch From/To/Total) are gone
