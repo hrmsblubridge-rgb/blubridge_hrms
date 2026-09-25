@@ -27,7 +27,7 @@ import {
   ShieldCheck, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
   ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText, BookOpen,
   UploadCloud, CheckCircle2, AlertCircle, ChevronRight as CaretRight, RotateCcw, Search,
-  LogIn, LogOut, Coffee, Microscope, CalendarDays, User, Clock,
+  LogIn, LogOut, Coffee, Microscope, CalendarDays, User, Clock, ChevronDown,
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -180,7 +180,8 @@ export default function OperationalVigilance() {
   const [downloading, setDownloading] = useState(false);
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [deleteId, setDeleteId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null); // {id, employeeName, date, submitter}
+  const [detailRow, setDetailRow] = useState(null);        // admin: row whose submissions are shown in the centered modal
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(25);
   const [sort, setSort] = useState({ key: null, dir: null });
@@ -192,6 +193,7 @@ export default function OperationalVigilance() {
   const bodyScrollRef = useRef(null);
   const [scrollW, setScrollW] = useState(0);
   const [row1H, setRow1H] = useState(44);
+  const [row2H, setRow2H] = useState(36);
 
   // Non-recursive horizontal scroll sync via single ACTIVE-DRIVER arbitration.
   // Root cause of the old jitter: cross-writing scrollLeft both ways. During
@@ -251,8 +253,9 @@ export default function OperationalVigilance() {
       const el = bodyScrollRef.current;
       if (!el) return;
       setScrollW(el.scrollWidth);
-      const h1 = el.querySelector('thead tr');
-      if (h1 && h1.offsetHeight) setRow1H(h1.offsetHeight);
+      const rows = el.querySelectorAll('thead tr');
+      if (rows[0] && rows[0].offsetHeight) setRow1H(rows[0].offsetHeight);
+      if (rows[1] && rows[1].offsetHeight) setRow2H(rows[1].offsetHeight);
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -475,6 +478,21 @@ export default function OperationalVigilance() {
     });
   };
 
+  // Admin: open the centered modal with ALL vigilance submissions for a row.
+  const openDetail = (row) => setDetailRow(row);
+  // Edit a specific submission from within the detail modal (closes the modal first).
+  const editFromDetail = (submission, row) => { setDetailRow(null); openEdit(submission, row); };
+  // Request deletion of a specific submission (with full context for the confirm dialog).
+  const openDelete = (submission, row) => {
+    setDetailRow(null);
+    setDeleteTarget({
+      id: submission.id,
+      employeeName: row.target_employee_name,
+      date: row.date_display,
+      submitter: submission.uploaded_by_name || null,
+    });
+  };
+
   const saveDraft = async () => {
     setSaving(true);
     try {
@@ -504,9 +522,9 @@ export default function OperationalVigilance() {
 
   const confirmDelete = async () => {
     try {
-      await axios.delete(`${API}/vigilance/entries/${deleteId}`, { headers: getAuthHeaders() });
+      await axios.delete(`${API}/vigilance/entries/${deleteTarget.id}`, { headers: getAuthHeaders() });
       toast.success('Entry deleted');
-      setDeleteId(null);
+      setDeleteTarget(null);
       loadEntries(filters);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Delete failed');
@@ -689,11 +707,11 @@ export default function OperationalVigilance() {
         </div>
         {/* Body: synchronized vertical + horizontal scroll, sticky header */}
         <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-auto scroll-premium"
-             style={{ maxHeight: '68vh', '--vig-h1': `${row1H || 44}px` }} data-testid="vig-table-scroll">
+             style={{ maxHeight: '68vh', '--vig-h1': `${row1H || 44}px`, '--vig-h2': `${row2H || 36}px` }} data-testid="vig-table-scroll">
           {isAdmin ? (
-            <AdminMergedTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
+            <AdminMergedTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onOpenDetail={openDetail} />
           ) : (
-            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onView={openView} onEdit={openEdit} onDelete={setDeleteId} />
+            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onView={openView} onEdit={openEdit} onDelete={openDelete} />
           )}
         </div>
         <PaginationBar page={page} setPage={setPage} rowsPerPage={rowsPerPage} setRowsPerPage={(v) => { setRowsPerPage(v); setPage(1); }} total={totalRows} />
@@ -707,11 +725,21 @@ export default function OperationalVigilance() {
 
       {upload && <UploadProgressOverlay upload={upload} onClose={() => setUpload(null)} />}
 
-      <AlertDialog open={!!deleteId} onOpenChange={(o) => !o && setDeleteId(null)}>
+      {/* Admin: centered modal with all vigilance submissions for the selected row */}
+      <VigilanceDetailModal row={detailRow} onClose={() => setDetailRow(null)} onEdit={editFromDetail} onDelete={openDelete} />
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete vigilance entry?</AlertDialogTitle>
-            <AlertDialogDescription>This removes only this vigilance row. Employee, attendance and other HRMS data are not affected.</AlertDialogDescription>
+            <AlertDialogTitle>Delete this vigilance submission?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget && (
+                <span className="block space-y-1">
+                  <span className="block">You are about to delete a vigilance submission for <span className="font-semibold text-slate-700">{deleteTarget.employeeName}</span> on <span className="font-semibold text-slate-700">{deleteTarget.date}</span>{deleteTarget.submitter ? <> submitted by <span className="font-semibold text-slate-700">{deleteTarget.submitter}</span></> : null}.</span>
+                  <span className="block text-slate-400">This removes only this vigilance row. Employee, attendance and other HRMS data are not affected.</span>
+                </span>
+              )}
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -769,7 +797,7 @@ function RowActions({ row, submission, onView, onEdit, onDelete, canView = true,
         {canView && (
           <Tooltip>
             <TooltipTrigger asChild>
-              <button className={`${btn} text-red-500 hover:bg-red-50 hover:text-red-600`} onClick={() => onDelete(submission.id)} data-testid={deleteTestId} aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+              <button className={`${btn} text-red-500 hover:bg-red-50 hover:text-red-600`} onClick={() => onDelete(submission, row)} data-testid={deleteTestId} aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
             </TooltipTrigger>
             <TooltipContent>Delete</TooltipContent>
           </Tooltip>
@@ -844,35 +872,47 @@ function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, 
   );
 }
 
-// ===================== Admin merged table (compact, dynamic vigilance-team columns) =====================
-// Each vigilance team member (dynamic, from data.uploaders) gets exactly two columns:
-// Research Hours + Total Break Hours. Raw break From/To/Total and Sys In/Out are no
-// longer shown in the main table — they stay accessible via the View / Edit dialog.
-function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete }) {
+// ===================== Admin merged table (3-tier grouped header, single View action) =====================
+// Fixed employee/attendance columns, then a dynamic "Vigilance Team" band with one
+// two-column group (Research + Break) per vigilance member (from data.uploaders).
+// A single View (eye) button per row opens the centered detail modal with every
+// submission for that employee/day. No frozen columns — the synced top scrollbar
+// handles horizontal scroll when many members exist.
+function AdminMergedTable({ data, rows, loading, sort, onSort, onOpenDetail }) {
   const uploaders = data.uploaders || [];
-  const perUploaderCols = 2; // Research Hours, Total Break Hours
-  const colCount = 6 + uploaders.length * perUploaderCols + 1;
-  const baseTh = 'vig-sticky-h1 z-30 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap';
+  const colCount = 6 + uploaders.length * 2 + 1;
+  const base = 'vig-sticky-h2 z-20 bg-slate-50 px-3 py-2.5 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap border-b border-slate-200';
+  const band1 = 'vig-sticky-h1 top-0 z-30 bg-[#eef2f9] px-3 py-2.5 text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-slate-200';
   const baseScalars = [['Team', 'team'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
   return (
     <table className="text-sm border-collapse min-w-full" data-testid="vig-admin-table">
       <thead>
-        <tr className="bg-slate-100 text-slate-600">
-          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-0 z-40 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold min-w-[220px]" />
-          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} rowSpan={2} className="vig-sticky-h1 left-[220px] z-40 bg-slate-100 px-3 py-3 text-left text-[12px] font-semibold min-w-[115px]" />
-          {baseScalars.map(([h, k]) => (
-            <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} rowSpan={2} className={baseTh} />
+        {/* Tier 1 — top group bands */}
+        <tr>
+          <th colSpan={3} className={`${band1} text-left`}>Employee</th>
+          <th colSpan={3} className={`${band1} text-left border-l border-slate-200`}>Attendance</th>
+          {uploaders.length > 0 && (
+            <th colSpan={uploaders.length * 2} className={`${band1} text-center border-l border-slate-200 bg-[#0b1f3b]/[0.07] tracking-widest`} data-testid="vig-team-band">Vigilance Team</th>
+          )}
+          <th rowSpan={3} className="vig-sticky-h1 top-0 z-40 bg-slate-100 px-3 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-l border-slate-200 min-w-[90px]">Actions</th>
+        </tr>
+        {/* Tier 2 — base column labels (rowSpan 2) + per-member name band */}
+        <tr>
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} rowSpan={2} className={`${base} min-w-[220px]`} />
+          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} rowSpan={2} className={`${base} min-w-[110px]`} />
+          {baseScalars.map(([h, k], i) => (
+            <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} rowSpan={2} className={`${base} ${i === 0 ? 'border-l border-slate-200' : ''}`} />
           ))}
           {uploaders.map((u, idx) => (
-            <th key={u.employee_id} colSpan={perUploaderCols} className={`vig-sticky-h1 z-30 px-3 py-2 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-l-2 border-slate-300 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50' : 'bg-[#eef2f9]'}`}>
+            <th key={u.employee_id} colSpan={2} className={`vig-sticky-h2 z-20 px-3 py-2 text-center text-[12px] font-bold text-[#0b1f3b] border-l-2 border-b border-slate-200 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50/70' : 'bg-[#eef2f9]'}`} data-testid="vig-member-band">
               {u.name}
             </th>
           ))}
-          <th rowSpan={2} className="vig-sticky-h1 right-0 z-40 bg-slate-100 px-3 py-3 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] min-w-[150px]">Actions</th>
         </tr>
-        <tr className="bg-slate-50 text-[11px] text-slate-500">
+        {/* Tier 3 — per-member Research / Break */}
+        <tr>
           {uploaders.map((u) => (
-            <FragmentCols key={u.employee_id} ukey={u.employee_id} sort={sort} onSort={onSort} firstClass="border-l-2 border-slate-300" />
+            <FragmentCols key={u.employee_id} ukey={u.employee_id} sort={sort} onSort={onSort} firstClass="border-l-2 border-slate-200" />
           ))}
         </tr>
       </thead>
@@ -885,7 +925,7 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
           const subByUp = Object.fromEntries((row.submissions || []).map(s => [s.uploaded_by_employee_id, s]));
           return (
             <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-admin-row">
-              <td className="sticky left-0 bg-white z-20 px-3 py-2.5 min-w-[220px]">
+              <td className="px-3 py-2.5 min-w-[220px]">
                 <div className="flex items-center gap-2.5">
                   <Avatar name={row.target_employee_name} />
                   <div className="min-w-0">
@@ -894,46 +934,23 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
                   </div>
                 </div>
               </td>
-              <td className="sticky left-[220px] bg-white z-20 px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.date_display}</td>
-              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.target_team || '—'}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap border-l border-slate-100">{row.target_team || '—'}</td>
               <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
               <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
               <td className="px-3 py-2.5 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{row.total_hours || '—'}</td>
               {uploaders.map((u) => (
-                <FragmentData key={u.employee_id} ukey={u.employee_id} s={subByUp[u.employee_id]} firstClass="border-l-2 border-slate-200" />
+                <FragmentData key={u.employee_id} s={subByUp[u.employee_id]} firstClass="border-l-2 border-slate-100" />
               ))}
-              <td className="sticky right-0 bg-white z-20 px-2 py-2 border-l border-slate-100 min-w-[150px]" data-testid="vig-admin-actions">
-                {(row.submissions || []).length === 0 ? (
-                  <span className="block text-center text-slate-300">—</span>
-                ) : (
-                  <TooltipProvider delayDuration={150}>
-                    <div className="flex flex-col gap-1.5">
-                      {(row.submissions || []).map(s => (
-                        <div key={s.id} className="flex items-center justify-end gap-1">
-                          <span className="text-[10px] text-slate-400 mr-0.5 truncate max-w-[64px]" title={s.uploaded_by_name}>{s.uploaded_by_name}</span>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button onClick={() => onView(s, row)} className="inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-800 transition-colors" data-testid="vig-admin-view-btn" aria-label="View"><Eye className="w-3.5 h-3.5" /></button>
-                            </TooltipTrigger>
-                            <TooltipContent>View</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button onClick={() => onEdit(s, row)} className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[#0b1f3b] hover:bg-[#0b1f3b]/10 transition-colors" data-testid="vig-admin-edit-btn" aria-label="Edit"><Pencil className="w-3.5 h-3.5" /></button>
-                            </TooltipTrigger>
-                            <TooltipContent>Edit</TooltipContent>
-                          </Tooltip>
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <button onClick={() => onDelete(s.id)} className="inline-flex h-7 w-7 items-center justify-center rounded-md text-red-500 hover:bg-red-50 hover:text-red-600 transition-colors" data-testid="vig-admin-delete-btn" aria-label="Delete"><Trash2 className="w-3.5 h-3.5" /></button>
-                            </TooltipTrigger>
-                            <TooltipContent>Delete</TooltipContent>
-                          </Tooltip>
-                        </div>
-                      ))}
-                    </div>
-                  </TooltipProvider>
-                )}
+              <td className="px-2 py-2.5 border-l border-slate-100 text-center" data-testid="vig-admin-actions">
+                <TooltipProvider delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button onClick={() => onOpenDetail(row)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#0b1f3b] hover:bg-[#0b1f3b]/10 transition-colors" data-testid="vig-view-detail-btn" aria-label="View vigilance details"><Eye className="w-4 h-4" /></button>
+                    </TooltipTrigger>
+                    <TooltipContent>View all vigilance submissions</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
               </td>
             </tr>
           );
@@ -944,8 +961,8 @@ function AdminMergedTable({ data, rows, loading, sort, onSort, onView, onEdit, o
 }
 
 function FragmentCols({ firstClass, ukey, sort, onSort }) {
-  const th = 'vig-sticky-h2 z-30 bg-slate-50 px-3 py-1.5 text-center whitespace-nowrap';
-  const subs = [['Research', `up:${ukey}:total_research_hours`], ['Total Break', `up:${ukey}:total_break_hours`]];
+  const th = 'vig-sticky-h3 z-10 bg-slate-50 px-3 py-1.5 text-center whitespace-nowrap border-b border-slate-200';
+  const subs = [['Research', `up:${ukey}:total_research_hours`], ['Break', `up:${ukey}:total_break_hours`]];
   return (
     <>
       {subs.map(([label, key], i) => (
@@ -959,6 +976,141 @@ function FragmentData({ s, firstClass }) {
   const cell = (v, extra = '') => <td className={`px-3 py-2.5 text-center text-[13px] whitespace-nowrap ${v ? 'text-slate-700' : 'text-slate-400'} ${extra}`}>{v || '—'}</td>;
   if (!s) return (<>{cell('', firstClass)}{cell('')}</>);
   return (<>{cell(s.total_research_hours, firstClass)}{cell(s.total_break_hours)}</>);
+}
+
+// ===================== Centered vigilance detail modal =====================
+function VigilanceDetailModal({ row, onClose, onEdit, onDelete }) {
+  if (!row) return null;
+  const subs = row.submissions || [];
+  const att = [
+    ['Punch-In', row.punch_in],
+    ['Punch-Out', row.punch_out],
+    ['Total Hours', row.total_hours],
+  ];
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-[860px] w-[95vw] max-h-[85vh] p-0 gap-0 overflow-hidden flex flex-col" data-testid="vig-detail-modal">
+        {/* Sticky header */}
+        <div className="px-6 pt-6 pb-4 border-b border-slate-100 shrink-0">
+          <DialogTitle className="text-lg font-bold text-slate-900 leading-tight">Vigilance Details</DialogTitle>
+          <div className="mt-3 flex items-start gap-3">
+            <Avatar name={row.target_employee_name} />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
+              {row.target_email && <div className="text-xs text-slate-400 truncate">{row.target_email}</div>}
+              <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
+                <CalendarDays className="w-3.5 h-3.5 text-slate-400" />
+                <span>{row.date_display}</span>
+                {row.target_team && <><span className="text-slate-300">•</span><span>{row.target_team}</span></>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="px-6 py-5 space-y-5 overflow-y-auto scroll-premium">
+          {/* Attendance */}
+          <div>
+            <h4 className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-2">Attendance</h4>
+            <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
+              {att.map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between px-4 py-2.5">
+                  <span className="text-sm text-slate-500">{label}</span>
+                  <span className={`text-sm tabular-nums ${label === 'Total Hours' ? 'font-bold text-slate-900' : 'font-medium text-slate-700'}`}>{value || '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Vigilance submissions */}
+          <div>
+            <h4 className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-2">Vigilance Team Submissions ({subs.length})</h4>
+            {subs.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-sm text-slate-400">No vigilance submissions for this employee/date.</div>
+            ) : (
+              <div className="space-y-3">
+                {subs.map(s => <SubmissionCard key={s.id} s={s} row={row} onEdit={onEdit} onDelete={onDelete} />)}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Sticky footer */}
+        <div className="px-6 py-4 border-t border-slate-100 bg-slate-50/60 flex justify-end shrink-0">
+          <Button onClick={onClose} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg" data-testid="vig-detail-close">Close</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SubmissionCard({ s, row, onEdit, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const breaks = s.breaks || [];
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden" data-testid="vig-submission-card">
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100 bg-slate-50/50">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Avatar name={s.uploaded_by_name} />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800 truncate">{s.uploaded_by_name || 'Vigilance member'}</div>
+            <div className="text-[11px] text-slate-400 truncate">Submitted by {s.uploaded_by_name || '—'}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Button size="sm" variant="outline" className="h-8 rounded-lg" onClick={() => onEdit(s, row)} data-testid="vig-submission-edit"><Pencil className="w-3.5 h-3.5 mr-1.5" /> Edit</Button>
+          <Button size="sm" variant="outline" className="h-8 rounded-lg text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700" onClick={() => onDelete(s, row)} data-testid="vig-submission-delete"><Trash2 className="w-3.5 h-3.5" /></Button>
+        </div>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {/* Research */}
+        <div className="flex items-center justify-between px-4 py-3">
+          <span className="text-sm text-slate-500">Research Hours</span>
+          <span className="text-sm font-semibold text-slate-900 tabular-nums">{s.total_research_hours || '—'}</span>
+        </div>
+        {/* Total Break — accordion */}
+        <div>
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-50/60 transition-colors text-left"
+            onClick={() => setOpen(o => !o)}
+            aria-expanded={open}
+            data-testid="vig-break-accordion-toggle">
+            <span className="flex items-center gap-1.5 text-sm text-slate-500">
+              Total Break Hours
+              {breaks.length > 0 && <span className="text-[11px] text-slate-400">({breaks.length})</span>}
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-slate-900 tabular-nums">{s.total_break_hours || '—'}</span>
+              <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} />
+            </span>
+          </button>
+          <div className={`grid transition-all duration-200 ease-out ${open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+            <div className="overflow-hidden">
+              <div className="px-4 pb-3 pt-1" data-testid="vig-break-details">
+                {breaks.length === 0 ? (
+                  <div className="text-sm text-slate-400 py-2">No individual breaks recorded.</div>
+                ) : (
+                  <div className="rounded-lg border border-slate-100 divide-y divide-slate-100">
+                    {breaks.map((b, i) => (
+                      <div key={i} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                        <div className="min-w-0">
+                          <div className="text-[13px] font-medium text-slate-700 truncate">{b.label || `Break ${i + 1}`}</div>
+                          <div className="text-[12px] text-slate-400 tabular-nums">{b.from || '—'} <span className="text-slate-300">→</span> {b.to || '—'}</div>
+                        </div>
+                        <span className="inline-flex items-center rounded-md bg-[#0b1f3b]/[0.06] px-2 py-0.5 text-[13px] font-semibold text-[#0b1f3b] tabular-nums shrink-0">
+                          {b.total || computeBreakTotal(b.from, b.to) || '—'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 

@@ -315,6 +315,7 @@
    No DOM duplication, no JS scroll patches — pure position:sticky. */
 .vig-sticky-h1 { position: sticky; top: 0; }
 .vig-sticky-h2 { position: sticky; top: var(--vig-h1, 44px); }
+.vig-sticky-h3 { position: sticky; top: calc(var(--vig-h1, 44px) + var(--vig-h2, 36px)); }
 
 /* Vigilance upload progress bar — moving sheen while in progress (premium, jitter-free) */
 .vig-progress-sheen { position: relative; overflow: hidden; }
