@@ -38,6 +38,13 @@ const AdminLateRequests = () => {
   const [lopRemark, setLopRemark] = useState('');
   const [searchName, setSearchName] = useState('');
   const [form, setForm] = useState({ employee_id: '', date: '', expected_time: '', actual_time: '', reason: '', is_lop: null, auto_approve: false });
+  // Bulk selection (pending tab only)
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [showBulkApprove, setShowBulkApprove] = useState(false);
+  const [showBulkReject, setShowBulkReject] = useState(false);
+  const [bulkLop, setBulkLop] = useState('no_lop');
+  const [bulkRemark, setBulkRemark] = useState('');
+  const [bulkReason, setBulkReason] = useState('');
 
   const fetchData = useCallback(async () => {
     try { setLoading(true);
@@ -57,6 +64,38 @@ const AdminLateRequests = () => {
   const filteredPending = searchName ? pendingRequests.filter(r => r.emp_name?.toLowerCase().includes(searchName.toLowerCase())) : pendingRequests;
   const filteredHistory = searchName ? historyRequests.filter(r => r.emp_name?.toLowerCase().includes(searchName.toLowerCase())) : historyRequests;
   const getStatusBadge = (s) => ({ pending: 'badge-warning', approved: 'badge-success', rejected: 'badge-error' }[s] || 'badge-neutral');
+
+  // Keep selection in sync with the eligible (pending, filtered) rows only.
+  useEffect(() => { setSelectedIds(new Set()); }, [activeTab, searchName]);
+  const eligibleIds = filteredPending.map(r => r.id);
+  const allSelected = eligibleIds.length > 0 && eligibleIds.every(id => selectedIds.has(id));
+  const toggleOne = (id) => setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = () => setSelectedIds(prev => allSelected ? new Set() : new Set(eligibleIds));
+  const selectedRecords = filteredPending.filter(r => selectedIds.has(r.id));
+
+  const handleBulkApprove = async () => {
+    setActionLoading(true);
+    try {
+      const res = await axios.put(`${API}/late-requests/bulk-approve`, { ids: Array.from(selectedIds), is_lop: bulkLop === 'lop', lop_remark: bulkRemark || null }, { headers: getAuthHeaders() });
+      const d = res.data;
+      if (d.processed > 0) toast.success(`${d.processed} request${d.processed > 1 ? 's' : ''} approved successfully with ${bulkLop === 'lop' ? 'LOP' : 'No LOP'}.`);
+      if (d.skipped > 0) toast.warning(`${d.skipped} selected request(s) skipped (already processed or ineligible).`);
+      setShowBulkApprove(false); setBulkRemark(''); setSelectedIds(new Set()); fetchData();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Bulk approve failed'); }
+    finally { setActionLoading(false); }
+  };
+
+  const handleBulkReject = async () => {
+    setActionLoading(true);
+    try {
+      const res = await axios.put(`${API}/late-requests/bulk-reject`, { ids: Array.from(selectedIds), reason: bulkReason || null }, { headers: getAuthHeaders() });
+      const d = res.data;
+      if (d.processed > 0) toast.success(`${d.processed} request${d.processed > 1 ? 's' : ''} rejected successfully.`);
+      if (d.skipped > 0) toast.warning(`${d.skipped} selected request(s) skipped (already processed or ineligible).`);
+      setShowBulkReject(false); setBulkReason(''); setSelectedIds(new Set()); fetchData();
+    } catch (e) { toast.error(e.response?.data?.detail || 'Bulk reject failed'); }
+    finally { setActionLoading(false); }
+  };
 
   const handleApprove = async () => {
     if (!selected) return;
@@ -134,6 +173,7 @@ const AdminLateRequests = () => {
     <div className="overflow-x-auto">
       <table className="table-premium">
         <thead><tr>
+          {isPending && isHR && <th className="w-10"><input type="checkbox" checked={allSelected} onChange={toggleAll} className="rounded w-4 h-4 accent-[#063c88] cursor-pointer" data-testid="late-select-all" aria-label="Select all" /></th>}
           <SortableTh field="emp_name" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Employee</SortableTh>
           <SortableTh field="team" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Team</SortableTh>
           <SortableTh field="date" sortField={sortField} sortDir={sortDir} onSort={toggleSort}>Date</SortableTh>
@@ -145,8 +185,9 @@ const AdminLateRequests = () => {
           {isHR && <th>Actions</th>}
         </tr></thead>
         <tbody>
-          {sortedRows.length === 0 ? <tr><td colSpan={isHR ? 9 : 8} className="text-center py-12 text-slate-500">No records</td></tr> : sortedRows.map(r => (
-            <tr key={r.id}>
+          {sortedRows.length === 0 ? <tr><td colSpan={(isHR ? 9 : 8) + (isPending && isHR ? 1 : 0)} className="text-center py-12 text-slate-500">No records</td></tr> : sortedRows.map(r => (
+            <tr key={r.id} className={selectedIds.has(r.id) ? 'bg-blue-50/60' : ''}>
+              {isPending && isHR && <td><input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleOne(r.id)} className="rounded w-4 h-4 accent-[#063c88] cursor-pointer" data-testid={`late-select-${r.id}`} aria-label="Select request" /></td>}
               <td className="font-medium text-slate-900">{r.emp_name}</td>
               <td className="text-slate-600">{r.team}</td>
               <td className="text-slate-600">{formatDate(r.date)}</td>
@@ -187,6 +228,17 @@ const AdminLateRequests = () => {
       </div>
 
       <div className="card-flat p-4"><div className="max-w-sm"><EmployeeAutocomplete value={searchName} onChange={setSearchName} onSelect={(emp) => setSearchName(emp.full_name)} placeholder="Search employee..." data-testid="late-search" /></div></div>
+
+      {isHR && activeTab === 'requests' && selectedIds.size > 0 && (
+        <div className="flex items-center justify-between gap-3 bg-[#063c88] text-white rounded-2xl px-5 py-3 shadow-md animate-fade-in" data-testid="late-bulk-bar">
+          <span className="text-sm font-medium" data-testid="late-bulk-count">{selectedIds.size} Request{selectedIds.size > 1 ? 's' : ''} Selected</span>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => { setBulkLop('no_lop'); setBulkRemark(''); setShowBulkApprove(true); }} className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg h-8" data-testid="late-bulk-approve-btn"><Check className="w-4 h-4 mr-1" /> Approve Selected</Button>
+            <Button size="sm" onClick={() => { setBulkReason(''); setShowBulkReject(true); }} className="bg-red-500 hover:bg-red-600 text-white rounded-lg h-8" data-testid="late-bulk-reject-btn"><X className="w-4 h-4 mr-1" /> Reject Selected</Button>
+            <Button size="sm" variant="outline" onClick={() => setSelectedIds(new Set())} className="rounded-lg h-8 bg-transparent border-white/40 text-white hover:bg-white/10" data-testid="late-bulk-clear-btn">Clear Selection</Button>
+          </div>
+        </div>
+      )}
 
       <div className="card-premium overflow-hidden">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -264,6 +316,50 @@ const AdminLateRequests = () => {
           <DialogFooter><Button variant="outline" onClick={() => setShowApply(false)} className="rounded-lg">Cancel</Button><Button onClick={handleApplyForEmployee} disabled={actionLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg">{actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Submit'}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* Bulk Approve Dialog with LOP */}
+      <Dialog open={showBulkApprove} onOpenChange={setShowBulkApprove}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl sm:max-w-lg" data-testid="late-bulk-approve-dialog">
+          <DialogHeader><DialogTitle style={{ fontFamily: 'Outfit' }}><Check className="w-5 h-5 text-emerald-500 inline mr-2" />Approve Selected Requests</DialogTitle><DialogDescription>Choose how these {selectedRecords.length} request{selectedRecords.length > 1 ? 's' : ''} should be treated.</DialogDescription></DialogHeader>
+          <div className="py-3 space-y-4">
+            <div><Label>LOP Decision</Label>
+              <Select value={bulkLop} onValueChange={setBulkLop}><SelectTrigger className="mt-1.5 rounded-lg" data-testid="late-bulk-lop-select"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="no_lop">No LOP</SelectItem><SelectItem value="lop">LOP (Loss of Pay)</SelectItem></SelectContent>
+              </Select>
+              <p className="text-xs text-slate-500 mt-1">This decision will be applied to all eligible selected requests.</p>
+            </div>
+            <div><Label>Remark (optional)</Label><Input value={bulkRemark} onChange={e => setBulkRemark(e.target.value)} className="mt-1.5 rounded-lg" placeholder="Optional remark..." /></div>
+            <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100" data-testid="late-bulk-approve-list">
+              {selectedRecords.map((r, i) => (
+                <div key={r.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span className="text-slate-700">{i + 1}. <span className="font-medium">{r.emp_name}</span> — Late</span>
+                  <span className="text-slate-500">{formatDate(r.date)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setShowBulkApprove(false)} disabled={actionLoading} className="rounded-lg">Cancel</Button><Button onClick={handleBulkApprove} disabled={actionLoading} className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg" data-testid="late-bulk-approve-confirm">{actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : `Approve ${selectedRecords.length} Request${selectedRecords.length > 1 ? 's' : ''}`}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Reject Dialog */}
+      <Dialog open={showBulkReject} onOpenChange={setShowBulkReject}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl sm:max-w-lg" data-testid="late-bulk-reject-dialog">
+          <DialogHeader><DialogTitle style={{ fontFamily: 'Outfit' }}><AlertTriangle className="w-5 h-5 text-red-500 inline mr-2" />Reject Selected Requests</DialogTitle><DialogDescription>Are you sure you want to reject these {selectedRecords.length} request{selectedRecords.length > 1 ? 's' : ''}?</DialogDescription></DialogHeader>
+          <div className="py-3 space-y-4">
+            <div><Label>Reason (optional)</Label><Textarea value={bulkReason} onChange={e => setBulkReason(e.target.value)} className="mt-1.5 rounded-lg min-h-[70px]" placeholder="Reason for rejection..." /></div>
+            <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100" data-testid="late-bulk-reject-list">
+              {selectedRecords.map((r, i) => (
+                <div key={r.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span className="text-slate-700">{i + 1}. <span className="font-medium">{r.emp_name}</span> — Late</span>
+                  <span className="text-slate-500">{formatDate(r.date)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setShowBulkReject(false)} disabled={actionLoading} className="rounded-lg">Cancel</Button><Button onClick={handleBulkReject} disabled={actionLoading} className="bg-red-500 hover:bg-red-600 text-white rounded-lg" data-testid="late-bulk-reject-confirm">{actionLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : `Reject ${selectedRecords.length} Request${selectedRecords.length > 1 ? 's' : ''}`}</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Edit Dialog (HR) - any status */}
       <Dialog open={showEdit} onOpenChange={setShowEdit}>
         <DialogContent className="bg-[#fffdf7] rounded-2xl sm:max-w-lg" data-testid="edit-late-dialog">

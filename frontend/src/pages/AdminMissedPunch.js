@@ -36,6 +36,12 @@ const AdminMissedPunch = () => {
   const [editForm, setEditForm] = useState({ date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '' });
   const [editLoading, setEditLoading] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
+  // Bulk selection (pending tab only, current page scope)
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [showBulkApprove, setShowBulkApprove] = useState(false);
+  const [showBulkReject, setShowBulkReject] = useState(false);
+  const [bulkReason, setBulkReason] = useState('');
+  const [bulkLoading, setBulkLoading] = useState(false);
   const [formData, setFormData] = useState({ employee_id: '', date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '', auto_approve: false });
   const [empSearch, setEmpSearch] = useState('');
   const [empDropdownOpen, setEmpDropdownOpen] = useState(false);
@@ -101,6 +107,33 @@ const AdminMissedPunch = () => {
 
   // Reset to page 1 when filters or tab change
   useEffect(() => { setPage(1); }, [filterFromDate, filterToDate, filterStatus, filterEmpName, perPage, activeTab]);
+
+  // Clear bulk selection whenever the visible result set changes.
+  useEffect(() => { setSelectedIds(new Set()); }, [page, perPage, activeTab, filterFromDate, filterToDate, filterStatus, filterEmpName]);
+
+  const handleBulkApprove = async () => {
+    setBulkLoading(true);
+    try {
+      const res = await axios.put(`${API}/missed-punches/bulk-approve`, { ids: Array.from(selectedIds) }, { headers: getAuthHeaders() });
+      const d = res.data;
+      if (d.processed > 0) toast.success(`${d.processed} request${d.processed > 1 ? 's' : ''} approved successfully and applied to attendance.`);
+      if (d.skipped > 0) toast.warning(`${d.skipped} selected request(s) skipped (already processed or ineligible).`);
+      setShowBulkApprove(false); setSelectedIds(new Set()); fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Bulk approve failed'); }
+    finally { setBulkLoading(false); }
+  };
+
+  const handleBulkReject = async () => {
+    setBulkLoading(true);
+    try {
+      const res = await axios.put(`${API}/missed-punches/bulk-reject`, { ids: Array.from(selectedIds), reason: bulkReason || null }, { headers: getAuthHeaders() });
+      const d = res.data;
+      if (d.processed > 0) toast.success(`${d.processed} request${d.processed > 1 ? 's' : ''} rejected successfully.`);
+      if (d.skipped > 0) toast.warning(`${d.skipped} selected request(s) skipped (already processed or ineligible).`);
+      setShowBulkReject(false); setBulkReason(''); setSelectedIds(new Set()); fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Bulk reject failed'); }
+    finally { setBulkLoading(false); }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -302,11 +335,22 @@ const AdminMissedPunch = () => {
   const activeRows = data;
   const { sortedRows: sortedRowsMP, sortField: mpSortField, sortDir: mpSortDir, toggleSort: mpToggleSort } = useTableSort(activeRows);
 
+  // Bulk selection derived state — eligible = pending rows on the current page.
+  const isPendingTab = activeTab === 'requests';
+  const eligibleRows = sortedRowsMP.filter(r => r.status === 'pending');
+  const eligibleIds = eligibleRows.map(r => r.id);
+  const allSelected = eligibleIds.length > 0 && eligibleIds.every(id => selectedIds.has(id));
+  const toggleOne = (id) => setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = () => setSelectedIds(prev => allSelected ? new Set() : new Set(eligibleIds));
+  const selectedRecords = activeRows.filter(r => selectedIds.has(r.id));
+  const showBulkCol = isPendingTab && isHR;
+
   const renderTable = (items, showActions) => (
     <div className="overflow-x-auto">
       <table className="w-full text-sm table-premium">
         <thead>
           <tr className="bg-slate-50">
+            {showBulkCol && <th className="w-10 px-4 py-3"><input type="checkbox" checked={allSelected} onChange={toggleAll} className="rounded w-4 h-4 accent-[#063c88] cursor-pointer" data-testid="mp-select-all" aria-label="Select all" /></th>}
             <SortableTh field="emp_name" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Employee</SortableTh>
             <SortableTh field="date" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Date</SortableTh>
             <SortableTh field="punch_type" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Type</SortableTh>
@@ -318,9 +362,10 @@ const AdminMissedPunch = () => {
         </thead>
         <tbody>
           {sortedRowsMP.length === 0 ? (
-            <tr><td colSpan={7} className="text-center py-8 text-slate-400">No records found</td></tr>
+            <tr><td colSpan={showBulkCol ? 8 : 7} className="text-center py-8 text-slate-400">No records found</td></tr>
           ) : sortedRowsMP.map(r => (
-            <tr key={r.id} className="border-t border-slate-50 hover:bg-slate-50/50">
+            <tr key={r.id} className={`border-t border-slate-50 hover:bg-slate-50/50 ${selectedIds.has(r.id) ? 'bg-blue-50/60' : ''}`}>
+              {showBulkCol && <td className="px-4 py-3">{r.status === 'pending' ? <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleOne(r.id)} className="rounded w-4 h-4 accent-[#063c88] cursor-pointer" data-testid={`mp-select-${r.id}`} aria-label="Select request" /> : null}</td>}
               <td className="px-4 py-3 font-medium text-slate-900">{r.emp_name}</td>
               <td className="px-4 py-3 text-slate-600">{formatDate(r.date)}</td>
               <td className="px-4 py-3"><Badge variant="outline" className="text-xs">{r.punch_type}</Badge></td>
@@ -414,6 +459,17 @@ const AdminMissedPunch = () => {
           </Button>
         )}
       </div>
+
+      {showBulkCol && selectedIds.size > 0 && (
+        <div className="flex items-center justify-between gap-3 bg-[#063c88] text-white rounded-2xl px-5 py-3 shadow-md animate-fade-in" data-testid="mp-bulk-bar">
+          <span className="text-sm font-medium" data-testid="mp-bulk-count">{selectedIds.size} Request{selectedIds.size > 1 ? 's' : ''} Selected</span>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => setShowBulkApprove(true)} className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg h-8" data-testid="mp-bulk-approve-btn"><Check className="w-4 h-4 mr-1" /> Approve Selected</Button>
+            <Button size="sm" onClick={() => { setBulkReason(''); setShowBulkReject(true); }} className="bg-red-500 hover:bg-red-600 text-white rounded-lg h-8" data-testid="mp-bulk-reject-btn"><X className="w-4 h-4 mr-1" /> Reject Selected</Button>
+            <Button size="sm" variant="outline" onClick={() => setSelectedIds(new Set())} className="rounded-lg h-8 bg-transparent border-white/40 text-white hover:bg-white/10" data-testid="mp-bulk-clear-btn">Clear Selection</Button>
+          </div>
+        </div>
+      )}
 
       {/* Data Table with Tabs */}
       <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
@@ -755,6 +811,51 @@ const AdminMissedPunch = () => {
             >
               {importLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (<><Upload className="w-4 h-4 mr-1" /> Upload &amp; Import</>)}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Approve Dialog (no LOP — applies punch times to attendance) */}
+      <Dialog open={showBulkApprove} onOpenChange={(o) => { if (!bulkLoading) setShowBulkApprove(o); }}>
+        <DialogContent className="sm:max-w-lg" data-testid="mp-bulk-approve-dialog">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Check className="w-5 h-5 text-emerald-500" /> Approve Selected Requests</DialogTitle></DialogHeader>
+          <div className="py-2 space-y-3">
+            <p className="text-sm text-slate-600">You are about to approve <span className="font-medium">{selectedRecords.length}</span> selected missed-punch request{selectedRecords.length > 1 ? 's' : ''}. The requested punch times will be applied to attendance for each eligible request.</p>
+            <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100" data-testid="mp-bulk-approve-list">
+              {selectedRecords.map((r, i) => (
+                <div key={r.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span className="text-slate-700">{i + 1}. <span className="font-medium">{r.emp_name}</span> — {r.punch_type}</span>
+                  <span className="text-slate-500">{formatDate(r.date)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBulkApprove(false)} disabled={bulkLoading}>Cancel</Button>
+            <Button onClick={handleBulkApprove} disabled={bulkLoading} className="bg-emerald-500 hover:bg-emerald-600 text-white" data-testid="mp-bulk-approve-confirm">{bulkLoading ? 'Approving…' : `Approve ${selectedRecords.length} Request${selectedRecords.length > 1 ? 's' : ''}`}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Reject Dialog */}
+      <Dialog open={showBulkReject} onOpenChange={(o) => { if (!bulkLoading) setShowBulkReject(o); }}>
+        <DialogContent className="sm:max-w-lg" data-testid="mp-bulk-reject-dialog">
+          <DialogHeader><DialogTitle>Reject Selected Requests</DialogTitle></DialogHeader>
+          <div className="py-2 space-y-3">
+            <p className="text-sm text-slate-600">Are you sure you want to reject these <span className="font-medium">{selectedRecords.length}</span> selected request{selectedRecords.length > 1 ? 's' : ''}?</p>
+            <Textarea value={bulkReason} onChange={e => setBulkReason(e.target.value)} placeholder="Reason (optional)..." className="bg-slate-50 rounded-xl" data-testid="mp-bulk-reject-reason" />
+            <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100" data-testid="mp-bulk-reject-list">
+              {selectedRecords.map((r, i) => (
+                <div key={r.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span className="text-slate-700">{i + 1}. <span className="font-medium">{r.emp_name}</span> — {r.punch_type}</span>
+                  <span className="text-slate-500">{formatDate(r.date)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBulkReject(false)} disabled={bulkLoading}>Cancel</Button>
+            <Button onClick={handleBulkReject} disabled={bulkLoading} className="bg-red-500 hover:bg-red-600 text-white" data-testid="mp-bulk-reject-confirm">{bulkLoading ? 'Rejecting…' : `Reject ${selectedRecords.length} Request${selectedRecords.length > 1 ? 's' : ''}`}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

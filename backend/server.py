@@ -17293,6 +17293,64 @@ async def create_late_request(data: LateRequestCreate, current_user: dict = Depe
     await db.late_requests.insert_one(doc.copy())
     return serialize_doc(doc)
 
+class BulkActionBody(BaseModel):
+    """Payload for bulk approve/reject. Only the exact selected IDs are processed."""
+    ids: List[str] = []
+    is_lop: Optional[bool] = None
+    lop_remark: Optional[str] = None
+    reason: Optional[str] = None
+    model_config = ConfigDict(extra="ignore")
+
+
+async def _bulk_run(collection, ids, action_coro_factory):
+    """Reuse the EXISTING single-record approve/reject logic across a set of IDs.
+
+    - Processes ONLY the exact IDs provided (de-duplicated).
+    - Skips records that are missing or not currently 'pending' — never
+      overwrites an already Approved/Rejected request.
+    - Delegates the real work to the same handler used by the individual flow,
+      so attendance/payroll/LOP/audit behaviour is identical.
+    Returns a per-record summary.
+    """
+    processed, skipped = [], []
+    seen = set()
+    for rid in ids:
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        rec = await collection.find_one({"id": rid}, {"_id": 0})
+        if not rec:
+            skipped.append({"id": rid, "emp_name": None, "reason": "Request not found"})
+            continue
+        if rec.get("status") != "pending":
+            skipped.append({"id": rid, "emp_name": rec.get("emp_name"), "status": rec.get("status"), "reason": "Already processed"})
+            continue
+        try:
+            await action_coro_factory(rid)
+            processed.append({"id": rid, "emp_name": rec.get("emp_name")})
+        except HTTPException as e:
+            skipped.append({"id": rid, "emp_name": rec.get("emp_name"), "reason": str(e.detail)})
+    return {"total": len(seen), "processed": len(processed), "skipped": len(skipped), "processed_items": processed, "skipped_items": skipped}
+
+
+# NOTE: bulk routes are declared BEFORE the /{request_id} param routes so the
+# literal "bulk-approve"/"bulk-reject" path segment is never captured as an id.
+@api_router.put("/late-requests/bulk-approve")
+async def bulk_approve_late_requests(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.late_requests, data.ids,
+        lambda rid: approve_late_request(rid, RequestApproveBody(is_lop=data.is_lop, lop_remark=data.lop_remark), current_user))
+
+
+@api_router.put("/late-requests/bulk-reject")
+async def bulk_reject_late_requests(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.late_requests, data.ids,
+        lambda rid: reject_late_request(rid, current_user))
+
+
 @api_router.put("/late-requests/{request_id}/approve")
 async def approve_late_request(request_id: str, data: Optional[RequestApproveBody] = None, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.HR]:
@@ -17789,6 +17847,22 @@ async def create_early_out_request(data: EarlyOutRequestCreate, current_user: di
     doc['created_at'] = doc['created_at'].isoformat()
     await db.early_out_requests.insert_one(doc.copy())
     return serialize_doc(doc)
+
+@api_router.put("/early-out-requests/bulk-approve")
+async def bulk_approve_early_out_requests(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.early_out_requests, data.ids,
+        lambda rid: approve_early_out_request(rid, RequestApproveBody(is_lop=data.is_lop, lop_remark=data.lop_remark), current_user))
+
+
+@api_router.put("/early-out-requests/bulk-reject")
+async def bulk_reject_early_out_requests(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.early_out_requests, data.ids,
+        lambda rid: reject_early_out_request(rid, current_user))
+
 
 @api_router.put("/early-out-requests/{request_id}/approve")
 async def approve_early_out_request(request_id: str, data: Optional[RequestApproveBody] = None, current_user: dict = Depends(get_current_user)):
@@ -18652,6 +18726,24 @@ async def missed_punch_approval_preview(request_id: str, current_user: dict = De
         "existing_check_in": (att or {}).get("check_in"),
         "existing_check_out": (att or {}).get("check_out"),
     }
+
+
+@api_router.put("/missed-punches/bulk-approve")
+async def bulk_approve_missed_punches(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    # Missed Punch has NO LOP concept — approval just applies punch times to
+    # attendance via the same per-record handler used by the individual flow.
+    return await _bulk_run(db.missed_punches, data.ids,
+        lambda rid: approve_missed_punch(rid, current_user))
+
+
+@api_router.put("/missed-punches/bulk-reject")
+async def bulk_reject_missed_punches(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.missed_punches, data.ids,
+        lambda rid: reject_missed_punch(rid, current_user))
 
 
 @api_router.put("/missed-punches/{request_id}/approve")
