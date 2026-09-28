@@ -19,6 +19,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
 import { Pagination } from '../components/Pagination';
 import { useTableSort, SortableTh } from '../components/useTableSort';
+import { PaidLeaveManagement } from '../components/PaidLeaveManagement';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 
@@ -39,9 +40,9 @@ const Leave = () => {
   const [lopRemark, setLopRemark] = useState('');
   const [showApplyDialog, setShowApplyDialog] = useState(false);
   const [showEditDialog, setShowEditDialog] = useState(false);
-  const [editForm, setEditForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: 'no_lop', leave_validity: 'select' });
+  const [editForm, setEditForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: 'no_lop', leave_validity: 'select', consider_as_paid_leave: false });
   const [employees, setEmployees] = useState([]);
-  const [applyForm, setApplyForm] = useState({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false });
+  const [applyForm, setApplyForm] = useState({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false, consider_as_paid_leave: false });
   const [adminPaidBalance, setAdminPaidBalance] = useState(null);
   const [filters, setFilters] = useState({ empName: '', team: 'All', fromDate: '', toDate: '', leaveType: 'All', status: 'All' });
   // Bulk Import state
@@ -79,15 +80,13 @@ const Leave = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Refresh admin Paid Leave balance hint when employee or start_date changes
+  // Refresh admin stored Paid Leave balance hint when the selected employee changes.
   useEffect(() => {
     if (!showApplyDialog || !applyForm.employee_id) { setAdminPaidBalance(null); return; }
-    if (applyForm.leave_type !== 'Paid') { setAdminPaidBalance(null); return; }
-    const params = applyForm.start_date ? { reference_date: applyForm.start_date } : {};
-    axios.get(`${API}/admin/employees/${applyForm.employee_id}/paid-leave-balance`, { headers: getAuthHeaders(), params })
+    axios.get(`${API}/admin/employees/${applyForm.employee_id}/paid-leave-balance`, { headers: getAuthHeaders() })
       .then(r => setAdminPaidBalance(r.data))
       .catch(() => setAdminPaidBalance(null));
-  }, [showApplyDialog, applyForm.employee_id, applyForm.leave_type, applyForm.start_date, getAuthHeaders]);
+  }, [showApplyDialog, applyForm.employee_id, getAuthHeaders]);
 
   const handleFilter = async () => {
     try {
@@ -146,7 +145,7 @@ const Leave = () => {
       const payload = { ...applyForm, end_date: applyForm.start_date };
       await axios.post(`${API}/leaves`, payload, { headers: getAuthHeaders() });
       toast.success(applyForm.auto_approve ? 'Leave applied & approved' : 'Leave applied for employee');
-      setShowApplyDialog(false); setApplyForm({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false }); fetchData();
+      setShowApplyDialog(false); setApplyForm({ employee_id: '', leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', is_lop: null, auto_approve: false, consider_as_paid_leave: false }); fetchData();
     } catch (e) { toast.error(e.response?.data?.detail || 'Failed'); }
     finally { setActionLoading(false); }
   };
@@ -161,6 +160,7 @@ const Leave = () => {
       reason: leave.reason || '',
       is_lop: leave.is_lop === true ? 'lop' : 'no_lop',
       leave_validity: leave.leave_validity || 'select',
+      consider_as_paid_leave: !!leave.consider_as_paid_leave,
     });
     setShowEditDialog(true);
   };
@@ -181,6 +181,7 @@ const Leave = () => {
         end_date: editForm.start_date,
         reason: editForm.reason,
         is_lop: editForm.is_lop === 'lop',
+        consider_as_paid_leave: !!editForm.consider_as_paid_leave,
       };
       if (editForm.leave_validity === 'valid' || editForm.leave_validity === 'invalid') {
         payload.leave_validity = editForm.leave_validity;
@@ -427,6 +428,11 @@ const Leave = () => {
               <TabsTrigger value="history" className="px-6 py-4 rounded-none data-[state=active]:bg-[#063c88] data-[state=active]:text-white transition-all" data-testid="tab-history">
                 History ({historyLeaves.length})
               </TabsTrigger>
+              {canApprove && (
+                <TabsTrigger value="paid-leave" className="px-6 py-4 rounded-none data-[state=active]:bg-[#063c88] data-[state=active]:text-white transition-all" data-testid="tab-paid-leave">
+                  Paid Leave Management
+                </TabsTrigger>
+              )}
             </TabsList>
           </div>
 
@@ -615,6 +621,11 @@ const Leave = () => {
               />
             </div>
           </TabsContent>
+          {canApprove && (
+            <TabsContent value="paid-leave" className="mt-0">
+              <PaidLeaveManagement />
+            </TabsContent>
+          )}
         </Tabs>
       </div>
 
@@ -649,6 +660,10 @@ const Leave = () => {
                     { label: 'Duration', value: selectedLeave.duration },
                   ];
                   if (isHalf) rows.push({ label: 'Session', value: split, isSession: true });
+                  if (selectedLeave.consider_as_paid_leave) {
+                    rows.push({ label: 'Consider as Paid Leave', value: 'Yes' });
+                    rows.push({ label: 'Paid Leave Deduction', value: `${selectedLeave.paid_leave_amount ?? (isHalf ? 0.5 : 1)} Day` });
+                  }
                   rows.push({ label: 'Status', value: selectedLeave.status, isBadge: true });
                   if (selectedLeave.status === 'approved') {
                     rows.push({ label: 'LOP Status', value: selectedLeave.is_lop === true ? 'LOP' : 'No LOP' });
@@ -719,13 +734,20 @@ const Leave = () => {
               </div>
               <div>
                 <Label className="text-sm font-medium text-slate-700">LOP Status</Label>
-                <Select value={lopChoice} onValueChange={setLopChoice}>
-                  <SelectTrigger className="mt-1.5 rounded-lg" data-testid="approve-lop-select"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="no_lop">No LOP</SelectItem>
-                    <SelectItem value="lop">LOP (Loss of Pay)</SelectItem>
-                  </SelectContent>
-                </Select>
+                {(selectedLeave.consider_as_paid_leave || (selectedLeave.leave_type || '').toLowerCase().startsWith('paid')) ? (
+                  <div className="mt-1.5 flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2" data-testid="approve-paid-note">
+                    <span className="text-sm font-medium text-emerald-700">Treated as Paid Leave — LOP not applicable</span>
+                    <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200 ml-auto">Paid</Badge>
+                  </div>
+                ) : (
+                  <Select value={lopChoice} onValueChange={setLopChoice}>
+                    <SelectTrigger className="mt-1.5 rounded-lg" data-testid="approve-lop-select"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="no_lop">No LOP</SelectItem>
+                      <SelectItem value="lop">LOP (Loss of Pay)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                )}
               </div>
               <div>
                 <Label className="text-sm font-medium text-slate-700">
@@ -806,13 +828,11 @@ const Leave = () => {
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
                     <SelectItem value="Optional">Optional</SelectItem>
-                    <SelectItem value="Paid">Paid Leave</SelectItem>
                   </SelectContent>
                 </Select>
-                {applyForm.leave_type === 'Paid' && adminPaidBalance && (
+                {adminPaidBalance && (
                   <p className="text-[11px] text-emerald-700 mt-1" data-testid="admin-paid-balance-hint">
                     Available Paid Leave: <strong>{adminPaidBalance.balance}</strong> day(s)
-                    {' '}(earned {adminPaidBalance.earned}, used {adminPaidBalance.used})
                   </p>
                 )}
               </div>
@@ -843,6 +863,15 @@ const Leave = () => {
               )}
             </div>
             <div><Label>Reason (min 10 chars)</Label><Textarea value={applyForm.reason} onChange={e => setApplyForm({ ...applyForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Reason for leave..." /></div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3" data-testid="admin-consider-paid-box">
+              <label className={`flex items-center gap-2.5 ${adminPaidBalance && Number(adminPaidBalance.balance) <= 0 ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+                <input type="checkbox" checked={!!applyForm.consider_as_paid_leave} disabled={adminPaidBalance && Number(adminPaidBalance.balance) <= 0} onChange={e => setApplyForm({ ...applyForm, consider_as_paid_leave: e.target.checked })} className="rounded w-4 h-4 accent-emerald-600" data-testid="admin-consider-paid-checkbox" />
+                <span className="text-sm font-medium text-slate-800">Consider as Paid Leave</span>
+              </label>
+              <p className="text-[11px] text-slate-500 mt-1.5 ml-6.5">
+                {adminPaidBalance ? (Number(adminPaidBalance.balance) <= 0 ? 'No paid leave balance available.' : <>Available: <strong>{adminPaidBalance.balance}</strong> day(s). {applyForm.consider_as_paid_leave && <>Deduction: <strong>{applyForm.leave_split === 'Full Day' ? '1' : '0.5'} Day</strong>.</>}</>) : 'Only confirmed Full-Time employees are eligible.'}
+              </p>
+            </div>
             <div className="flex items-center gap-4 pt-2">
               <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={applyForm.auto_approve} onChange={e => setApplyForm({ ...applyForm, auto_approve: e.target.checked })} className="rounded" /><span className="text-sm text-slate-700">Auto-approve & set LOP status</span></label>
               {applyForm.auto_approve && <Select value={applyForm.is_lop === true ? 'lop' : 'no_lop'} onValueChange={v => setApplyForm({ ...applyForm, is_lop: v === 'lop' })}><SelectTrigger className="w-[140px] rounded-lg"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="no_lop">No LOP</SelectItem><SelectItem value="lop">LOP</SelectItem></SelectContent></Select>}
@@ -1015,7 +1044,6 @@ const Leave = () => {
                       <SelectItem value="Emergency">Emergency</SelectItem>
                       <SelectItem value="Preplanned">Preplanned</SelectItem>
                       <SelectItem value="Optional">Optional</SelectItem>
-                      <SelectItem value="Paid">Paid Leave</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -1061,6 +1089,13 @@ const Leave = () => {
               <div>
                 <Label>Reason (min 10 chars)</Label>
                 <Textarea value={editForm.reason} onChange={e => setEditForm({ ...editForm, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" data-testid="edit-leave-reason" />
+              </div>
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3">
+                <label className="flex items-center gap-2.5 cursor-pointer">
+                  <input type="checkbox" checked={!!editForm.consider_as_paid_leave} onChange={e => setEditForm({ ...editForm, consider_as_paid_leave: e.target.checked })} className="rounded w-4 h-4 accent-emerald-600" data-testid="edit-consider-paid-checkbox" />
+                  <span className="text-sm font-medium text-slate-800">Consider as Paid Leave</span>
+                </label>
+                <p className="text-[11px] text-slate-500 mt-1.5 ml-6.5">For pending leaves this reserves/releases the employee's paid-leave balance. Only confirmed Full-Time employees are eligible.</p>
               </div>
             </div>
           )}

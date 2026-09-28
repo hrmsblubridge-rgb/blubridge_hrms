@@ -27,7 +27,7 @@ const EmployeeLeave = () => {
   const [editingId, setEditingId] = useState(null);
   const [docFile, setDocFile] = useState(null);
   const [docUploading, setDocUploading] = useState(false);
-  const [form, setForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' });
+  const [form, setForm] = useState({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '', consider_as_paid_leave: false });
   const [viewReason, setViewReason] = useState(null); // { reason, leave_type, start_date, end_date }
   const [paidBalance, setPaidBalance] = useState(null);
   const [paidEligible, setPaidEligible] = useState(false);
@@ -50,6 +50,10 @@ const EmployeeLeave = () => {
       } catch {
         setLeaveBalance(null);
       }
+      try {
+        const pb = await axios.get(`${API}/employee/paid-leave-balance`, { headers: getAuthHeaders() });
+        setPaidBalance(pb.data);
+      } catch { /* stored balance optional */ }
     } catch (error) {
       toast.error('Failed to load leave data');
     } finally {
@@ -72,27 +76,22 @@ const EmployeeLeave = () => {
         if (!active) return;
         setPaidEligible(!!r.data?.eligible);
         setPaidIneligibleReason(r.data?.reason || '');
-        // If Paid was selected but is no longer eligible, reset the selection.
-        if (!r.data?.eligible) {
-          setForm(prev => prev.leave_type === 'Paid'
-            ? { ...prev, leave_type: 'Sick', start_date: '', end_date: '' }
-            : prev);
-        }
+        if (r.data?.balance !== undefined) setPaidBalance({ balance: r.data.balance, earned: r.data.balance, used: 0 });
+        // If no longer eligible, silently clear the checkbox.
+        if (!r.data?.eligible) setForm(prev => prev.consider_as_paid_leave ? { ...prev, consider_as_paid_leave: false } : prev);
       })
       .catch(() => { if (active) { setPaidEligible(false); setPaidIneligibleReason(''); } });
     return () => { active = false; };
   }, [showApplyDialog, getAuthHeaders]);
 
-  // Refresh Paid Leave balance hint when employee opens the apply dialog or
-  // changes the selected start date (so past-date apply shows historical
-  // balance, future-date apply shows current balance).
+  // Refresh stored Paid Leave balance whenever the apply dialog opens so the
+  // "Consider as Paid Leave" checkbox shows the correct available balance.
   useEffect(() => {
-    if (!showApplyDialog || form.leave_type !== 'Paid') { setPaidBalance(null); return; }
-    const params = form.start_date ? { reference_date: form.start_date } : {};
-    axios.get(`${API}/employee/paid-leave-balance`, { headers: getAuthHeaders(), params })
+    if (!showApplyDialog) { return; }
+    axios.get(`${API}/employee/paid-leave-balance`, { headers: getAuthHeaders() })
       .then(r => setPaidBalance(r.data))
       .catch(() => setPaidBalance(null));
-  }, [showApplyDialog, form.leave_type, form.start_date, getAuthHeaders]);
+  }, [showApplyDialog, getAuthHeaders]);
 
   const handleDocUpload = async (file) => {
     if (!file) return;
@@ -108,16 +107,16 @@ const EmployeeLeave = () => {
   };
 
   const handleApplyLeave = async () => {
-    if (form.leave_type === 'Paid' && !paidEligible) {
-      toast.error(paidIneligibleReason || 'Paid Leave is not available for your profile.');
-      return;
-    }
     if (!form.leave_type || !form.start_date || !form.reason) {
       toast.error('Please fill all fields');
       return;
     }
     if (form.reason.trim().length < 10) {
       toast.error('Reason must be at least 10 characters');
+      return;
+    }
+    if (form.consider_as_paid_leave && paidBalance && Number(paidBalance.balance) <= 0) {
+      toast.error('No paid leave balance available.');
       return;
     }
     try {
@@ -135,7 +134,7 @@ const EmployeeLeave = () => {
       setShowApplyDialog(false);
       setEditingId(null);
       setDocFile(null);
-      setForm({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' });
+      setForm({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '', consider_as_paid_leave: false });
       fetchData();
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Failed to apply leave');
@@ -146,7 +145,7 @@ const EmployeeLeave = () => {
 
   const handleEdit = (leave) => {
     setEditingId(leave.id);
-    setForm({ leave_type: leave.leave_type, leave_split: leave.leave_split || 'Full Day', start_date: leave.start_date, end_date: leave.end_date, reason: leave.reason, supporting_document_url: leave.supporting_document_url || '', supporting_document_name: leave.supporting_document_name || '' });
+    setForm({ leave_type: leave.leave_type, leave_split: leave.leave_split || 'Full Day', start_date: leave.start_date, end_date: leave.end_date, reason: leave.reason, supporting_document_url: leave.supporting_document_url || '', supporting_document_name: leave.supporting_document_name || '', consider_as_paid_leave: !!leave.consider_as_paid_leave });
     setShowApplyDialog(true);
   };
 
@@ -171,19 +170,20 @@ const EmployeeLeave = () => {
             <p className="text-sm text-slate-500">Apply for leave and track requests</p>
           </div>
         </div>
-        <Button onClick={() => { setEditingId(null); setDocFile(null); setForm({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '' }); setShowApplyDialog(true); }} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-lg shadow-[#063c88]/20" data-testid="apply-leave-btn">
+        <Button onClick={() => { setEditingId(null); setDocFile(null); setForm({ leave_type: 'Sick', leave_split: 'Full Day', start_date: '', end_date: '', reason: '', supporting_document_url: '', supporting_document_name: '', consider_as_paid_leave: false }); setShowApplyDialog(true); }} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-lg shadow-[#063c88]/20" data-testid="apply-leave-btn">
           <Plus className="w-4 h-4 mr-2" /> Apply Leave
         </Button>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
           { label: 'Pending', value: stats.pending, icon: Clock, color: 'amber' },
           { label: 'Approved', value: stats.approved, icon: CheckCircle2, color: 'blue' },
           { label: 'Rejected', value: stats.rejected, icon: XCircle, color: 'red' },
+          { label: 'Available Paid Leave', value: paidBalance ? paidBalance.balance : 0, icon: CalendarDays, color: 'emerald', testid: 'available-paid-leave-stat' },
         ].map((stat, i) => (
-          <div key={i} className="stat-card">
+          <div key={i} className="stat-card" data-testid={stat.testid}>
             <div className="flex items-center gap-4">
               <div className={`w-10 h-10 rounded-xl bg-${stat.color}-100 flex items-center justify-center`}>
                 <stat.icon className={`w-5 h-5 text-${stat.color}-600`} />
@@ -314,9 +314,6 @@ const EmployeeLeave = () => {
                     <SelectItem value="Emergency">Emergency</SelectItem>
                     <SelectItem value="Preplanned">Preplanned</SelectItem>
                     <SelectItem value="Optional">Optional</SelectItem>
-                    {paidEligible && (
-                      <SelectItem value="Paid">Paid Leave</SelectItem>
-                    )}
                   </SelectContent>
                 </Select>
                 {/* Leave rule hints */}
@@ -324,12 +321,6 @@ const EmployeeLeave = () => {
                 {form.leave_type === 'Casual' && <p className="text-[11px] text-blue-600 mt-1">Casual leave: min 4 working days in advance (excl. Sundays)</p>}
                 {form.leave_type === 'Emergency' && <p className="text-[11px] text-emerald-600 mt-1">Emergency leave: no date restrictions</p>}
                 {form.leave_type === 'Optional' && <p className="text-[11px] text-violet-600 mt-1">Optional leave: no balance / policy restrictions — pick any date</p>}
-                {form.leave_type === 'Paid' && paidBalance && (
-                  <p className="text-[11px] text-emerald-700 mt-1" data-testid="paid-leave-balance-hint">
-                    Available Paid Leave: <strong>{paidBalance.balance}</strong> day(s)
-                    {' '}(earned {paidBalance.earned}, used {paidBalance.used}) — 1 credit/month, carries forward.
-                  </p>
-                )}
               </div>
               <div>
                 <Label className="text-sm font-medium text-slate-700">Leave Split</Label>
@@ -355,6 +346,31 @@ const EmployeeLeave = () => {
                 data-testid="leave-date-input"
               />
             </div>
+            {paidEligible && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3" data-testid="consider-paid-leave-box">
+                <label className={`flex items-center gap-2.5 ${paidBalance && Number(paidBalance.balance) <= 0 ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+                  <input
+                    type="checkbox"
+                    checked={!!form.consider_as_paid_leave}
+                    disabled={paidBalance && Number(paidBalance.balance) <= 0}
+                    onChange={(e) => setForm({ ...form, consider_as_paid_leave: e.target.checked })}
+                    className="rounded w-4 h-4 accent-emerald-600"
+                    data-testid="consider-paid-leave-checkbox"
+                  />
+                  <span className="text-sm font-medium text-slate-800">Consider as Paid Leave</span>
+                </label>
+                {paidBalance && Number(paidBalance.balance) <= 0 ? (
+                  <p className="text-[11px] text-red-600 mt-1.5 ml-6.5" data-testid="paid-leave-no-balance">No paid leave balance available.</p>
+                ) : (
+                  <p className="text-[11px] text-emerald-700 mt-1.5 ml-6.5" data-testid="paid-leave-balance-hint">
+                    Available Paid Leave: <strong>{paidBalance ? paidBalance.balance : '—'}</strong> day(s).
+                    {form.consider_as_paid_leave && (
+                      <> Paid Leave Deduction: <strong>{form.leave_split === 'Full Day' ? '1' : '0.5'} Day</strong>.</>
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
             <div>
               <Label className="text-sm font-medium text-slate-700">Reason (min 10 characters)</Label>
               <Textarea value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="mt-1.5 rounded-lg min-h-[80px]" placeholder="Enter reason for leave..." data-testid="reason-textarea" />
