@@ -307,6 +307,71 @@ const PolicyDocument = ({ policy, onAcknowledge, isEmployee }) => {
   );
 };
 
+const AdminApplicabilityEditor = ({ policy, departments, onSave }) => {
+  const configured = policy.applicability_mode === 'all' || policy.applicability_mode === 'selected';
+  const [mode, setMode] = useState(policy.applicability_mode || 'all');
+  const [selected, setSelected] = useState(policy.applicable_departments || []);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setMode(policy.applicability_mode || 'all');
+    setSelected(policy.applicable_departments || []);
+  }, [policy.applicability_mode, policy.applicable_departments]);
+
+  const toggleDept = (id) => setSelected((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const dirty = mode !== (policy.applicability_mode || 'all')
+    || JSON.stringify([...selected].sort()) !== JSON.stringify([...(policy.applicable_departments || [])].sort());
+
+  const save = async () => {
+    if (mode === 'selected' && selected.length === 0) { toast.error('Select at least one department'); return; }
+    setSaving(true);
+    await onSave(policy.id, mode, selected);
+    setSaving(false);
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 shadow-[0_1px_2px_rgba(0,0,0,0.04)] p-4" data-testid={`policy-applicability-${policy.id}`}>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 text-[13px] font-semibold text-slate-700">
+          <Building2 className="w-4 h-4 text-slate-400" /> Applicable To
+          {!configured && <span className="text-[11px] font-normal text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">Not configured · visible per current rules</span>}
+        </div>
+        <div className="flex items-center gap-3 text-[13px]">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name={`app-${policy.id}`} checked={mode === 'all'} onChange={() => setMode('all')} data-testid={`policy-app-all-${policy.id}`} />
+            All Departments
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="radio" name={`app-${policy.id}`} checked={mode === 'selected'} onChange={() => setMode('selected')} data-testid={`policy-app-selected-${policy.id}`} />
+            Selected Departments
+          </label>
+        </div>
+      </div>
+      {mode === 'selected' && (
+        <div className="mt-3 flex flex-wrap gap-2" data-testid={`policy-app-depts-${policy.id}`}>
+          {departments.length === 0 ? (
+            <span className="text-[12px] text-slate-400">Loading departments…</span>
+          ) : departments.map((d) => {
+            const on = selected.includes(d.id);
+            return (
+              <button key={d.id} type="button" onClick={() => toggleDept(d.id)}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-[12px] font-medium transition-colors ${on ? 'bg-[#0b1f3b] text-white border-[#0b1f3b]' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'}`}
+                data-testid={`policy-app-dept-${policy.id}-${d.id}`}>
+                {on && <Check className="w-3 h-3" />} {d.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <div className="mt-3 flex justify-end">
+        <Button size="sm" onClick={save} disabled={!dirty || saving} className="h-8 rounded-lg bg-[#0b1f3b] hover:bg-[#0b1f3b]/90" data-testid={`policy-app-save-${policy.id}`}>
+          {saving ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null} Save Applicability
+        </Button>
+      </div>
+    </div>
+  );
+};
+
 const Policies = () => {
   const { token, user } = useAuth();
   const [policies, setPolicies] = useState([]);
@@ -317,6 +382,23 @@ const Policies = () => {
   const isProgrammaticScroll = useRef(false);
 
   const isEmployee = !!user?.employee_id;
+  const isAdmin = ['hr', 'system_admin', 'office_admin'].includes(user?.role);
+  const [departments, setDepartments] = useState([]);
+
+  const saveApplicability = async (policyId, mode, deptIds) => {
+    try {
+      const applicable_departments = mode === 'selected' ? deptIds : [];
+      await axios.put(`${API}/policies/${policyId}`,
+        { applicability_mode: mode, applicable_departments },
+        { headers: { Authorization: `Bearer ${token}` } });
+      setPolicies((prev) => prev.map((p) => p.id === policyId
+        ? { ...p, applicability_mode: mode, applicable_departments }
+        : p));
+      toast.success('Applicability updated');
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to update applicability');
+    }
+  };
 
   const fetchPolicies = async () => {
     try {
@@ -342,6 +424,14 @@ const Policies = () => {
     return () => { mounted = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    axios.get(`${API}/departments`, { headers: { Authorization: `Bearer ${token}` } })
+      .then(({ data }) => setDepartments((data || []).map((d) => ({ id: d.id, name: d.name }))))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token, isAdmin]);
 
   const handleAcknowledge = async (policyId) => {
     try {
@@ -503,12 +593,16 @@ const Policies = () => {
             </div>
           ) : (
             policies.map((p) => (
-              <PolicyDocument
-                key={p.id}
-                policy={p}
-                onAcknowledge={handleAcknowledge}
-                isEmployee={isEmployee}
-              />
+              <div key={p.id} className="space-y-3">
+                {isAdmin && (
+                  <AdminApplicabilityEditor policy={p} departments={departments} onSave={saveApplicability} />
+                )}
+                <PolicyDocument
+                  policy={p}
+                  onAcknowledge={handleAcknowledge}
+                  isEmployee={isEmployee}
+                />
+              </div>
             ))
           )}
         </main>

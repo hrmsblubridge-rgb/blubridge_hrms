@@ -15767,36 +15767,77 @@ HIDDEN_POLICIES: set = {"policy_research_hr"}
 # documents like the IT and Communication Policy and the Admin Induction.
 GLOBAL_POLICIES = {"policy_it", "policy_admin_induction"}
 
-async def _is_policy_visible_to_user(policy_id: str, current_user: dict) -> bool:
+async def _resolve_dept_names(dept_ids: list) -> set:
+    """Resolve Settings→Department IDs to their current names (match target for
+    employee.department, which is stored as a name). Robust to renames."""
+    ids = [d for d in (dept_ids or []) if d]
+    if not ids:
+        return set()
+    rows = await db.departments.find(
+        {"id": {"$in": ids}, "is_deleted": {"$ne": True}},
+        {"_id": 0, "name": 1},
+    ).to_list(200)
+    return {r.get("name") for r in rows if r.get("name")}
+
+
+async def _is_policy_visible_to_user(policy_id: str, current_user: dict, policy: dict = None) -> bool:
     """Decide if a policy is visible to the current user.
-    Hidden policies are invisible to everyone.
-    Global policies are visible to every authenticated user, regardless of
-    role / department / club.
-    Admin roles see all non-hidden policies.
-    Employees only see department-restricted policies whose allowlist
-    contains their employee.department.
+
+    Precedence:
+      1. Hidden policies → invisible to everyone.
+      2. NEW department applicability (admin-configured on the policy doc) wins
+         when set: mode 'all' → everyone; mode 'selected' → admins always, and
+         employees only if their CURRENT department is in the policy's
+         applicable department set (resolved from Settings→Department IDs).
+      3. Fallback (unconfigured) → existing behavior: GLOBAL_POLICIES visible to
+         all; DEPARTMENT_RESTRICTED_POLICIES gated by department name; otherwise
+         visible to all. This keeps every existing policy exactly as-is until an
+         admin explicitly configures its applicability.
     """
     if policy_id in HIDDEN_POLICIES:
         return False
-    # Global override — explicit allow for organisation-wide docs.
+
+    if policy is None:
+        policy = await db.policies.find_one(
+            {"id": policy_id},
+            {"_id": 0, "applicability_mode": 1, "applicable_departments": 1},
+        ) or {}
+
+    async def _employee_dept() -> str:
+        dept = current_user.get("department")
+        if dept is not None:
+            return dept
+        emp_id = current_user.get("employee_id")
+        if not emp_id:
+            return None
+        emp = await db.employees.find_one(
+            {"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0, "department": 1}
+        )
+        return (emp or {}).get("department")
+
+    mode = policy.get("applicability_mode")
+    if mode in ("all", "selected"):
+        if mode == "all":
+            return True
+        # selected
+        if current_user.get("role") in ALL_ADMIN_ROLES:
+            return True
+        if not current_user.get("employee_id"):
+            return False
+        dept_names = await _resolve_dept_names(policy.get("applicable_departments") or [])
+        return (await _employee_dept()) in dept_names
+
+    # ---- Fallback: existing hardcoded behavior ----
     if policy_id in GLOBAL_POLICIES:
         return True
     restricted_to = DEPARTMENT_RESTRICTED_POLICIES.get(policy_id)
     if not restricted_to:
         return True
-    # Admins (hr, system_admin, office_admin) always see restricted policies
     if current_user.get("role") in ALL_ADMIN_ROLES:
         return True
-    employee_id = current_user.get("employee_id")
-    if not employee_id:
+    if not current_user.get("employee_id"):
         return False
-    employee = await db.employees.find_one(
-        {"id": employee_id, "is_deleted": {"$ne": True}},
-        {"_id": 0, "department": 1},
-    )
-    if not employee:
-        return False
-    return employee.get("department") in restricted_to
+    return (await _employee_dept()) in restricted_to
 
 
 @api_router.get("/policies")
@@ -15833,8 +15874,16 @@ async def get_policies(current_user: dict = Depends(get_current_user)):
     # Apply department-based visibility filter
     visible_policies = []
     for policy in policies:
-        if await _is_policy_visible_to_user(policy.get("id"), current_user):
+        if await _is_policy_visible_to_user(policy.get("id"), current_user, policy=policy):
             visible_policies.append(policy)
+
+    # Enrich with resolved applicable department names for the admin UI.
+    if current_user.get("role") in ALL_ADMIN_ROLES:
+        for p in visible_policies:
+            if p.get("applicability_mode") == "selected":
+                p["applicable_department_names"] = sorted(
+                    await _resolve_dept_names(p.get("applicable_departments") or [])
+                )
 
     # Attach acknowledgement state for the requesting user (read-only enrichment).
     # Only employees see this; admins still see the policies but ack tracking
@@ -15873,11 +15922,25 @@ async def update_policy(policy_id: str, data: dict, current_user: dict = Depends
     policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
     if not policy:
         raise HTTPException(status_code=404, detail="Policy not found")
-    
+
+    # Validate / normalize department applicability if provided.
+    if "applicability_mode" in data:
+        mode = data.get("applicability_mode")
+        if mode not in ("all", "selected", None):
+            raise HTTPException(status_code=400, detail="Invalid applicability_mode")
+        if mode == "selected":
+            data["applicable_departments"] = [d for d in (data.get("applicable_departments") or []) if d]
+        elif mode == "all":
+            data["applicable_departments"] = []
+
     data["updated_at"] = get_ist_now().isoformat()
     await db.policies.update_one({"id": policy_id}, {"$set": data})
-    
+
     await log_audit(current_user["id"], "update_policy", "policy", policy_id)
+    if "applicability_mode" in data:
+        prev_names = sorted(await _resolve_dept_names(policy.get("applicable_departments") or [])) if policy.get("applicability_mode") == "selected" else (policy.get("applicability_mode") or "unconfigured")
+        new_names = sorted(await _resolve_dept_names(data.get("applicable_departments") or [])) if data.get("applicability_mode") == "selected" else data.get("applicability_mode")
+        await log_audit(current_user["id"], "update_policy_applicability", "policy", policy_id, details=f"Applicability changed from {prev_names} to {new_names}")
     return {"message": "Policy updated successfully"}
 
 
@@ -15903,11 +15966,21 @@ async def _ensure_policy_ack_indexes() -> None:
 async def _eligible_employees_for_policy(policy_id: str) -> list:
     """Return the active employees who SHOULD see / acknowledge this policy
     given the existing visibility primitives. Hidden policies → empty list.
+    New DB applicability (mode 'all'/'selected') wins when configured.
     """
     if policy_id in HIDDEN_POLICIES:
         return []
     base_q: dict = {"is_deleted": {"$ne": True}, "employee_status": {"$ne": "Inactive"}}
-    if policy_id in GLOBAL_POLICIES:
+    policy = await db.policies.find_one(
+        {"id": policy_id}, {"_id": 0, "applicability_mode": 1, "applicable_departments": 1}
+    ) or {}
+    mode = policy.get("applicability_mode")
+    if mode in ("all", "selected"):
+        if mode == "selected":
+            dept_names = await _resolve_dept_names(policy.get("applicable_departments") or [])
+            base_q["department"] = {"$in": list(dept_names)}
+        # mode 'all' → no department filter
+    elif policy_id in GLOBAL_POLICIES:
         pass  # global → all active employees
     else:
         depts = DEPARTMENT_RESTRICTED_POLICIES.get(policy_id)
