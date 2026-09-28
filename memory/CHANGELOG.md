@@ -1,5 +1,24 @@
 # HRMS Changelog
 
+## 2026-06-28 — Bulk Approve/Reject for Late / Missed Punch / Early Out (additive)
+Added bulk selection + bulk approve/reject to the three separate admin pages
+(Late Requests, Early Outs, Missed Punch). Individual flows unchanged.
+- **Backend (server.py)**: `BulkActionBody` model + `_bulk_run` helper + six routes
+  (`PUT /api/{late-requests|early-out-requests|missed-punches}/bulk-approve|bulk-reject`).
+  Declared BEFORE the `/{request_id}` param routes so "bulk-*" is never captured as an id.
+  Each route REUSES the existing per-record handler (approve_late_request, etc.) in a loop —
+  identical attendance/payroll/LOP/audit behaviour. Skips missing/non-pending IDs (never
+  overwrites processed records). Returns {total, processed, skipped, processed_items, skipped_items}.
+- **LOP scope**: Late & Early Out bulk-approve show an LOP / No LOP dropdown + optional remark.
+  Missed Punch bulk-approve = simple confirmation, NO LOP (it applies punch times to attendance).
+- **Frontend**: page-scoped Select-All + per-row checkboxes on Pending tab only (HR only),
+  bulk action bar ("N Requests Selected" + Approve/Reject Selected + Clear Selection),
+  bulk dialogs listing selected records. Selection clears on tab/filter/page change.
+  data-testid prefixes: late-*, eo-*, mp-*.
+- **Verified**: testing agent iteration_90 — backend 13/13 pytest, frontend key flows 100%, no bugs.
+  Test records used `QATEST_BULK_*` reason prefix and were deleted after testing (no prod data touched).
+
+
 ## 2026-09-25 — Department-wise Policy Assignment (additive, backward-compatible)
 Added an admin-configurable department applicability layer on top of the existing
 Policy + Policy Acknowledgement modules. No rebuild, no content/data/permission changes.

@@ -1,5 +1,11 @@
 # HRMS Application - Product Requirements Document
 
+> **2026-06-28 UPDATE**: Bulk Approve/Reject (with LOP/No-LOP on bulk approve) shipped for
+> Late Requests, Early Outs, and Missed Punch admin pages. Additive only — individual flows
+> and existing LOP/attendance logic unchanged. Backend reuses per-record handlers via
+> `_bulk_run` + six `/…/bulk-approve|bulk-reject` routes. Verified (iteration_90: BE 13/13, FE key flows). See CHANGELOG.md.
+
+
 ## 🆕 2026-09-24 — IT Module: Conditional Accessories per Asset Type (Charger/SIM/Bag/Mouse…)
 Additive; no existing feature changed. Verified via curl (config, required-validation, create+serial, edit+history, backward-compat) and screenshot (dynamic UI + conditional serial/note).
 - **Backend** (`it_asset/router.py`): new collection `it_accessory_config` (per-category accessory list, seeded on first read from `ACCESSORY_DEFAULTS`: Mobile Phone→Charger*,SIM,USB Cable,Earphones,Case; Laptop→Charger*,Laptop Bag,Mouse,Keyboard,Docking Station; Desktop→Keyboard,Mouse,Monitor,UPS; Server→Rack Rails,Power Cable; *=required, matched by category keyword). New `GET /api/it/accessory-config?category=`. `POST /it/assets` and `PUT /it/assets/{id}` now accept `accessories: [{key,given,serial,note}]`, normalized+validated against config (required accessory must be Given → 400 else), stored on the asset; edit writes an "Accessories updated: …" history note. Backward-compatible: if payload omits `accessories`, none are required/stored.
