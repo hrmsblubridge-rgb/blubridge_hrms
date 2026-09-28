@@ -1,5 +1,27 @@
 # HRMS Changelog
 
+## 2026-06-28 — Leave Module: Paid Leave (checkbox model) + Monthly Management
+Reshaped Paid Leave from a leave-TYPE into a "Consider as Paid Leave" checkbox backed by a
+STORED balance, plus an admin monthly management tab. Additive; individual leave/approve/
+LOP/payroll flows preserved.
+- **Storage**: `employees.available_paid_leave` (float, starts 0). New collections
+  `paid_leave_generation` (per-year/month record: method generate|import, count, performed_by)
+  and `paid_leave_history` (ledger: prev/new/change, action_type, month/year, changed_by).
+  `leaves` gains `consider_as_paid_leave`, `paid_leave_amount`, `paid_leave_reservation_status`.
+- **Eligibility** (`_is_confirmed_fulltime`, case-insensitive): Full-time AND confirmation_date set AND <= today.
+- **Reservation**: apply RESERVES (atomic $inc guard, full=1/half=0.5) → approve FINALIZES
+  (is_lop forced false, LOP hidden in approve dialog) → reject RELEASES → reset re-reserves.
+  Balance can't go negative; over-draw returns 400. Employee/admin edits adjust the reservation delta.
+- **Admin tab** (Leave.js → PaidLeaveManagement.js): Month/Year, Generate (once/month, +1 to all
+  confirmed FT), Export (xlsx locked Employee-ID col / csv), Import (whole-file validation:
+  bad/duplicate/mismatched Employee ID, negative, non-0.5-step all reject with row errors; all-or-nothing),
+  History. Generate & Import mutually locked per month.
+- **Payroll**: consider_as_paid_leave leaves map to PA (full) / PH (half), reusing the existing path.
+- **Employee page**: 4th stat "Available Paid Leave"; "Paid" removed from apply/edit type dropdowns
+  (kept in the admin filter for historical records).
+- **Verified**: iteration_91 — backend 14/14 pytest, frontend surface 100%, no defects; all test data rolled back.
+
+
 ## 2026-06-28 — Bulk Approve/Reject for Late / Missed Punch / Early Out (additive)
 Added bulk selection + bulk approve/reject to the three separate admin pages
 (Late Requests, Early Outs, Missed Punch). Individual flows unchanged.

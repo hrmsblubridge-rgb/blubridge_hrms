@@ -5,6 +5,15 @@
 > and existing LOP/attendance logic unchanged. Backend reuses per-record handlers via
 > `_bulk_run` + six `/…/bulk-approve|bulk-reject` routes. Verified (iteration_90: BE 13/13, FE key flows). See CHANGELOG.md.
 
+> **2026-06-28 UPDATE 2**: Leave Module Paid-Leave redesign shipped. "Paid" is no longer a
+> leave type — it's a "Consider as Paid Leave" checkbox backed by a STORED balance
+> (`employees.available_paid_leave`, starts 0). Apply reserves / approve finalizes (LOP hidden,
+> is_lop=false) / reject releases. New admin "Paid Leave Management" tab: Generate (once/month),
+> Export/Import (xlsx+csv, Employee-ID protected + backend re-validation), History; Generate & Import
+> mutually locked per month. Ledger in `paid_leave_history`, monthly record in `paid_leave_generation`.
+> Verified (iteration_91: BE 14/14, FE surface 100%). See CHANGELOG.md.
+
+
 
 ## 🆕 2026-09-24 — IT Module: Conditional Accessories per Asset Type (Charger/SIM/Bag/Mouse…)
 Additive; no existing feature changed. Verified via curl (config, required-validation, create+serial, edit+history, backward-compat) and screenshot (dynamic UI + conditional serial/note).
