@@ -1,0 +1,43 @@
+{
+  "summary": "Backend + Frontend testing of Policy Department-wise Applicability feature. Wrote 12-test pytest file (all pass); Playwright UI verified admin editor works end-to-end (radios, chips, Save enable/disable, persist across reload, employee cannot see editor). All mutations restored — policy_leave is back to applicability_mode=null, applicable_departments=[].",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_policy_applicability.py",
+    "/app/test_reports/pytest/policy_applicability.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is >20k lines — long-term should be split into modules (policies, acknowledgements, etc.).",
+    "update_policy is generic (accepts arbitrary dict) — consider a Pydantic model to prevent accidental writes of unrelated fields via the same admin endpoint; currently protected only by role, no field allowlist.",
+    "Login field returns 'token' (not 'access_token'); consistent across code and tests — fine but worth noting for external consumers."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_policy_applicability.py"
+  ],
+  "success_rate": { "backend": "100% (12/12)", "frontend": "100% (admin editor + non-admin gating)" },
+  "test_credentials": "admin/HrAdmin@2109 (admin), user/pass123 (employee). madhan.s/Vigil@123 has drifted — invalid at test time; used 'user' instead for employee flows.",
+  "seed_data_creation": "None. All modifications to policy_leave restored to original (applicability_mode=null, applicable_departments=[]).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend responds slowly (~30-45s first request; Cloudflare 502 while reloading). Use timeout>=120s. Test file /app/backend/tests/test_policy_applicability.py includes autouse teardown to restore policy_leave. Admin login returns key 'token'. Employee 'user' has restricted employee-portal menu (no Policies page in nav) so employee visibility of /policies UI cannot be exhaustively verified via UI — verified via backend GET /api/policies as employee token instead (test_employee_visibility_selected).",
+  "verified_behaviors": [
+    "PUT /api/policies/{id} with applicability_mode='selected'+applicable_departments=[deptId] persists.",
+    "GET /api/policies (admin) exposes applicable_department_names resolved via /api/departments.",
+    "applicability_mode='all' clears applicable_departments to [].",
+    "applicability_mode=null restores unconfigured behavior.",
+    "Invalid mode → HTTP 400.",
+    "Eligible-employee summary count narrows when mode goes all → selected(single dept).",
+    "Backward-compat: policy_it (GLOBAL_POLICIES) visible to employees when mode=null.",
+    "Employee sees selected-mode policy iff their department matches; excluded otherwise.",
+    "Non-admin PUT /api/policies/{id} → 403.",
+    "Ack history preserved: after all→selected(other dept)→all, ack count returns to original (>= before).",
+    "Admin UI editor: radios, dept chips, Save disabled until changed, Save persists across reload.",
+    "'Not configured' badge shown when mode=null.",
+    "Employee (non-admin) does not see any policy-applicability-* editor node."
+  ]
+}

@@ -1,5 +1,29 @@
 # HRMS Changelog
 
+## 2026-09-25 — Department-wise Policy Assignment (additive, backward-compatible)
+Added an admin-configurable department applicability layer on top of the existing
+Policy + Policy Acknowledgement modules. No rebuild, no content/data/permission changes.
+- **Storage**: on the policy document — `applicability_mode` ('all' | 'selected' | null)
+  + `applicable_departments` (array of Settings→Department **IDs**). One policy record,
+  multiple depts as an array; no new collection/table.
+- **Matching**: dept IDs resolved to current names at match time against
+  `db.departments` (robust to renames); compared to `employee.department` (a name).
+- **Backend** (server.py): `_is_policy_visible_to_user` and `_eligible_employees_for_policy`
+  now honor the new config — 'all' → everyone; 'selected' → admins always + employees
+  whose CURRENT department matches; **null → exact existing behavior** (GLOBAL /
+  DEPARTMENT_RESTRICTED / HIDDEN). `update_policy` validates the mode, normalizes
+  departments, and writes an `update_policy_applicability` audit entry. `get_policies`
+  attaches `applicable_department_names` for the admin UI. New helper `_resolve_dept_names`.
+- **Frontend** (Policies.js): admin-only `AdminApplicabilityEditor` on each policy card —
+  All / Selected radios + department chips + Save (PUT /policies/{id}); "Not configured"
+  badge preserves current visibility until an admin sets it. Employee acknowledge flow,
+  layout and content unchanged; editor hidden for non-admins.
+- **Safety**: acknowledgement history is never deleted when applicability/department
+  changes; unconfigured policies keep prior visibility (safe migration).
+Verification: testing_agent iteration_89 — backend **12/12 (100%)**, frontend **100%**
+(admin editor + non-admin gating + history preserved + backward-compat); all mutated
+test data restored.
+
 ## 2026-09-25 — Vigilance Edit/View: identify the submitter (Reported Employee vs Vigilance Team Member)
 Fixed the ambiguity when editing a submission from the admin Vigilance Details modal.
 The Edit/View dialog now clearly distinguishes two people via labelled ContextCards:
