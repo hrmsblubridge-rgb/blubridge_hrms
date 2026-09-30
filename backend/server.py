@@ -3460,6 +3460,14 @@ async def calculate_payroll_for_employee(employee_id: str, month: str, employee:
                         exp_mins = parse_time_24h_to_minutes(exp_login)
                         if act_mins is not None and exp_mins is not None and act_mins > exp_mins:
                             is_late = True
+                # An APPROVED Late Coming request is the authoritative "late"
+                # signal — the employee raised it and admin approved it. Honour it
+                # even when the check-in-vs-shift recomputation above doesn't flag
+                # the day (e.g. shift timing not matched). This lets payroll apply
+                # the current LOP/NO_LOP decision: LOP → LC (0.5), NO_LOP → excused
+                # (P). Without this, a NO_LOP→LOP change was left showing P.
+                if date_iso in late_by_date:
+                    is_late = True
 
                 if hw >= full_hours and not is_late:
                     detail["status"] = "P"

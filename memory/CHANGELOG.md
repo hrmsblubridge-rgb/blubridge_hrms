@@ -1,5 +1,24 @@
 # HRMS Changelog
 
+## 2026-06-28 — Payroll: LC/LOP recalculation fix (NO_LOP→LOP stayed "P")
+Fixed a general payroll bug where an approved Late Coming request changed from
+NO_LOP to LOP still showed **P** (full payable) instead of **LC** (0.5).
+- **Root cause** (`server.py` payroll loop, "With Checkout" branch): the LC/LOP
+  decision was gated behind payroll's own `is_late` re-detection (check-in vs
+  shift login). When that detection didn't fire, the approved late request was
+  ignored and the day fell through to `hw>=full and not is_late` → P. The
+  `late_by_date` map was already read live from the current `is_lop`, so data
+  was never stale — only the gating was wrong.
+- **Fix** (1 line + comment): an approved Late request IS the authoritative late
+  signal — force `is_late = True` when `date_iso in late_by_date`. The existing
+  rule then yields LOP→LC(0.5) and NO_LOP→P using the existing per-department
+  `DEPARTMENT_WORK_HOURS` thresholds. No employee/date hardcoding; NO_LOP, HD, A,
+  P, PA/PH and all other codes unchanged; no UI change.
+- **Verified** (`backend/tests/test_lc_lop_recalc.py`, real /api/payroll endpoint,
+  isolated tagged data, cleaned up): LOP→LC/0.5, NO_LOP→P, and NO_LOP→LOP live
+  recalc→LC/0.5 all pass across a Research-Unit employee.
+
+
 ## 2026-06-28 — Leave Module: Paid Leave (checkbox model) + Monthly Management
 Reshaped Paid Leave from a leave-TYPE into a "Consider as Paid Leave" checkbox backed by a
 STORED balance, plus an admin monthly management tab. Additive; individual leave/approve/
