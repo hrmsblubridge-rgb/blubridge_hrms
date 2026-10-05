@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="21" time="388.262" timestamp="2026-09-03T10:12:48.457571+00:00" hostname="agent-env-d2b154a6-5072-46ae-9b41-0f74a8491535"><testcase classname="tests.test_brsf_iter73.TestCompletedMonthGuard" name="test_recalculate_current_month_rejected" time="75.848" /><testcase classname="tests.test_brsf_iter73.TestCompletedMonthGuard" name="test_recalculate_future_month_rejected" time="0.460" /><testcase classname="tests.test_brsf_iter73.TestCompletedMonthGuard" name="test_recalculate_completed_month_accepted" time="180.100"><failure message="requests.exceptions.ReadTimeout: HTTPConnectionPool(host='localhost', port=8001): Read timed out. (read timeout=180)">/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:534: in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/connection.py:571: in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:1443: in getresponse
+    response.begin()
+/usr/local/lib/python3.11/http/client.py:337: in begin
+    version, status, reason = self._read_status()
+                              ^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/http/client.py:298: in _read_status
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.11/socket.py:718: in readinto
+    return self._sock.recv_into(b)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+E   TimeoutError: timed out
+
+The above exception was the direct cause of the following exception:
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:644: in send
+    resp = conn.urlopen(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:841: in urlopen
+    retries = retries.increment(
+/root/.venv/lib/python3.11/site-packages/urllib3/util/retry.py:490: in increment
+    raise reraise(type(error), error, _stacktrace)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/urllib3/util/util.py:39: in reraise
+    raise value
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:787: in urlopen
+    response = self._make_request(
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:536: in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+/root/.venv/lib/python3.11/site-packages/urllib3/connectionpool.py:367: in _raise_timeout
+    raise ReadTimeoutError(
+E   urllib3.exceptions.ReadTimeoutError: HTTPConnectionPool(host='localhost', port=8001): Read timed out. (read timeout=180)
+
+During handling of the above exception, another exception occurred:
+backend/tests/test_brsf_iter73.py:63: in test_recalculate_completed_month_accepted
+    r = requests.post(f"{API}/api/brsf/recalculate",
+/root/.venv/lib/python3.11/site-packages/requests/api.py:115: in post
+    return request("post", url, data=data, json=json, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/api.py:59: in request
+    return session.request(method=method, url=url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:589: in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/sessions.py:703: in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/root/.venv/lib/python3.11/site-packages/requests/adapters.py:690: in send
+    raise ReadTimeout(e, request=request)
+E   requests.exceptions.ReadTimeout: HTTPConnectionPool(host='localhost', port=8001): Read timed out. (read timeout=180)</failure></testcase><testcase classname="tests.test_brsf_iter73.TestCompletedMonthGuard" name="test_summary_reports_month_completed_flag" time="2.525" /><testcase classname="tests.test_brsf_iter73.TestCompletedMonthGuard" name="test_stars_endpoint_returns_month_completed" time="9.622" /><testcase classname="tests.test_brsf_iter73.TestCompletedMonthGuard" name="test_mutating_endpoints_blocked_on_current_month" time="13.785" /><testcase classname="tests.test_brsf_iter73.TestCompletedMonthGuard" name="test_import_blocked_on_current_month" time="1.673" /><testcase classname="tests.test_brsf_iter73.TestP05WeeklyChildOverride" name="test_children_carry_stable_keys" time="9.640" /><testcase classname="tests.test_brsf_iter73.TestP05WeeklyChildOverride" name="test_bogus_key_404" time="0.917" /><testcase classname="tests.test_brsf_iter73.TestP05WeeklyChildOverride" name="test_invalid_values_rejected" time="2.750" /><testcase classname="tests.test_brsf_iter73.TestP05WeeklyChildOverride" name="test_valid_override_flows_to_parent" time="26.418" /><testcase classname="tests.test_brsf_iter73.TestP05WeeklyChildOverride" name="test_child_override_survives_recalculate" time="22.744" /><testcase classname="tests.test_brsf_iter73.TestN01LeaveChildren" name="test_every_leave_is_listed" time="9.639" /><testcase classname="tests.test_brsf_iter73.TestN01LeaveChildren" name="test_not_applicable_leave_rejects_override" time="0.916" /><testcase classname="tests.test_brsf_iter73.TestN01LeaveChildren" name="test_applicable_leave_only_accepts_0_or_minus1" time="14.450" /><testcase classname="tests.test_brsf_iter73.TestMonthEffectiveEligibility" name="test_counts_match_agent_probe" time="2.754" /><testcase classname="tests.test_brsf_iter73.TestMonthEffectiveEligibility" name="test_sai_rupesh_drops_after_july" time="2.065" /><testcase classname="tests.test_brsf_iter73.TestMonthEffectiveEligibility" name="test_anuj_kumar_drops_after_august" time="2.071" /><testcase classname="tests.test_brsf_iter73.TestMonthEffectiveEligibility" name="test_confirmation_month_gate" time="1.608" /><testcase classname="tests.test_brsf_iter73.TestMonthEffectiveEligibility" name="test_summary_matches_eligibility" time="5.050" /><testcase classname="tests.test_brsf_iter73.TestMonthEffectiveEligibility" name="test_export_respects_eligibility" time="3.006" /></testsuite></testsuites>

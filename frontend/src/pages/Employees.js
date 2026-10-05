@@ -1,0 +1,3259 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import { useSearchParams } from 'react-router-dom';
+import axios from 'axios';
+import { toast } from 'sonner';
+import SalarySlip from '../components/SalarySlip';
+import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import EmployeeAvatar from '../components/EmployeeAvatar';
+import { viewSecureDocument, downloadSecureDocument } from '../lib/documentAccess';
+import { compressPdfIfNeeded } from '../lib/pdfCompressor';
+import AvatarUploader from '../components/AvatarUploader';
+import { useTableSort, SortableTh } from '../components/useTableSort';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
+import { 
+  Users, 
+  Search, 
+  Plus,
+  Eye,
+  Edit,
+  Trash2,
+  RotateCcw,
+  Download,
+  Filter,
+  ChevronLeft,
+  ChevronRight,
+  UserCheck,
+  UserX,
+  MoreVertical,
+  ShieldAlert,
+  AlertTriangle,
+  KeyRound,
+  MailCheck,
+  MailWarning,
+  MailX,
+  Copy,
+  Briefcase,
+  Mail,
+  Phone,
+  MapPin,
+  Calendar,
+  GraduationCap,
+  Building2,
+  Award,
+  Shield,
+  CheckCircle,
+  Loader2,
+  FileText,
+  Upload,
+  ExternalLink,
+  File,
+  Wallet,
+  DollarSign,
+  TrendingUp,
+  TrendingDown,
+  PiggyBank,
+  Receipt,
+  Banknote,
+  FileSpreadsheet,
+  AlertCircle,
+  X,
+  Fingerprint,
+  Hash,
+  Printer
+} from 'lucide-react';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
+import { Textarea } from '../components/ui/textarea';
+import { Label } from '../components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Badge } from '../components/ui/badge';
+import { Switch } from '../components/ui/switch';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogDescription,
+} from '../components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { PageSizeSelector } from '../components/PageSizeSelector';
+
+import { formatDate } from '../lib/dateFormat';
+const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+
+// Premium Stat Card
+const StatCard = ({ title, value, icon: Icon, color, bgColor }) => (
+  <div className="stat-card">
+    <div className="flex items-center gap-4">
+      <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${bgColor}`}>
+        <Icon className="w-6 h-6" style={{ color }} strokeWidth={1.5} />
+      </div>
+      <div>
+        <p className="text-2xl font-bold text-slate-900 number-display">{value}</p>
+        <p className="text-sm text-slate-500">{title}</p>
+      </div>
+    </div>
+  </div>
+);
+
+const Employees = () => {
+  const { getAuthHeaders, user, token } = useAuth();
+  const [searchParams] = useSearchParams();
+  const [employees, setEmployees] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [teams, setTeams] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [designations, setDesignations] = useState([]);
+  // Centralized client-side sort (works on the currently-paginated page set)
+  const { sortedRows: sortedEmployees, sortField: empSortField, sortDir: empSortDir, toggleSort: toggleEmpSort } = useTableSort(employees);
+
+  // Defensive fallbacks — used ONLY if the Settings master-data APIs are
+  // unreachable. The dropdowns now always render the live Settings list
+  // (`/api/departments`, `/api/teams`, `/api/settings/designations`) so HR
+  // can add a Department/Team/Designation in Settings and have it appear
+  // here immediately.
+  const FALLBACK_DEPARTMENTS = ['Research Unit', 'Support Staff', 'Business & Product'];
+  const FALLBACK_TEAMS = ['Data', 'Parallelism', 'Quantization', 'Compiler', 'Tensor & Ops', 'Hardware', 'Administation', 'IT', 'Product Team', 'Unknown'];
+  const FALLBACK_DESIGNATIONS = ['AI Research scientist', 'AI Research - Intern', 'Research', 'Front Office', 'Junior Admin', 'Junior System admin', 'Business & Product - Product Team', 'System Engineer'];
+
+  // Computed lists used by every dropdown in this page. Sorted A→Z so newly
+  // added Settings entries slot in naturally. Falls back to the legacy
+  // hardcoded list only when the API list is empty (resilient to startup
+  // race / network blip — never empty dropdowns).
+  const departmentOptions = (departments && departments.length > 0)
+    ? Array.from(new Set(departments.map(d => d.name).filter(Boolean))).sort()
+    : FALLBACK_DEPARTMENTS;
+  const teamOptions = (teams && teams.length > 0)
+    ? Array.from(new Set(teams.map(t => t.name).filter(Boolean))).sort()
+    : FALLBACK_TEAMS;
+  const designationOptions = (designations && designations.length > 0)
+    ? Array.from(new Set(designations.map(d => d.name).filter(Boolean))).sort()
+    : FALLBACK_DESIGNATIONS;
+  const [allEmployees, setAllEmployees] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [pagination, setPagination] = useState({ page: 1, limit: 25, total: 0, pages: 0 });
+  
+  // Initialize search from URL params
+  const initialSearch = searchParams.get('search') || '';
+  const [filters, setFilters] = useState({
+    search: initialSearch,
+    department: 'All',
+    team: 'All',
+    designation: 'All',
+    status: 'Active',
+    employment_type: 'All',
+    tier_level: 'All',
+    work_location: 'All',
+    office_location: 'All'
+  });
+  
+  const [showAddSheet, setShowAddSheet] = useState(false);
+  const [showEditSheet, setShowEditSheet] = useState(false);
+  const [showViewDialog, setShowViewDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  // Permanent delete (safe) + Force delete (super admin only) state
+  const [showPermDeleteDialog, setShowPermDeleteDialog] = useState(false);
+  const [showForceDeleteDialog, setShowForceDeleteDialog] = useState(false);
+  const [deletionImpact, setDeletionImpact] = useState(null);
+  const [deletionLoading, setDeletionLoading] = useState(false);
+  const [forceStep, setForceStep] = useState(1); // 1: warning, 2: critical, 3: type DELETE
+  const [forceConfirmText, setForceConfirmText] = useState('');
+  // Admin Reset Credentials dialog
+  const [showResetCredsDialog, setShowResetCredsDialog] = useState(false);
+  const [resetMode, setResetMode] = useState('manual'); // 'manual' | 'auto'
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetConfirm, setResetConfirm] = useState('');
+  const [resetForceChange, setResetForceChange] = useState(true);
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetGeneratedPwd, setResetGeneratedPwd] = useState(''); // shown ONCE after success
+  const [resetShowPwd, setResetShowPwd] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [viewTab, setViewTab] = useState('profile');
+  const [eduExpData, setEduExpData] = useState(null);
+  const [loadingEduExp, setLoadingEduExp] = useState(false);
+  const [verifyingEducation, setVerifyingEducation] = useState(false);
+  const [verifyingExperience, setVerifyingExperience] = useState(false);
+  
+  // Documents state
+  const [documentsData, setDocumentsData] = useState(null);
+  const [loadingDocuments, setLoadingDocuments] = useState(false);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);  // 0–100 for Offer Letter upload
+  const [uploadPhase, setUploadPhase] = useState('');       // 'compressing' | 'uploading' | ''
+  
+  // Salary state
+  const [salaryData, setSalaryData] = useState(null);
+  const [loadingSalary, setLoadingSalary] = useState(false);
+  const [adjustments, setAdjustments] = useState([]);
+  const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
+  const [newAdjustment, setNewAdjustment] = useState({
+    adjustment_type: 'bonus',
+    description: '',
+    amount: '',
+    frequency: 'one_time',
+    applicable_month: new Date().toISOString().slice(0, 7),
+    start_month: '',
+    end_month: ''
+  });
+  const [savingSalary, setSavingSalary] = useState(false);
+  const [showPayslip, setShowPayslip] = useState(false);
+  const salarySlipRef = useRef(null);
+  
+  // Bulk import state
+  const [showBulkImport, setShowBulkImport] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+
+  // Bulk Deactivate
+  const [showBulkDeactivate, setShowBulkDeactivate] = useState(false);
+  const [deactivateFile, setDeactivateFile] = useState(null);
+  const [deactivating, setDeactivating] = useState(false);
+  const [deactivatePreview, setDeactivatePreview] = useState(null);
+  const [deactivateResult, setDeactivateResult] = useState(null);
+  
+  // Deactivation form state
+  const [deactForm, setDeactForm] = useState({
+    inactive_type: 'Relieved',
+    inactive_date: new Date().toISOString().split('T')[0],
+    reason: '',
+    last_day_payable: false
+  });
+  const [inactiveTypeFilter, setInactiveTypeFilter] = useState('All');
+
+  const handleAutocompleteSelect = (emp) => {
+    setFilters(prev => ({ ...prev, search: emp.full_name }));
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  // Trigger fetch when search changes from autocomplete selection
+  const prevSearchRef = useRef(filters.search);
+  useEffect(() => {
+    if (prevSearchRef.current !== filters.search && filters.search) {
+      fetchData();
+    }
+    prevSearchRef.current = filters.search;
+  }, [filters.search]);
+  
+  const [form, setForm] = useState({
+    full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
+    date_of_joining: '', confirmation_date: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
+    reporting_manager_id: '', department: '', team: '', work_location: 'Office',
+    office_location: '',
+    leave_policy: 'Standard', shift_type: 'General', custom_login_time: '', custom_logout_time: '',
+    monthly_salary: 0, attendance_tracking_enabled: true, user_role: 'employee', login_enabled: true,
+    custom_employee_id: '', biometric_id: ''
+  });
+  
+  const [officeLocations, setOfficeLocations] = useState([]);
+  
+  const [config, setConfig] = useState({
+    employmentTypes: [], employeeStatuses: [], tierLevels: [], workLocations: [], userRoles: []
+  });
+
+  // Dynamic Shifts (driven by Settings → Shift Configuration). The dropdown
+  // in Add/Edit Employee is sourced from this list — no hardcoded shifts.
+  const [settingsShifts, setSettingsShifts] = useState([]);
+
+  const fetchSettingsShifts = useCallback(async () => {
+    try {
+      const res = await axios.get(`${API}/settings/shifts`, { headers: getAuthHeaders() });
+      const list = Array.isArray(res.data) ? res.data : [];
+      // Show only ACTIVE shifts by default (inactive ones are kept available
+      // for displaying historical assignments — see Edit flow handling below).
+      setSettingsShifts(list);
+    } catch (err) {
+      console.error('Failed to fetch settings shifts:', err);
+      setSettingsShifts([]);
+    }
+  }, [getAuthHeaders]);
+
+  const fetchConfig = useCallback(async () => {
+    try {
+      const [types, statuses, tiers, locations, roles] = await Promise.all([
+        axios.get(`${API}/config/employment-types`),
+        axios.get(`${API}/config/employee-statuses`),
+        axios.get(`${API}/config/tier-levels`),
+        axios.get(`${API}/config/work-locations`),
+        axios.get(`${API}/config/user-roles`)
+      ]);
+      setConfig({
+        employmentTypes: types.data, employeeStatuses: statuses.data,
+        tierLevels: tiers.data, workLocations: locations.data, userRoles: roles.data
+      });
+    } catch (error) {
+      console.error('Config fetch error:', error);
+    }
+  }, []);
+
+  const fetchData = useCallback(async () => {
+    try {
+      setLoading(true);
+      // When the user has typed a search term we ignore the Status filter so
+      // employees are findable regardless of whether they are Active or
+      // Inactive (a typed name/email/ID is a global lookup, not a scoped one).
+      const searchActive = !!(filters.search && filters.search.trim());
+      const params = {
+        page: pagination.page, limit: pagination.limit,
+        ...(filters.search && { search: filters.search }),
+        ...(filters.department !== 'All' && { department: filters.department }),
+        ...(filters.team !== 'All' && { team: filters.team }),
+        ...(filters.designation !== 'All' && { designation: filters.designation }),
+        ...(!searchActive && filters.status !== 'All' && { status: filters.status }),
+        ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
+        ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
+        ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
+        ...(filters.office_location !== 'All' && { office_location: filters.office_location }),
+        ...(!searchActive && inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
+      };
+
+      // Fetch the employee list FIRST — this is what the loading spinner is
+      // hiding. Everything else (stats cards, filter dropdowns, dept/team
+      // lists) is deferred so the table renders in ~0.9s instead of the ~2.4s
+      // dominated by the /stats aggregate previously. Aux data updates the UI
+      // in-place as it arrives without any user-visible re-load.
+      const employeesRes = await axios.get(`${API}/employees`, { headers: getAuthHeaders(), params });
+      setEmployees(employeesRes.data.employees);
+      setPagination({ page: employeesRes.data.page, limit: employeesRes.data.limit, total: employeesRes.data.total, pages: employeesRes.data.pages });
+      setLoading(false);
+
+      // Background load — never blocks the table. Each call is fired
+      // independently so a slow/failing endpoint can't stall the others
+      // (previously used Promise.all which rejected as soon as any one
+      // supporting endpoint threw, leaving the stats cards permanently blank).
+      const bg = (p, apply) => p.then(apply).catch((e) => console.warn('[Employees bg]', e?.message || e));
+      bg(axios.get(`${API}/employees/stats`,          { headers: getAuthHeaders() }), (r) => setStats(r.data));
+      bg(axios.get(`${API}/teams`,                    { headers: getAuthHeaders() }), (r) => setTeams(r.data));
+      bg(axios.get(`${API}/departments`,              { headers: getAuthHeaders() }), (r) => setDepartments(r.data));
+      bg(axios.get(`${API}/settings/designations`,    { headers: getAuthHeaders() }), (r) => setDesignations(r.data || []));
+      bg(axios.get(`${API}/employees/all`,            { headers: getAuthHeaders() }), (r) => setAllEmployees(r.data));
+      bg(axios.get(`${API}/settings/office-locations`,{ headers: getAuthHeaders() }), (r) => setOfficeLocations(r.data || []));
+    } catch (error) {
+      console.error('Fetch error:', error);
+      toast.error('Failed to load employee data');
+      setLoading(false);
+    }
+  }, [getAuthHeaders, pagination.page, pagination.limit, filters, inactiveTypeFilter]);
+
+  useEffect(() => { fetchConfig(); }, [fetchConfig]);
+  useEffect(() => { fetchSettingsShifts(); }, [fetchSettingsShifts]);
+  useEffect(() => { fetchData(); }, [pagination.page, pagination.limit, filters.department, filters.team, filters.designation, filters.status, filters.office_location, inactiveTypeFilter]);
+
+  const handleSearch = () => { setPagination(prev => ({ ...prev, page: 1 })); fetchData(); };
+  const handleReset = () => {
+    setFilters({ search: '', department: 'All', team: 'All', designation: 'All', status: 'All', employment_type: 'All', tier_level: 'All', work_location: 'All', office_location: 'All' });
+    setPagination(prev => ({ ...prev, page: 1 }));
+  };
+
+  const resetForm = () => {
+    setForm({
+      full_name: '', official_email: '', phone_number: '', gender: '', date_of_birth: '',
+      date_of_joining: '', confirmation_date: '', employment_type: 'Full-time', designation: '', tier_level: 'Mid',
+      reporting_manager_id: '', department: '', team: '', work_location: 'Office',
+      office_location: '',
+      leave_policy: 'Standard', shift_type: 'General', custom_login_time: '', custom_logout_time: '',
+      monthly_salary: 0, attendance_tracking_enabled: true, user_role: 'employee', login_enabled: true,
+      custom_employee_id: '', biometric_id: ''
+    });
+  };
+
+  // Render the contents of a Settings-driven Shift dropdown. The list comes
+  // from /api/settings/shifts (active only). The currently-selected shift
+  // — if it points to an inactive / removed Settings entry — is always
+  // rendered (disabled) so existing employees don't lose their assignment
+  // visually. "Custom" remains an explicit ad-hoc option.
+  const renderShiftOptions = () => {
+    const active = (settingsShifts || []).filter(s => (s.status || 'active') === 'active' && !s.is_deleted);
+    const activeNames = new Set(active.map(s => s.name));
+    const currentValue = form.shift_type;
+    const currentIsInactive =
+      currentValue && currentValue !== 'Custom' && !activeNames.has(currentValue);
+
+    const fmtHours = (h) => {
+      const total = Number(h || 0);
+      const hh = Math.floor(total);
+      const mm = Math.round((total - hh) * 60);
+      return mm ? `${hh}h ${mm}m` : `${hh}h`;
+    };
+
+    if (active.length === 0 && !currentIsInactive) {
+      return (
+        <>
+          <SelectItem value="__no_shifts__" disabled>
+            No shifts available — create one in Settings → Shifts
+          </SelectItem>
+          <SelectItem value="Custom">Custom</SelectItem>
+        </>
+      );
+    }
+
+    return (
+      <>
+        {active.map((s) => (
+          <SelectItem key={s.id} value={s.name}>
+            {s.name} ({s.start_time}, {fmtHours(s.total_hours)})
+          </SelectItem>
+        ))}
+        {currentIsInactive && (
+          <SelectItem value={currentValue} disabled>
+            {currentValue} (inactive — kept for record integrity)
+          </SelectItem>
+        )}
+        <SelectItem value="Custom">Custom (one-off)</SelectItem>
+      </>
+    );
+  };
+
+  const handleAdd = () => { resetForm(); fetchSettingsShifts(); setShowAddSheet(true); };
+  
+  const handleEdit = (employee) => {
+    setSelectedEmployee(employee);
+    fetchSettingsShifts();
+    // If employee has an `active_shift_name`, prefer it for the dropdown so
+    // the centrally-configured shift assignment is reflected. Otherwise fall
+    // back to the legacy `shift_type` string.
+    const shiftValue = employee.active_shift_name || employee.shift_type || 'General';
+    setForm({
+      full_name: employee.full_name || '', official_email: employee.official_email || '',
+      phone_number: employee.phone_number || '', gender: employee.gender || '',
+      date_of_birth: employee.date_of_birth || '', date_of_joining: employee.date_of_joining || '',
+      confirmation_date: employee.confirmation_date || '',
+      employment_type: employee.employment_type || 'Full-time', designation: employee.designation || '',
+      tier_level: employee.tier_level || 'Mid', reporting_manager_id: employee.reporting_manager_id || '',
+      department: employee.department || '', team: employee.team || '',
+      work_location: employee.work_location || 'Office',
+      office_location: employee.office_location || '',
+      leave_policy: employee.leave_policy || 'Standard',
+      shift_type: shiftValue, custom_login_time: employee.custom_login_time || '',
+      custom_logout_time: employee.custom_logout_time || '', monthly_salary: employee.monthly_salary || 0,
+      attendance_tracking_enabled: employee.attendance_tracking_enabled ?? true,
+      user_role: employee.user_role || 'employee', login_enabled: employee.login_enabled ?? true,
+      custom_employee_id: employee.custom_employee_id || '',
+      biometric_id: employee.biometric_id || ''
+    });
+    setShowEditSheet(true);
+  };
+
+  const handleView = async (employee) => {
+    setSelectedEmployee(employee);
+    setViewTab('profile');
+    setEduExpData(null);
+    setDocumentsData(null);
+    setSalaryData(null);
+    setAdjustments([]);
+    setShowViewDialog(true);
+    // Fetch the freshest detail (which now includes the linked login username).
+    // Falls back silently to the list-row data if the call fails.
+    try {
+      const { data } = await axios.get(`${API}/employees/${employee.id}`, { headers: getAuthHeaders() });
+      if (data) setSelectedEmployee((prev) => ({ ...prev, ...data }));
+    } catch (e) {
+      // non-fatal — keep showing whatever we already have
+    }
+  };
+  
+  const fetchEduExp = async (employeeId) => {
+    setLoadingEduExp(true);
+    try {
+      const response = await axios.get(`${API}/employees/${employeeId}/education-experience`, { headers: getAuthHeaders() });
+      setEduExpData(response.data);
+    } catch (error) {
+      console.error('Error fetching education/experience:', error);
+      toast.error('Failed to load education/experience data');
+    } finally {
+      setLoadingEduExp(false);
+    }
+  };
+  
+  const handleVerifyEducation = async (employeeId) => {
+    setVerifyingEducation(true);
+    try {
+      await axios.post(`${API}/employees/${employeeId}/verify-education`, {}, { headers: getAuthHeaders() });
+      toast.success('Education details verified');
+      fetchEduExp(employeeId);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to verify education');
+    } finally {
+      setVerifyingEducation(false);
+    }
+  };
+  
+  const handleVerifyExperience = async (employeeId) => {
+    setVerifyingExperience(true);
+    try {
+      await axios.post(`${API}/employees/${employeeId}/verify-experience`, {}, { headers: getAuthHeaders() });
+      toast.success('Experience details verified');
+      fetchEduExp(employeeId);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to verify experience');
+    } finally {
+      setVerifyingExperience(false);
+    }
+  };
+  
+  // Fetch employee documents
+  const fetchDocuments = async (employeeId) => {
+    setLoadingDocuments(true);
+    try {
+      const response = await axios.get(`${API}/employees/${employeeId}/documents`, { headers: getAuthHeaders() });
+      setDocumentsData(response.data);
+    } catch (error) {
+      console.error('Error fetching documents:', error);
+      toast.error('Failed to load documents');
+    } finally {
+      setLoadingDocuments(false);
+    }
+  };
+  
+  // Upload offer letter — supports files up to 25 MB via Cloudinary's
+  // chunked-upload protocol (single POST works up to ~10 MB on the free plan,
+  // which is why replaces of larger PDFs used to fail with "File size too
+  // large"). Chunked path is used for anything ≥ 5 MB.
+  const handleUploadOfferLetter = async (file) => {
+    if (!selectedEmployee) return;
+
+    // Client-side guards — surface errors immediately instead of letting the
+    // browser hang on a doomed Cloudinary upload.
+    const MAX_BYTES = 25 * 1024 * 1024; // 25 MB
+    if (file.size > MAX_BYTES) {
+      toast.error(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 25 MB.`);
+      return;
+    }
+    const okExt = /\.(pdf|doc|docx)$/i.test(file.name || '');
+    if (!okExt) {
+      toast.error('Only PDF, DOC or DOCX files are supported.');
+      return;
+    }
+
+    setUploadingDocument(true);
+    setUploadProgress(0);
+    setUploadPhase('');
+    try {
+      // ── Phase 1: shrink over-sized PDFs (Cloudinary Free plan caps at 10 MB
+      // per asset). Target 9 MB so we leave headroom for the multipart wrap.
+      // Non-PDFs pass through untouched.
+      const CLOUDINARY_LIMIT = 10 * 1024 * 1024;   // 10 MB hard cap on our plan
+      const COMPRESS_TARGET  = 9  * 1024 * 1024;   // 9  MB leaves ~1 MB margin
+      let uploadFile = file;
+      if (/\.pdf$/i.test(file.name) && file.size > CLOUDINARY_LIMIT) {
+        setUploadPhase('compressing');
+        setUploadProgress(0);
+        try {
+          const { file: compressed, compressed: didShrink, originalBytes, finalBytes, preset } =
+            await compressPdfIfNeeded(file, COMPRESS_TARGET, (pct) => setUploadProgress(pct));
+          if (didShrink) {
+            const from = (originalBytes / 1024 / 1024).toFixed(1);
+            const to   = (finalBytes   / 1024 / 1024).toFixed(1);
+            toast.success(`Compressed PDF: ${from} MB → ${to} MB (${preset})`);
+            uploadFile = compressed;
+          }
+        } catch (compErr) {
+          console.warn('PDF compression failed, will attempt raw upload:', compErr);
+        }
+        // Even after client compression, if it's still over Cloudinary's cap,
+        // fall back to SERVER-SIDE compression (PyMuPDF) — the browser
+        // compressor can fail in production builds. The original file is
+        // streamed to the backend in small base64 chunks (ingress-safe),
+        // compressed below 10 MB there and uploaded to Cloudinary directly.
+        if (uploadFile.size > CLOUDINARY_LIMIT) {
+          setUploadPhase('compressing');
+          setUploadProgress(0);
+          try {
+            const uploadId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-fallback`);
+            const CHUNK = 3 * 1024 * 1024; // 3 MB raw → ~4 MB base64 JSON
+            const buf = await uploadFile.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            const totalChunks = Math.ceil(bytes.length / CHUNK);
+            for (let i = 0; i < totalChunks; i++) {
+              const slice = bytes.subarray(i * CHUNK, Math.min((i + 1) * CHUNK, bytes.length));
+              let bin = '';
+              for (let j = 0; j < slice.length; j += 0x8000) {
+                bin += String.fromCharCode.apply(null, slice.subarray(j, j + 0x8000));
+              }
+              await axios.post(`${API}/documents/compress-upload/chunk`, {
+                upload_id: uploadId, chunk_index: i, data: btoa(bin),
+              }, { headers: getAuthHeaders(), timeout: 60000 });
+              setUploadProgress(Math.round(((i + 1) / totalChunks) * 60));
+            }
+            const finishResp = await axios.post(`${API}/documents/compress-upload/finish`, {
+              upload_id: uploadId, file_name: uploadFile.name,
+            }, { headers: getAuthHeaders(), timeout: 180000 });
+            const { secure_url, public_id, original_bytes, final_bytes } = finishResp.data;
+            setUploadProgress(100);
+            toast.success(
+              `Compressed on server: ${(original_bytes / 1024 / 1024).toFixed(1)} MB → ${(final_bytes / 1024 / 1024).toFixed(1)} MB`
+            );
+            await axios.post(`${API}/employees/${selectedEmployee.id}/documents`, {
+              file_url: secure_url,
+              file_name: uploadFile.name,
+              file_type: 'application/pdf',
+              file_public_id: public_id,
+              document_type: 'offer_letter',
+            }, { headers: getAuthHeaders(), timeout: 60000 });
+            toast.success('Offer letter uploaded successfully');
+            await fetchDocuments(selectedEmployee.id);
+            return;
+          } catch (srvErr) {
+            const msg = srvErr?.response?.data?.detail || srvErr?.message || 'Server compression failed';
+            toast.error(`Could not compress the PDF: ${msg}`);
+            return;
+          }
+        }
+      } else if (!/\.pdf$/i.test(file.name) && file.size > CLOUDINARY_LIMIT) {
+        // DOC/DOCX can't be compressed in-browser meaningfully. Ask the user.
+        toast.error(
+          `File is ${(file.size / 1024 / 1024).toFixed(1)} MB. ` +
+          `Non-PDF files must be under 10 MB — please compress or convert to PDF.`
+        );
+        return;
+      }
+
+      setUploadPhase('uploading');
+      setUploadProgress(0);
+
+      // Get signed upload params from backend
+      const sigResponse = await axios.get(`${API}/cloudinary/signature?folder=documents`, {
+        headers: getAuthHeaders()
+      });
+      const { signature, timestamp, cloud_name, api_key, folder } = sigResponse.data;
+      const uploadUrl = `https://api.cloudinary.com/v1_1/${cloud_name}/auto/upload`;
+
+      // Common signed fields sent with every request (single or chunked).
+      const baseFields = {
+        signature, timestamp, api_key, folder, type: 'upload',
+      };
+
+      const CHUNK_SIZE = 5 * 1024 * 1024;   // 5 MB — Cloudinary minimum
+      const useChunked = uploadFile.size > CHUNK_SIZE;
+
+      let cloudinaryData;
+      try {
+        if (!useChunked) {
+          // Fast path: single POST, works for small (<5 MB) files.
+          const fd = new FormData();
+          fd.append('file', uploadFile);
+          Object.entries(baseFields).forEach(([k, v]) => fd.append(k, v));
+          const resp = await axios.post(uploadUrl, fd, {
+            timeout: 120000,
+            transformRequest: [(d) => d],
+            onUploadProgress: (e) => {
+              if (e.total) setUploadProgress(Math.round((e.loaded / e.total) * 100));
+            },
+          });
+          cloudinaryData = resp.data;
+        } else {
+          // Chunked path: bypasses Cloudinary's per-request 10 MB free-plan
+          // cap. Every chunk carries the same X-Unique-Upload-Id; the final
+          // chunk returns the fully-assembled asset payload.
+          const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+          const total = uploadFile.size;
+          for (let start = 0; start < total; start += CHUNK_SIZE) {
+            const end = Math.min(start + CHUNK_SIZE, total);
+            const chunk = uploadFile.slice(start, end);
+            const fd = new FormData();
+            fd.append('file', chunk);
+            Object.entries(baseFields).forEach(([k, v]) => fd.append(k, v));
+            const resp = await axios.post(uploadUrl, fd, {
+              timeout: 120000,
+              transformRequest: [(d) => d],
+              headers: {
+                'X-Unique-Upload-Id': uniqueId,
+                'Content-Range': `bytes ${start}-${end - 1}/${total}`,
+              },
+              onUploadProgress: (e) => {
+                if (!e.total) return;
+                const chunkLoaded = e.loaded;
+                const overall = Math.min(100, Math.round(((start + chunkLoaded) / total) * 100));
+                setUploadProgress(overall);
+              },
+            });
+            // The FINAL chunk's response contains the full asset metadata.
+            if (end >= total) cloudinaryData = resp.data;
+          }
+        }
+      } catch (clErr) {
+        const clMsg = clErr?.response?.data?.error?.message
+          || (clErr?.code === 'ECONNABORTED' ? 'Upload timed out — please retry.' : null)
+          || clErr?.message
+          || 'Cloudinary upload failed';
+        toast.error(`Upload failed: ${clMsg}`);
+        return; // finally still clears the spinner
+      }
+
+      if (!cloudinaryData?.secure_url || !cloudinaryData?.public_id) {
+        toast.error('Upload finished but Cloudinary did not return a usable file. Please retry.');
+        return;
+      }
+      setUploadProgress(100);
+
+      // Save document reference to backend (backend swaps the DB row and
+      // purges the old Cloudinary asset — see upload_employee_document).
+      await axios.post(`${API}/employees/${selectedEmployee.id}/documents`, {
+        file_url: cloudinaryData.secure_url,
+        file_name: uploadFile.name,
+        file_type: uploadFile.type,
+        file_public_id: cloudinaryData.public_id,
+        document_type: 'offer_letter'
+      }, { headers: getAuthHeaders(), timeout: 60000 });
+
+      toast.success('Offer letter uploaded successfully');
+      await fetchDocuments(selectedEmployee.id);
+    } catch (error) {
+      console.error('Upload error:', error);
+      const detail = error?.response?.data?.detail || error?.message || 'Failed to upload offer letter';
+      toast.error(typeof detail === 'string' ? detail : 'Failed to upload offer letter');
+    } finally {
+      setUploadingDocument(false);
+      setUploadProgress(0);
+      setUploadPhase('');
+    }
+  };
+
+  // Delete offer letter (removes DB row + purges Cloudinary asset server-side)
+  const handleDeleteOfferLetter = async () => {
+    if (!selectedEmployee) return;
+    const doc = documentsData?.documents?.find(d => d.document_type === 'offer_letter');
+    if (!doc) return;
+    const name = doc.file_name || 'this Offer Letter';
+    if (!window.confirm(`Delete “${name}”? This cannot be undone.`)) return;
+    try {
+      await axios.delete(
+        `${API}/employees/${selectedEmployee.id}/documents/${doc.id}`,
+        { headers: getAuthHeaders(), timeout: 30000 }
+      );
+      toast.success('Offer letter deleted');
+      await fetchDocuments(selectedEmployee.id);
+    } catch (error) {
+      const detail = error?.response?.data?.detail || error?.message || 'Failed to delete offer letter';
+      toast.error(typeof detail === 'string' ? detail : 'Failed to delete offer letter');
+    }
+  };
+  
+  // Fetch employee salary
+  const fetchSalary = async (employeeId) => {
+    setLoadingSalary(true);
+    try {
+      const [salaryRes, adjustmentsRes] = await Promise.all([
+        axios.get(`${API}/employees/${employeeId}/salary`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/employees/${employeeId}/salary/adjustments`, { headers: getAuthHeaders() })
+      ]);
+      setSalaryData(salaryRes.data.salary);
+      setAdjustments(adjustmentsRes.data.adjustments || []);
+    } catch (error) {
+      console.error('Error fetching salary:', error);
+      setSalaryData(null);
+    } finally {
+      setLoadingSalary(false);
+    }
+  };
+  
+  // Update salary CTC
+  const handleUpdateSalary = async (annualCtc) => {
+    if (!selectedEmployee) return;
+    setSavingSalary(true);
+    try {
+      await axios.put(`${API}/employees/${selectedEmployee.id}/salary`, 
+        { annual_ctc: parseFloat(annualCtc) },
+        { headers: getAuthHeaders() }
+      );
+      toast.success('Salary updated successfully');
+      fetchSalary(selectedEmployee.id);
+    } catch (error) {
+      toast.error('Failed to update salary');
+    } finally {
+      setSavingSalary(false);
+    }
+  };
+  
+  // Create salary adjustment
+  const handleCreateAdjustment = async () => {
+    if (!selectedEmployee || !newAdjustment.description || !newAdjustment.amount) {
+      toast.error('Please fill all required fields');
+      return;
+    }
+    setSavingSalary(true);
+    try {
+      await axios.post(`${API}/employees/${selectedEmployee.id}/salary/adjustments`, {
+        ...newAdjustment,
+        amount: parseFloat(newAdjustment.amount)
+      }, { headers: getAuthHeaders() });
+      toast.success('Adjustment created successfully');
+      setShowAdjustmentModal(false);
+      setNewAdjustment({
+        adjustment_type: 'bonus',
+        description: '',
+        amount: '',
+        frequency: 'one_time',
+        applicable_month: new Date().toISOString().slice(0, 7),
+        start_month: '',
+        end_month: ''
+      });
+      fetchSalary(selectedEmployee.id);
+    } catch (error) {
+      toast.error('Failed to create adjustment');
+    } finally {
+      setSavingSalary(false);
+    }
+  };
+  
+  // Delete adjustment
+  const handleDeleteAdjustment = async (adjustmentId) => {
+    if (!selectedEmployee) return;
+    try {
+      await axios.delete(`${API}/employees/${selectedEmployee.id}/salary/adjustments/${adjustmentId}`, 
+        { headers: getAuthHeaders() }
+      );
+      toast.success('Adjustment deleted');
+      fetchSalary(selectedEmployee.id);
+    } catch (error) {
+      toast.error('Failed to delete adjustment');
+    }
+  };
+  
+  const handlePrintPayslip = () => {
+    const content = salarySlipRef.current;
+    if (!content) return;
+    const printWindow = window.open('', '_blank', 'width=900,height=700');
+    const origin = window.location.origin;
+    let html = content.innerHTML;
+    html = html.replace(/src="\/logo/g, `src="${origin}/logo`);
+    printWindow.document.write(`<!DOCTYPE html><html><head><title>Salary Slip - ${selectedEmployee?.full_name || 'Employee'}</title><style>body{margin:0;padding:0;font-family:'Segoe UI',Tahoma,sans-serif;background:#f4f6f9}@media print{body{padding:0;background:#f4f6f9}@page{margin:0.3in}}</style></head><body>`);
+    printWindow.document.write(html);
+    printWindow.document.write('</body></html>');
+    printWindow.document.close();
+    setTimeout(() => { printWindow.print(); }, 500);
+  };
+
+  const handleDelete = (employee) => { setSelectedEmployee(employee); setShowDeleteDialog(true); };
+
+  const isSuperAdmin = user?.role === 'system_admin';
+
+  const fetchDeletionImpact = async (emp) => {
+    setDeletionLoading(true);
+    setDeletionImpact(null);
+    try {
+      const res = await axios.get(`${API}/employees/${emp.id}/deletion-impact`, { headers: getAuthHeaders() });
+      setDeletionImpact(res.data);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to load deletion impact');
+    } finally {
+      setDeletionLoading(false);
+    }
+  };
+
+  const openPermDelete = async (emp) => {
+    setSelectedEmployee(emp);
+    setShowPermDeleteDialog(true);
+    await fetchDeletionImpact(emp);
+  };
+
+  // ---- Admin Reset Credentials -------------------------------------------
+  const openResetCreds = (emp) => {
+    setSelectedEmployee(emp);
+    setResetMode('manual');
+    setResetPassword('');
+    setResetConfirm('');
+    setResetForceChange(true);
+    setResetGeneratedPwd('');
+    setResetShowPwd(false);
+    setShowResetCredsDialog(true);
+  };
+
+  // ---- Resend Credential Email (uses robust retry pipeline) --------------
+  const resendCredentialEmail = async (emp) => {
+    if (!emp?.official_email) { toast.error('Employee has no email on record'); return; }
+    if (!window.confirm(`Resend login credentials to ${emp.official_email}?\n\nThis will regenerate a new temporary password.`)) return;
+    try {
+      const { data } = await axios.post(
+        `${API}/employees/${emp.id}/resend-credentials`,
+        {},
+        { headers: getAuthHeaders() },
+      );
+      toast.success(`Credential email queued to ${data.queued_for}. Delivery status will update in the table shortly.`, { duration: 6000 });
+      // Refresh employees so the status pill updates
+      setTimeout(() => fetchData(), 15000);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to queue credential email');
+    }
+  };
+
+  const submitResetCreds = async () => {
+    if (!selectedEmployee) return;
+    if (resetMode === 'manual') {
+      if (!resetPassword || resetPassword.length < 8) { toast.error('Password must be at least 8 characters'); return; }
+      if (resetPassword !== resetConfirm) { toast.error('Passwords do not match'); return; }
+    }
+    setResetSubmitting(true);
+    try {
+      const body = resetMode === 'auto'
+        ? { auto_generate: true, force_change_on_next_login: resetForceChange }
+        : { password: resetPassword, confirm_password: resetConfirm, force_change_on_next_login: resetForceChange };
+      const { data } = await axios.post(
+        `${API}/admin/employees/${selectedEmployee.id}/reset-credentials`,
+        body,
+        { headers: getAuthHeaders() },
+      );
+      if (data.generated && data.password) {
+        // Show ONCE
+        setResetGeneratedPwd(data.password);
+        toast.success('Password generated — copy it now, it will not be shown again');
+      } else {
+        toast.success('Credentials reset successfully');
+        setShowResetCredsDialog(false);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to reset credentials');
+    } finally {
+      setResetSubmitting(false);
+    }
+  };
+
+  const closeResetCreds = () => {
+    setShowResetCredsDialog(false);
+    setResetGeneratedPwd('');
+    setResetPassword('');
+    setResetConfirm('');
+    setSelectedEmployee(null);
+  };
+
+  const openForceDelete = async (emp) => {
+    setSelectedEmployee(emp);
+    setForceStep(1);
+    setForceConfirmText('');
+    setShowForceDeleteDialog(true);
+    await fetchDeletionImpact(emp);
+  };
+
+  const confirmPermDelete = async () => {
+    if (!selectedEmployee) return;
+    const idToDelete = selectedEmployee.id;
+    try {
+      await axios.delete(`${API}/employees/${idToDelete}/permanent`, { headers: getAuthHeaders() });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to permanently delete');
+      return;
+    }
+    // SUCCESS — happen ONCE, in this order, all outside the try/catch so
+    // any state-cleanup or refetch error never triggers a phantom failure toast.
+    toast.success('Employee permanently deleted');
+    setShowPermDeleteDialog(false);
+    setSelectedEmployee(null);
+    setEmployees((prev) => prev.filter((e) => e.id !== idToDelete));      // optimistic UI removal
+    setAllEmployees((prev) => prev.filter((e) => e.id !== idToDelete));
+    setPagination((p) => ({ ...p, total: Math.max(0, (p.total || 1) - 1) }));
+    fetchData();                                                          // authoritative refresh in background
+  };
+
+  const confirmForceDelete = async () => {
+    if (!selectedEmployee) return;
+    if (forceConfirmText.trim() !== 'DELETE') {
+      toast.error('Please type DELETE to confirm');
+      return;
+    }
+    const idToDelete = selectedEmployee.id;
+    try {
+      await axios.delete(`${API}/employees/${idToDelete}/force`, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        data: { confirmation_text: 'DELETE' },
+      });
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to force delete');
+      return;
+    }
+    toast.success('Employee and all records permanently deleted');
+    setShowForceDeleteDialog(false);
+    setForceStep(1);
+    setForceConfirmText('');
+    setSelectedEmployee(null);
+    setEmployees((prev) => prev.filter((e) => e.id !== idToDelete));
+    setAllEmployees((prev) => prev.filter((e) => e.id !== idToDelete));
+    setPagination((p) => ({ ...p, total: Math.max(0, (p.total || 1) - 1) }));
+    fetchData();
+  };
+
+  const validateForm = (isEdit = false) => {
+    if (!form.full_name.trim()) { toast.error('Full name is required'); return false; }
+    if (!form.official_email.trim()) { toast.error('Email is required'); return false; }
+    if (!form.date_of_joining) { toast.error('Date of joining is required'); return false; }
+    if (!form.department) { toast.error('Department is required'); return false; }
+    if (!form.team) { toast.error('Team is required'); return false; }
+    if (!form.designation.trim()) { toast.error('Designation is required'); return false; }
+    // Employee ID is now optional — an auto-generated `emp_id` is always available as a fallback.
+    if (!form.biometric_id.trim()) { toast.error('Biometric ID is required'); return false; }
+    if (!form.office_location || !form.office_location.trim()) { toast.error('Office Location is required'); return false; }
+    // Paid-Leave Confirmation Date: required + valid for leave-eligible types.
+    if (form.employment_type !== 'Intern') {
+      if (!form.confirmation_date) { toast.error('Confirmation Date is required for leave-eligible employment types'); return false; }
+      const cd = new Date(form.confirmation_date);
+      const today = new Date(); today.setHours(23, 59, 59, 999);
+      if (cd > today) { toast.error('Confirmation Date cannot be a future date'); return false; }
+      if (form.date_of_joining && cd < new Date(form.date_of_joining)) {
+        toast.error('Confirmation Date cannot be earlier than the Date of Joining'); return false;
+      }
+    }
+    return true;
+  };
+
+  const submitAdd = async () => {
+    if (!validateForm()) return;
+    try {
+      const response = await axios.post(`${API}/employees`, form, { headers: getAuthHeaders() });
+      if (form.login_enabled && response.data.temp_password) {
+        toast.success(`Employee added! Credentials sent to ${form.official_email}`, { duration: 5000 });
+      } else {
+        toast.success('Employee added successfully');
+      }
+      resetForm();
+      setShowAddSheet(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to add employee');
+    }
+  };
+
+  const submitEdit = async () => {
+    if (!validateForm()) return;
+    try {
+      await axios.put(`${API}/employees/${selectedEmployee.id}`, form, { headers: getAuthHeaders() });
+      toast.success('Employee updated successfully');
+      setShowEditSheet(false);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to update employee');
+    }
+  };
+
+  const confirmDelete = async () => {
+    try {
+      await axios.delete(`${API}/employees/${selectedEmployee.id}`, {
+        headers: getAuthHeaders(),
+        data: deactForm
+      });
+      toast.success('Employee deactivated successfully');
+      setShowDeleteDialog(false);
+      setDeactForm({ inactive_type: 'Relieved', inactive_date: new Date().toISOString().split('T')[0], reason: '', last_day_payable: false });
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to deactivate employee');
+    }
+  };
+
+  const handleReactivate = async (employee) => {
+    try {
+      await axios.put(`${API}/employees/${employee.id}/reactivate`, {}, { headers: getAuthHeaders() });
+      toast.success(`${employee.full_name} has been reactivated`);
+      fetchData();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to reactivate employee');
+    }
+  };
+
+  const handleExportCSV = async () => {
+    try {
+      // Build same filter params as the list view so export honors current filters.
+      // Mirror the list-view rule: a typed search overrides Status / inactive-type
+      // so the export reflects exactly what the user is seeing on screen.
+      const searchActive = !!(filters.search && filters.search.trim());
+      const params = {
+        ...(filters.search && { search: filters.search }),
+        ...(filters.department !== 'All' && { department: filters.department }),
+        ...(filters.team !== 'All' && { team: filters.team }),
+        ...(filters.designation !== 'All' && { designation: filters.designation }),
+        ...(!searchActive && filters.status !== 'All' && { status: filters.status }),
+        ...(filters.employment_type !== 'All' && { employment_type: filters.employment_type }),
+        ...(filters.tier_level !== 'All' && { tier_level: filters.tier_level }),
+        ...(filters.work_location !== 'All' && { work_location: filters.work_location }),
+        ...(filters.office_location !== 'All' && { office_location: filters.office_location }),
+        ...(!searchActive && inactiveTypeFilter !== 'All' && { inactive_type: inactiveTypeFilter }),
+      };
+      const response = await axios.get(`${API}/employees/export`, {
+        headers: getAuthHeaders(),
+        params,
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `employees-${new Date().toISOString().split('T')[0]}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      toast.success('Employees exported');
+    } catch (error) {
+      toast.error(error?.response?.data?.detail || 'Failed to export');
+    }
+  };
+
+  // Bulk Import handlers
+  const handleDownloadTemplate = async () => {
+    try {
+      const response = await axios.get(`${API}/employees/import-template`, {
+        headers: getAuthHeaders(),
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'employee_import_template.xlsx';
+      a.click();
+      window.URL.revokeObjectURL(url);
+      toast.success('Template downloaded');
+    } catch (error) {
+      toast.error('Failed to download template');
+    }
+  };
+
+  const handleBulkImport = async () => {
+    if (!importFile) { toast.error('Please select a file'); return; }
+    setImporting(true);
+    setImportResult(null);
+    try {
+      const formData = new FormData();
+      formData.append('file', importFile);
+      const response = await axios.post(`${API}/employees/bulk-import`, formData, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' }
+      });
+      setImportResult(response.data);
+      if (response.data.success > 0) {
+        toast.success(`${response.data.success} employees imported successfully`);
+        fetchData();
+      }
+      if (response.data.failed > 0) {
+        toast.error(`${response.data.failed} records failed`);
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to import employees');
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Bulk Deactivate handlers
+  const handleDownloadDeactivateTemplate = async () => {
+    try {
+      const resp = await axios.get(`${API}/employees/bulk-deactivate/template`, { headers: getAuthHeaders(), responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([resp.data]));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'inactive_employees_template.xlsx';
+      a.click();
+      window.URL.revokeObjectURL(url);
+      toast.success('Template downloaded');
+    } catch {
+      toast.error('Failed to download template');
+    }
+  };
+
+  const handlePreviewDeactivate = async (file) => {
+    if (!file) return;
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const resp = await axios.post(`${API}/employees/bulk-deactivate/preview`, fd, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' }
+      });
+      setDeactivatePreview(resp.data);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to preview file');
+      setDeactivatePreview(null);
+    }
+  };
+
+  const handleBulkDeactivate = async () => {
+    if (!deactivateFile) { toast.error('Please select a file'); return; }
+    if (!window.confirm(`This will deactivate ${deactivatePreview?.will_deactivate || 'multiple'} employees and disable their logins. Continue?`)) return;
+    setDeactivating(true);
+    setDeactivateResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', deactivateFile);
+      const resp = await axios.post(`${API}/employees/bulk-deactivate`, fd, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' }
+      });
+      setDeactivateResult(resp.data);
+      if (resp.data.deactivated > 0) {
+        toast.success(`${resp.data.deactivated} employees deactivated`);
+        fetchData();
+      }
+      if (resp.data.failed > 0) {
+        toast.error(`${resp.data.failed} rows failed`);
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to deactivate');
+    } finally {
+      setDeactivating(false);
+    }
+  };
+
+  const getStatusBadge = (status) => {
+    const styles = { 'Active': 'badge-success', 'Inactive': 'badge-neutral', 'Resigned': 'badge-error' };
+    return styles[status] || 'badge-neutral';
+  };
+
+  const canEdit = ['hr'].includes(user?.role);
+  const filteredTeams = form.department ? teams.filter(t => t.department === form.department) : teams;
+
+  return (
+    <div className="space-y-6 animate-fade-in" data-testid="employees-page">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[#063c88] flex items-center justify-center">
+            <Users className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Employee Management</h1>
+            <p className="text-sm text-slate-500">Manage your workforce efficiently</p>
+          </div>
+        </div>
+        {canEdit && (
+          <div className="flex gap-2">
+            <Button onClick={() => { setImportFile(null); setImportResult(null); setShowBulkImport(true); }} variant="outline" className="rounded-xl border-[#063c88] text-[#063c88] hover:bg-[#063c88]/5" data-testid="bulk-import-btn">
+              <FileSpreadsheet className="w-4 h-4 mr-2" />
+              Bulk Import
+            </Button>
+            <Button onClick={() => { setDeactivateFile(null); setDeactivatePreview(null); setDeactivateResult(null); setShowBulkDeactivate(true); }} variant="outline" className="rounded-xl border-amber-500 text-amber-600 hover:bg-amber-50" data-testid="bulk-deactivate-btn">
+              <UserX className="w-4 h-4 mr-2" />
+              Bulk Deactivate
+            </Button>
+            <Button onClick={handleAdd} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl shadow-lg shadow-[#063c88]/20" data-testid="add-employee-btn">
+              <Plus className="w-4 h-4 mr-2" />
+              Add Employee
+            </Button>
+          </div>
+        )}
+      </div>
+
+      {/* Stats */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <StatCard title="Total Employees" value={stats.total} icon={Users} color="#063c88" bgColor="bg-blue-100" />
+          <StatCard title="Active" value={stats.active} icon={UserCheck} color="#10b981" bgColor="bg-emerald-100" />
+          <StatCard title="Inactive" value={stats.inactive} icon={UserX} color="#64748b" bgColor="bg-slate-100" />
+          <StatCard title="Resigned" value={stats.resigned} icon={Briefcase} color="#ef4444" bgColor="bg-red-100" />
+        </div>
+      )}
+
+      {/* Workforce Distribution (additive) — Full-Time vs Intern, overall + by department */}
+      {stats?.workforce && (
+        <div className="space-y-4" data-testid="workforce-distribution">
+          {/* Group 1 — Overall employment type */}
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <StatCard title="Full-Time Employees" value={stats.workforce.full_time} icon={Briefcase} color="#063c88" bgColor="bg-blue-100" />
+            <StatCard title="Intern Employees" value={stats.workforce.intern} icon={GraduationCap} color="#7c3aed" bgColor="bg-violet-100" />
+            {/* Group 2 — Department-wise breakdown */}
+            {['Research Unit', 'Business & Product', 'Support Staff'].map((dept) => {
+              const d = stats.workforce.by_department?.[dept] || { full_time: 0, intern: 0 };
+              return (
+                <div key={dept} className="stat-card" data-testid={`workforce-dept-${dept.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`}>
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-9 h-9 rounded-lg flex items-center justify-center bg-slate-100">
+                      <Building2 className="w-5 h-5" style={{ color: '#063c88' }} strokeWidth={1.5} />
+                    </div>
+                    <p className="text-sm font-semibold text-slate-900 leading-tight">{dept}</p>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xl font-bold text-slate-900 number-display" data-testid={`workforce-dept-ft-${dept.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`}>{d.full_time}</p>
+                      <p className="text-xs text-slate-500">Full-Time</p>
+                    </div>
+                    <div className="h-8 w-px bg-slate-200" />
+                    <div>
+                      <p className="text-xl font-bold text-violet-700 number-display" data-testid={`workforce-dept-intern-${dept.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`}>{d.intern}</p>
+                      <p className="text-xs text-slate-500">Interns</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="card-flat p-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4">
+          <div className="lg:col-span-2">
+            <Label className="text-sm text-slate-600 mb-1.5 block">Search</Label>
+            <EmployeeAutocomplete
+              value={filters.search}
+              onChange={(val) => setFilters(prev => ({ ...prev, search: val }))}
+              onSelect={handleAutocompleteSelect}
+              placeholder="Name, email, ID..."
+              data-testid="filter-search"
+            />
+          </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Department</Label>
+            <Select value={filters.department} onValueChange={(v) => setFilters({ ...filters, department: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-department"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {departmentOptions.map(dept => <SelectItem key={dept} value={dept}>{dept}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Team</Label>
+            <Select value={filters.team} onValueChange={(v) => setFilters({ ...filters, team: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-team"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {teamOptions.map(team => <SelectItem key={team} value={team}>{team}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Designation</Label>
+            <Select value={filters.designation} onValueChange={(v) => setFilters({ ...filters, designation: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-designation"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {designationOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Status</Label>
+            <Select value={filters.status} onValueChange={(v) => setFilters({ ...filters, status: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-status"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {config.employeeStatuses.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Location</Label>
+            <Select value={filters.office_location} onValueChange={(v) => setFilters({ ...filters, office_location: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-office-location"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {(officeLocations || [])
+                  .map(o => (typeof o === 'string' ? o : o?.name))
+                  .filter(n => n && !/test|hist|renamed/i.test(n))
+                  .filter((v, i, arr) => arr.indexOf(v) === i)
+                  .sort()
+                  .map(name => <SelectItem key={name} value={name} data-testid={`filter-office-location-${name}`}>{name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-sm text-slate-600 mb-1.5 block">Inactive Type</Label>
+            <Select value={inactiveTypeFilter} onValueChange={(v) => setInactiveTypeFilter(v)}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-inactive-type"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                <SelectItem value="Relieved">Relieved</SelectItem>
+                <SelectItem value="Terminated">Terminated</SelectItem>
+                <SelectItem value="Completed Internship">Completed Internship</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex items-end gap-2">
+            <Button onClick={handleSearch} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="search-btn">
+              <Filter className="w-4 h-4 mr-1" /> Filter
+            </Button>
+            <Button variant="outline" onClick={handleReset} className="rounded-lg" data-testid="reset-btn">
+              <RotateCcw className="w-4 h-4" />
+            </Button>
+          </div>
+          <div className="flex items-end">
+            <Button variant="outline" onClick={handleExportCSV} className="rounded-lg" data-testid="export-btn">
+              <Download className="w-4 h-4 mr-1" /> Export
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="card-premium overflow-hidden">
+        {loading ? (
+          <div className="flex items-center justify-center h-64">
+            <div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="table-premium w-full">
+                <thead>
+                  <tr>
+                    <SortableTh field="custom_employee_id" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap">Employee ID</SortableTh>
+                    <SortableTh field="full_name" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap">Name</SortableTh>
+                    <SortableTh field="official_email" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden md:table-cell">Email</SortableTh>
+                    <SortableTh field="department" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden lg:table-cell">Department</SortableTh>
+                    <SortableTh field="team" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden lg:table-cell">Team</SortableTh>
+                    <SortableTh field="designation" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden xl:table-cell">Designation</SortableTh>
+                    <SortableTh field="biometric_id" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden xl:table-cell">Biometric ID</SortableTh>
+                    <SortableTh field="employee_status" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap">Status</SortableTh>
+                    <SortableTh field="inactive_type" sortField={empSortField} sortDir={empSortDir} onSort={toggleEmpSort} className="whitespace-nowrap hidden xl:table-cell">Inactive Type</SortableTh>
+                    <th className="whitespace-nowrap">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {employees.length === 0 ? (
+                    <tr>
+                      <td colSpan="10" className="text-center py-12 text-slate-500">No employees found</td>
+                    </tr>
+                  ) : (
+                    sortedEmployees.map((emp) => (
+                      <tr key={emp.id}>
+                        <td className="font-semibold text-[#063c88] whitespace-nowrap">{emp.custom_employee_id || emp.emp_id}</td>
+                        <td>
+                          <div className="flex items-center gap-2">
+                            <EmployeeAvatar employee={emp} size="xs" shape="circle" />
+                            <span className="font-medium text-slate-900 truncate max-w-[120px]" title={emp.full_name}>{emp.full_name}</span>
+                          </div>
+                        </td>
+                        <td className="text-slate-600 hidden md:table-cell">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate max-w-[180px] block" title={emp.official_email}>{emp.official_email}</span>
+                            <CredentialEmailPill emp={emp} />
+                          </div>
+                        </td>
+                        <td className="text-slate-600 hidden lg:table-cell whitespace-nowrap">{emp.department}</td>
+                        <td className="text-slate-600 hidden lg:table-cell">
+                          <span className="truncate max-w-[120px] block" title={emp.team}>{emp.team}</span>
+                        </td>
+                        <td className="text-slate-600 hidden xl:table-cell">
+                          <span className="truncate max-w-[100px] block" title={emp.designation}>{emp.designation}</span>
+                        </td>
+                        <td className="text-slate-600 hidden xl:table-cell whitespace-nowrap">
+                          <span className="text-xs font-mono">{emp.biometric_id || '-'}</span>
+                        </td>
+                        <td><Badge className={getStatusBadge(emp.employee_status)}>{emp.employee_status}</Badge></td>
+                        <td className="hidden xl:table-cell">
+                          {emp.inactive_type ? (
+                            <Badge variant="outline" className="text-xs border-slate-300 text-slate-600">{emp.inactive_type}</Badge>
+                          ) : <span className="text-slate-400">-</span>}
+                        </td>
+                        <td>
+                          <div className="flex gap-1">
+                            <Button size="sm" variant="ghost" onClick={() => handleView(emp)} className="h-7 w-7 p-0 rounded-lg" data-testid={`view-${emp.id}`}>
+                              <Eye className="w-4 h-4 text-slate-500" />
+                            </Button>
+                            {canEdit && (
+                              <>
+                                <Button size="sm" variant="ghost" onClick={() => handleEdit(emp)} className="h-7 w-7 p-0 rounded-lg" data-testid={`edit-${emp.id}`}>
+                                  <Edit className="w-4 h-4 text-blue-500" />
+                                </Button>
+                                {emp.employee_status === 'Inactive' ? (
+                                  <Button size="sm" variant="ghost" onClick={() => handleReactivate(emp)} className="h-7 w-7 p-0 rounded-lg" title="Reactivate" data-testid={`activate-${emp.id}`}>
+                                    <UserCheck className="w-4 h-4 text-emerald-600" />
+                                  </Button>
+                                ) : null}
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0 rounded-lg" title="More actions" data-testid={`actions-menu-${emp.id}`}>
+                                      <MoreVertical className="w-4 h-4 text-slate-500" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end" className="w-64">
+                                    <DropdownMenuLabel>Employee Actions</DropdownMenuLabel>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem onClick={() => openResetCreds(emp)} data-testid={`reset-creds-${emp.id}`}>
+                                      <KeyRound className="w-4 h-4 mr-2 text-blue-600" />
+                                      <span>Reset Credentials</span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => resendCredentialEmail(emp)} data-testid={`resend-cred-email-${emp.id}`}>
+                                      <MailCheck className="w-4 h-4 mr-2 text-emerald-600" />
+                                      <span>Resend Credential Email</span>
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    {emp.employee_status !== 'Inactive' && (
+                                      <DropdownMenuItem onClick={() => handleDelete(emp)} data-testid={`deactivate-${emp.id}`}>
+                                        <UserX className="w-4 h-4 mr-2 text-orange-500" />
+                                        <span>Deactivate Employee</span>
+                                      </DropdownMenuItem>
+                                    )}
+                                    <DropdownMenuItem onClick={() => openForceDelete(emp)} data-testid={`perm-delete-${emp.id}`} className="text-rose-700 focus:text-rose-800 focus:bg-rose-50">
+                                      <Trash2 className="w-4 h-4 mr-2" />
+                                      <span>Delete Permanently</span>
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            
+            {/* Pagination */}
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-4">
+                <p className="text-sm text-slate-500" data-testid="employees-pagination-info">
+                  Showing {pagination.total === 0 ? 0 : ((pagination.page - 1) * pagination.limit) + 1} to {Math.min(pagination.page * pagination.limit, pagination.total)} of {pagination.total}
+                </p>
+                <PageSizeSelector
+                  value={pagination.limit}
+                  onChange={(newLimit) => setPagination(prev => ({ ...prev, page: 1, limit: newLimit }))}
+                  testId="employees-rows-per-page"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" disabled={pagination.page <= 1} onClick={() => setPagination(prev => ({ ...prev, page: prev.page - 1 }))} className="rounded-lg" data-testid="prev-page">
+                  <ChevronLeft className="w-4 h-4" />
+                </Button>
+                <span className="text-sm text-slate-600 px-3">Page {pagination.page} of {pagination.pages}</span>
+                <Button size="sm" variant="outline" disabled={pagination.page >= pagination.pages} onClick={() => setPagination(prev => ({ ...prev, page: prev.page + 1 }))} className="rounded-lg" data-testid="next-page">
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Add Dialog */}
+      <Dialog open={showAddSheet} onOpenChange={(open) => { if (!open) resetForm(); setShowAddSheet(open); }}>
+        <DialogContent className="bg-[#fffdf7] max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Add New Employee</DialogTitle>
+            <DialogDescription>Fill in the details to add a new team member</DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Tabs defaultValue="personal" className="w-full">
+              <TabsList className="grid w-full grid-cols-4 mb-6 bg-slate-100 p-1 rounded-xl">
+                <TabsTrigger value="personal" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">Personal</TabsTrigger>
+                <TabsTrigger value="employment" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">Employment</TabsTrigger>
+                <TabsTrigger value="organization" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">Organization</TabsTrigger>
+                <TabsTrigger value="system" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">System</TabsTrigger>
+              </TabsList>
+              <TabsContent value="personal" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Full Name <span className="text-red-500">*</span></Label>
+                    <Input value={form.full_name} onChange={(e) => setForm(prev => ({ ...prev, full_name: e.target.value }))} placeholder="Enter full name" className="mt-1.5 rounded-lg" data-testid="input-full-name" />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Official Email <span className="text-red-500">*</span></Label>
+                    <Input type="email" value={form.official_email} onChange={(e) => setForm(prev => ({ ...prev, official_email: e.target.value }))} placeholder="Enter email" className="mt-1.5 rounded-lg" data-testid="input-email" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Phone Number</Label>
+                    <Input value={form.phone_number} onChange={(e) => setForm(prev => ({ ...prev, phone_number: e.target.value }))} placeholder="Enter phone" className="mt-1.5 rounded-lg" data-testid="input-phone" />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Gender</Label>
+                    <Select value={form.gender} onValueChange={(val) => setForm(prev => ({ ...prev, gender: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select gender" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Male">Male</SelectItem>
+                        <SelectItem value="Female">Female</SelectItem>
+                        <SelectItem value="Other">Other</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-slate-700">Date of Birth</Label>
+                  <DatePicker value={form.date_of_birth} onChange={(val) => setForm(prev => ({ ...prev, date_of_birth: val }))} className="mt-1.5 rounded-lg" data-testid="input-dob" />
+                </div>
+              </TabsContent>
+              <TabsContent value="employment" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Employee ID</Label>
+                    <Input value={form.custom_employee_id} onChange={(e) => setForm(prev => ({ ...prev, custom_employee_id: e.target.value }))} placeholder="e.g., EID-001" className="mt-1.5 rounded-lg" data-testid="input-custom-employee-id" />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Date of Joining</Label>
+                    <DatePicker value={form.date_of_joining} onChange={(val) => setForm(prev => ({ ...prev, date_of_joining: val }))} className="mt-1.5 rounded-lg" data-testid="input-doj" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Employment Type</Label>
+                    <Select value={form.employment_type} onValueChange={(val) => setForm(prev => ({ ...prev, employment_type: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {config.employmentTypes.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {form.employment_type !== 'Intern' && (
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Confirmation Date <span className="text-red-500">*</span></Label>
+                      <DatePicker value={form.confirmation_date} onChange={(val) => setForm(prev => ({ ...prev, confirmation_date: val }))} className="mt-1.5 rounded-lg" data-testid="input-confirmation-date" />
+                      <p className="text-xs text-slate-400 mt-1">Paid Leave eligibility starts from this date.</p>
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Designation <span className="text-red-500">*</span></Label>
+                    <Select value={form.designation} onValueChange={(val) => setForm(prev => ({ ...prev, designation: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="input-designation"><SelectValue placeholder="Select Designation" /></SelectTrigger>
+                      <SelectContent>
+                        {designationOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Tier Level</Label>
+                    <Select value={form.tier_level} onValueChange={(val) => setForm(prev => ({ ...prev, tier_level: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {config.tierLevels.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Reporting Manager</Label>
+                    <Select value={form.reporting_manager_id} onValueChange={(val) => setForm(prev => ({ ...prev, reporting_manager_id: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select manager" /></SelectTrigger>
+                      <SelectContent>
+                        {allEmployees.filter(e => e.id !== selectedEmployee?.id).map(e => <SelectItem key={e.id} value={e.id}>{e.full_name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Work Location</Label>
+                    <Select value={form.work_location} onValueChange={(val) => setForm(prev => ({ ...prev, work_location: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {config.workLocations.map(w => <SelectItem key={w} value={w}>{w}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Office Location <span className="text-red-500">*</span></Label>
+                    <Select value={form.office_location || ''} onValueChange={(val) => setForm(prev => ({ ...prev, office_location: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="office-location-select"><SelectValue placeholder="Select Office Location" /></SelectTrigger>
+                      <SelectContent>
+                        {officeLocations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </TabsContent>
+              <TabsContent value="organization" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Department <span className="text-red-500">*</span></Label>
+                    <Select value={form.department} onValueChange={(val) => setForm(prev => ({ ...prev, department: val, team: '' }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Department" /></SelectTrigger>
+                      <SelectContent>
+                        {departmentOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Team <span className="text-red-500">*</span></Label>
+                    <Select value={form.team} onValueChange={(val) => setForm(prev => ({ ...prev, team: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Team" /></SelectTrigger>
+                      <SelectContent>
+                        {teamOptions.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Leave Policy</Label>
+                    <Select value={form.leave_policy} onValueChange={(val) => setForm(prev => ({ ...prev, leave_policy: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Standard">Standard</SelectItem>
+                        <SelectItem value="Extended">Extended</SelectItem>
+                        <SelectItem value="Probation">Probation</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Shift Type</Label>
+                    <Select value={form.shift_type} onValueChange={(val) => setForm(prev => ({ ...prev, shift_type: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="add-shift-type"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {renderShiftOptions()}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {form.shift_type === 'Custom' && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Custom Login Time</Label>
+                      <Input type="time" value={form.custom_login_time} onChange={(e) => setForm(prev => ({ ...prev, custom_login_time: e.target.value }))} className="mt-1.5 rounded-lg" />
+                    </div>
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Custom Logout Time</Label>
+                      <Input type="time" value={form.custom_logout_time} onChange={(e) => setForm(prev => ({ ...prev, custom_logout_time: e.target.value }))} className="mt-1.5 rounded-lg" />
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <Label className="text-sm font-medium text-slate-700">Monthly Salary (INR)</Label>
+                  <Input type="number" value={form.monthly_salary} onChange={(e) => setForm(prev => ({ ...prev, monthly_salary: parseFloat(e.target.value) || 0 }))} placeholder="0" className="mt-1.5 rounded-lg" data-testid="input-salary" />
+                </div>
+              </TabsContent>
+              <TabsContent value="system" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">User Role</Label>
+                    <Select value={form.user_role} onValueChange={(val) => setForm(prev => ({ ...prev, user_role: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {config.userRoles.map(r => <SelectItem key={r} value={r}>{r.replace('_', ' ').toUpperCase()}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Biometric ID <span className="text-red-500">*</span></Label>
+                    <Input value={form.biometric_id} onChange={(e) => setForm(prev => ({ ...prev, biometric_id: e.target.value }))} placeholder="e.g., BIO-001" className="mt-1.5 rounded-lg" data-testid="input-biometric-id" />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                  <div>
+                    <p className="font-medium text-slate-900">Enable System Login</p>
+                    <p className="text-sm text-slate-500">User can log into the system</p>
+                  </div>
+                  <Switch checked={form.login_enabled} onCheckedChange={(checked) => setForm(prev => ({ ...prev, login_enabled: checked }))} />
+                </div>
+                <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                  <div>
+                    <p className="font-medium text-slate-900">Attendance Tracking</p>
+                    <p className="text-sm text-slate-500">Enable daily attendance</p>
+                  </div>
+                  <Switch checked={form.attendance_tracking_enabled} onCheckedChange={(checked) => setForm(prev => ({ ...prev, attendance_tracking_enabled: checked }))} />
+                </div>
+              </TabsContent>
+            </Tabs>
+          </div>
+          <DialogFooter className="flex gap-2 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => { resetForm(); setShowAddSheet(false); }} className="rounded-lg">Cancel</Button>
+            <Button onClick={submitAdd} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="submit-add">Save Employee</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog */}
+      <Dialog open={showEditSheet} onOpenChange={setShowEditSheet}>
+        <DialogContent className="bg-[#fffdf7] max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Edit Employee - {selectedEmployee?.emp_id}</DialogTitle>
+            <DialogDescription>Update employee information</DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <Tabs defaultValue="personal" className="w-full">
+              <TabsList className="grid w-full grid-cols-4 mb-6 bg-slate-100 p-1 rounded-xl">
+                <TabsTrigger value="personal" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">Personal</TabsTrigger>
+                <TabsTrigger value="employment" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">Employment</TabsTrigger>
+                <TabsTrigger value="organization" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">Organization</TabsTrigger>
+                <TabsTrigger value="system" className="rounded-lg data-[state=active]:bg-white data-[state=active]:shadow-sm">System</TabsTrigger>
+              </TabsList>
+              <TabsContent value="personal" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Full Name <span className="text-red-500">*</span></Label>
+                    <Input value={form.full_name} onChange={(e) => setForm(prev => ({ ...prev, full_name: e.target.value }))} placeholder="Enter full name" className="mt-1.5 rounded-lg" data-testid="input-full-name" />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Official Email <span className="text-red-500">*</span></Label>
+                    <Input type="email" value={form.official_email} onChange={(e) => setForm(prev => ({ ...prev, official_email: e.target.value }))} placeholder="Enter email" className="mt-1.5 rounded-lg" data-testid="input-email" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Phone Number</Label>
+                    <Input value={form.phone_number} onChange={(e) => setForm(prev => ({ ...prev, phone_number: e.target.value }))} placeholder="Enter phone" className="mt-1.5 rounded-lg" data-testid="input-phone" />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Gender</Label>
+                    <Select value={form.gender} onValueChange={(val) => setForm(prev => ({ ...prev, gender: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select gender" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Male">Male</SelectItem>
+                        <SelectItem value="Female">Female</SelectItem>
+                        <SelectItem value="Other">Other</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-slate-700">Date of Birth</Label>
+                  <DatePicker value={form.date_of_birth} onChange={(val) => setForm(prev => ({ ...prev, date_of_birth: val }))} className="mt-1.5 rounded-lg" data-testid="input-dob" />
+                </div>
+              </TabsContent>
+              <TabsContent value="employment" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Employee ID</Label>
+                    <Input value={form.custom_employee_id} onChange={(e) => setForm(prev => ({ ...prev, custom_employee_id: e.target.value }))} placeholder="e.g., EID-001" className="mt-1.5 rounded-lg" data-testid="input-custom-employee-id" />
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Date of Joining</Label>
+                    <DatePicker value={form.date_of_joining} onChange={(val) => setForm(prev => ({ ...prev, date_of_joining: val }))} className="mt-1.5 rounded-lg" data-testid="input-doj" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Employment Type</Label>
+                    <Select value={form.employment_type} onValueChange={(val) => setForm(prev => ({ ...prev, employment_type: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {config.employmentTypes.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {form.employment_type !== 'Intern' && (
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Confirmation Date <span className="text-red-500">*</span></Label>
+                      <DatePicker value={form.confirmation_date} onChange={(val) => setForm(prev => ({ ...prev, confirmation_date: val }))} className="mt-1.5 rounded-lg" data-testid="input-confirmation-date" />
+                      <p className="text-xs text-slate-400 mt-1">Paid Leave eligibility starts from this date.</p>
+                    </div>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Designation <span className="text-red-500">*</span></Label>
+                    <Select value={form.designation} onValueChange={(val) => setForm(prev => ({ ...prev, designation: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="input-designation"><SelectValue placeholder="Select Designation" /></SelectTrigger>
+                      <SelectContent>
+                        {designationOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Tier Level</Label>
+                    <Select value={form.tier_level} onValueChange={(val) => setForm(prev => ({ ...prev, tier_level: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {config.tierLevels.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Reporting Manager</Label>
+                    <Select value={form.reporting_manager_id} onValueChange={(val) => setForm(prev => ({ ...prev, reporting_manager_id: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select manager" /></SelectTrigger>
+                      <SelectContent>
+                        {allEmployees.filter(e => e.id !== selectedEmployee?.id).map(e => <SelectItem key={e.id} value={e.id}>{e.full_name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Work Location</Label>
+                    <Select value={form.work_location} onValueChange={(val) => setForm(prev => ({ ...prev, work_location: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {config.workLocations.map(w => <SelectItem key={w} value={w}>{w}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Office Location <span className="text-red-500">*</span></Label>
+                    <Select value={form.office_location || ''} onValueChange={(val) => setForm(prev => ({ ...prev, office_location: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="office-location-select"><SelectValue placeholder="Select Office Location" /></SelectTrigger>
+                      <SelectContent>
+                        {officeLocations.map(l => <SelectItem key={l.id} value={l.name}>{l.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </TabsContent>
+              <TabsContent value="organization" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Department <span className="text-red-500">*</span></Label>
+                    <Select value={form.department} onValueChange={(val) => setForm(prev => ({ ...prev, department: val, team: '' }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Department" /></SelectTrigger>
+                      <SelectContent>
+                        {departmentOptions.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Team <span className="text-red-500">*</span></Label>
+                    <Select value={form.team} onValueChange={(val) => setForm(prev => ({ ...prev, team: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue placeholder="Select Team" /></SelectTrigger>
+                      <SelectContent>
+                        {teamOptions.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Leave Policy</Label>
+                    <Select value={form.leave_policy} onValueChange={(val) => setForm(prev => ({ ...prev, leave_policy: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Standard">Standard</SelectItem>
+                        <SelectItem value="Extended">Extended</SelectItem>
+                        <SelectItem value="Probation">Probation</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Shift Type</Label>
+                    <Select value={form.shift_type} onValueChange={(val) => setForm(prev => ({ ...prev, shift_type: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg" data-testid="add-shift-type"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {renderShiftOptions()}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {form.shift_type === 'Custom' && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Custom Login Time</Label>
+                      <Input type="time" value={form.custom_login_time} onChange={(e) => setForm(prev => ({ ...prev, custom_login_time: e.target.value }))} className="mt-1.5 rounded-lg" />
+                    </div>
+                    <div>
+                      <Label className="text-sm font-medium text-slate-700">Custom Logout Time</Label>
+                      <Input type="time" value={form.custom_logout_time} onChange={(e) => setForm(prev => ({ ...prev, custom_logout_time: e.target.value }))} className="mt-1.5 rounded-lg" />
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <Label className="text-sm font-medium text-slate-700">Monthly Salary (INR)</Label>
+                  <Input type="number" value={form.monthly_salary} onChange={(e) => setForm(prev => ({ ...prev, monthly_salary: parseFloat(e.target.value) || 0 }))} placeholder="0" className="mt-1.5 rounded-lg" data-testid="input-salary" />
+                </div>
+              </TabsContent>
+              <TabsContent value="system" className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">User Role</Label>
+                    <Select value={form.user_role} onValueChange={(val) => setForm(prev => ({ ...prev, user_role: val }))}>
+                      <SelectTrigger className="mt-1.5 rounded-lg"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {config.userRoles.map(r => <SelectItem key={r} value={r}>{r.replace('_', ' ').toUpperCase()}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700">Biometric ID <span className="text-red-500">*</span></Label>
+                    <Input value={form.biometric_id} onChange={(e) => setForm(prev => ({ ...prev, biometric_id: e.target.value }))} placeholder="e.g., BIO-001" className="mt-1.5 rounded-lg" data-testid="edit-input-biometric-id" />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                  <div>
+                    <p className="font-medium text-slate-900">Attendance Tracking</p>
+                    <p className="text-sm text-slate-500">Enable daily attendance</p>
+                  </div>
+                  <Switch checked={form.attendance_tracking_enabled} onCheckedChange={(checked) => setForm(prev => ({ ...prev, attendance_tracking_enabled: checked }))} />
+                </div>
+              </TabsContent>
+            </Tabs>
+          </div>
+          <DialogFooter className="flex gap-2 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => setShowEditSheet(false)} className="rounded-lg">Cancel</Button>
+            <Button onClick={submitEdit} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="submit-edit">Update Employee</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* View Dialog */}
+      <Dialog open={showViewDialog} onOpenChange={setShowViewDialog}>
+        <DialogContent className="bg-[#fffdf7] max-w-2xl max-h-[85vh] overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Employee Details</DialogTitle>
+            <DialogDescription>{selectedEmployee?.emp_id}</DialogDescription>
+          </DialogHeader>
+          {selectedEmployee && (
+            <div className="space-y-4">
+              {/* Header */}
+              <div className="flex items-center gap-4 pb-4 border-b border-slate-100">
+                {user?.role === 'hr' || user?.role === 'system_admin' || user?.role === 'office_admin' ? (
+                  <AvatarUploader
+                    employee={selectedEmployee}
+                    mode="admin"
+                    token={token}
+                    size="lg"
+                    shape="square"
+                    canRemove={true}
+                    onUpdated={(updatedEmp) => {
+                      setSelectedEmployee((prev) => ({ ...(prev || {}), ...(updatedEmp || {}) }));
+                      // Reflect in the table immediately
+                      setEmployees((list) =>
+                        list.map((e) => (e.id === updatedEmp.id ? { ...e, ...updatedEmp } : e))
+                      );
+                    }}
+                    testIdPrefix="admin-employee-avatar"
+                  />
+                ) : (
+                  <EmployeeAvatar employee={selectedEmployee} size="lg" shape="square" />
+                )}
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">{selectedEmployee.full_name}</h3>
+                  <p className="text-sm text-slate-500">{selectedEmployee.designation} • {selectedEmployee.tier_level}</p>
+                  <Badge className={`${getStatusBadge(selectedEmployee.employee_status)} mt-1`}>{selectedEmployee.employee_status}</Badge>
+                </div>
+              </div>
+              
+              {/* Tabs */}
+              <Tabs value={viewTab} onValueChange={(v) => { 
+                setViewTab(v); 
+                if (v === 'education' && !eduExpData && selectedEmployee.id) {
+                  fetchEduExp(selectedEmployee.id);
+                }
+                if (v === 'documents' && !documentsData && selectedEmployee.id) {
+                  fetchDocuments(selectedEmployee.id);
+                }
+                if (v === 'salary' && !salaryData && selectedEmployee.id) {
+                  fetchSalary(selectedEmployee.id);
+                }
+              }}>
+                <TabsList className="grid w-full grid-cols-4 bg-slate-100 rounded-lg p-1">
+                  <TabsTrigger value="profile" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm text-xs">Profile</TabsTrigger>
+                  <TabsTrigger value="education" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm text-xs">Education</TabsTrigger>
+                  <TabsTrigger value="documents" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm text-xs" data-testid="documents-tab">Documents</TabsTrigger>
+                  <TabsTrigger value="salary" className="rounded-md data-[state=active]:bg-white data-[state=active]:shadow-sm text-xs" data-testid="salary-tab">Salary</TabsTrigger>
+                </TabsList>
+                
+                {/* Profile Tab */}
+                <TabsContent value="profile" className="mt-4">
+                  <div className="grid grid-cols-2 gap-6">
+                    <div className="space-y-4">
+                      <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide">Personal</h4>
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3"><Mail className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.official_email}</span></div>
+                        <div className="flex items-center gap-3"><Phone className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.phone_number || '-'}</span></div>
+                        <div className="flex items-center gap-3"><Calendar className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">DOB: {formatDate(selectedEmployee.date_of_birth)}</span></div>
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide">Employment</h4>
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-3"><Hash className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Employee ID: {selectedEmployee.custom_employee_id || '-'}</span></div>
+                        <div className="flex items-center gap-3" data-testid="employee-username-row">
+                          <KeyRound className="w-4 h-4 text-slate-400" />
+                          <span className="text-sm text-slate-600">Username:&nbsp;</span>
+                          {selectedEmployee.username ? (
+                            <>
+                              <code className="text-sm font-medium text-slate-800 bg-slate-50 px-2 py-0.5 rounded border border-slate-200" data-testid="employee-username-value">
+                                {selectedEmployee.username}
+                              </code>
+                              <button
+                                type="button"
+                                onClick={() => { navigator.clipboard.writeText(selectedEmployee.username); toast.success('Username copied'); }}
+                                className="text-slate-400 hover:text-slate-600 transition-colors"
+                                title="Copy username"
+                                data-testid="employee-username-copy"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-sm text-slate-400 italic">N/A</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3"><Fingerprint className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Biometric ID: {selectedEmployee.biometric_id || '-'}</span></div>
+                        <div className="flex items-center gap-3"><Briefcase className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">Joined: {formatDate(selectedEmployee.date_of_joining)}</span></div>
+                        <div className="flex items-center gap-3"><Users className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.department} / {selectedEmployee.team}</span></div>
+                        <div className="flex items-center gap-3"><MapPin className="w-4 h-4 text-slate-400" /><span className="text-sm text-slate-600">{selectedEmployee.work_location}</span></div>
+                        <div className="flex items-center gap-3" data-testid="employee-office-location">
+                          <MapPin className="w-4 h-4 text-slate-400" />
+                          <span className="text-sm text-slate-600">Office: {selectedEmployee.office_location || 'Unassigned'}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Inactive Details — shown only if employee has inactive history */}
+                  {(selectedEmployee.employee_status === 'Inactive' || selectedEmployee.inactive_type) && (
+                    <div className="mt-4 p-4 rounded-xl border border-slate-200 bg-slate-50/60 space-y-3" data-testid="inactive-details">
+                      <h4 className="font-semibold text-sm text-slate-500 uppercase tracking-wide flex items-center gap-2">
+                        <UserX className="w-4 h-4" /> Deactivation Details
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div><span className="text-slate-500">Type:</span> <span className="font-medium text-slate-700">{selectedEmployee.inactive_type || '-'}</span></div>
+                        <div><span className="text-slate-500">Date:</span> <span className="font-medium text-slate-700">{formatDate(selectedEmployee.inactive_date)}</span></div>
+                        <div><span className="text-slate-500">Reason:</span> <span className="font-medium text-slate-700">{selectedEmployee.inactive_reason || '-'}</span></div>
+                        <div><span className="text-slate-500">Last Day Payable:</span> <span className="font-medium text-slate-700">{selectedEmployee.last_day_payable ? 'Yes' : 'No'}</span></div>
+                      </div>
+                      {canEdit && selectedEmployee.employee_status === 'Inactive' && (
+                        <Button size="sm" onClick={() => handleReactivate(selectedEmployee)} className="mt-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg" data-testid="reactivate-btn">
+                          <UserCheck className="w-4 h-4 mr-1" /> Reactivate Employee
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </TabsContent>
+                <TabsContent value="education" className="mt-4">
+                  {loadingEduExp ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+                    </div>
+                  ) : eduExpData ? (
+                    <div className="space-y-6">
+                      {/* Education Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <GraduationCap className="w-5 h-5 text-blue-600" />
+                            <h4 className="font-semibold text-slate-900">Education</h4>
+                          </div>
+                          {eduExpData.education_verified ? (
+                            <Badge className="bg-emerald-100 text-emerald-700">
+                              <Shield className="w-3 h-3 mr-1" />Verified
+                            </Badge>
+                          ) : eduExpData.education?.length > 0 && (
+                            <Button 
+                              size="sm" 
+                              onClick={() => handleVerifyEducation(selectedEmployee.id)}
+                              disabled={verifyingEducation}
+                              data-testid="verify-education-btn"
+                            >
+                              {verifyingEducation ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <CheckCircle className="w-4 h-4 mr-1" />}
+                              Verify
+                            </Button>
+                          )}
+                        </div>
+                        {eduExpData.education?.length > 0 ? (
+                          <div className="space-y-2">
+                            {eduExpData.education.map((edu, idx) => (
+                              <div key={idx} className="p-3 bg-white rounded-lg border border-slate-200">
+                                <div className="flex items-start gap-3">
+                                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center mt-0.5">
+                                    <Award className="w-4 h-4 text-blue-600" />
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium text-slate-900">{edu.level}</span>
+                                      <Badge variant="outline" className="text-xs">{edu.year_of_passing}</Badge>
+                                    </div>
+                                    <p className="text-sm text-slate-700">{edu.institution}</p>
+                                    <p className="text-xs text-slate-500">{edu.board_university} • {edu.percentage_cgpa}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500 py-4 text-center">No education details added</p>
+                        )}
+                      </div>
+                      
+                      {/* Experience Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Briefcase className="w-5 h-5 text-emerald-600" />
+                            <h4 className="font-semibold text-slate-900">Work Experience</h4>
+                          </div>
+                          {eduExpData.experience_verified ? (
+                            <Badge className="bg-emerald-100 text-emerald-700">
+                              <Shield className="w-3 h-3 mr-1" />Verified
+                            </Badge>
+                          ) : eduExpData.experience?.length > 0 && (
+                            <Button 
+                              size="sm" 
+                              onClick={() => handleVerifyExperience(selectedEmployee.id)}
+                              disabled={verifyingExperience}
+                              data-testid="verify-experience-btn"
+                            >
+                              {verifyingExperience ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <CheckCircle className="w-4 h-4 mr-1" />}
+                              Verify
+                            </Button>
+                          )}
+                        </div>
+                        {eduExpData.experience?.length > 0 ? (
+                          <div className="space-y-2">
+                            {eduExpData.experience.map((exp, idx) => (
+                              <div key={idx} className="p-3 bg-white rounded-lg border border-slate-200">
+                                <div className="flex items-start gap-3">
+                                  <div className="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center mt-0.5">
+                                    <Building2 className="w-4 h-4 text-emerald-600" />
+                                  </div>
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-medium text-slate-900">{exp.designation}</span>
+                                      {exp.is_current && <Badge className="bg-emerald-100 text-emerald-700 text-xs">Current</Badge>}
+                                    </div>
+                                    <p className="text-sm text-slate-700">{exp.company_name}</p>
+                                    <p className="text-xs text-slate-500">
+                                      {formatDate(exp.start_date)} - {exp.is_current ? 'Present' : formatDate(exp.end_date)}
+                                    </p>
+                                    {exp.responsibilities && (
+                                      <p className="text-xs text-slate-600 mt-1">{exp.responsibilities}</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500 py-4 text-center">No work experience added</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-slate-500">
+                      <p>Click to load education and experience details</p>
+                    </div>
+                  )}
+                </TabsContent>
+                
+                {/* Documents Tab */}
+                <TabsContent value="documents" className="mt-4">
+                  {loadingDocuments ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {/* Offer Letter Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-5 h-5 text-blue-600" />
+                            <h4 className="font-semibold text-slate-900">Offer Letter</h4>
+                          </div>
+                        </div>
+                        
+                        {/* Existing Offer Letter */}
+                        {documentsData?.documents?.find(d => d.document_type === 'offer_letter') ? (
+                          <div className="p-4 bg-white rounded-xl border border-slate-200">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center">
+                                  <File className="w-5 h-5 text-blue-600" />
+                                </div>
+                                <div>
+                                  <p className="font-medium text-slate-900">
+                                    {documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_name || 'Offer Letter'}
+                                  </p>
+                                  <p className="text-xs text-slate-500">
+                                    Uploaded by {documentsData.documents.find(d => d.document_type === 'offer_letter')?.uploaded_by_name} • {formatDate(documentsData.documents.find(d => d.document_type === 'offer_letter')?.uploaded_at)}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    viewSecureDocument({
+                                      employeeId: selectedEmployee?.id,
+                                      documentType: 'offer_letter',
+                                      fallbackUrl: documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_url,
+                                      source: 'employee',
+                                    })
+                                  }
+                                  className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                                  data-testid="view-offer-letter-btn"
+                                >
+                                  <ExternalLink className="w-4 h-4" />
+                                  View
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    downloadSecureDocument({
+                                      employeeId: selectedEmployee?.id,
+                                      documentType: 'offer_letter',
+                                      fileName: documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_name,
+                                      fallbackUrl: documentsData.documents.find(d => d.document_type === 'offer_letter')?.file_url,
+                                      source: 'employee',
+                                    })
+                                  }
+                                  className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                                  data-testid="download-offer-letter-btn"
+                                >
+                                  <Download className="w-4 h-4" />
+                                  Download
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={handleDeleteOfferLetter}
+                                  className="flex items-center gap-1 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                  data-testid="delete-offer-letter-btn"
+                                  title="Delete offer letter"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-4 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 text-center">
+                            <p className="text-sm text-slate-500 mb-2">No offer letter uploaded yet</p>
+                          </div>
+                        )}
+                        
+                        {/* Upload Button */}
+                        {canEdit && (
+                          <div className="mt-3">
+                            <input
+                              type="file"
+                              id="offer-letter-upload"
+                              className="hidden"
+                              accept=".pdf,.doc,.docx"
+                              onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                // Reset value so picking the SAME file next
+                                // time still fires onChange (fixes a common
+                                // "Replace" no-op when the user re-selects
+                                // the exact same filename).
+                                e.target.value = '';
+                                if (f) handleUploadOfferLetter(f);
+                              }}
+                            />
+                            <label
+                              htmlFor="offer-letter-upload"
+                              className={`flex items-center justify-center gap-2 w-full py-3 border-2 border-dashed border-blue-300 rounded-xl cursor-pointer hover:bg-blue-50 hover:border-blue-400 transition-colors ${uploadingDocument ? 'opacity-50 pointer-events-none' : ''}`}
+                              data-testid="upload-offer-letter-btn"
+                            >
+                              {uploadingDocument ? (
+                                <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                              ) : (
+                                <Upload className="w-5 h-5 text-blue-500" />
+                              )}
+                              <span className="text-sm font-medium text-blue-600">
+                                {uploadingDocument
+                                  ? (uploadPhase === 'compressing'
+                                      ? `Compressing PDF… ${uploadProgress}%`
+                                      : `Uploading… ${uploadProgress}%`)
+                                  : documentsData?.documents?.find(d => d.document_type === 'offer_letter') ? 'Replace Offer Letter' : 'Upload Offer Letter'}
+                              </span>
+                            </label>
+                            {uploadingDocument && (
+                              <div
+                                className="mt-2 h-1.5 w-full bg-blue-100 rounded-full overflow-hidden"
+                                role="progressbar"
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                                aria-valuenow={uploadProgress}
+                                data-testid="upload-offer-letter-progress"
+                              >
+                                <div
+                                  className="h-full bg-blue-500 transition-all duration-200"
+                                  style={{ width: `${uploadProgress}%` }}
+                                />
+                              </div>
+                            )}
+                            <p className="text-xs text-slate-400 text-center mt-2">Supported: PDF, DOC, DOCX · Max 25 MB</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </TabsContent>
+                
+                {/* Salary Tab */}
+                <TabsContent value="salary" className="mt-4">
+                  {loadingSalary ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="w-8 h-8 animate-spin text-slate-400" />
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {/* CTC Update + View Payslip */}
+                      <div className="flex items-center justify-between gap-4">
+                        {canEdit && (
+                          <div className="flex-1 p-4 bg-blue-50 rounded-xl border border-blue-100">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <p className="text-sm font-medium text-blue-700">Annual CTC</p>
+                                <p className="text-2xl font-bold text-blue-900">
+                                  {salaryData?.annual_ctc ? `₹${salaryData.annual_ctc.toLocaleString('en-IN')}` : 'Not Set'}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <input type="number" placeholder="Enter Annual CTC" className="w-40 px-3 py-2 rounded-lg border border-blue-200 text-sm" id="new-ctc-input" data-testid="ctc-input" />
+                                <Button size="sm" onClick={() => { const input = document.getElementById('new-ctc-input'); if (input?.value) handleUpdateSalary(input.value); }} disabled={savingSalary} className="bg-blue-600 hover:bg-blue-700 rounded-lg" data-testid="update-ctc-btn">
+                                  {savingSalary ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Update CTC'}
+                                </Button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {salaryData && (
+                          <Button onClick={() => setShowPayslip(true)} className="bg-[#063c88] hover:bg-[#052d66] rounded-xl h-14 px-6 gap-2" data-testid="view-payslip-btn">
+                            <Printer className="w-4 h-4" /> View Payslip
+                          </Button>
+                        )}
+                      </div>
+                      
+                      {/* Structured Compensation Table */}
+                      {salaryData ? (
+                        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="bg-[#063c88]">
+                                <th className="text-left px-5 py-3 text-xs text-white font-semibold uppercase tracking-wider">Particulars</th>
+                                <th className="text-right px-5 py-3 text-xs text-white font-semibold uppercase tracking-wider">Monthly (INR)</th>
+                                <th className="text-right px-5 py-3 text-xs text-white font-semibold uppercase tracking-wider">Annual (INR)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr className="bg-slate-50"><td colSpan={3} className="px-5 py-2 text-xs font-bold text-slate-700 uppercase tracking-wider">Base Components (A)</td></tr>
+                              <SalaryRow label="Basic" value={salaryData.basic} />
+                              <SalaryRow label="HRA" value={salaryData.hra} />
+                              <tr className="bg-slate-50 border-b-2 border-slate-200"><td className="px-5 py-2.5 font-bold text-slate-800">Sub Total (A)</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.base_components_total)}</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.base_components_total * 12)}</td></tr>
+                              
+                              <tr className="bg-slate-50"><td colSpan={3} className="px-5 py-2 text-xs font-bold text-slate-700 uppercase tracking-wider">Basket of Allowances (B)</td></tr>
+                              <SalaryRow label="Leave Travel Assistance" value={salaryData.lta} />
+                              <SalaryRow label="Phone & Internet Reimbursement" value={salaryData.phone_internet} />
+                              <SalaryRow label="Bonus" value={salaryData.bonus} />
+                              <SalaryRow label="Stay and Travel Allowance" value={salaryData.stay_travel} />
+                              <SalaryRow label="Special Allowance" value={salaryData.special_allowance} />
+                              <SalaryRow label="Food Reimbursement" value={salaryData.food_reimbursement} />
+                              {salaryData.medical_allowance > 0 && <SalaryRow label="Medical Allowance" value={salaryData.medical_allowance} />}
+                              {salaryData.conveyance > 0 && <SalaryRow label="Conveyance" value={salaryData.conveyance} />}
+                              <tr className="bg-slate-50 border-b-2 border-slate-200"><td className="px-5 py-2.5 font-bold text-slate-800">Sub Total (B)</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.basket_allowances_total)}</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.basket_allowances_total * 12)}</td></tr>
+                              
+                              <tr className="bg-slate-50"><td colSpan={3} className="px-5 py-2 text-xs font-bold text-slate-700 uppercase tracking-wider">Retirement Benefits (C)</td></tr>
+                              <SalaryRow label="PF Company Contribution" value={salaryData.pf_employer} />
+                              <SalaryRow label="Gratuity" value={salaryData.gratuity} />
+                              <tr className="bg-slate-50 border-b-2 border-slate-200"><td className="px-5 py-2.5 font-bold text-slate-800">Sub Total (C)</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.retirement_benefits_total)}</td><td className="px-5 py-2.5 text-right font-bold text-slate-800">{fmtINR(salaryData.retirement_benefits_total * 12)}</td></tr>
+                              
+                              <tr className="bg-blue-50 border-b-2 border-blue-200"><td className="px-5 py-3 font-bold text-blue-800">Fixed Compensation (A+B+C)</td><td className="px-5 py-3 text-right font-bold text-blue-800">{fmtINR(salaryData.fixed_compensation)}</td><td className="px-5 py-3 text-right font-bold text-blue-800">{fmtINR(salaryData.fixed_compensation * 12)}</td></tr>
+                              
+                              <SalaryRow label="Variable Compensation (at 100%)" value={salaryData.variable_compensation} />
+                              
+                              <tr className="bg-[#063c88]"><td className="px-5 py-3 font-bold text-white text-sm">Cost To Company (CTC)</td><td className="px-5 py-3 text-right font-bold text-white text-sm">{fmtINR(salaryData.monthly_ctc)}</td><td className="px-5 py-3 text-right font-bold text-white text-sm">{fmtINR(salaryData.annual_ctc)}</td></tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div className="text-center py-8 text-slate-500">
+                          <Wallet className="w-12 h-12 mx-auto text-slate-300 mb-2" />
+                          <p>No salary structure configured</p>
+                          <p className="text-sm">Enter Annual CTC above to auto-calculate salary breakup</p>
+                        </div>
+                      )}
+                      
+                      {/* Deductions Summary */}
+                      {salaryData && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                            <div className="p-4 bg-red-50 border-b border-red-100">
+                              <h4 className="text-sm font-bold text-red-700 flex items-center gap-2"><TrendingDown className="w-4 h-4" /> Employee Deductions</h4>
+                            </div>
+                            <div className="divide-y divide-slate-100">
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">PF (Employee)</span><span className="font-medium text-red-600">{fmtINR(salaryData.pf_employee)}</span></div>
+                              {salaryData.esi_employee > 0 && <div className="p-3 flex justify-between"><span className="text-slate-600">ESI</span><span className="font-medium text-red-600">{fmtINR(salaryData.esi_employee)}</span></div>}
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">Professional Tax</span><span className="font-medium text-red-600">{fmtINR(salaryData.professional_tax)}</span></div>
+                              {salaryData.tds > 0 && <div className="p-3 flex justify-between"><span className="text-slate-600">TDS</span><span className="font-medium text-red-600">{fmtINR(salaryData.tds)}</span></div>}
+                              <div className="p-3 bg-red-50 flex justify-between font-bold"><span className="text-red-700">Total Deductions</span><span className="text-red-700">{fmtINR(salaryData.total_deductions)}</span></div>
+                            </div>
+                          </div>
+                          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                            <div className="p-4 bg-slate-50 border-b border-slate-100">
+                              <h4 className="text-sm font-bold text-slate-700 flex items-center gap-2"><Shield className="w-4 h-4" /> Insurance Coverage</h4>
+                            </div>
+                            <div className="divide-y divide-slate-100">
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">Medical Insurance</span><span className="font-medium">Up to ₹3,00,000 p.a.</span></div>
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">Accident Insurance</span><span className="font-medium">1x CTC (Min ₹5,00,000)</span></div>
+                              <div className="p-3 flex justify-between"><span className="text-slate-600">Life Insurance</span><span className="font-medium">₹5,00,000</span></div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Net Salary */}
+                      {salaryData && (
+                        <div className="p-5 bg-gradient-to-r from-[#063c88] to-[#0a5cba] rounded-2xl text-white">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <p className="text-blue-200 text-sm">Monthly Net Salary (Take Home)</p>
+                              <p className="text-3xl font-bold">₹{salaryData.net_salary?.toLocaleString('en-IN')}</p>
+                            </div>
+                            <div className="text-right">
+                              <p className="text-blue-200 text-sm">Annual Take Home</p>
+                              <p className="text-xl font-bold">₹{(salaryData.net_salary * 12)?.toLocaleString('en-IN')}</p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Adjustments Section */}
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <h4 className="font-semibold text-slate-700 flex items-center gap-2">
+                            <Receipt className="w-4 h-4" /> Salary Adjustments
+                          </h4>
+                          {canEdit && (
+                            <Button 
+                              size="sm" 
+                              variant="outline"
+                              onClick={() => setShowAdjustmentModal(true)}
+                              className="rounded-lg"
+                            >
+                              <Plus className="w-4 h-4 mr-1" /> Add Adjustment
+                            </Button>
+                          )}
+                        </div>
+                        
+                        {adjustments.length > 0 ? (
+                          <div className="space-y-2">
+                            {adjustments.map((adj) => (
+                              <div key={adj.id} className="p-3 bg-white rounded-lg border border-slate-200 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${adj.category === 'earning' ? 'bg-emerald-100' : 'bg-red-100'}`}>
+                                    {adj.category === 'earning' ? (
+                                      <TrendingUp className="w-4 h-4 text-emerald-600" />
+                                    ) : (
+                                      <TrendingDown className="w-4 h-4 text-red-600" />
+                                    )}
+                                  </div>
+                                  <div>
+                                    <p className="text-sm font-medium text-slate-700">{adj.description}</p>
+                                    <p className="text-xs text-slate-500">
+                                      {adj.adjustment_type} • {adj.frequency === 'recurring' ? 'Recurring' : `One-time (${adj.applicable_month})`}
+                                    </p>
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <span className={`font-semibold ${adj.category === 'earning' ? 'text-emerald-600' : 'text-red-600'}`}>
+                                    {adj.category === 'earning' ? '+' : '-'}₹{adj.amount?.toLocaleString('en-IN')}
+                                  </span>
+                                  {canEdit && (
+                                    <Button 
+                                      size="sm" 
+                                      variant="ghost" 
+                                      onClick={() => handleDeleteAdjustment(adj.id)}
+                                      className="h-8 w-8 p-0 text-red-500 hover:text-red-700 hover:bg-red-50"
+                                    >
+                                      <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-500 text-center py-4">No adjustments added</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowViewDialog(false)} className="rounded-lg">Close</Button>
+            {canEdit && <Button onClick={() => { setShowViewDialog(false); handleEdit(selectedEmployee); }} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg">Edit</Button>}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Dialog */}
+      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl max-w-md" data-testid="deactivation-modal">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Deactivate Employee</DialogTitle>
+            <DialogDescription>Fill in the deactivation details. This will disable login access and mark the employee as inactive.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-sm text-slate-600">Employee</Label>
+              <Input value={selectedEmployee?.full_name || ''} readOnly className="mt-1 bg-slate-50 rounded-lg" data-testid="deact-employee-name" />
+            </div>
+            <div>
+              <Label className="text-sm text-slate-600">Date</Label>
+              <DatePicker value={deactForm.inactive_date} onChange={(val) => setDeactForm({ ...deactForm, inactive_date: val })} className="mt-1 rounded-lg" data-testid="deact-date" />
+            </div>
+            <div>
+              <Label className="text-sm text-slate-600">Type</Label>
+              <Select value={deactForm.inactive_type} onValueChange={(v) => setDeactForm({ ...deactForm, inactive_type: v })}>
+                <SelectTrigger className="mt-1 rounded-lg" data-testid="deact-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Relieved">Relieved</SelectItem>
+                  <SelectItem value="Terminated">Terminated</SelectItem>
+                  <SelectItem value="Completed Internship">Completed Internship</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-sm text-slate-600">Reason</Label>
+              <Textarea value={deactForm.reason} onChange={(e) => setDeactForm({ ...deactForm, reason: e.target.value })} placeholder="Reason for deactivation..." className="mt-1 rounded-lg" rows={3} data-testid="deact-reason" />
+            </div>
+            <div>
+              <Label className="text-sm text-slate-600">Last Day Payable</Label>
+              <Select value={deactForm.last_day_payable ? 'yes' : 'no'} onValueChange={(v) => setDeactForm({ ...deactForm, last_day_payable: v === 'yes' })}>
+                <SelectTrigger className="mt-1 rounded-lg" data-testid="deact-ldp"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="yes">Yes</SelectItem>
+                  <SelectItem value="no">No</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDeleteDialog(false)} className="rounded-lg">Cancel</Button>
+            <Button onClick={confirmDelete} className="bg-red-500 hover:bg-red-600 text-white rounded-lg" data-testid="confirm-delete">Deactivate</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Admin Reset Credentials Dialog */}
+      <Dialog open={showResetCredsDialog} onOpenChange={(o) => { if (!o) closeResetCreds(); }}>
+        <DialogContent className="max-w-lg" data-testid="reset-creds-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2" style={{ fontFamily: 'Outfit' }}>
+              <KeyRound className="w-5 h-5 text-blue-600" /> Reset Credentials
+            </DialogTitle>
+            <DialogDescription>
+              {selectedEmployee && (
+                <span>Reset password for <b>{selectedEmployee.full_name}</b> (<code className="text-xs">{selectedEmployee.employee_code || selectedEmployee.id?.slice(0,8)}</code>). The old password is invalidated immediately. <b>No email is sent.</b></span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {resetGeneratedPwd ? (
+            // Post-success: show generated password ONCE
+            <div className="space-y-4 py-2" data-testid="reset-generated-pwd-box">
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5" />
+                  <div className="text-[13px] text-amber-900">
+                    <b>This password will not be shown again.</b> Copy it now and share it securely with the employee.
+                  </div>
+                </div>
+              </div>
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 flex items-center justify-between">
+                <code className="font-mono text-base text-slate-900 select-all" data-testid="generated-password-text">
+                  {resetShowPwd ? resetGeneratedPwd : '•'.repeat(resetGeneratedPwd.length)}
+                </code>
+                <div className="flex items-center gap-1">
+                  <Button size="sm" variant="ghost" onClick={() => setResetShowPwd(!resetShowPwd)} data-testid="generated-password-show-btn">
+                    {resetShowPwd ? 'Hide' : 'Show'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => { navigator.clipboard.writeText(resetGeneratedPwd); toast.success('Copied to clipboard'); }}
+                    data-testid="generated-password-copy-btn"
+                  >
+                    <Copy className="w-3.5 h-3.5 mr-1" /> Copy
+                  </Button>
+                </div>
+              </div>
+              {resetForceChange && (
+                <p className="text-xs text-slate-500">The employee will be prompted to change this password on their next login.</p>
+              )}
+              <DialogFooter>
+                <Button onClick={closeResetCreds} className="rounded-lg" data-testid="reset-generated-done-btn">Done</Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <div className="space-y-4 py-2">
+              {/* Mode selector */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setResetMode('manual')}
+                  className={`p-3 rounded-lg border text-left transition-all ${resetMode==='manual' ? 'border-[#063c88] bg-[#063c88]/5' : 'border-slate-200 hover:border-slate-300'}`}
+                  data-testid="reset-mode-manual"
+                >
+                  <div className="text-sm font-semibold text-slate-900">Set Password</div>
+                  <div className="text-xs text-slate-500 mt-0.5">I'll type a new password</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResetMode('auto')}
+                  className={`p-3 rounded-lg border text-left transition-all ${resetMode==='auto' ? 'border-[#063c88] bg-[#063c88]/5' : 'border-slate-200 hover:border-slate-300'}`}
+                  data-testid="reset-mode-auto"
+                >
+                  <div className="text-sm font-semibold text-slate-900">Auto-Generate</div>
+                  <div className="text-xs text-slate-500 mt-0.5">System creates a strong one</div>
+                </button>
+              </div>
+
+              {resetMode === 'manual' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-[13px] font-medium text-slate-700">New Password</label>
+                    <input
+                      type="password"
+                      value={resetPassword}
+                      onChange={(e) => setResetPassword(e.target.value)}
+                      placeholder="Min 8 chars, with letter and digit"
+                      className="mt-1 w-full h-10 px-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-[#063c88]/20 outline-none text-sm"
+                      data-testid="reset-new-pwd-input"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[13px] font-medium text-slate-700">Confirm Password</label>
+                    <input
+                      type="password"
+                      value={resetConfirm}
+                      onChange={(e) => setResetConfirm(e.target.value)}
+                      placeholder="Re-enter password"
+                      className="mt-1 w-full h-10 px-3 rounded-lg border border-slate-200 focus:ring-2 focus:ring-[#063c88]/20 outline-none text-sm"
+                      data-testid="reset-confirm-pwd-input"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {resetMode === 'auto' && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-[13px] text-blue-900">
+                  A 12-character strong password will be generated. It will be shown to you <b>once</b> in the next screen — please copy it before closing.
+                </div>
+              )}
+
+              <label className="flex items-center gap-2 text-[13px] text-slate-700 select-none cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={resetForceChange}
+                  onChange={(e) => setResetForceChange(e.target.checked)}
+                  data-testid="reset-force-change-cb"
+                />
+                Force employee to change password on next login (recommended)
+              </label>
+
+              <DialogFooter>
+                <Button variant="outline" onClick={closeResetCreds} className="rounded-lg" data-testid="reset-cancel-btn">Cancel</Button>
+                <Button onClick={submitResetCreds} disabled={resetSubmitting} className="bg-[#063c88] hover:bg-[#0a56c2] text-white rounded-lg" data-testid="reset-submit-btn">
+                  {resetSubmitting ? 'Resetting…' : (resetMode === 'auto' ? 'Generate & Reset' : 'Reset Password')}
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Permanent Delete (SAFE) — only allowed when zero linked records */}
+      <Dialog open={showPermDeleteDialog} onOpenChange={setShowPermDeleteDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="w-5 h-5 text-red-500" /> Delete Permanently
+            </DialogTitle>
+            <DialogDescription>
+              This permanently removes <b>{selectedEmployee?.full_name}</b> from the database. Allowed only when the employee has no records.
+            </DialogDescription>
+          </DialogHeader>
+          {deletionLoading ? (
+            <div className="py-6 text-center text-slate-500">Checking records…</div>
+          ) : deletionImpact ? (
+            <div className="space-y-3 text-sm">
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
+                <div className="text-xs uppercase tracking-wider text-slate-500 mb-1.5">This employee has:</div>
+                <div className="flex justify-between"><span>Attendance records</span><span className="font-medium">{deletionImpact.counts.attendance}</span></div>
+                <div className="flex justify-between"><span>Payroll entries</span><span className="font-medium">{deletionImpact.counts.payroll}</span></div>
+                <div className="flex justify-between"><span>Leave records</span><span className="font-medium">{deletionImpact.counts.leaves}</span></div>
+                <div className="flex justify-between"><span>Other requests</span><span className="font-medium">{deletionImpact.counts.late_requests + deletionImpact.counts.early_out_requests + deletionImpact.counts.missed_punches}</span></div>
+                <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1.5"><span>Total</span><span className="font-semibold">{deletionImpact.counts.total}</span></div>
+              </div>
+              {deletionImpact.can_permanent_delete ? (
+                <p className="text-slate-700">Are you sure you want to permanently delete this employee?</p>
+              ) : (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-800 text-xs">
+                  Cannot permanently delete. Employee has existing records. Please use <b>Deactivate</b> instead.
+                </div>
+              )}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowPermDeleteDialog(false)} className="rounded-lg" data-testid="perm-delete-cancel">Cancel</Button>
+            <Button
+              onClick={confirmPermDelete}
+              disabled={!deletionImpact?.can_permanent_delete}
+              className="bg-red-500 hover:bg-red-600 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              data-testid="perm-delete-confirm"
+            >
+              Delete Permanently
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Force Delete (SUPER ADMIN ONLY) — multi-step destructive confirmation */}
+      <Dialog open={showForceDeleteDialog} onOpenChange={(open) => { if (!open) { setForceStep(1); setForceConfirmText(''); } setShowForceDeleteDialog(open); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-rose-700">
+              <AlertTriangle className="w-5 h-5" /> Delete Permanently
+            </DialogTitle>
+            <DialogDescription>
+              Step {forceStep} of 3 — destructive action for <b>{selectedEmployee?.full_name}</b>
+            </DialogDescription>
+          </DialogHeader>
+
+          {forceStep === 1 && (
+            <div className="space-y-3 text-sm">
+              <p className="text-slate-700">You are about to permanently delete this employee.</p>
+              {deletionLoading ? (
+                <div className="text-center text-slate-500 py-4">Loading impact…</div>
+              ) : deletionImpact ? (
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
+                  <div className="text-xs uppercase tracking-wider text-slate-500 mb-1.5">This employee has:</div>
+                  <div className="flex justify-between"><span>{deletionImpact.counts.attendance}</span><span>attendance records</span></div>
+                  <div className="flex justify-between"><span>{deletionImpact.counts.payroll}</span><span>payroll entries</span></div>
+                  <div className="flex justify-between"><span>{deletionImpact.counts.leaves}</span><span>leave records</span></div>
+                  <div className="flex justify-between"><span>{deletionImpact.counts.late_requests + deletionImpact.counts.early_out_requests + deletionImpact.counts.missed_punches}</span><span>requests (late / early / missed)</span></div>
+                  <div className="flex justify-between border-t border-slate-200 pt-1.5 mt-1.5 font-semibold"><span>{deletionImpact.counts.total}</span><span>total records will be destroyed</span></div>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {forceStep === 2 && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 p-4 text-rose-800 text-sm space-y-2" data-testid="force-delete-warning">
+              <div className="font-semibold flex items-center gap-2"><AlertTriangle className="w-4 h-4" /> WARNING</div>
+              <p>This will delete <b>ALL records</b> including attendance, payroll, leave, and history.</p>
+              <p>This action is <b>IRREVERSIBLE</b> and will affect reports.</p>
+            </div>
+          )}
+
+          {forceStep === 3 && (
+            <div className="space-y-3 text-sm">
+              <p>Type <code className="px-2 py-0.5 rounded bg-slate-100 text-rose-700 font-mono">DELETE</code> to confirm:</p>
+              <input
+                type="text"
+                value={forceConfirmText}
+                onChange={(e) => setForceConfirmText(e.target.value)}
+                placeholder="Type DELETE"
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-rose-300 font-mono"
+                data-testid="force-delete-input"
+                autoFocus
+              />
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setShowForceDeleteDialog(false)} className="rounded-lg">Cancel</Button>
+            {forceStep < 3 ? (
+              <Button onClick={() => setForceStep(forceStep + 1)} className="bg-rose-600 hover:bg-rose-700 text-white rounded-lg" data-testid="force-delete-next">Continue</Button>
+            ) : (
+              <Button
+                onClick={confirmForceDelete}
+                disabled={forceConfirmText.trim() !== 'DELETE'}
+                className="bg-rose-700 hover:bg-rose-800 text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                data-testid="force-delete-final"
+              >
+                Delete Permanently with All Records
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      
+      {/* Adjustment Modal */}
+      <Dialog open={showAdjustmentModal} onOpenChange={setShowAdjustmentModal}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Add Salary Adjustment</DialogTitle>
+            <DialogDescription>Add bonus, incentive, deduction or reimbursement</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Type</label>
+              <Select value={newAdjustment.adjustment_type} onValueChange={(v) => setNewAdjustment({...newAdjustment, adjustment_type: v})}>
+                <SelectTrigger className="rounded-lg">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="bonus">Bonus</SelectItem>
+                  <SelectItem value="incentive">Incentive</SelectItem>
+                  <SelectItem value="reimbursement">Reimbursement</SelectItem>
+                  <SelectItem value="deduction">Deduction</SelectItem>
+                  <SelectItem value="lop">Loss of Pay</SelectItem>
+                  <SelectItem value="advance_recovery">Advance Recovery</SelectItem>
+                  <SelectItem value="penalty">Penalty</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Description</label>
+              <Input
+                placeholder="e.g., Performance Bonus Q1"
+                value={newAdjustment.description}
+                onChange={(e) => setNewAdjustment({...newAdjustment, description: e.target.value})}
+                className="rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Amount (₹)</label>
+              <Input
+                type="number"
+                placeholder="Enter amount"
+                value={newAdjustment.amount}
+                onChange={(e) => setNewAdjustment({...newAdjustment, amount: e.target.value})}
+                className="rounded-lg"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-slate-700 mb-1.5 block">Frequency</label>
+              <Select value={newAdjustment.frequency} onValueChange={(v) => setNewAdjustment({...newAdjustment, frequency: v})}>
+                <SelectTrigger className="rounded-lg">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="one_time">One Time</SelectItem>
+                  <SelectItem value="recurring">Recurring</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {newAdjustment.frequency === 'one_time' && (
+              <div>
+                <label className="text-sm font-medium text-slate-700 mb-1.5 block">Applicable Month</label>
+                <Input
+                  type="month"
+                  value={newAdjustment.applicable_month}
+                  onChange={(e) => setNewAdjustment({...newAdjustment, applicable_month: e.target.value})}
+                  className="rounded-lg"
+                />
+              </div>
+            )}
+            {newAdjustment.frequency === 'recurring' && (
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium text-slate-700 mb-1.5 block">Start Month</label>
+                  <Input
+                    type="month"
+                    value={newAdjustment.start_month}
+                    onChange={(e) => setNewAdjustment({...newAdjustment, start_month: e.target.value})}
+                    className="rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-slate-700 mb-1.5 block">End Month (Optional)</label>
+                  <Input
+                    type="month"
+                    value={newAdjustment.end_month}
+                    onChange={(e) => setNewAdjustment({...newAdjustment, end_month: e.target.value})}
+                    className="rounded-lg"
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowAdjustmentModal(false)} className="rounded-lg">Cancel</Button>
+            <Button onClick={handleCreateAdjustment} disabled={savingSalary} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg">
+              {savingSalary ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Add Adjustment
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Import Dialog */}
+      <Dialog open={showBulkImport} onOpenChange={(open) => { if (!open) { setImportFile(null); setImportResult(null); } setShowBulkImport(open); }}>
+        <DialogContent className="bg-[#fffdf7] max-w-xl max-h-[85vh] overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }}>Bulk Import Employees</DialogTitle>
+            <DialogDescription>Upload an Excel or CSV file to import multiple employees at once</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-5 py-4">
+            {/* Download Template */}
+            <div className="flex items-center justify-between p-4 bg-blue-50 rounded-xl border border-blue-100">
+              <div>
+                <p className="font-medium text-slate-900 text-sm">Sample Template</p>
+                <p className="text-xs text-slate-500">Download the template to fill in employee data</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={handleDownloadTemplate} className="rounded-lg border-[#063c88] text-[#063c88]" data-testid="download-template-btn">
+                <Download className="w-4 h-4 mr-1" /> Template
+              </Button>
+            </div>
+
+            {/* File Upload */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium text-slate-700">Upload File (.xlsx or .csv)</Label>
+              <div className="relative">
+                <input
+                  type="file"
+                  accept=".xlsx,.csv"
+                  onChange={(e) => { setImportFile(e.target.files[0]); setImportResult(null); }}
+                  className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-[#063c88] file:text-white hover:file:bg-[#052d66] cursor-pointer border border-slate-200 rounded-lg"
+                  data-testid="import-file-input"
+                />
+              </div>
+              {importFile && (
+                <p className="text-xs text-slate-500 flex items-center gap-1">
+                  <FileSpreadsheet className="w-3 h-3" /> {importFile.name} ({(importFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+
+            {/* Import Results */}
+            {importResult && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="text-center p-3 bg-slate-100 rounded-lg">
+                    <p className="text-lg font-bold text-slate-900">{importResult.total}</p>
+                    <p className="text-xs text-slate-500">Total Records</p>
+                  </div>
+                  <div className="text-center p-3 bg-emerald-50 rounded-lg">
+                    <p className="text-lg font-bold text-emerald-600">{importResult.success}</p>
+                    <p className="text-xs text-emerald-600">Successful</p>
+                  </div>
+                  <div className="text-center p-3 bg-red-50 rounded-lg">
+                    <p className="text-lg font-bold text-red-600">{importResult.failed}</p>
+                    <p className="text-xs text-red-600">Failed</p>
+                  </div>
+                </div>
+
+                {importResult.errors?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-red-600 flex items-center gap-1">
+                      <AlertCircle className="w-4 h-4" /> Error Report
+                    </p>
+                    <div className="max-h-48 overflow-y-auto space-y-1.5 border border-red-100 rounded-lg p-3 bg-red-50/50">
+                      {importResult.errors.map((err, idx) => (
+                        <div key={idx} className="text-xs bg-white p-2 rounded border border-red-100" data-testid={`import-error-${idx}`}>
+                          <span className="font-medium text-slate-700">Row {err.row} ({err.name}):</span>
+                          <ul className="mt-0.5 ml-3 list-disc text-red-600">
+                            {err.errors.map((e, i) => <li key={i}>{e}</li>)}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex gap-2 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => setShowBulkImport(false)} className="rounded-lg">Close</Button>
+            <Button
+              onClick={handleBulkImport}
+              disabled={!importFile || importing}
+              className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg"
+              data-testid="import-submit-btn"
+            >
+              {importing ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Upload className="w-4 h-4 mr-2" />}
+              {importing ? 'Importing...' : 'Import Employees'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Payslip Dialog */}
+      <Dialog open={showPayslip} onOpenChange={setShowPayslip}>
+        <DialogContent className="bg-white max-w-[950px] max-h-[90vh] overflow-y-auto rounded-2xl p-0" data-testid="payslip-dialog">
+          <DialogHeader className="px-6 pt-5 pb-0">
+            <DialogTitle style={{ fontFamily: 'Outfit' }} className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-[#063c88]" /> Salary Slip
+            </DialogTitle>
+            <DialogDescription>Compensation structure for {selectedEmployee?.full_name}</DialogDescription>
+          </DialogHeader>
+          <div className="px-4 py-4">
+            <SalarySlip
+              ref={salarySlipRef}
+              employee={selectedEmployee}
+              salary={salaryData}
+              month={formatDate()}
+            />
+          </div>
+          <DialogFooter className="px-6 pb-5 pt-2 border-t border-slate-100 flex gap-2">
+            <Button variant="outline" onClick={() => setShowPayslip(false)} className="rounded-lg">Close</Button>
+            <Button onClick={handlePrintPayslip} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg gap-2" data-testid="print-payslip-btn">
+              <Printer className="w-4 h-4" /> Print / Download PDF
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Deactivate Dialog */}
+      <Dialog open={showBulkDeactivate} onOpenChange={(open) => { if (!open) { setDeactivateFile(null); setDeactivatePreview(null); setDeactivateResult(null); } setShowBulkDeactivate(open); }}>
+        <DialogContent className="bg-[#fffdf7] max-w-xl max-h-[85vh] overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle style={{ fontFamily: 'Outfit' }} className="flex items-center gap-2">
+              <UserX className="w-5 h-5 text-amber-600" /> Bulk Deactivate Employees
+            </DialogTitle>
+            <DialogDescription>Upload an Excel/CSV file to deactivate multiple employees at once. Logins will be disabled.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-5 py-4">
+            <div className="flex items-center justify-between p-4 bg-amber-50 rounded-xl border border-amber-100">
+              <div>
+                <p className="font-medium text-slate-900 text-sm">Sample Template</p>
+                <p className="text-xs text-slate-500">Email · Inactive Date · Reason · Type · Last Day Payable</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={handleDownloadDeactivateTemplate} className="rounded-lg border-amber-500 text-amber-600" data-testid="download-deactivate-template-btn">
+                <Download className="w-4 h-4 mr-1" /> Template
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-sm font-medium text-slate-700">Upload File (.xlsx or .csv)</Label>
+              <input
+                type="file"
+                accept=".xlsx,.csv"
+                onChange={(e) => { const f = e.target.files[0]; setDeactivateFile(f); setDeactivatePreview(null); setDeactivateResult(null); if (f) handlePreviewDeactivate(f); }}
+                className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-amber-500 file:text-white hover:file:bg-amber-600 cursor-pointer border border-slate-200 rounded-lg"
+                data-testid="deactivate-file-input"
+              />
+              {deactivateFile && (
+                <p className="text-xs text-slate-500 flex items-center gap-1">
+                  <FileSpreadsheet className="w-3 h-3" /> {deactivateFile.name} ({(deactivateFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+
+            {/* Preview Summary */}
+            {deactivatePreview && (
+              <div className="space-y-3" data-testid="deactivate-preview">
+                {deactivatePreview.missing_required?.length > 0 ? (
+                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+                    <p className="font-medium mb-1 flex items-center gap-1"><AlertCircle className="w-3.5 h-3.5" /> Missing required column(s):</p>
+                    <ul className="list-disc ml-5">{deactivatePreview.missing_required.map((m, i) => <li key={i}>{m}</li>)}</ul>
+                  </div>
+                ) : (
+                  <>
+                    <p className="text-sm font-medium text-slate-700">Preview · {deactivatePreview.total_rows} row(s)</p>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="text-center p-3 bg-amber-50 rounded-lg">
+                        <p className="text-lg font-bold text-amber-700">{deactivatePreview.will_deactivate}</p>
+                        <p className="text-xs text-amber-700">Will Deactivate</p>
+                      </div>
+                      <div className="text-center p-3 bg-slate-100 rounded-lg">
+                        <p className="text-lg font-bold text-slate-700">{deactivatePreview.already_inactive}</p>
+                        <p className="text-xs text-slate-500">Already Inactive</p>
+                      </div>
+                      <div className="text-center p-3 bg-red-50 rounded-lg">
+                        <p className="text-lg font-bold text-red-600">{deactivatePreview.not_found}</p>
+                        <p className="text-xs text-red-600">Not Found</p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.entries(deactivatePreview.column_mapping || {}).map(([sheet, canon]) => (
+                        <span key={sheet} className="text-[11px] px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full border border-emerald-200">
+                          {sheet} → {canon}
+                        </span>
+                      ))}
+                      {(deactivatePreview.ignored_columns || []).map((c, i) => (
+                        <span key={`ig${i}`} className="text-[11px] px-2 py-0.5 bg-amber-50 text-amber-700 rounded-full border border-amber-200">
+                          {c} (ignored)
+                        </span>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Result Summary */}
+            {deactivateResult && (
+              <div className="space-y-3" data-testid="deactivate-result">
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="text-center p-3 bg-slate-100 rounded-lg">
+                    <p className="text-lg font-bold text-slate-900">{deactivateResult.total}</p>
+                    <p className="text-xs text-slate-500">Total</p>
+                  </div>
+                  <div className="text-center p-3 bg-emerald-50 rounded-lg">
+                    <p className="text-lg font-bold text-emerald-600">{deactivateResult.deactivated}</p>
+                    <p className="text-xs text-emerald-600">Deactivated</p>
+                  </div>
+                  <div className="text-center p-3 bg-slate-100 rounded-lg">
+                    <p className="text-lg font-bold text-slate-700">{(deactivateResult.skipped_not_found || 0) + (deactivateResult.skipped_already_inactive || 0)}</p>
+                    <p className="text-xs text-slate-500">Skipped</p>
+                  </div>
+                  <div className="text-center p-3 bg-red-50 rounded-lg">
+                    <p className="text-lg font-bold text-red-600">{deactivateResult.failed}</p>
+                    <p className="text-xs text-red-600">Failed</p>
+                  </div>
+                </div>
+                {deactivateResult.errors?.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-red-600 flex items-center gap-1">
+                      <AlertCircle className="w-4 h-4" /> Errors
+                    </p>
+                    <div className="max-h-40 overflow-y-auto space-y-1.5 border border-red-100 rounded-lg p-3 bg-red-50/50">
+                      {deactivateResult.errors.map((err, idx) => (
+                        <div key={idx} className="text-xs bg-white p-2 rounded border border-red-100">
+                          <span className="font-medium">Row {err.row}:</span> <span className="text-slate-600">{err.email}</span> – <span className="text-red-600">{err.reason}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="flex gap-2 pt-4 border-t border-slate-100">
+            <Button variant="outline" onClick={() => setShowBulkDeactivate(false)} className="rounded-lg">Close</Button>
+            <Button
+              onClick={handleBulkDeactivate}
+              disabled={!deactivateFile || deactivating || (deactivatePreview && (deactivatePreview.missing_required?.length > 0 || deactivatePreview.will_deactivate === 0))}
+              className="bg-amber-600 hover:bg-amber-700 text-white rounded-lg"
+              data-testid="deactivate-submit-btn"
+            >
+              {deactivating ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <UserX className="w-4 h-4 mr-2" />}
+              {deactivating ? 'Deactivating...' : `Deactivate ${deactivatePreview?.will_deactivate || ''} Employees`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+// Salary Item Component
+const SalaryItem = ({ label, amount, isDeduction }) => (
+  <div className="p-3 flex justify-between items-center">
+    <span className="text-sm text-slate-600">{label}</span>
+    <span className={`text-sm font-medium ${isDeduction ? 'text-red-600' : 'text-slate-900'}`}>
+      {isDeduction && amount > 0 ? '-' : ''}₹{amount?.toLocaleString('en-IN') || '0'}
+    </span>
+  </div>
+);
+
+const fmtINR = (v) => {
+  if (!v && v !== 0) return '₹0';
+  return `₹${Math.round(Number(v)).toLocaleString('en-IN')}`;
+};
+
+const SalaryRow = ({ label, value }) => (
+  <tr className="border-b border-slate-100 hover:bg-slate-50/50">
+    <td className="px-5 py-2.5 text-slate-700">{label}</td>
+    <td className="px-5 py-2.5 text-right tabular-nums text-slate-800">{fmtINR(value)}</td>
+    <td className="px-5 py-2.5 text-right tabular-nums text-slate-800">{fmtINR(value * 12)}</td>
+  </tr>
+);
+
+// Small status pill shown next to the employee email — indicates delivery
+// state of the auto-sent welcome/credential email.
+const CredentialEmailPill = ({ emp }) => {
+  const st = emp.credential_email_status;
+  if (!st) return null; // legacy employees before the tracking system existed
+  const attempts = emp.credential_email_attempts || 0;
+  const err = emp.credential_email_last_error || '';
+  const sentAt = emp.credential_email_sent_at ? new Date(emp.credential_email_sent_at).toLocaleString() : '';
+  if (st === 'sent') {
+    return (
+      <span title={`Credential email delivered${sentAt ? ' at ' + sentAt : ''}`} className="inline-flex items-center text-emerald-600" data-testid={`cred-status-${emp.id}`}>
+        <MailCheck className="w-3.5 h-3.5" />
+      </span>
+    );
+  }
+  if (st === 'failed') {
+    return (
+      <span
+        title={`Credential email FAILED after ${attempts} attempt(s).\nReason: ${err || 'unknown'}\nUse "Resend Credential Email" from the row menu.`}
+        className="inline-flex items-center text-red-600"
+        data-testid={`cred-status-${emp.id}`}
+      >
+        <MailX className="w-3.5 h-3.5" />
+      </span>
+    );
+  }
+  return (
+    <span title={`Credential email pending (attempt ${attempts})`} className="inline-flex items-center text-amber-500" data-testid={`cred-status-${emp.id}`}>
+      <MailWarning className="w-3.5 h-3.5 animate-pulse" />
+    </span>
+  );
+};
+
+export default Employees;

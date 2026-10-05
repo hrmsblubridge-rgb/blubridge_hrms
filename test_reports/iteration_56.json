@@ -1,0 +1,39 @@
+{
+  "summary": "End-to-end Playwright verification of Leave Management Report (/leave-report) refinements for iteration 56. All 5 primary specs (§1-§5) verified working. Backend regression check confirmed employee 403 unchanged. ResizeObserver suppressor works — zero occurrences in console during a full test session that opens shadcn Selects, DatePickers, Popover, and clicks all 9 quick pills. One minor UX concern found: clicking a quick date pill also silently commits any pending draft changes to Team/Leave Type/Leave Status filters (i.e. the pill applies date + any un-saved manual filter selections). Whether this violates the spec depends on interpretation of §2.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Quick-date pill click while a manual filter is in draft",
+        "issue": "handleQuickPill copies the ENTIRE current draft (including un-applied Team/Leave Type/Leave Status changes) to `applied` — so a stale manual selection gets committed silently. Reproduced: opened Leave Type -> Sick (draft only, no Filter click), then clicked 'Last 30 Days' pill. Network URL captured: /api/leaves/report?...&from_date=2026-06-21&to_date=2026-07-20&leave_type=Sick. Total dropped from 140 (last30 unfiltered) to 61 (last30 + Sick). Spec §2 says pills apply the DATE window immediately; spec also says manual filters require Filter button. Suggest handleQuickPill only mutate fromDate/toDate on `applied`, leaving other manual draft filters untouched.",
+        "affected_selectors": ["[data-testid^=\"quick-\"]", "[data-testid=\"leave-type-filter\"]", "[data-testid=\"team-filter\"]", "[data-testid=\"status-filter\"]"]
+      }
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_56.json"
+  ],
+  "action_items": [
+    "OPTIONAL/MINOR: Decide whether quick-date pills should apply ONLY the date window (leaving un-applied Team/Leave Type/Status draft changes deferred until Filter click) or continue current behaviour (commit entire draft). If the former, patch handleQuickPill in /app/frontend/src/pages/LeaveReport.js line ~284 to update `applied` using `applied` (not `draft`) for non-date fields, e.g. setApplied(a => ({ ...a, fromDate, toDate, search: searchText.trim() }))."
+  ],
+  "critical_code_review_comments": [
+    "handleQuickPill (LeaveReport.js ~L296) uses `setApplied({ ...nextDraft, search: searchText.trim() })` — this commits the ENTIRE draft (including any un-applied Team/Leave Type/Status selections) on every pill click. If the intent is strictly 'quick pills apply date only, other manual filters require Filter button', switch to `setApplied(a => ({ ...a, fromDate, toDate, search: searchText.trim() }))` and consider whether pill click should also reset the draft's non-date fields to their applied values so the UI stays consistent.",
+    "NameEmailAutocomplete.onEnter (line 190) still triggers onEnter -> handleApplyFilters — meaning pressing Enter in the search box while a manual filter is in draft ALSO commits the whole draft. That's expected/desired for Enter (equivalent to clicking Filter), documenting for completeness.",
+    "index.js ResizeObserver suppressor patches console.error with a string-only check (line 44). If a future dependency emits the ResizeObserver message as a non-string (e.g. Error object as first arg), the suppression will silently miss it. Consider also inspecting args[0]?.message and args.map(String).join(' ').",
+    "handleReset (line 307) sets both `draft` and `applied` to DEFAULT_FILTERS but relies on the fetchReport useEffect firing again when `applied` changes. Confirmed working — after Reset the table re-populated with Last-7-Days without a Filter click. Good.",
+    "The DatePicker for from/to has no explicit clear behaviour surfaced via testid — 'All Records' relies on programmatically setting fromDate/toDate to ''. Verified in DOM that the DatePicker shows placeholder 'Pick from date' / 'Pick to date' after quick-all click. OK."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (no backend changes; regression 403 check passed)", "frontend": "100% of the 5 primary spec items + regression pass; 1 minor UX concern noted"},
+  "test_credentials": "HR Admin: admin / HrAdmin786$ (PINNED). Employee (for 403 regression): user / pass123.",
+  "seed_data_creation": "None. All tests read existing leave records only.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration 56 Leave Report refinements verified end-to-end via Playwright. Concrete evidence captured for each spec: §1 (button order last1y idx=7, all idx=8 immediately_after=True); §2 (all 9 pills triggered /api/leaves/report with the expected date window and no manual Filter click — totals: today=6, yesterday=0, last7=23, last14=67, last30=140, last3m=372, last6m=540, last1y=683, all=697); §3 (typing 'Kav' and 'Har' fired /api/employees/autocomplete but NOT /api/leaves/report; picking 'Pragathi V Nahar' from Harshini's suggestion list populated the input but did NOT refetch the report — row count stayed at 30, only after clicking Filter did the report refetch and show 9 records for that employee); §4 (0 ResizeObserver console messages, no webpack-overlay iframe present at any time); §5 (Reset restored last7 window, cleared search, refetched and showed 23 records without a Filter click). Regression: Reason popover opens on click (verified — 30 preview buttons rendered, popover text 'Feeling unwell(stomach ache)…'); employee 'user'/'pass123' gets 403 on /api/leaves/report. Only issue: quick pills silently commit stale draft filters (Team/Leave Type/Status) — see integration_issues.",
+  "rca_of_the_issue": "For the minor stale-draft-commit finding: the offending line is /app/frontend/src/pages/LeaveReport.js ~L296: setApplied({ ...nextDraft, search: searchText.trim() }). nextDraft = { ...draft, fromDate, toDate } — so any un-applied changes the user made to draft.team / draft.leaveType / draft.status get committed on pill click. Mitigation: refactor to setApplied(a => ({ ...a, fromDate, toDate, search: searchText.trim() })) so only date + search change; leave manual dropdown selections in draft until the user presses Filter. Reproduction: on /leave-report, open Leave Type dropdown -> pick Sick (do NOT click Filter), then click any quick-date pill -> network shows leave_type=Sick already applied."
+}

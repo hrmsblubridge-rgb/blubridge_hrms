@@ -1,0 +1,394 @@
+[
+  {
+    "emp_id": "2ce742cb-f44b-4224-b19b-4dd44ca6ae51",
+    "user_id": "3681426e-1b04-4c80-90b3-d8e0cf977bc4",
+    "name": "Rishi S Nayak",
+    "email": "rishi.nayak@blubridge.com",
+    "username": "rishi.nayak",
+    "password": "rish@0001"
+  },
+  {
+    "emp_id": "dfae85c3-10dc-4eb5-b24a-953bec76b79d",
+    "user_id": "5d51111c-8185-4ccc-808a-3b3813a7283e",
+    "name": "Mohammed Hamza S E",
+    "email": "administration@blubridge.com",
+    "username": "administration",
+    "password": "moha@0002"
+  },
+  {
+    "emp_id": "975f8c57-f8ff-4237-af57-07f4a0b1195b",
+    "user_id": "7c19c445-24bc-44d6-bff9-d0618fd9f185",
+    "name": "Pragathi V Nahar",
+    "email": "frontdesk@blubridge.com",
+    "username": "frontdesk",
+    "password": "prag@0003"
+  },
+  {
+    "emp_id": "b8cf3ffb-01ca-46cf-b33c-42399c3b0fd7",
+    "user_id": "d0744cc7-2fc3-46d7-bbe4-e58eb6922996",
+    "name": "Aparna A",
+    "email": "aparna.a@blubridge.com",
+    "username": "aparna.a",
+    "password": "apar@0004"
+  },
+  {
+    "emp_id": "1ccc0c37-4502-4671-902a-ad4f3f9a22ca",
+    "user_id": "104da16f-ef13-4209-874d-03ce986d2f80",
+    "name": "Rishimithan Kannan",
+    "email": "rishimithan.kannan@blubridge.com",
+    "username": "rishimithan.kannan",
+    "password": "rish@0005"
+  },
+  {
+    "emp_id": "d451167d-62f6-4c7f-83b9-c40c823ce0f1",
+    "user_id": "ae37cbc3-3fc3-416d-af34-dfd245c10a7f",
+    "name": "Revathi T",
+    "email": "revathi.t@blubridge.com",
+    "username": "revathi.t",
+    "password": "reva@0008"
+  },
+  {
+    "emp_id": "98e6d2db-df38-411c-85e8-3f383280238d",
+    "user_id": "6341721f-9ae9-4826-96db-f112aba357d5",
+    "name": "Dinesh G",
+    "email": "dinesh.g@blubridge.com",
+    "username": "dinesh.g",
+    "password": "dine@0009"
+  },
+  {
+    "emp_id": "b9fee223-e0de-4ccf-924c-14cbd53cc5a6",
+    "user_id": "0c7edd80-5631-429a-b768-74c9fdc43d15",
+    "name": "Mohamed Aslam M",
+    "email": "mohamed.aslam@blubridge.com",
+    "username": "mohamed.aslam",
+    "password": "moha@0010"
+  },
+  {
+    "emp_id": "4ebc68eb-2fb0-4136-97fe-0d94b0adcb28",
+    "user_id": "2f951dd4-bbde-4bb1-b921-0e228f08b467",
+    "name": "Varsha T",
+    "email": "varsha.t@blubridge.com",
+    "username": "varsha.t",
+    "password": "vars@0011"
+  },
+  {
+    "emp_id": "c53d319a-61e3-47ab-b5c7-f849b21ca9e0",
+    "user_id": "3c86ad63-6339-4b18-9c44-d5ddd9aaa78f",
+    "name": "Kiruthik Kanna M",
+    "email": "kiruthik.kanna@blubridge.com",
+    "username": "kiruthik.kanna",
+    "password": "kiru@0012"
+  },
+  {
+    "emp_id": "fc07846d-5d74-442f-b45c-44b0b4d59780",
+    "user_id": "bf1f50b4-d3e4-45f8-a8e6-8e27e54117ca",
+    "name": "Harshini V M",
+    "email": "harshini.vm@blubridge.com",
+    "username": "harshini.vm",
+    "password": "hars@0013"
+  },
+  {
+    "emp_id": "8d593abc-292e-4b2f-85b0-ba0156979b88",
+    "user_id": "fcdff600-5193-48f0-a41d-6d0302c6f199",
+    "name": "Adhitya Charan",
+    "email": "adhitya.charan@blubridge.com",
+    "username": "adhitya.charan",
+    "password": "adhi@0014"
+  },
+  {
+    "emp_id": "e31fc5de-0631-49ac-85c8-75728a1ba6c5",
+    "user_id": "7b6f60de-0839-4e7c-826e-1b35f6fd28cf",
+    "name": "Jenifa D",
+    "email": "jenifa.d@blubridge.com",
+    "username": "jenifa.d",
+    "password": "jeni@0015"
+  },
+  {
+    "emp_id": "51e542c8-3aea-455a-828f-60e50b41c82b",
+    "user_id": "c915d241-8535-4192-ad13-4e91d38ad645",
+    "name": "Madhumithaa G K",
+    "email": "madhumithaa.gk@blubridge.com",
+    "username": "madhumithaa.gk",
+    "password": "madh@0016"
+  },
+  {
+    "emp_id": "61864ff8-9d9b-43c8-a043-4c9b2fed191d",
+    "user_id": "62535a0b-2eea-4b31-80a1-e5121c8854c2",
+    "name": "Jona Delcy C A",
+    "email": "jona.delcy@blubridge.com",
+    "username": "jona.delcy",
+    "password": "jona@0017"
+  },
+  {
+    "emp_id": "9bc363dc-c771-47d3-991b-96f55b646fda",
+    "user_id": "8dfe1683-84b8-4be3-bb3d-3487825d09bb",
+    "name": "Surendra Vendra",
+    "email": "surendra.vendra@blubridge.com",
+    "username": "surendra.vendra",
+    "password": "sure@0018"
+  },
+  {
+    "emp_id": "c440ade9-6785-4bc0-a7da-a1d54ecbcae0",
+    "user_id": "1f8e91c4-a9d8-4295-ab67-d7625c96d41b",
+    "name": "Ram Charan Golla",
+    "email": "ram.charan@blubridge.com",
+    "username": "ram.charan",
+    "password": "ramc@0019"
+  },
+  {
+    "emp_id": "2049d852-4e8e-4117-8bf7-d2e504498181",
+    "user_id": "5d1df7b6-33b9-4914-956a-6dc853a83e2b",
+    "name": "Anuj Kumar",
+    "email": "anuj.kumar@blubridge.com",
+    "username": "anuj.kumar",
+    "password": "anuj@0020"
+  },
+  {
+    "emp_id": "163377a4-5564-48ec-b823-b79a2339a0f4",
+    "user_id": "0402074d-dc47-4324-a77f-2219296716c4",
+    "name": "Rishikkanth R",
+    "email": "rishikkanth.r@blubridge.com",
+    "username": "rishikkanth.r",
+    "password": "rish@0021"
+  },
+  {
+    "emp_id": "9021d5a8-152b-417b-b412-a04f367e3b91",
+    "user_id": "c0eef43b-92d9-413f-b95c-0cf10518b3b2",
+    "name": "Sanjay Krishna MV",
+    "email": "sanjay.krishna@blubridge.com",
+    "username": "sanjay.krishna",
+    "password": "sanj@0022"
+  },
+  {
+    "emp_id": "3a630b20-f4d8-40a0-b3e5-a8eccddcdd0f",
+    "user_id": "d8a3ddfb-b570-4821-b387-c2af59fc3c47",
+    "name": "Goutham Kumar Reddy",
+    "email": "goutham.kumar@blubridge.com",
+    "username": "goutham.kumar",
+    "password": "gout@0023"
+  },
+  {
+    "emp_id": "eb6eae01-d31b-4f46-bcaf-90fa32869fb3",
+    "user_id": "2aaf0cd0-fa7a-489d-8575-b8f1c1e6106e",
+    "name": "Kota Dhanakumar",
+    "email": "kota.dhanakumar@blubridge.com",
+    "username": "kota.dhanakumar",
+    "password": "kota@0024"
+  },
+  {
+    "emp_id": "cb334380-d6f4-4db2-a111-9826e4c65b72",
+    "user_id": "deed3680-05ad-4707-9859-be8a204c37a6",
+    "name": "Adwaid Suresh",
+    "email": "adwaid.suresh@blubridge.com",
+    "username": "adwaid.suresh",
+    "password": "adwa@0025"
+  },
+  {
+    "emp_id": "c2341145-6de3-468c-aec7-5ec283e290e0",
+    "user_id": "c1943698-c891-4f0c-9706-6b13a76e9bdc",
+    "name": "Killi Uma Maheswara Rao",
+    "email": "uma.maheswara@blubridge.com",
+    "username": "uma.maheswara",
+    "password": "kill@0026"
+  },
+  {
+    "emp_id": "db300e79-7bab-43da-8235-249b8c9d2e74",
+    "user_id": "23c23f62-e36f-40d2-8b10-3ad75e3075fd",
+    "name": "Sanjay Kumar M",
+    "email": "sanjaykumar@blubridge.com",
+    "username": "sanjaykumar",
+    "password": "sanj@0027"
+  },
+  {
+    "emp_id": "86cd8482-5382-4249-a47d-3ce14afefb14",
+    "user_id": "43f44d60-ab62-4863-8942-9e449657dccb",
+    "name": "Sai Rupesh L",
+    "email": "sairupesh@blubridge.com",
+    "username": "sairupesh",
+    "password": "sair@0028"
+  },
+  {
+    "emp_id": "4d297ae7-b1b2-46f6-996d-24b3f20fd88a",
+    "user_id": "d2088504-5d14-47dd-8256-0a4e64963c3d",
+    "name": "Gowtham S",
+    "email": "gowtham@blubridge.com",
+    "username": "gowtham",
+    "password": "gowt@0029"
+  },
+  {
+    "emp_id": "4d532a1f-b22e-40fa-9b59-7d862720afa3",
+    "user_id": "c846d26b-1ea6-4762-ae0a-73deba5796fb",
+    "name": "Saravanan V",
+    "email": "saravanan@blubridge.com",
+    "username": "saravanan",
+    "password": "sara@0030"
+  },
+  {
+    "emp_id": "5d192ac8-8985-487f-bc3b-0c905acd1e64",
+    "user_id": "dfc4cdbc-324c-476e-9287-fa565d7d4673",
+    "name": "Navin Kumar V",
+    "email": "navin.kumar@blubridge.com",
+    "username": "navin.kumar",
+    "password": "navi@0031"
+  },
+  {
+    "emp_id": "ebe63470-d33b-473b-b42e-937cf4382fe2",
+    "user_id": "40a97cbf-eaf8-451c-a3f8-78a3debfec12",
+    "name": "Kurra Vishnu Sai",
+    "email": "kurra.vishnu@blubridge.com",
+    "username": "kurra.vishnu",
+    "password": "kurr@0032"
+  },
+  {
+    "emp_id": "0253ca70-4f9c-45dc-b14d-e8bb8bc22370",
+    "user_id": "6938fe9a-49ae-4a29-97d5-2648b05a0a42",
+    "name": "Kathirvel S",
+    "email": "kathirvel.s@blubridge.com",
+    "username": "kathirvel.s",
+    "password": "kath@0033"
+  },
+  {
+    "emp_id": "93bb0403-f51c-4e9a-ace1-d2e9d51b2035",
+    "user_id": "11d48984-9aed-4446-9408-90cc9eb527cc",
+    "name": "Dharun MS",
+    "email": "dharun.ms@blubridge.com",
+    "username": "dharun.ms",
+    "password": "dhar@0062"
+  },
+  {
+    "emp_id": "2c7c937f-bb9b-47cd-b8ff-a3642ea5ea0c",
+    "user_id": "4633b1f3-3d24-47d8-a61d-bcc93f19a3ed",
+    "name": "Dinesh Yampalaaku",
+    "email": "dinesh.yampalaaku@blubridge.com",
+    "username": "dinesh.yampalaaku",
+    "password": "dine@0066"
+  },
+  {
+    "emp_id": "3faa3993-6fdf-4b5a-be52-185b40a84788",
+    "user_id": "2b47f3b9-8b96-4996-ba79-87ad2fee201f",
+    "name": "Vasanth D",
+    "email": "vasanth.d@blubridge.com",
+    "username": "vasanth.d",
+    "password": "vasa@0067"
+  },
+  {
+    "emp_id": "2de161bb-d784-4add-8f7f-e3fa79d846f8",
+    "user_id": "6bff5cdc-a83e-43fa-96fc-9c87e539dca2",
+    "name": "Sivalingaraja S",
+    "email": "sivalingaraja.s@blubridge.com",
+    "username": "sivalingaraja.s",
+    "password": "siva@0068"
+  },
+  {
+    "emp_id": "d2709189-f9ee-4520-9491-742de396abb8",
+    "user_id": "3db83ea4-db6f-4d07-8f38-4079a51272ab",
+    "name": "Raghul R S",
+    "email": "raghul.rs@blubridge.com",
+    "username": "raghul.rs",
+    "password": "ragh@0071"
+  },
+  {
+    "emp_id": "aac65d15-a0e4-41f9-89e9-7b80a82a0e6f",
+    "user_id": "ff040433-113b-4775-8e7e-78de58de846e",
+    "name": "Shridhar S",
+    "email": "shridhar.s@blubridge.com",
+    "username": "shridhar.s",
+    "password": "shri@0073"
+  },
+  {
+    "emp_id": "e1313264-884d-4b50-bb42-968c090aa3d3",
+    "user_id": "859051f0-a073-4c34-9032-d77b62a45c25",
+    "name": "Shyam Sundar",
+    "email": "shyam.sundar@blubridge.com",
+    "username": "shyam.sundar",
+    "password": "shya@0074"
+  },
+  {
+    "emp_id": "f09dfa2c-c6cd-448d-9f6e-94408149680f",
+    "user_id": "ebb0a1a8-d198-4e56-aa10-3e8c64b09e8f",
+    "name": "Srimathi S",
+    "email": "srimathi.s@blubridge.com",
+    "username": "srimathi.s",
+    "password": "srim@0075"
+  },
+  {
+    "emp_id": "41733349-d5da-4af4-baa1-ca0a15b68453",
+    "user_id": "47a9562d-8701-4719-a0de-9e54d3d3bac8",
+    "name": "Satyam Kumar",
+    "email": "satyam.kumar@blubridge.com",
+    "username": "satyam.kumar",
+    "password": "saty@0077"
+  },
+  {
+    "emp_id": "6cb99131-48c3-4f49-ae47-fe9c0be06126",
+    "user_id": "2f378bdd-cb2a-4e5b-9e43-2ea09d8d749a",
+    "name": "Madhan S",
+    "email": "madhan.s@blubridge.com",
+    "username": "madhan.s",
+    "password": "madh@0078"
+  },
+  {
+    "emp_id": "d642ba2d-9f0f-4ee3-acc2-63120c745e97",
+    "user_id": "f89d442a-6b36-4b3b-b029-64f460d4d5ff",
+    "name": "Dinesh T",
+    "email": "dinesh.t@blubridge.com",
+    "username": "dinesh.t",
+    "password": "dine@0079"
+  },
+  {
+    "emp_id": "6d7b1fa7-e881-4720-9d13-902588cf01f4",
+    "user_id": "b7e14c2b-b342-48b7-9bdc-d22db0751c77",
+    "name": "Jayasri S",
+    "email": "jayasri.s@blubridge.com",
+    "username": "jayasri.s",
+    "password": "jaya@0080"
+  },
+  {
+    "emp_id": "59742144-6fc9-4c99-907f-bfdbe087a9e7",
+    "user_id": "a901b8d8-e750-4f1e-8541-48ea8682e9e8",
+    "name": "Naveen Prasad K",
+    "email": "naveenprasad.k@blubridge.com",
+    "username": "naveenprasad.k",
+    "password": "nave@0081"
+  },
+  {
+    "emp_id": "409a1ed7-051b-4bdd-bae8-8fb4cbb921c4",
+    "user_id": "03daff0e-b218-4a6b-9089-b7c266098097",
+    "name": "Siddharth G",
+    "email": "siddharth.g@blubridge.com",
+    "username": "siddharth.g",
+    "password": "sidd@0082"
+  },
+  {
+    "emp_id": "ebe41ef2-cea6-4e3f-9630-d3f2be461495",
+    "user_id": "87b98ff2-f567-4def-b48c-28b474aa216d",
+    "name": "Harshitha P",
+    "email": "harshitha.p@blubridge.com",
+    "username": "harshitha.p",
+    "password": "hars@0084"
+  },
+  {
+    "emp_id": "9030be99-b7de-4015-81e0-c0ba2ff13a1b",
+    "user_id": "8d6b9b9c-c38c-4478-8d1d-3c761211ed6c",
+    "name": "Rama krishna sai prasad punamalli",
+    "email": "ramakrishna.saiprasadpunamalli@blubridge.com",
+    "username": "ramakrishna.saiprasadpunamalli",
+    "password": "rama@0085"
+  },
+  {
+    "emp_id": "c11ea1aa-a576-4606-80e4-dd8078f81b0c",
+    "user_id": "943b1aa4-1e4e-4b43-a583-c10f5719b907",
+    "name": "Vedanth Reddy",
+    "email": "vedanthreddy@blubridge.com",
+    "username": "vedanthreddy",
+    "password": "veda@0086"
+  },
+  {
+    "emp_id": "8b62a4ee-d219-4954-9c2b-43a8798bea47",
+    "user_id": "b020b4aa-5ac3-4188-b382-14705dfef652",
+    "name": "Narasimha Kas",
+    "email": "narasimha.kas@blubridge.com",
+    "username": "narasimha.kas",
+    "password": "nara@0087"
+  }
+]

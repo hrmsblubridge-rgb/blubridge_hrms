@@ -1,0 +1,37 @@
+{
+  "summary": "Full regression + new-feature verification for IT Module (A) assign-on-create with active-only picker + backend re-validation, and (B) HRMS re-skin. Backend: added /app/backend/tests/test_it_asset_assign_on_create.py with 10 targeted tests -> 10/10 PASS. Re-ran /app/backend/tests/test_it_components_phase1.py -> 10/10 PASS. Verified: (1) POST /api/it/assets with assign_employee_id=ACTIVE emp returns status='Assigned', assigned_to set, asset assignment_history has open period for that employee; (2) without assign_employee_id, asset is created with status='In Stock' and assigned_to=null; (3) with INACTIVE emp: 400 'Selected employee is no longer active.'; (4) with bogus emp id: 400 'not found'; (5) post-create /it/assets/{id}/assign flow still works and sets assignment; (6) GET /api/employees?status=Active returns only Active employees (source for the picker); (7) RBAC: employee token 'user'/'pass123' gets 403 on POST /it/assets and GET /it/assets; /api/employee/it-assets and /api/employee/it-components remain 200 for employee. Frontend (playwright @1920x1080 and 390x844): IT module loads, no full-page horizontal overflow at either viewport, tabs render, Add Asset dialog opens with it-form-category and the new it-active-emp-search present, typing 'a' surfaced 20 active-employee options (it-active-emp-opt-*), selecting one rendered the it-active-emp-selected chip. Assets tab controls verified: it-asset-search, it-filter-category, it-filter-status, it-page-size, it-export-btn, it-tab-components, it-tab-import, it-add-asset-btn, it-asset-row-*, it-view-*, it-history. Components tab: comp-add-btn present. Design re-skin looks consistent (Outfit headings, #063c88 primary, surface #fffdf7).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Asset detail dialog & Add Asset dialog", "issues": ["Radix DialogContent missing DialogTitle/aria-describedby — console emits accessibility warnings/errors. Non-functional but should be fixed for a11y."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_it_asset_assign_on_create.py",
+    "/app/backend/tests/test_it_components_phase1.py",
+    "/app/test_reports/pytest/it_assign_on_create.xml",
+    "/app/test_reports/pytest/it_p1_re.xml"
+  ],
+  "action_items": [
+    "(Optional / a11y) Wrap Asset detail Radix DialogContent with a DialogTitle (VisuallyHidden if not visually needed) and add aria-describedby / DialogDescription to eliminate the Radix console error/warning. Same for the Add Asset dialog description warning."
+  ],
+  "critical_code_review_comments": [
+    "_emp_snapshot_active correctly gates on employee_status=='Active' and reuses _emp_snapshot for the payload shape — good separation.",
+    "it_create_asset assign-on-create branch re-invokes the same primitives (open_asset_assignment + sync_components_on_asset_reassign) so assignment history and component inheritance are automatically consistent with the existing 'assign later' flow. No duplication of logic.",
+    "Backend re-validates active status at POST /it/assets time so even a stale frontend cache cannot bypass the check — verified by test_create_asset_inactive_employee_rejected.",
+    "server.py is huge (~4780+ LOC around the employees endpoint). Consider splitting employee/HR routers similar to it_asset/router.py for maintainability. Not a functional issue.",
+    "Add Asset & Asset Detail Radix Dialogs are missing DialogTitle/DialogDescription — accessibility gap (Radix warning). Low-risk but should be addressed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_it_asset_assign_on_create.py (NEW)"
+  ],
+  "success_rate": {"backend": "100% (20/20: 10 new + 10 phase-1)", "frontend": "100% of requested surface (Add Asset + active picker + filters + tabs + detail dialog + responsive @ 1920 & 390)"},
+  "test_credentials": "admin / HrAdmin@2109 (works); user / pass123 (403 admin endpoints, 200 employee endpoints).",
+  "seed_data_creation": "Created TEST_AoC_* Desktop assets during pytest run (a few per run). Not cleaned. IDs auto-generated (DSK-*). Also creates a handful of TESTAOC-* serial numbers.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "New feature regression: /app/backend/tests/test_it_asset_assign_on_create.py. If inactive/resigned employees are not present in the environment, test_create_asset_inactive_employee_rejected auto-skips. Frontend Add Asset opens quickly; the ActiveEmployeePicker requires typing at least 1 character to fetch (calls GET /api/employees?status=Active&search=...). After writing to backend/tests/ uvicorn WatchFiles reloads (~30-45s downtime) — wait before hitting the API. Employees endpoint returns {employees:[...]}.",
+  "rca of the issue": "N/A — no bugs found. Initial pytest run hit read-timeouts due to backend reload from test-file write (WatchFiles reload triggered by writing under backend/tests/). Waiting ~60s and re-running yielded 10/10 pass."
+}

@@ -1,0 +1,37 @@
+{
+  "summary": "Frontend-only verification of the global DD-Mon-YYYY date-format standardization. Verified across Leave, Employees, Early-Out, Late-Requests, Missed-Punch, Settings (Holidays + Shift tabs), Dashboard, Reports, Holidays, Employee Profile, and Education & Experience. Every accessible table/list/detail dialog renders dates as DD-Mon-YYYY (e.g. '05-Jun-2026', '15-Jul-2003'). No ISO YYYY-MM-DD leakage detected anywhere in the UI. All sampled date-picker fields render as shadcn DatePicker buttons (placeholder 'Pick a date' + calendar icon); selecting a day updates the trigger label to DD-Mon-YYYY (verified live on the Apply Leave dialog: '10-Jun-2026'). Zero native <input type=\"date\"> remain in the Education & Experience Add-Experience form. Datetime-local fields on Missed Punch could not be opened (RBAC blocks sysadmin/office_admin) — needs hr-role retest. Critical blocker: the documented hr-admin credential `admin / MyPermanent#2026A` is REJECTED by /api/auth/login ('Invalid credentials'), so the Add-Holiday dialog (hr-only) could not be opened, and Employees CRUD form (input-dob / input-doj testids) could not be triggered. The DatePicker component itself is the SAME instance used on every page already verified, so the format/save guarantee transitively applies.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_47.json"
+  ],
+  "action_items": [
+    "BLOCKER for full coverage: HR admin login `admin / MyPermanent#2026A` returns 401 Invalid credentials. Either the password documented in /app/memory/test_credentials.md is stale or the seed reverted. Please reset & re-document so Add-Holiday dialog, Missed-Punch create dialog, and Employee Edit form (input-dob/input-doj/deact-date) can be verified end-to-end by the next agent.",
+    "Documented employee `kasper / pass123` is deactivated ({\"detail\":\"Your account is deactivated. Contact admin.\"}). Used `user / pass123` (Rishi S Nayak) as substitute. Please reactivate kasper or update test_credentials.md.",
+    "sysadmin and office_admin both lose access to /employees rows (table shows 0 rows) and /missed-punch (redirects to /dashboard). These are hr-only — flagged only so reviewers know the gap; no fix needed if the gate is intentional."
+  ],
+  "critical_code_review_comments": [
+    "date-picker.jsx parseLocalDate correctly avoids the UTC-midnight off-by-one for `yyyy-MM-dd` strings — verified by typing into Apply-Leave: picked day rendered as '10-Jun-2026' matching the actual click target (no off-by-one).",
+    "dateFormat.js parseToDate accepts the legacy DD-MM-YYYY form and ISO form without timezone drift — good. Consider also accepting RFC-3339 with explicit offset for completeness.",
+    "DatePicker uses Popover + Calendar; popover is rendered in a portal yet inside another Radix Dialog the focus-trap caused one nested-dialog hover-intercept warning in test (Apply-Leave then row-click). Not user-visible, but consider raising z-index of PopoverContent inside dialogs.",
+    "No design issues observed — DD-Mon-YYYY format renders consistently in all admin/employee pages with sufficient contrast."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "N/A (frontend-only task)",
+    "frontend": "~85% (everything reachable with sysadmin/office_admin/employee was green; ~15% gated behind hr-admin login that is currently broken)"
+  },
+  "test_credentials": "sysadmin/pass123 (system_admin) — WORKS. workforce/Pass@123# (office_admin) — WORKS. user/pass123 (employee Rishi S Nayak) — WORKS. admin/MyPermanent#2026A (hr) — REJECTED. kasper/pass123 — DEACTIVATED. spartasolace1/spar@1230 — REJECTED. vijayan.k/pass123 — REJECTED.",
+  "seed_data_creation": "None. All testing was read-only / form-open + Escape; no holiday/leave/edit was actually submitted.",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "DatePicker (src/components/ui/date-picker.jsx) is the single component used everywhere. Verified live: Leave>Apply Leave dialog `admin-apply-leave-date` opens calendar and emits '10-Jun-2026'. All admin filter-from/filter-to/chart-custom-from/chart-custom-to/assign-effective-from/assign-effective-to/edit-eo-date/edit-late-date/missed-date/edit-mp-date testids resolve to BUTTON tag with 'Pick a date' placeholder. Tables verified: Leave list shows '05-Jun-2026','15-Jun-2026' etc.; Early-Out/Late lists show DD-Mon-YYYY; Settings>Holidays tab shows '01-Jan-2026','15-Jan-2026','16-Jan-2026','26-Jan-2026'; Dashboard widgets show DD-Mon; Reports table shows DD-Mon; Employee Profile shows DOB=15-Jul-2003 / DOJ=24-Sep-2025. ZERO ISO YYYY-MM-DD strings leaked into any rendered body across all pages tested. Education-Experience Add-Experience form has 2 DatePicker buttons, 0 native <input type=\"date\">. The only remaining un-verified UI flows are (a) Holidays > Add Holiday dialog `holiday-date-input` (hr-gated), (b) Employees Add/Edit form `input-dob`/`input-doj`/`deact-date` (hr-gated), (c) Missed-Punch create dialog `missed-date`/`edit-mp-date` + the datetime-local check-in/out fields (hr-gated). Restore hr-admin login, then re-run those three flows.",
+  "rca of the issue": "N/A — feature working as designed for everything reachable. Outstanding coverage gap is purely an auth/credentials issue, not a date-format bug."
+}

@@ -1,0 +1,34 @@
+{
+  "summary": "Frontend-only verification of OperationalVigilance Edit/View dialog identity fix (Reported Employee vs Vigilance Team Member) + reopen-detail-modal-after-save behavior. Executed via Playwright against the preview URL as admin/HrAdmin@2109. All acceptance criteria verified end-to-end using Adwaid Suresh / 01-Sep-2026 (two distinct submitters: Madhan S 12:27/02:19 and Dinesh T 12:28/02:18). Data was mutated during isolation testing and fully restored to original values by the end of the run.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "verified": {
+    "per_click_submission_identity": "Editing card index 0 (Madhan S) opens dialog with banner 'EDIT VIGILANCE SUBMISSION' + subtitle 'Submitted by Madhan S · 01-Sep-2026'; ContextCards show Reported Employee=Adwaid Suresh (with email adwaid.suresh@blubridge.com and avatar) and Vigilance Team Member=Madhan S ('Submitted by' accent) and Date=01-Sep-2026. Research field = 12:27, Break = 02:19 (Madhan's actual values).",
+    "per_click_submission_identity_2nd": "Editing card index 1 (Dinesh T) opens dialog with subtitle 'Submitted by Dinesh T · 01-Sep-2026'; Vigilance Team Member card shows Dinesh T. Research=12:28, Break=02:18 (Dinesh's own values — NOT the first submitter's). Distinct submission loaded per click.",
+    "context_cards_rendering": "Three ContextCards render in isEdit branch: Reported Employee (User icon), Vigilance Team Member (ShieldCheck icon, accent styling — visually distinct blue-tint background), Date (CalendarDays icon). Photos + email + 'Submitted by' subline all present.",
+    "banner_text": "Dialog title = 'Edit Vigilance Submission' (uppercase eyebrow), name = target employee (Adwaid Suresh), subtitle = 'Submitted by <submitter> · <display date>'. Correct across both clicks.",
+    "save_isolation": "Edited Madhan S research 12:27 -> 12:29 and saved. Toast 'Entry updated' fired. Detail modal auto-reopened showing Madhan=12:29 while Dinesh remained 12:28 (unchanged). Reverted Madhan back to 12:27; reopened modal now shows Madhan=12:27, Dinesh=12:28, no 12:29 anywhere. No duplicate submission was created (still exactly 2 submission cards). Reported Employee row/attendance unchanged.",
+    "reopen_detail_after_save": "After successful save launched from the detail modal (fromDetailKey path), vig-detail-modal automatically reopens for the same employee/day with fresh values. Verified twice (revert-save and mutation-save).",
+    "read_only_variant_banner_text": "Read-only entry dialog (isEdit=false render path in code) uses title 'Vigilance Submission' and subtitle 'Submitted by <name> · <date>' — same ContextCard structure. Verified via code inspection (lines 1358-1377). Live path from admin uses Edit only; there is no separate View button on submission cards.",
+    "avatars": "Photos render in detail modal header (Adwaid Suresh), each submission card (Madhan S, Dinesh T), and both Reported Employee + Vigilance Team Member ContextCards inside the Edit dialog.",
+    "responsive_390px": "At 390x844: dialog width = 390 (full-width), ContextCards stack vertically (tops 177/274/371, all left=24, width=342), documentElement.scrollWidth <= innerWidth (no page overflow behind the modal).",
+    "permissions": "Normal user 'user/pass123' navigating to /vigilance is redirected to /employee/dashboard (unchanged from prior iteration)."
+  },
+  "not_verified": [
+    "Vigilance-employee own-view accounts (madhan.s / dinesh.t with Vigil@123) — same credential drift noted in iterations 85/86/87. Own-view code path was not changed in this iteration."
+  ],
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "OperationalVigilance.js is now 1559 lines (up from 1487) — still well over the 700-line soft cap. Splitting into AdminMergedTable.jsx, VigilanceDetailModal.jsx, SubmissionCard.jsx, EntryDialog.jsx, ContextCard.jsx is recommended for maintainability. Non-blocking.",
+    "The reopen useEffect (lines 315-321) depends on `data`; if a save's server-side response updates a row.key value, the reopen will fail silently. Consider matching by (target_employee_id + date) as a fallback."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (skipped per request)", "frontend": "100% of the identity-fix + save-isolation + reopen-detail-modal + responsive + permission checks passed"},
+  "test_credentials": "admin/HrAdmin@2109 works; user/pass123 works and is correctly denied /vigilance.",
+  "seed_data_creation": "None. Values were mutated (Madhan research 12:27 -> 12:29 -> 12:27) and fully restored. Final state matches pre-test state.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Identity-fix and reopen behavior are fully functional. If regressing later, use admin/HrAdmin@2109, range 2026-09-01..2026-09-30, and pick a row where the two submitters carry different values (Adwaid Suresh / 01-Sep-2026 has Madhan 12:27/02:19 and Dinesh 12:28/02:18 — ideal). Only mutate a field with a plan to revert it in the same run.",
+  "rca of the issue": "N/A — no bugs found."
+}

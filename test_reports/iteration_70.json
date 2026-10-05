@@ -1,0 +1,47 @@
+{
+  "summary": "Iteration 70 — BRSF Star Reward cleanup + merge validated end-to-end. All 12 acceptance items from the request are satisfied. Backend: 14/14 pytest scenarios PASSED (eligibility by month, confirmation-month partial window, mutating-route eligibility guards, non-HR 403, month-scoped idempotent recalc, override/manual preservation across recalc). Direct MongoDB verification: unique index (employee_id, year, month, code) present and all 21 eligible employees for 2026-04 hold exactly 14 star lines each — no duplicates. Frontend UI (HR admin) smoke test on /star-reward confirms: exactly 2 tabs (Employees + Teams, NO tab-brsf), removed widgets (bulk-auto-btn, scheduler-status-strip) are gone, all merged Employees-tab controls (brsf-month-picker, brsf-employee-select, brsf-view-table/grid, brsf-recalculate-btn, brsf-export-btn) exist, filter card is scoped to Teams tab only, Table View shows 24 summary rows for Sep-2026, Grid View shows the same 24 cards, Teams tab still shows 12 team cards.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_scenarios_verified": [
+    "Only Employees + Teams tabs exist; tab-brsf removed.",
+    "bulk-auto-btn and scheduler-status-strip removed from the page.",
+    "Merged Employees-tab controls all present (month picker, employee selector, Table/Grid view switch, Auto Calculate, Export).",
+    "Table View: 24 brsf-summary-row-* for Sep-2026 with Positive/Negative/Net + Edit Stars.",
+    "Grid View: 24 brsf-grid-card-* with matching totals + Edit Stars button.",
+    "Filter card (team/month/search) only rendered when activeTab==='teams' — absent from Employees tab.",
+    "GET /api/brsf/eligible-employees?month=2026-03 EXCLUDES Harshini V M and Kiruthik Kanna M; ?month=2026-04 INCLUDES both (+2 monotonic vs March).",
+    "Sep 2026 eligible list = 24 employees (matches UI row/card count).",
+    "GET /api/brsf/stars?employee_id=<Harshini>&month=2026-04 returns weeks[0].start == '2026-04-08' — confirmation-date window respected.",
+    "POST /api/brsf/recalculate with no month -> 400; with an ineligible employee_id -> 400; GET /api/brsf/stars with bogus id -> 400; PUT /api/brsf/stars/{bogus}/override -> 404.",
+    "Non-HR employee token: GET/POST on /api/brsf/eligible-employees, /summary, /recalculate all return 403.",
+    "Double recalculate for 2026-04 for one employee: both 200, response message contains '2026-04', stars endpoint still returns exactly 14 lines.",
+    "Mongo aggregation: 21/21 employees for 2026-04 have exactly 14 brsf_star_lines each; unique index 'brsf_line_unique' on (employee_id, year, month, code) confirmed.",
+    "Manual override on P01 (=2) and monthly manual P03 (=2): both survive Auto Calculate — override_value / manual_value unchanged after re-run."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_brsf_cleanup.py",
+    "/app/test_reports/pytest/brsf_cleanup.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "brsf_stars.py _resolve_final rounds to 2 decimals but final_value is used in unique/dedup only via unique index on code — OK.",
+    "StarReward.js still imports lots of dialogs (AutoStarDialog, BulkAutoStarDialog, EditStarsDialog, LeaveAdjustDialog, EntryOverrideDialog) that are no longer reachable from the trimmed UI — dead code that should be removed once the cleanup is finalised (safe to prune AutoStarDialog + BulkAutoStarDialog since the buttons that opened them are gone; EditStars/LeaveAdjust/EntryOverride still open from the ViewHistoryModal which is retained but also no longer reachable from any UI entry point now that its opener was removed). Consider deleting or wiring them intentionally.",
+    "BrsfFramework.jsx (~760 lines with dialogs) — Override/Manual/Instance dialogs would benefit from extraction into their own files for maintainability.",
+    "loadEmployees / loadStars / loadSummary all include getAuthHeaders in their dep array — if AuthContext re-creates the fn each render, they will over-fetch. Memoise getAuthHeaders in AuthContext.",
+    "STATUS_STYLE['Not Applicable'] key still unused (statusOf never returns it) — dead style key, minor."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_brsf_cleanup.py (new)"
+  ],
+  "success_rate": { "backend": "100% (14/14)", "frontend": "100% (13/13 scenarios)" },
+  "test_credentials": "admin / HrAdmin786$ (HR Admin, pinned); user / pass123 (employee for 403 checks)",
+  "seed_data_creation": "TestPreserveManualAcrossRecalculate creates a P01 override and P03 monthly manual entry for the first eligible employee of 2026-04 and then RESETS them at the end of the test (reset-override on P01, monthly_value=0 on P03). Idempotency test recalculates 2026-04 twice for that same employee — no residual duplicates. No other seed data left behind.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "BRSF cleanup + merge is fully wired. Backend regression file: /app/backend/tests/test_brsf_cleanup.py — reuse for future BRSF changes. To run: `REACT_APP_BACKEND_URL=<preview URL> pytest backend/tests/test_brsf_cleanup.py -v` (session-scoped admin login has 6x retry to handle Cloudflare 502 cold-starts). Mongo unique index confirmed on brsf_star_lines. The removed StarReward dialogs (AutoStarDialog etc.) still exist in the source but are unreachable — flag for cleanup, not a test blocker.",
+  "rca of the issue": "N/A — all requested items pass. Only cold-start 502 from Cloudflare was encountered on the very first login attempt; fixture-level retry mitigates."
+}

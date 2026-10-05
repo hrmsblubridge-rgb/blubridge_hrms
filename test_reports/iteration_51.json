@@ -1,0 +1,36 @@
+{
+  "summary": "Full re-validation of Vigilance Reports module (both Admin and Vigilance-User flows) after E1's blocker fix in /app/frontend/src/App.js (EmployeeRoute now contains a vigilance-designation bypass on /employee/vigilance, lines 88-110). Result: the prior 0%-reachable vigilance-user UI is now FULLY functional. Verified end-to-end: (a) madhan.s (onboarding REJECTED) and dinesh.t (onboarding approved) BOTH mount OperationalVigilance without onboarding redirect; (b) vig-own-table renders 25 base rows per page out of 50 total (vig-record-count: 'Showing 1\u201325 of 50 records'); (c) CRUD: edit dialog opens via vig-edit-btn (25 buttons, one per base row), Save persists 08:15:30 EXACTLY (verified via admin merged view: submissions[0].total_research_hours == '08:15:30', system_login '09:00 AM', system_logout '06:00 PM', total_break_hours '01:00'); (d) entry row in UI shows red trash icon (vig-delete-btn) AND pencil while pure-base rows show only the pencil; (e) Toast 'Entry created' appears on save; (f) DATA ISOLATION verified at both layers \u2014 dinesh GET /api/vigilance/entries returns 50 base rows with 0 rows-with-data after madhan's submit, AND backend PUT/DELETE of madhan's entry by dinesh\u2192403 with messages 'You can only edit/delete your own vigilance entries'; (g) Admin merged view: GET /api/vigilance/entries as admin returns mode='admin' with per-row submissions[] array carrying uploaded_by_name + uploader-grouped fields (verified Adhitya Charan row); (h) Template download HTTP 200, 34KB xlsx for 01\u201306-Jun range; invalid range From>To returns HTTP 400 with the exact required message 'To Date must be the same as or after From Date.'; missing dates returns 422; (i) Export HTTP 200, 20KB xlsx; (j) Filter testids (vig-filter-employee/from/to/department/designation/team/btn), Upload (vig-upload-input), Add Entry, Download Template all present; (k) Non-vigilance user/pass123 still correctly blocked \u2014 sees [data-testid=vigilance-no-access], no vig-own-table. Cleanup performed: madhan's test entry deleted, admin merged view confirms 0 rows-with-submissions remain. NO STRAY DATA LEFT.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/vigilance/my-entries", "issue": "Returns 404 'Not Found'. The endpoint either doesn't exist or is named differently than docs/iter50 implied. Vigilance users currently rely on the main GET /api/vigilance/entries (which works) plus client-side filtering by submissions[].uploaded_by_employee_id. Not blocking, but adding /my-entries (or documenting its absence) would simplify own-entry queries."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Vigilance dialogs (carry-over from iter49/iter50)", "issues": ["Re-check: README claims DialogDescription was added. Did not see Radix a11y warning in this run, so likely fixed \u2014 mark as RESOLVED pending E1 confirmation."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_vigilance_flow.py", "/app/test_reports/iteration_50.json"],
+  "action_items": [
+    "[LOW] Decide whether to expose GET /api/vigilance/my-entries for convenience, or remove any stale references to it from docs/tests \u2014 currently returns 404."
+  ],
+  "critical_code_review_comments": [
+    "EmployeeRoute bypass (App.js:96-101) is correctly scoped: only triggers when (designation==='vigilance' && pathname startsWith /employee/vigilance). Good \u2014 minimum surface, won't accidentally leak access to other employee routes.",
+    "Backend ownership guard in vigilance router returns precise 403 messages on cross-user PUT/DELETE. Confirmed working. Recommend adding the same explicit check on bulk delete / upload-replace paths if any exist.",
+    "OperationalVigilance.js is still a single very large file (~1000+ lines). Splitting into EntryDialog.jsx, ViewDialog.jsx, useVigilanceData.js (hook), and filters/scroll utilities would improve maintainability and stay under the 700-line guideline."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "100% (all flows: access, CRUD, ownership-403, isolation, template, export, validation)",
+    "frontend": "100% (vigilance-user base grid + CRUD + delete-button-conditional + non-vig block; admin merged-view data structure verified via API; UI render of submissions also confirmed in iter50)"
+  },
+  "test_credentials": "admin/HrAdmin786$ (OK), madhan.s/Vigil@123 (OK \u2014 onboarding_status=rejected, designation=Vigilance, bypass works), dinesh.t/Vigil@123 (OK), user/pass123 (OK \u2014 correctly blocked).",
+  "seed_data_creation": "Created 1 vigilance entry as madhan.s on 06-Jun-2026 against Adhitya Charan (id 01b7988e-b5e2-45bb-b2c4-7dca45e5da38) for the CRUD/isolation tests, then DELETED it via DELETE /api/vigilance/entries/{id} (200 ok). Final verification via admin GET /api/vigilance/entries?from=06-Jun-2026&to=06-Jun-2026 -> rows-with-submissions = 0. No stray data remains.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Vigilance module is now in a fully working state. EmployeeRoute bypass at App.js:96-101 is the critical patch \u2014 if a future change reverts it, the vigilance-user UI will go dark again. Backend pytest is at 30/30 in test_vigilance_flow.py. The only minor open thread is whether GET /api/vigilance/my-entries should exist (currently 404). If you need to exercise multi-uploader admin merging via UI (not just API), have BOTH madhan.s and dinesh.t POST an entry for the SAME target+date, then login as admin and inspect /vigilance \u2014 you should see ONE merged row with both 'Madhan S' and 'Dinesh T' column groups under vig-admin-actions with per-uploader View/Edit/Delete (data structure already verified at API layer). Remember to DELETE any test entries created \u2014 0 stray entries is a hard requirement from the user.",
+  "rca of the issue": "Previous iteration_50 blocker (vigilance employees redirected to onboarding) is FIXED by the targeted bypass in EmployeeRoute (App.js lines 96-101): const isVigilanceEmployee = (user?.designation||'').toLowerCase()==='vigilance'; const onVigilancePath = location.pathname.startsWith('/employee/vigilance'); const allowVigilanceBypass = isVigilanceEmployee && onVigilancePath; \u2026 if (\u2026 needsOnboarding() && !allowVigilanceBypass) Navigate to onboarding. Combined with the backend change that exposes user.designation on /api/auth/me and gates onboarding on the user record rather than the document-derived onboarding record, this fully unblocks the vigilance UI for users whose onboarding has not been approved. Validated end-to-end with madhan.s (onboarding_status=rejected) successfully creating, editing, viewing, and deleting an entry via the UI."
+}

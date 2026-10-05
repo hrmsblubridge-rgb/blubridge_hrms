@@ -1,0 +1,636 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import axios from 'axios';
+import { toast } from 'sonner';
+import { EmployeeAutocomplete } from '../components/EmployeeAutocomplete';
+import { formatDate } from '../lib/dateFormat';
+import EmployeeAvatar from '../components/EmployeeAvatar';
+import { useTableSort, SortableTh } from '../components/useTableSort';
+import { 
+  CalendarCheck, 
+  Search, 
+  Filter,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
+  LogIn,
+  LogOut as LogOutIcon,
+  TimerOff,
+  AlertCircle,
+  Eye,
+  BarChart3
+} from 'lucide-react';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Badge } from '../components/ui/badge';
+import { DatePicker } from '../components/ui/date-picker';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog';
+import EmployeeLeaveDetail from '../components/EmployeeLeaveDetail';
+import { PageSizeSelector } from '../components/PageSizeSelector';
+
+const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+
+const Attendance = () => {
+  const { getAuthHeaders } = useAuth();
+  const [attendance, setAttendance] = useState([]);
+  const [teams, setTeams] = useState([]);
+  const [departments, setDepartments] = useState([]);
+  const [designations, setDesignations] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [showLeaveDetail, setShowLeaveDetail] = useState(false);
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+
+  // Vigilance integration (admin only) — Research/Break columns per vigilance member
+  const [vigMap, setVigMap] = useState({});
+  const [vigMembers, setVigMembers] = useState([]);
+
+  // Default: today's date (original behavior)
+  const [filters, setFilters] = useState({
+    empName: '',
+    team: 'All',
+    department: 'All',
+    designation: 'All',
+    fromDate: new Date().toISOString().split('T')[0],
+    toDate: new Date().toISOString().split('T')[0],
+    status: 'All'
+  });
+
+  useEffect(() => { fetchData(); }, []);
+
+  // ---- Premium synced top+bottom horizontal scrollbars (single ACTIVE-DRIVER
+  // arbitration — prevents the echo-bounce/jitter of cross-writing scrollLeft) ----
+  const topScrollRef = useRef(null);
+  const bodyScrollRef = useRef(null);
+  const [scrollW, setScrollW] = useState(0);
+  const scrollDriver = useRef(null);
+  const scrollIdle = useRef(0);
+
+  const handleScrollSync = useCallback((self, other) => {
+    if (!self || !other) return;
+    if (scrollDriver.current && scrollDriver.current !== self) return; // ignore follower echo
+    scrollDriver.current = self;
+    clearTimeout(scrollIdle.current);
+    scrollIdle.current = setTimeout(() => { scrollDriver.current = null; }, 140);
+    const left = self.scrollLeft;
+    if (Math.abs(other.scrollLeft - left) >= 1) other.scrollLeft = left; // silent one-way follow
+  }, []);
+  const onTopScroll = useCallback(() => handleScrollSync(topScrollRef.current, bodyScrollRef.current), [handleScrollSync]);
+  const onBodyScroll = useCallback(() => handleScrollSync(bodyScrollRef.current, topScrollRef.current), [handleScrollSync]);
+  useEffect(() => () => clearTimeout(scrollIdle.current), []);
+
+  // Keep the top spacer width equal to the table's scrollable width.
+  useEffect(() => {
+    const measure = () => { const el = bodyScrollRef.current; if (el) setScrollW(el.scrollWidth); };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (bodyScrollRef.current) ro.observe(bodyScrollRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, [attendance, currentPage, rowsPerPage, loading, vigMembers]);
+
+  const formatDateForApi = (date) => {
+    if (!date) return '';
+    const d = new Date(date);
+    return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+  };
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [attendanceRes, teamsRes, deptsRes, desigRes] = await Promise.all([
+        axios.get(`${API}/attendance`, {
+          headers: getAuthHeaders(),
+          params: { 
+            from_date: formatDateForApi(filters.fromDate), 
+            to_date: formatDateForApi(filters.toDate) 
+          }
+        }),
+        axios.get(`${API}/teams`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/departments`, { headers: getAuthHeaders() }),
+        axios.get(`${API}/settings/designations`, { headers: getAuthHeaders() }).catch(() => ({ data: [] }))
+      ]);
+      setAttendance(attendanceRes.data);
+      setTeams(teamsRes.data);
+      setDepartments(deptsRes.data);
+      setDesignations(desigRes.data || []);
+    } catch (error) {
+      console.error('Attendance fetch error:', error);
+      toast.error('Failed to load attendance data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const vigToIso = (d) => {
+    if (!d) return '';
+    const m = String(d).match(/^(\d{2})-(\d{2})-(\d{4})$/);
+    return m ? `${m[3]}-${m[2]}-${m[1]}` : String(d).slice(0, 10);
+  };
+
+  // Fetch vigilance Research/Break data for the currently loaded attendance range.
+  // Columns are built from the full list of vigilance members so the per-member
+  // Research/Break columns are ALWAYS visible (showing "-" when no data yet).
+  useEffect(() => {
+    if (!filters.fromDate || !filters.toDate) return;
+    axios.get(`${API}/vigilance/attendance-integration`, {
+      headers: getAuthHeaders(),
+      params: { from_date: formatDateForApi(filters.fromDate), to_date: formatDateForApi(filters.toDate) },
+    }).then(res => {
+      setVigMap(res.data?.map || {});
+      setVigMembers(res.data?.vigilance_members || []);
+    }).catch(() => { setVigMap({}); setVigMembers([]); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendance]);
+
+  const handleReset = async () => {
+    const today = new Date().toISOString().split('T')[0];
+    const resetFilters = { 
+      empName: '', 
+      team: 'All', 
+      department: 'All', 
+      designation: 'All',
+      fromDate: today, 
+      toDate: today, 
+      status: 'All' 
+    };
+    setFilters(resetFilters);
+    
+    // Fetch with reset filter values directly
+    try {
+      setLoading(true);
+      const response = await axios.get(`${API}/attendance`, {
+        headers: getAuthHeaders(),
+        params: { 
+          from_date: formatDateForApi(today), 
+          to_date: formatDateForApi(today) 
+        }
+      });
+      setAttendance(response.data);
+      setCurrentPage(1);
+      toast.info('Filters reset');
+    } catch (error) {
+      toast.error('Failed to reset');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFilter = async () => {
+    try {
+      setLoading(true);
+      const response = await axios.get(`${API}/attendance`, {
+        headers: getAuthHeaders(),
+        params: {
+          employee_name: filters.empName || undefined,
+          team: filters.team !== 'All' ? filters.team : undefined,
+          department: filters.department !== 'All' ? filters.department : undefined,
+          designation: filters.designation !== 'All' ? filters.designation : undefined,
+          from_date: formatDateForApi(filters.fromDate),
+          to_date: formatDateForApi(filters.toDate),
+          status: filters.status !== 'All' ? filters.status : undefined
+        }
+      });
+      setAttendance(response.data);
+      setCurrentPage(1);
+      toast.success('Filter applied');
+    } catch (error) {
+      toast.error('Failed to filter');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const { sortedRows: sortedAttendance, sortField, sortDir: sortOrder, toggleSort: handleSort } = useTableSort(attendance);
+
+  // Pagination computed values
+  const totalRecords = sortedAttendance.length;
+  const totalPages = Math.max(1, Math.ceil(totalRecords / rowsPerPage));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const startIndex = (safeCurrentPage - 1) * rowsPerPage;
+  const endIndex = Math.min(startIndex + rowsPerPage, totalRecords);
+  const paginatedAttendance = sortedAttendance.slice(startIndex, endIndex);
+
+  const getStatusBadge = (status, isLop) => {
+    if (isLop || status === 'Loss of Pay') return 'badge-error font-bold';
+    const styles = {
+      'Login': 'badge-success', 'Completed': 'badge-info', 'Present': 'badge-success',
+      'Not Logged': 'badge-neutral', 'Early Out': 'badge-error', 'Late Login': 'badge-warning'
+    };
+    return styles[status] || 'badge-neutral';
+  };
+
+  const getStatusIcon = (status) => {
+    if (status === 'Login') return <LogIn className="w-3 h-3" />;
+    if (status === 'Completed') return <LogOutIcon className="w-3 h-3" />;
+    if (status === 'Late Login') return <Clock className="w-3 h-3" />;
+    return null;
+  };
+
+  // Stats — categorization rules (kept in lock-step with the row badge logic):
+  //   • PRESENT     – clocked-in, completed shift, NOT late, NOT early out, NOT LOP
+  //   • LOGGED IN   – currently inside their shift (Login state)
+  //   • LATE LOGIN  – arrived late; includes late-login LOPs from the engine
+  //   • ABSENT      – truly non-working day: Absent / Not Logged / On Leave
+  //
+  // Rule (per user, 2026-07-23): Late-Login employees ARE Present — they came
+  // in for the day, just late. So they must be included in the "Present"
+  // count AND continue to show in the separate "Late Login" secondary card.
+  // Present is counted by UNIQUE employee_id (not row count) so that a
+  // multi-date range doesn't inflate the tile.
+  const isLateLoginLop = (a) => a.is_lop && (a.lop_reason || '').toLowerCase().includes('late login');
+  const isLateLoginRow = (a) => a.status === 'Late Login' || isLateLoginLop(a);
+  const hasValidCheckIn = (a) => Boolean(a.check_in || a.check_in_24h);
+  // "Present" = every eligible employee with a valid final Check-In. This
+  // covers on-time login, Late Login, Completed, plus any approved
+  // Missed-Punch / Punch-Request that supplied the Check-In (the unified
+  // service already merges those onto check_in / check_in_24h before the
+  // row reaches the client).
+  // Present = EVERY unique employee with a valid Check-In, including those
+  // still logged in (Present = Logged In + Logged Out).
+  const isPresentRow = (a) => hasValidCheckIn(a);
+  const hasValidCheckOut = (a) => Boolean(a.check_out || a.check_out_24h);
+  // Logged In = checked in but NOT yet checked out (still inside).
+  const isLoggedInRow = (a) => hasValidCheckIn(a) && !hasValidCheckOut(a);
+  // Early Out = checked in AND out but did NOT complete required working
+  // hours. Late-login LOPs are excluded ONLY when purely late (full hours
+  // worked) — a late arriver who is ALSO short-hours IS an Early Out.
+  const isShortHoursLop = (a) => {
+    const r = (a.lop_reason || '').toLowerCase();
+    return r.includes('short') || r.includes('early out');
+  };
+  const isEarlyOutRow = (a) =>
+    hasValidCheckIn(a) && hasValidCheckOut(a) &&
+    (a.status === 'Early Out' || a.status === 'Loss of Pay' || a.is_lop) &&
+    (!isLateLoginRow(a) || isShortHoursLop(a));
+  const isAbsentRow = (a) => {
+    // Late-login LOPs belong in Late Login, NOT Absent
+    if (isLateLoginLop(a)) return false;
+    const s = a.status || '';
+    return s === 'Absent' || s === 'Not Logged' || s.includes('Leave');
+  };
+  // Keep ONE row per employee so detail lists always match the unique counts.
+  const dedupeByEmployee = (rows) => {
+    const seen = new Set();
+    return rows.filter((a) => {
+      const id = a.employee_id;
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+  };
+  const cardRows = {
+    present: dedupeByEmployee(sortedAttendance.filter(isPresentRow)),
+    login: dedupeByEmployee(sortedAttendance.filter(isLoggedInRow)),
+    loggedOut: dedupeByEmployee(sortedAttendance.filter(hasValidCheckOut)),
+    earlyOut: dedupeByEmployee(sortedAttendance.filter(isEarlyOutRow)),
+    late: dedupeByEmployee(sortedAttendance.filter(isLateLoginRow)),
+    absent: sortedAttendance.filter(isAbsentRow),
+  };
+  const stats = {
+    present: cardRows.present.length,
+    login: cardRows.login.length,
+    loggedOut: cardRows.loggedOut.length,
+    earlyOut: cardRows.earlyOut.length,
+    late: cardRows.late.length,
+    absent: cardRows.absent.length,
+  };
+  const [detailCard, setDetailCard] = useState(null);
+  const CARD_META = {
+    present: { title: 'Present', color: 'emerald' },
+    login: { title: 'Logged In', color: 'blue' },
+    loggedOut: { title: 'Logged Out', color: 'violet' },
+    earlyOut: { title: 'Early Out', color: 'orange' },
+    late: { title: 'Late Login', color: 'amber' },
+    absent: { title: 'Absent', color: 'red' },
+  };
+
+  // Handle employee click to show leave detail
+  const handleEmployeeClick = (record) => {
+    setSelectedEmployee({
+      emp_name: record.emp_name,
+      employee_id: record.employee_id,
+      team: record.team,
+      department: record.department,
+      emp_id: record.emp_id
+    });
+    setShowLeaveDetail(true);
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in" data-testid="attendance-page">
+      {/* Header */}
+      <div className="flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-[#063c88] flex items-center justify-center">
+          <CalendarCheck className="w-5 h-5 text-white" />
+        </div>
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Attendance</h1>
+          <p className="text-sm text-slate-500">Track employee attendance records</p>
+        </div>
+      </div>
+
+      {/* Quick Stats — every card is clickable and opens its detail list */}
+      <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        {[
+          { key: 'present', label: 'Present', value: stats.present, icon: CalendarCheck, iconBg: 'bg-emerald-100', iconColor: 'text-emerald-600' },
+          { key: 'login', label: 'Logged In', value: stats.login, icon: LogIn, iconBg: 'bg-blue-100', iconColor: 'text-blue-600' },
+          { key: 'loggedOut', label: 'Logged Out', value: stats.loggedOut, icon: LogOutIcon, iconBg: 'bg-violet-100', iconColor: 'text-violet-600' },
+          { key: 'earlyOut', label: 'Early Out', value: stats.earlyOut, icon: TimerOff, iconBg: 'bg-orange-100', iconColor: 'text-orange-600' },
+          { key: 'late', label: 'Late Login', value: stats.late, icon: Clock, iconBg: 'bg-amber-100', iconColor: 'text-amber-600' },
+          { key: 'absent', label: 'Absent', value: stats.absent, icon: AlertCircle, iconBg: 'bg-red-100', iconColor: 'text-red-600' },
+        ].map((stat) => (
+          <button
+            key={stat.key}
+            type="button"
+            onClick={() => setDetailCard(stat.key)}
+            className="card-flat p-4 flex items-center gap-4 text-left cursor-pointer transition-shadow hover:shadow-md hover:border-[#063c88]/30 focus:outline-none focus:ring-2 focus:ring-[#063c88]/30"
+            data-testid={`attendance-card-${stat.key}`}
+            title={`View ${stat.label} details`}
+          >
+            <div className={`w-10 h-10 rounded-xl ${stat.iconBg} flex items-center justify-center shrink-0`}>
+              <stat.icon className={`w-5 h-5 ${stat.iconColor}`} />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-slate-900 number-display">{stat.value}</p>
+              <p className="text-xs text-slate-500">{stat.label}</p>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Card detail modal */}
+      <Dialog open={!!detailCard} onOpenChange={(open) => !open && setDetailCard(null)}>
+        <DialogContent className="max-w-3xl" data-testid="attendance-card-detail-modal">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2" data-testid="attendance-card-detail-title">
+              {detailCard && CARD_META[detailCard].title} — {detailCard ? cardRows[detailCard].length : 0} employee{detailCard && cardRows[detailCard].length !== 1 ? 's' : ''}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto">
+            {detailCard && cardRows[detailCard].length === 0 ? (
+              <p className="text-center py-8 text-slate-500 text-sm">No records</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Employee</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Team</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Date</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">In</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 pr-3 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Out</th>
+                    <th className="sticky top-0 z-10 bg-white py-2 font-semibold shadow-[0_1px_0_0_#e2e8f0]">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailCard && cardRows[detailCard].map((r, i) => (
+                    <tr key={r.id || i} className="border-b border-slate-100" data-testid={`card-detail-row-${i}`}>
+                      <td className="py-2 pr-3">
+                        <div className="flex items-center gap-2">
+                          <EmployeeAvatar employeeId={r.employee_id} name={r.emp_name} size="sm" shape="circle" />
+                          <span className="font-medium text-slate-900">{r.emp_name}</span>
+                        </div>
+                      </td>
+                      <td className="py-2 pr-3 text-slate-600">{r.team || '-'}</td>
+                      <td className="py-2 pr-3 text-slate-600 whitespace-nowrap">{formatDate(r.date)}</td>
+                      <td className="py-2 pr-3 text-slate-900 whitespace-nowrap">{r.check_in || '-'}</td>
+                      <td className="py-2 pr-3 text-slate-900 whitespace-nowrap">{r.check_out || '-'}</td>
+                      <td className="py-2">
+                        <Badge className={`${getStatusBadge(r.status, r.is_lop)} w-fit`}>
+                          {r.is_lop ? 'Loss of Pay' : r.status}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Filters */}
+      <div className="card-flat p-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+          <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">Employee Name</label>
+            <EmployeeAutocomplete
+              value={filters.empName}
+              onChange={(val) => setFilters({ ...filters, empName: val })}
+              onSelect={(emp) => setFilters({ ...filters, empName: emp.full_name })}
+              placeholder="Search employee..."
+              data-testid="search-emp-name"
+            />
+          </div>
+          <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">Department</label>
+            <Select value={filters.department} onValueChange={(v) => setFilters({ ...filters, department: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-department"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All Departments</SelectItem>
+                {departments.map((dept) => <SelectItem key={dept.id} value={dept.name}>{dept.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">Team</label>
+            <Select value={filters.team} onValueChange={(v) => setFilters({ ...filters, team: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-team"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All Teams</SelectItem>
+                {teams.map((team) => <SelectItem key={team.id} value={team.name}>{team.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">Designation</label>
+            <Select value={filters.designation} onValueChange={(v) => setFilters({ ...filters, designation: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-designation"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All Designations</SelectItem>
+                {Array.from(new Set((designations || []).map(d => d.name).filter(Boolean))).sort().map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">Status</label>
+            <Select value={filters.status} onValueChange={(v) => setFilters({ ...filters, status: v })}>
+              <SelectTrigger className="rounded-lg" data-testid="filter-status"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All Status</SelectItem>
+                <SelectItem value="Login">Login</SelectItem>
+                <SelectItem value="Completed">Completed</SelectItem>
+                <SelectItem value="Present">Present</SelectItem>
+                <SelectItem value="Loss of Pay">Loss of Pay</SelectItem>
+                <SelectItem value="Early Out">Early Out</SelectItem>
+                <SelectItem value="Late Login">Late Login</SelectItem>
+                <SelectItem value="Not Logged">Not Logged</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">From Date</label>
+            <DatePicker value={filters.fromDate} onChange={(val) => setFilters({ ...filters, fromDate: val })} placeholder="Select date" data-testid="filter-from" />
+          </div>
+          <div>
+            <label className="text-sm text-slate-600 mb-1.5 block font-medium">To Date</label>
+            <DatePicker value={filters.toDate} onChange={(val) => setFilters({ ...filters, toDate: val })} placeholder="Select date" data-testid="filter-to" />
+          </div>
+          <div className="flex items-end gap-2 lg:col-span-2">
+            <Button onClick={handleFilter} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg" data-testid="apply-filter-btn">
+              <Filter className="w-4 h-4 mr-2" /> Apply Filter
+            </Button>
+            <Button variant="outline" onClick={handleReset} className="rounded-lg" data-testid="reset-filter-btn">
+              Reset
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="card-premium overflow-hidden">
+        {loading ? (
+          <div className="flex items-center justify-center h-64">
+            <div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" />
+          </div>
+        ) : (
+          <>
+          {/* Synced TOP horizontal scrollbar (mirrors the table's bottom scroll) */}
+          <div ref={topScrollRef} onScroll={onTopScroll}
+               className="overflow-x-auto overflow-y-hidden scroll-premium"
+               style={{ height: scrollW > 0 ? 12 : 0 }} data-testid="attendance-top-scroll">
+            <div style={{ width: scrollW, height: 1 }} />
+          </div>
+          <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-x-auto scroll-premium" data-testid="attendance-table-scroll">
+            <table className="table-premium table-nowrap">
+              <thead>
+                <tr>
+                  <th className="w-12"></th>
+                  <SortableTh field="emp_name" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Employee</SortableTh>
+                  <SortableTh field="team" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Team</SortableTh>
+                  <SortableTh field="date" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Date</SortableTh>
+                  <SortableTh field="check_in" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>In</SortableTh>
+                  <SortableTh field="check_out" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Out</SortableTh>
+                  <SortableTh field="total_hours" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Total Hours</SortableTh>
+                  {vigMembers.flatMap(m => ([
+                    <th key={m.employee_id + '-r'} className="px-4 py-3 text-left text-xs font-semibold text-emerald-700 whitespace-nowrap bg-emerald-50/60" data-testid="vig-att-research-col">Total Research Hrs<br /><span className="font-normal text-emerald-600">({m.name})</span></th>,
+                    <th key={m.employee_id + '-b'} className="px-4 py-3 text-left text-xs font-semibold text-emerald-700 whitespace-nowrap bg-emerald-50/60">Total Break Hrs<br /><span className="font-normal text-emerald-600">({m.name})</span></th>,
+                  ]))}
+                  <SortableTh field="status" sortField={sortField} sortDir={sortOrder} onSort={handleSort}>Status</SortableTh>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedAttendance.length === 0 ? (
+                  <tr>
+                    <td colSpan={8 + vigMembers.length * 2} className="text-center py-12 text-slate-500">
+                      <CalendarCheck className="w-10 h-10 mx-auto mb-2 text-slate-300" />
+                      <p>No attendance records found</p>
+                    </td>
+                  </tr>
+                ) : (
+                  paginatedAttendance.map((record, index) => (
+                    <tr key={record.id || index} className={`${record.is_lop ? 'bg-red-50/50' : ''} group`}>
+                      <td>
+                        <button 
+                          className="p-2 hover:bg-[#063c88]/10 rounded-lg transition-colors opacity-60 group-hover:opacity-100"
+                          onClick={() => handleEmployeeClick(record)}
+                          data-testid={`view-leave-btn-${index}`}
+                          title="View Leave & Attendance Details"
+                        >
+                          <BarChart3 className="w-4 h-4 text-[#063c88]" />
+                        </button>
+                      </td>
+                      <td>
+                        <div 
+                          className="flex items-center gap-3 cursor-pointer hover:opacity-80 transition-opacity"
+                          onClick={() => handleEmployeeClick(record)}
+                          data-testid={`employee-row-${index}`}
+                        >
+                          <EmployeeAvatar employeeId={record.employee_id} name={record.emp_name} size="sm" shape="circle" />
+                          <span className="font-medium text-slate-900 hover:text-[#063c88] transition-colors">{record.emp_name}</span>
+                        </div>
+                      </td>
+                      <td className="text-slate-600">{record.team}</td>
+                      <td className="text-slate-600 whitespace-nowrap">{formatDate(record.date)}</td>
+                      <td className="whitespace-nowrap min-w-[96px]">
+                        <div className="text-slate-900 font-medium">{record.check_in || '-'}</div>
+                      </td>
+                      <td className="whitespace-nowrap min-w-[96px]">
+                        <div className="text-slate-900 font-medium">{record.check_out || '-'}</div>
+                      </td>
+                      <td className="text-slate-600 font-medium">{record.total_hours || '-'}</td>
+                      {vigMembers.flatMap(m => {
+                        const list = vigMap[`${record.employee_id}__${vigToIso(record.date)}`] || [];
+                        const sub = list.find(x => x.uploaded_by_employee_id === m.employee_id);
+                        return [
+                          <td key={m.employee_id + '-r'} className="text-emerald-700 font-medium whitespace-nowrap bg-emerald-50/30">{sub?.total_research_hours || '-'}</td>,
+                          <td key={m.employee_id + '-b'} className="text-emerald-700 font-medium whitespace-nowrap bg-emerald-50/30">{sub?.total_break_hours || '-'}</td>,
+                        ];
+                      })}
+                      <td>
+                        <Badge className={`${getStatusBadge(record.status, record.is_lop)} flex items-center gap-1 w-fit`}>
+                          {getStatusIcon(record.is_lop ? 'Loss of Pay' : record.status)}
+                          {record.is_lop ? 'Loss of Pay' : record.status}
+                        </Badge>
+                        {record.is_lop && record.lop_reason && (
+                          <div className="text-xs text-red-600 mt-1 max-w-[200px] truncate" title={record.lop_reason}>
+                            {record.lop_reason}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          {/* Pagination Controls */}
+          {totalRecords > 0 && (
+            <div className="px-6 py-4 border-t border-slate-100 flex items-center justify-between bg-slate-50/50" data-testid="attendance-pagination">
+              <div className="flex items-center gap-4">
+                <p className="text-sm text-slate-500" data-testid="pagination-info">
+                  Showing {startIndex + 1}–{endIndex} of {totalRecords} records
+                </p>
+                <PageSizeSelector
+                  value={rowsPerPage}
+                  onChange={(v) => { setRowsPerPage(v); setCurrentPage(1); }}
+                  testId="rows-per-page-select"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="outline" disabled={safeCurrentPage <= 1} onClick={() => setCurrentPage(prev => prev - 1)} className="rounded-lg" data-testid="attendance-prev-page">
+                  <ChevronLeft className="w-4 h-4" />
+                </Button>
+                <span className="text-sm text-slate-600 px-3" data-testid="pagination-page-info">Page {safeCurrentPage} of {totalPages}</span>
+                <Button size="sm" variant="outline" disabled={safeCurrentPage >= totalPages} onClick={() => setCurrentPage(prev => prev + 1)} className="rounded-lg" data-testid="attendance-next-page">
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+          </>
+        )}
+      </div>
+
+      {/* Employee Leave Detail Modal */}
+      {showLeaveDetail && selectedEmployee && (
+        <EmployeeLeaveDetail 
+          employee={selectedEmployee}
+          onClose={() => {
+            setShowLeaveDetail(false);
+            setSelectedEmployee(null);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+export default Attendance;

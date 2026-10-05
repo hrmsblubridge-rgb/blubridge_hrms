@@ -1,0 +1,1577 @@
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import axios from 'axios';
+import { toast } from 'sonner';
+import { Navigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
+import { DatePicker } from '../components/ui/date-picker';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from '../components/ui/select';
+import {
+  Dialog, DialogContent, DialogTitle, DialogDescription,
+} from '../components/ui/dialog';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '../components/ui/alert-dialog';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
+import {
+  Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
+} from '../components/ui/tooltip';
+import {
+  ShieldCheck, Download, Upload, Filter, Plus, Pencil, Trash2, X, FileSpreadsheet, Loader2,
+  ChevronLeft, ChevronRight, Eye, ArrowUp, ArrowDown, ChevronsUpDown, HelpCircle, FileText, BookOpen,
+  UploadCloud, CheckCircle2, AlertCircle, ChevronRight as CaretRight, RotateCcw, Search,
+  LogIn, LogOut, Coffee, Microscope, CalendarDays, User, Clock, ChevronDown,
+  SlidersHorizontal, Building2, Briefcase, Users,
+} from 'lucide-react';
+
+const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const today = () => new Date().toISOString().split('T')[0];
+// Default the date range to the start of the current month so freshly uploaded
+// data is visible on load (a Today→Today default hid earlier-in-month uploads).
+const monthStart = () => `${today().slice(0, 8)}01`;
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// Format an ISO date (YYYY-MM-DD) to a compact display like 01-Sep-2026.
+const fmtDisplayDate = (iso) => {
+  if (!iso) return '—';
+  const [y, m, d] = String(iso).split('-');
+  if (!y || !m || !d) return iso;
+  return `${d}-${MONTHS[(+m) - 1] || m}-${y}`;
+};
+// Derive two-letter initials from a name (visual avatar only).
+const initialsOf = (name) => {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '–';
+  return ((parts[0][0] || '') + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+};
+
+// Auto-calculate a break Total = (To − From). Overnight allowed (wraps midnight).
+// Mirrors the backend `compute_break_total`; the Total field is read-only in the UI.
+const clockToMin = (s) => {
+  if (!s) return null;
+  const v = String(s).trim();
+  let m = v.match(/^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i);
+  if (m) { let h = parseInt(m[1], 10) % 12; if (m[3].toUpperCase() === 'PM') h += 12; return h * 60 + parseInt(m[2], 10); }
+  m = v.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  return null;
+};
+const computeBreakTotal = (from, to) => {
+  const f = clockToMin(from), t = clockToMin(to);
+  if (f === null || t === null) return '';
+  const d = (((t - f) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(d / 60)).padStart(2, '0')}:${String(d % 60).padStart(2, '0')}`;
+};
+
+// Staged status text for the upload progress overlay (derived from %, so it stays consistent).
+const UPLOAD_STATUS = (p) =>
+  p < 35 ? 'Uploading sheet…'
+  : p < 50 ? 'Reading template…'
+  : p < 68 ? 'Validating sheet…'
+  : p < 82 ? 'Processing employee records…'
+  : p < 95 ? 'Saving vigilance data…'
+  : p < 100 ? 'Finalizing upload…'
+  : 'Upload complete';
+
+const emptyDraft = () => ({
+  id: null,
+  target_employee_id: '',
+  date: today(),
+  system_login: '',
+  system_logout: '',
+  total_research_hours: '',
+  total_break_hours: '',
+  breaks: [],
+});
+
+// ---------------------------------------------------------------------------
+// Reusable, type-aware header sorting (text / date / time-of-day / duration).
+// Keys: base -> 'name'|'email'|'team'|'date'|'punch_in'|'punch_out'|'total_hours'
+//       own vigilance -> 'system_login'|'system_logout'|'total_research_hours'|
+//                         'total_break_hours'|'break:<label>:from|to|total'
+//       admin per-uploader -> 'up:<uid>:<field>' | 'up:<uid>:break:<label>:from|to|total'
+// ---------------------------------------------------------------------------
+const TIME_FIELDS = ['punch_in', 'punch_out', 'system_login', 'system_logout', 'from', 'to'];
+const DUR_FIELDS = ['total_hours', 'total_research_hours', 'total_break_hours', 'total'];
+const BASE_MAP = { name: 'target_employee_name', email: 'target_email', team: 'target_team' };
+
+const fieldOf = (key) => key.split(':').pop();
+const typeOf = (key) => {
+  const f = fieldOf(key);
+  if (f === 'date') return 'date';
+  if (TIME_FIELDS.includes(f)) return 'time';
+  if (DUR_FIELDS.includes(f)) return 'duration';
+  return 'text';
+};
+
+const rawValue = (row, key) => {
+  if (!key) return '';
+  if (key.startsWith('up:')) {
+    const p = key.split(':');
+    const s = (row.submissions || []).find(x => x.uploaded_by_employee_id === p[1]);
+    if (!s) return '';
+    if (p[2] === 'break') { const b = (s.breaks || []).find(x => x.label === p[3]); return b ? (b[p[4]] || '') : ''; }
+    return s[p[2]] || '';
+  }
+  if (key.startsWith('break:')) {
+    const p = key.split(':'); const b = (row.breaks || []).find(x => x.label === p[1]); return b ? (b[p[2]] || '') : '';
+  }
+  return row[BASE_MAP[key] || key] || '';
+};
+
+const timeToMin = (v) => {
+  const m = String(v).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!m) return null;
+  let h = +m[1]; const mm = +m[2]; const ap = m[3] && m[3].toUpperCase();
+  if (ap) { if (ap === 'PM' && h !== 12) h += 12; if (ap === 'AM' && h === 12) h = 0; }
+  return h * 60 + mm;
+};
+const durToSec = (v) => {
+  const m = String(v).trim().match(/^(\d{1,3}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  return (+m[1]) * 3600 + (+m[2]) * 60 + (m[3] ? +m[3] : 0);
+};
+
+const sortVal = (row, key) => {
+  const raw = rawValue(row, key);
+  const blankRaw = raw == null || String(raw).trim() === '' || raw === '—';
+  const t = typeOf(key);
+  if (t === 'time') { const n = timeToMin(raw); return { blank: n == null, v: n }; }
+  if (t === 'duration') { const n = durToSec(raw); return { blank: n == null, v: n }; }
+  if (t === 'date') return { blank: blankRaw, v: String(raw) };
+  return { blank: blankRaw, v: String(raw).toLowerCase() };
+};
+
+// Stable, blanks-last sort. Returns the original array reference when inactive.
+const sortRows = (rows, sort) => {
+  if (!sort.key || !sort.dir) return rows;
+  const mul = sort.dir === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const A = sortVal(a, sort.key), B = sortVal(b, sort.key);
+    if (A.blank && B.blank) return 0;
+    if (A.blank) return 1;
+    if (B.blank) return -1;
+    if (A.v < B.v) return -1 * mul;
+    if (A.v > B.v) return 1 * mul;
+    return 0;
+  });
+};
+
+export default function OperationalVigilance() {
+  const { getAuthHeaders, user, getAvatarById, refreshAvatars } = useAuth();
+  const [access, setAccess] = useState(null);
+  const [meta, setMeta] = useState({ departments: [], teams: [], designations: [], employees: [] });
+  const [filters, setFilters] = useState({
+    fromDate: monthStart(), toDate: today(), employeeName: '',
+    department: 'All', designation: 'All', team: 'All',
+  });
+  const [data, setData] = useState({ mode: null, rows: [], break_labels: [], uploaders: [] });
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [upload, setUpload] = useState(null);   // null | {phase,percent,status,result,message,errors}
+  const procTimer = useRef(null);
+  const pctRef = useRef(0);
+  const [downloading, setDownloading] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null); // {id, employeeName, date, submitter}
+  const [detailRow, setDetailRow] = useState(null);        // admin: row whose submissions are shown in the centered modal
+  const reopenDetailKey = useRef(null);                    // row.key to reopen in the detail modal after a save from it
+  const reopenDetailMatch = useRef(null);                  // {key, empId, date} fallback matcher for the reopen
+  const [page, setPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
+  const [sort, setSort] = useState({ key: null, dir: null });
+
+  const isAdmin = access?.is_admin;
+
+  // ---- Premium scroll (synced top+bottom) + sticky-header measurement ----
+  const topScrollRef = useRef(null);
+  const bodyScrollRef = useRef(null);
+  const [scrollW, setScrollW] = useState(0);
+  const [row1H, setRow1H] = useState(44);
+  const [row2H, setRow2H] = useState(36);
+
+  // Non-recursive horizontal scroll sync via single ACTIVE-DRIVER arbitration.
+  // Root cause of the old jitter: cross-writing scrollLeft both ways. During
+  // momentum the follower's echoed scroll event arrived a frame late and got
+  // mistaken for a real user scroll, writing the driver's scrollLeft BACKWARD
+  // (the to-and-fro bounce). Fix: the first element the user scrolls becomes the
+  // sole driver; the other is a pure follower whose echo events are ignored and
+  // never written back. The driver is released after a short scroll-idle.
+  const scrollDriver = useRef(null);
+  const scrollIdle = useRef(0);
+
+  const handleScrollSync = useCallback((self, other) => {
+    if (!self || !other) return;
+    if (scrollDriver.current && scrollDriver.current !== self) return; // ignore follower echo
+    scrollDriver.current = self;
+    clearTimeout(scrollIdle.current);
+    scrollIdle.current = setTimeout(() => { scrollDriver.current = null; }, 140);
+    const left = self.scrollLeft;
+    if (Math.abs(other.scrollLeft - left) >= 1) other.scrollLeft = left; // silent one-way follow
+  }, []);
+
+  const onTopScroll = useCallback(() => {
+    handleScrollSync(topScrollRef.current, bodyScrollRef.current);
+  }, [handleScrollSync]);
+  const onBodyScroll = useCallback(() => {
+    handleScrollSync(bodyScrollRef.current, topScrollRef.current);
+  }, [handleScrollSync]);
+
+  useEffect(() => () => clearTimeout(scrollIdle.current), []);
+
+  // Shift + mouse-wheel => horizontal scroll of the table body. Browsers only do
+  // this natively in some cases; a non-passive listener lets us preventDefault and
+  // translate vertical wheel delta into horizontal scroll reliably. Horizontal
+  // trackpad deltas (deltaX) are passed through too. The scroll event then syncs
+  // the top scrollbar via onBodyScroll.
+  useEffect(() => {
+    const el = bodyScrollRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      const dx = e.deltaX;
+      const dy = e.deltaY;
+      const wantsHorizontal = e.shiftKey && dy !== 0;
+      if (wantsHorizontal) {
+        el.scrollLeft += dy;
+        e.preventDefault();
+      } else if (Math.abs(dx) > Math.abs(dy) && dx !== 0) {
+        el.scrollLeft += dx;
+        e.preventDefault();
+      }
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [data]);
+
+  useEffect(() => {
+    const measure = () => {
+      const el = bodyScrollRef.current;
+      if (!el) return;
+      setScrollW(el.scrollWidth);
+      const rows = el.querySelectorAll('thead tr');
+      if (rows[0] && rows[0].offsetHeight) setRow1H(rows[0].offsetHeight);
+      if (rows[1] && rows[1].offsetHeight) setRow2H(rows[1].offsetHeight);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (bodyScrollRef.current) ro.observe(bodyScrollRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, [data, page, rowsPerPage, loading]);
+
+  const loadEntries = useCallback(async (f) => {
+    setLoading(true);
+    try {
+      const params = {
+        from_date: f.fromDate, to_date: f.toDate,
+        ...(f.employeeName && { employee_name: f.employeeName }),
+        ...(f.department !== 'All' && { department: f.department }),
+        ...(f.designation !== 'All' && { designation: f.designation }),
+        ...(f.team !== 'All' && { team: f.team }),
+      };
+      const res = await axios.get(`${API}/vigilance/entries`, { headers: getAuthHeaders(), params });
+      setData({ uploaders: [], ...res.data });
+      setPage(1);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Failed to load vigilance data');
+    } finally {
+      setLoading(false);
+    }
+  }, [getAuthHeaders]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const a = await axios.get(`${API}/vigilance/access`, { headers: getAuthHeaders() });
+        setAccess(a.data);
+        if (a.data.has_access) {
+          const m = await axios.get(`${API}/vigilance/filters-meta`, { headers: getAuthHeaders() });
+          setMeta(m.data);
+          refreshAvatars();  // ensure employee photos are available for the table/modals
+          loadEntries({ fromDate: monthStart(), toDate: today(), employeeName: '', department: 'All', designation: 'All', team: 'All' });
+        }
+      } catch {
+        setAccess({ has_access: false });
+      }
+    })();
+  }, [getAuthHeaders, loadEntries, refreshAvatars]);
+
+  // Auto-close the upload overlay a few seconds after success; clean up the
+  // processing timer on unmount so it never leaks.
+  useEffect(() => {
+    if (upload?.phase === 'success') {
+      const t = setTimeout(() => setUpload(null), 4500);
+      return () => clearTimeout(t);
+    }
+  }, [upload?.phase]);
+  useEffect(() => () => { if (procTimer.current) clearInterval(procTimer.current); }, []);
+
+  // After a save that originated from the detail modal, reopen that row's modal with fresh values.
+  useEffect(() => {
+    if (!reopenDetailKey.current) return;
+    const m = reopenDetailMatch.current || {};
+    const rows = data.rows || [];
+    const r = rows.find(x => x.key === reopenDetailKey.current)
+      || rows.find(x => x.target_employee_id === m.empId && x.date === m.date);
+    reopenDetailKey.current = null;
+    reopenDetailMatch.current = null;
+    if (r) setDetailRow(r);
+  }, [data]);
+
+  const validRange = filters.fromDate && filters.toDate && filters.toDate >= filters.fromDate;
+
+  // 3-state header sort toggle: asc -> desc -> reset (default backend order).
+  const toggleSort = (key) => {
+    setSort(prev => prev.key !== key ? { key, dir: 'asc' }
+      : prev.dir === 'asc' ? { key, dir: 'desc' }
+      : prev.dir === 'desc' ? { key: null, dir: null }
+      : { key, dir: 'asc' });
+    setPage(1);
+  };
+  const sortedRows = useMemo(() => sortRows(data.rows, sort), [data.rows, sort]);
+  const totalRows = sortedRows.length;
+  const pagedRows = sortedRows.slice((page - 1) * rowsPerPage, page * rowsPerPage);
+  const activeFilterCount = [
+    filters.employeeName && filters.employeeName.trim(),
+    filters.department !== 'All',
+    filters.designation !== 'All',
+    filters.team !== 'All',
+  ].filter(Boolean).length;
+
+  const handleApplyFilter = () => {
+    if (!validRange) { toast.error('Select a valid date range (To Date ≥ From Date).'); return; }
+    loadEntries(filters);
+  };
+
+  // Reset clears the filter fields back to their defaults and reloads (client-side only).
+  const handleReset = () => {
+    const def = { fromDate: monthStart(), toDate: today(), employeeName: '', department: 'All', designation: 'All', team: 'All' };
+    setFilters(def);
+    setRowsPerPage(25);
+    setSort({ key: null, dir: null });
+    setPage(1);
+    loadEntries(def);
+  };
+
+  const blobDownload = async (url, params, fname) => {
+    const res = await axios.get(url, { headers: getAuthHeaders(), params, responseType: 'blob' });
+    const blobUrl = window.URL.createObjectURL(new Blob([res.data]));
+    const a = document.createElement('a');
+    a.href = blobUrl; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    window.URL.revokeObjectURL(blobUrl);
+  };
+
+  const handleDownloadTemplate = async () => {
+    if (!filters.fromDate || !filters.toDate) { toast.error('Please select both From Date and To Date'); return; }
+    if (!validRange) { toast.error('To Date must be the same as or after From Date.'); return; }
+    setDownloading(true);
+    try {
+      await blobDownload(`${API}/vigilance/template`, {
+        from_date: filters.fromDate, to_date: filters.toDate,
+        ...(filters.employeeName && { employee_name: filters.employeeName }),
+        ...(filters.department !== 'All' && { department: filters.department }),
+        ...(filters.designation !== 'All' && { designation: filters.designation }),
+        ...(filters.team !== 'All' && { team: filters.team }),
+      }, 'Vigilance-Template.xlsx');
+      toast.success('Template downloaded');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Template download failed');
+    } finally { setDownloading(false); }
+  };
+
+  const handleUpload = async (file) => {
+    if (!file || uploading) return;   // guard against duplicate / double submission
+    if (!file.name.toLowerCase().endsWith('.xlsx')) { toast.error('Only .xlsx files are accepted.'); return; }
+    setUploading(true);
+    pctRef.current = 0;
+    setUpload({ phase: 'uploading', percent: 0, status: 'Preparing upload…' });
+
+    const tick = (p) => { pctRef.current = p; setUpload((u) => (u ? { ...u, percent: p, status: UPLOAD_STATUS(p) } : u)); };
+    const startProcessing = () => {
+      if (procTimer.current) return;
+      setUpload((u) => (u ? { ...u, phase: 'processing' } : u));
+      procTimer.current = setInterval(() => {
+        const cur = pctRef.current;
+        if (cur >= 92) return;                                  // never get stuck, never fake-jump
+        const next = Math.min(92, cur + Math.max(0.6, (92 - cur) * 0.06));
+        tick(Math.round(next * 10) / 10);
+      }, 320);
+    };
+    const stopProcessing = () => { if (procTimer.current) { clearInterval(procTimer.current); procTimer.current = null; } };
+
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await axios.post(`${API}/vigilance/upload`, fd, {
+        headers: { ...getAuthHeaders() },
+        onUploadProgress: (evt) => {
+          if (!evt.total) { startProcessing(); return; }       // transfer maps to first 35%
+          const frac = evt.loaded / evt.total;
+          tick(Math.round(frac * 35));
+          if (frac >= 1) startProcessing();
+        },
+      });
+      stopProcessing();
+      tick(100);
+      setUpload((u) => ({ ...(u || {}), phase: 'success', percent: 100, status: 'Upload complete', result: res.data }));
+      loadEntries(filters);
+    } catch (e) {
+      stopProcessing();
+      const detail = e.response?.data?.detail;
+      let message = 'Upload failed — please try again.';
+      let errors = [];
+      if (detail?.errors) { message = detail.message || 'Upload rejected — please fix the highlighted rows.'; errors = detail.errors; }
+      else if (typeof detail === 'string') message = detail;
+      else if (e.code === 'ERR_NETWORK') message = 'Network error — please check your connection and try again.';
+      else if (e.response?.status === 413) message = 'File too large. Please split the date range and upload again.';
+      setUpload({ phase: 'error', percent: pctRef.current, status: 'Upload failed', message, errors });
+    } finally { setUploading(false); }
+  };
+
+  const handleExport = async () => {
+    try {
+      await blobDownload(`${API}/vigilance/export`, {
+        from_date: filters.fromDate, to_date: filters.toDate,
+        ...(filters.employeeName && { employee_name: filters.employeeName }),
+        ...(filters.department !== 'All' && { department: filters.department }),
+        ...(filters.designation !== 'All' && { designation: filters.designation }),
+        ...(filters.team !== 'All' && { team: filters.team }),
+      }, 'Vigilance-Report.xlsx');
+      toast.success('Export downloaded');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Export failed');
+    }
+  };
+
+  const handleHelp = async (format) => {
+    try {
+      await blobDownload(`${API}/vigilance/help`, { format },
+        `Vigilance-Report-Help-Guide.${format}`);
+      toast.success('Help guide downloaded');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not download help guide');
+    }
+  };
+
+  const handleUserGuide = async () => {
+    try {
+      await blobDownload(`${API}/vigilance/user-guide`, { format: 'pdf' },
+        'Vigilance_Module_User_Guide.pdf');
+      toast.success('User guide downloaded');
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Could not download user guide');
+    }
+  };
+
+  const openEdit = (submission, row, fromDetailKey) => {
+    setDraft({
+      id: submission.id,
+      fromDetailKey: fromDetailKey || null,
+      target_employee_id: row.target_employee_id,
+      target_employee_name: row.target_employee_name,
+      target_email: row.target_email || '',
+      date: row.date,
+      date_display: row.date_display,
+      uploaded_by_name: submission.uploaded_by_name || null,
+      uploaded_by_employee_id: submission.uploaded_by_employee_id || null,
+      system_login: submission.system_login || '',
+      system_logout: submission.system_logout || '',
+      total_research_hours: submission.total_research_hours || '',
+      total_break_hours: submission.total_break_hours || '',
+      breaks: (submission.breaks || []).map(b => ({ ...b })),
+    });
+  };
+
+  const openView = (submission, row) => {
+    setDraft({
+      id: submission.id, readOnly: true,
+      target_employee_id: row.target_employee_id,
+      target_employee_name: row.target_employee_name,
+      target_email: row.target_email || '',
+      date: row.date,
+      date_display: row.date_display,
+      uploaded_by_name: submission.uploaded_by_name || null,
+      uploaded_by_employee_id: submission.uploaded_by_employee_id || null,
+      system_login: submission.system_login || '',
+      system_logout: submission.system_logout || '',
+      total_research_hours: submission.total_research_hours || '',
+      total_break_hours: submission.total_break_hours || '',
+      breaks: (submission.breaks || []).map(b => ({ ...b })),
+    });
+  };
+
+  // Admin: open the centered modal with ALL vigilance submissions for a row.
+  const openDetail = (row) => setDetailRow(row);
+  // Edit a specific submission from within the detail modal (closes the modal first,
+  // remembers the row so we can reopen it with refreshed values after a save).
+  const editFromDetail = (submission, row) => { reopenDetailMatch.current = { key: row.key, empId: row.target_employee_id, date: row.date }; setDetailRow(null); openEdit(submission, row, row.key); };
+  // Request deletion of a specific submission (with full context for the confirm dialog).
+  const openDelete = (submission, row) => {
+    setDetailRow(null);
+    setDeleteTarget({
+      id: submission.id,
+      employeeName: row.target_employee_name,
+      date: row.date_display,
+      submitter: submission.uploaded_by_name || null,
+    });
+  };
+
+  const saveDraft = async () => {
+    setSaving(true);
+    try {
+      if (draft.id) {
+        await axios.put(`${API}/vigilance/entries/${draft.id}`, {
+          system_login: draft.system_login, system_logout: draft.system_logout,
+          total_research_hours: draft.total_research_hours, total_break_hours: draft.total_break_hours,
+          breaks: draft.breaks,
+        }, { headers: getAuthHeaders() });
+        toast.success('Entry updated');
+      } else {
+        if (!draft.target_employee_id) { toast.error('Select an employee'); setSaving(false); return; }
+        await axios.post(`${API}/vigilance/entries`, {
+          target_employee_id: draft.target_employee_id, date: draft.date,
+          system_login: draft.system_login, system_logout: draft.system_logout,
+          total_research_hours: draft.total_research_hours, total_break_hours: draft.total_break_hours,
+          breaks: draft.breaks,
+        }, { headers: getAuthHeaders() });
+        toast.success('Entry created');
+      }
+      if (draft.fromDetailKey) reopenDetailKey.current = draft.fromDetailKey;  // return to the detail modal
+      setDraft(null);
+      loadEntries(filters);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Save failed');
+    } finally { setSaving(false); }
+  };
+
+  const confirmDelete = async () => {
+    try {
+      await axios.delete(`${API}/vigilance/entries/${deleteTarget.id}`, { headers: getAuthHeaders() });
+      toast.success('Entry deleted');
+      setDeleteTarget(null);
+      loadEntries(filters);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Delete failed');
+    }
+  };
+
+  // ---------------- Access gate ----------------
+  if (access === null) {
+    return <div className="flex items-center justify-center h-64"><Loader2 className="w-7 h-7 animate-spin text-slate-400" /></div>;
+  }
+  if (!access.has_access) {
+    // Unauthorized users must NOT see the Vigilance page — redirect straight to
+    // their Dashboard (admins to /dashboard, employees to /employee/dashboard).
+    const adminRoles = ['hr', 'system_admin', 'office_admin'];
+    const dashboard = adminRoles.includes(user?.role) ? '/dashboard' : '/employee/dashboard';
+    return <Navigate to={dashboard} replace />;
+  }
+
+  return (
+    <div className="space-y-5" data-testid="vigilance-page">
+      {/* Breadcrumb */}
+      <nav className="flex items-center gap-1.5 text-xs font-medium text-slate-400" data-testid="vig-breadcrumb" aria-label="Breadcrumb">
+        <span className="uppercase tracking-wide">Vigilance</span>
+        <CaretRight className="w-3.5 h-3.5 text-slate-300" />
+        <span className="text-slate-600">Operational Report</span>
+      </nav>
+
+      {/* Page header */}
+      <div className="flex items-start gap-4">
+        <div className="w-12 h-12 rounded-2xl bg-[#0b1f3b]/10 flex items-center justify-center shrink-0 ring-1 ring-[#0b1f3b]/10">
+          <ShieldCheck className="w-6 h-6 text-[#0b1f3b]" />
+        </div>
+        <div className="min-w-0">
+          <h1 className="text-[26px] sm:text-[28px] leading-tight font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Operational Vigilance Report</h1>
+          <p className="text-sm text-slate-500 mt-0.5">{isAdmin ? 'View, compare & export all vigilance submissions (merged by employee/day).' : 'Download the template, fill your observations, upload & manage your own entries.'}</p>
+        </div>
+      </div>
+
+      {/* Filter card */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between gap-3 px-5 sm:px-6 py-4 border-b border-slate-100 bg-slate-50/40">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#0b1f3b]/[0.07] text-[#0b1f3b] shrink-0"><SlidersHorizontal className="w-4 h-4" /></span>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-slate-800 leading-tight">Filters</div>
+              <div className="text-[11px] text-slate-400 leading-tight">Refine the vigilance report</div>
+            </div>
+            {activeFilterCount > 0 && (
+              <span className="ml-1 inline-flex items-center rounded-full bg-[#0b1f3b] px-2 py-0.5 text-[11px] font-semibold text-white" data-testid="vig-active-filter-count">{activeFilterCount} active</span>
+            )}
+          </div>
+          <button onClick={handleReset} className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-white hover:text-[#0b1f3b] hover:border-[#0b1f3b]/30 transition-colors shrink-0" data-testid="vig-reset-btn">
+            <RotateCcw className="w-4 h-4" /> Reset
+          </button>
+        </div>
+
+        <div className="p-5 sm:p-6 space-y-5">
+        {/* Row 1 */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><User className="w-3.5 h-3.5 text-slate-400" /> Employee Name</Label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <Input list="vig-emp-list" value={filters.employeeName} onChange={(e) => setFilters({ ...filters, employeeName: e.target.value })} placeholder="Search employee…" className="rounded-lg h-11 pl-9 pr-8" data-testid="vig-filter-employee" />
+              {filters.employeeName && (
+                <button onClick={() => setFilters({ ...filters, employeeName: '' })} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600" aria-label="Clear employee" data-testid="vig-filter-employee-clear">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+              <datalist id="vig-emp-list">
+                {meta.employees.map(e => <option key={e.id} value={e.name} />)}
+              </datalist>
+            </div>
+          </div>
+          <div>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><CalendarDays className="w-3.5 h-3.5 text-slate-400" /> From Date</Label>
+            <DatePicker value={filters.fromDate} onChange={(v) => setFilters({ ...filters, fromDate: v })} className="rounded-lg h-11" data-testid="vig-filter-from" />
+          </div>
+          <div>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><CalendarDays className="w-3.5 h-3.5 text-slate-400" /> To Date</Label>
+            <DatePicker value={filters.toDate} onChange={(v) => setFilters({ ...filters, toDate: v })} className="rounded-lg h-11" data-testid="vig-filter-to" />
+          </div>
+        </div>
+
+        {/* Row 2 */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><Building2 className="w-3.5 h-3.5 text-slate-400" /> Department</Label>
+            <Select value={filters.department} onValueChange={(v) => setFilters({ ...filters, department: v })}>
+              <SelectTrigger className="rounded-lg h-11" data-testid="vig-filter-department"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {meta.departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><Briefcase className="w-3.5 h-3.5 text-slate-400" /> Designation</Label>
+            <Select value={filters.designation} onValueChange={(v) => setFilters({ ...filters, designation: v })}>
+              <SelectTrigger className="rounded-lg h-11" data-testid="vig-filter-designation"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {meta.designations.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="flex items-center gap-1.5 text-xs font-medium text-slate-600 mb-1.5"><Users className="w-3.5 h-3.5 text-slate-400" /> Team</Label>
+            <Select value={filters.team} onValueChange={(v) => setFilters({ ...filters, team: v })}>
+              <SelectTrigger className="rounded-lg h-11" data-testid="vig-filter-team"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All">All</SelectItem>
+                {meta.teams.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        {/* Action toolbar */}
+        <div className="flex flex-wrap items-center gap-2 pt-4 border-t border-slate-100">
+          <Button onClick={handleApplyFilter} className="rounded-lg h-10 px-5 bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 shadow-sm" data-testid="vig-filter-btn">
+            <Filter className="w-4 h-4 mr-2" /> Filter
+          </Button>
+          <div className="hidden sm:block h-6 w-px bg-slate-200 mx-1" />
+          <Button onClick={handleDownloadTemplate} disabled={!validRange || downloading} variant="outline" className="rounded-lg h-10" data-testid="vig-download-template-btn">
+            {downloading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Download className="w-4 h-4 mr-2" />} Download Sample Template
+          </Button>
+          <label className="inline-flex">
+            <input type="file" accept=".xlsx" className="hidden" data-testid="vig-upload-input"
+              onChange={(e) => { handleUpload(e.target.files[0]); e.target.value = ''; }} />
+            <span className={`inline-flex items-center h-10 px-4 rounded-lg border border-slate-200 text-sm font-medium cursor-pointer hover:bg-slate-50 transition-colors ${uploading ? 'opacity-60 pointer-events-none' : ''}`} data-testid="vig-upload-btn">
+              {uploading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Upload className="w-4 h-4 mr-2" />} Upload Filled Sheet
+            </span>
+          </label>
+          <Button onClick={() => setDraft(emptyDraft())} variant="outline" className="rounded-lg h-10" data-testid="vig-add-entry-btn">
+            <Plus className="w-4 h-4 mr-2" /> Add Entry
+          </Button>
+          <div className="ml-auto flex items-center gap-2">
+          <Button onClick={handleExport} variant="outline" className="rounded-lg h-10" data-testid="vig-export-btn">
+            <FileSpreadsheet className="w-4 h-4 mr-2" /> Export
+          </Button>
+          {!isAdmin && (
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button onClick={handleUserGuide} variant="outline"
+                  className="rounded-lg h-10 border-[#0b1f3b]/30 text-[#0b1f3b] hover:bg-[#0b1f3b]/5"
+                  data-testid="vig-user-guide-btn">
+                  <BookOpen className="w-4 h-4 mr-2" /> Download User Guide
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                Download complete Vigilance Module user guide
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          )}
+          {isAdmin && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="rounded-lg h-10" data-testid="vig-help-btn">
+                <HelpCircle className="w-4 h-4 mr-2" /> Help Guide
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => handleHelp('docx')} data-testid="vig-help-docx">
+                <FileText className="w-4 h-4 mr-2 text-blue-600" /> Download as Word (.docx)
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => handleHelp('xlsx')} data-testid="vig-help-xlsx">
+                <FileSpreadsheet className="w-4 h-4 mr-2 text-emerald-600" /> Download as Excel (.xlsx)
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          )}
+          </div>
+        </div>
+        </div>
+      </div>
+
+      {/* Table */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        {/* Premium synchronized TOP horizontal scrollbar */}
+        <div ref={topScrollRef} onScroll={onTopScroll}
+             className="scroll-premium overflow-x-auto overflow-y-hidden border-b border-slate-100"
+             style={{ height: scrollW > 0 ? 12 : 0 }} data-testid="vig-top-scroll">
+          <div style={{ width: scrollW, height: 1 }} />
+        </div>
+        {/* Body: synchronized vertical + horizontal scroll, sticky header */}
+        <div ref={bodyScrollRef} onScroll={onBodyScroll} className="overflow-auto scroll-premium"
+             style={{ maxHeight: '68vh', '--vig-h1': `${row1H || 44}px`, '--vig-h2': `${row2H || 36}px` }} data-testid="vig-table-scroll">
+          {isAdmin ? (
+            <AdminMergedTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onOpenDetail={openDetail} avatarOf={getAvatarById} />
+          ) : (
+            <VigilanceOwnTable data={data} rows={pagedRows} loading={loading} sort={sort} onSort={toggleSort} onView={openView} onEdit={openEdit} onDelete={openDelete} avatarOf={getAvatarById} />
+          )}
+        </div>
+        <PaginationBar page={page} setPage={setPage} rowsPerPage={rowsPerPage} setRowsPerPage={(v) => { setRowsPerPage(v); setPage(1); }} total={totalRows} />
+      </div>
+
+      {/* Edit / Add dialog */}
+      <EntryDialog
+        draft={draft} setDraft={setDraft} onSave={saveDraft} saving={saving}
+        employees={meta.employees} avatarOf={getAvatarById}
+      />
+
+      {upload && <UploadProgressOverlay upload={upload} onClose={() => setUpload(null)} />}
+
+      {/* Admin: centered modal with all vigilance submissions for the selected row */}
+      <VigilanceDetailModal row={detailRow} onClose={() => setDetailRow(null)} onEdit={editFromDetail} onDelete={openDelete} avatarOf={getAvatarById} />
+
+      <AlertDialog open={!!deleteTarget} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this vigilance submission?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget && (
+                <span className="block space-y-1">
+                  <span className="block">You are about to delete a vigilance submission for <span className="font-semibold text-slate-700">{deleteTarget.employeeName}</span> on <span className="font-semibold text-slate-700">{deleteTarget.date}</span>{deleteTarget.submitter ? <> submitted by <span className="font-semibold text-slate-700">{deleteTarget.submitter}</span></> : null}.</span>
+                  <span className="block text-slate-400">This removes only this vigilance row. Employee, attendance and other HRMS data are not affected.</span>
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete} className="bg-red-600 hover:bg-red-700" data-testid="vig-confirm-delete">Delete</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+// ===================== Avatar (employee photo with initials fallback) =====================
+function Avatar({ name, src, className = 'h-8 w-8' }) {
+  const [failed, setFailed] = useState(false);
+  if (src && !failed) {
+    return <img src={src} alt={name || 'avatar'} onError={() => setFailed(true)}
+      className={`${className} shrink-0 rounded-full object-cover ring-1 ring-slate-200 bg-slate-100`} />;
+  }
+  return (
+    <div className={`flex ${className} shrink-0 items-center justify-center rounded-full bg-[#0b1f3b]/10 text-[11px] font-semibold text-[#0b1f3b]`} aria-hidden="true">
+      {initialsOf(name)}
+    </div>
+  );
+}
+
+// Avatar sized for the navy modal/dialog banners (white ring, initials on translucent white).
+function BannerAvatar({ name, src }) {
+  const [failed, setFailed] = useState(false);
+  if (src && !failed) {
+    return <img src={src} alt={name || 'avatar'} onError={() => setFailed(true)}
+      className="h-11 w-11 shrink-0 rounded-full object-cover ring-1 ring-white/30 bg-white/10" />;
+  }
+  return (
+    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-sm font-bold text-white ring-1 ring-white/20">
+      {initialsOf(name)}
+    </div>
+  );
+}
+
+// Labelled context card distinguishing the reported employee vs. the vigilance submitter.
+function ContextCard({ icon: Icon, label, name, sub, avatar, accent }) {
+  return (
+    <div className={`rounded-xl border px-3.5 py-3 ${accent ? 'border-[#0b1f3b]/25 bg-[#0b1f3b]/[0.04]' : 'border-slate-200 bg-slate-50'}`}>
+      <div className={`flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide ${accent ? 'text-[#0b1f3b]' : 'text-slate-400'}`}>
+        <Icon className="w-3.5 h-3.5" /> {label}
+      </div>
+      <div className="mt-1.5 flex items-center gap-2 min-w-0">
+        {avatar !== undefined && <Avatar name={name} src={avatar} className="h-7 w-7" />}
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-slate-800 truncate">{name || '—'}</div>
+          {sub && <div className="text-[11px] text-slate-400 truncate">{sub}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===================== Sortable header cell =====================
+function SortHeader({ label, sortKey, sort, onSort, className, align = 'left', rowSpan, colSpan }) {
+  const active = sort.key === sortKey;
+  const Icon = active && sort.dir === 'asc' ? ArrowUp : active && sort.dir === 'desc' ? ArrowDown : ChevronsUpDown;
+  return (
+    <th rowSpan={rowSpan} colSpan={colSpan} className={`${className} cursor-pointer select-none`} onClick={() => onSort(sortKey)} data-testid={`vig-sort-${sortKey}`} title="Click to sort">
+      <div className={`flex items-center gap-1 ${align === 'center' ? 'justify-center' : ''}`}>
+        <span>{label}</span>
+        <Icon className={`w-3 h-3 shrink-0 ${active ? 'text-[#0b1f3b]' : 'text-slate-300'}`} />
+      </div>
+    </th>
+  );
+}
+
+// Row-action icon buttons (View / Edit / Delete) with tooltips.
+function RowActions({ row, submission, onView, onEdit, onDelete, canView = true, viewTestId = 'vig-view-btn', editTestId = 'vig-edit-btn', deleteTestId = 'vig-delete-btn', editTitle }) {
+  const btn = 'inline-flex h-8 w-8 items-center justify-center rounded-lg border border-transparent transition-colors';
+  return (
+    <TooltipProvider delayDuration={150}>
+      <div className="flex items-center justify-center gap-1">
+        {canView && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button className={`${btn} text-slate-500 hover:bg-slate-100 hover:text-slate-800`} onClick={() => onView(submission, row)} data-testid={viewTestId} aria-label="View"><Eye className="w-4 h-4" /></button>
+            </TooltipTrigger>
+            <TooltipContent>View</TooltipContent>
+          </Tooltip>
+        )}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button className={`${btn} text-[#0b1f3b] hover:bg-[#0b1f3b]/10`} onClick={() => onEdit(submission, row)} data-testid={editTestId} aria-label={editTitle || 'Edit'}><Pencil className="w-4 h-4" /></button>
+          </TooltipTrigger>
+          <TooltipContent>{editTitle || 'Edit'}</TooltipContent>
+        </Tooltip>
+        {canView && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button className={`${btn} text-red-500 hover:bg-red-50 hover:text-red-600`} onClick={() => onDelete(submission, row)} data-testid={deleteTestId} aria-label="Delete"><Trash2 className="w-4 h-4" /></button>
+            </TooltipTrigger>
+            <TooltipContent>Delete</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+    </TooltipProvider>
+  );
+}
+
+// ===================== Vigilance own-view table (compact, grouped headers) =====================
+// Own view has a single vigilance author (the viewer), so it collapses to a flat
+// table showing only Research Hours + Total Break Hours. Detailed break rows remain
+// available via the View / Edit dialog.
+function VigilanceOwnTable({ data, rows, loading, sort, onSort, onView, onEdit, onDelete, avatarOf }) {
+  const colCount = 9;
+  const bandTh = 'vig-sticky-h1 top-0 z-30 bg-[#eef2f9] px-3 py-2.5 text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-slate-200';
+  const labelTh = 'vig-sticky-h2 z-20 bg-slate-50 px-3 py-2.5 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap border-b border-slate-200';
+  const td = 'px-3 py-3 text-[13px] text-slate-600 whitespace-nowrap';
+  const empCols = [['Date', 'date'], ['Team', 'team']];
+  const attCols = [['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
+  const vigCols = [['Research Hours', 'total_research_hours'], ['Total Break', 'total_break_hours']];
+
+  return (
+    <table className="text-sm border-collapse min-w-full" data-testid="vig-own-table">
+      <thead>
+        {/* Group band row */}
+        <tr>
+          <th colSpan={3} className={`${bandTh} text-left`}>Employee</th>
+          <th colSpan={3} className={`${bandTh} text-left border-l border-slate-200`}>Attendance</th>
+          <th colSpan={2} className={`${bandTh} text-left border-l border-slate-200`}>Vigilance</th>
+          <th rowSpan={2} className="vig-sticky-h1 top-0 z-40 bg-[#eef2f9] px-3 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-l border-slate-200 min-w-[130px]">Actions</th>
+        </tr>
+        {/* Column label row */}
+        <tr>
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} className={`${labelTh} min-w-[220px]`} />
+          {empCols.map(([h, k]) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={labelTh} />)}
+          {attCols.map(([h, k], i) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={`${labelTh} ${i === 0 ? 'border-l border-slate-200' : ''}`} />)}
+          {vigCols.map(([h, k], i) => <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} className={`${labelTh} ${i === 0 ? 'border-l border-slate-200' : ''}`} />)}
+        </tr>
+      </thead>
+      <tbody>
+        {loading ? (
+          <tr><td colSpan={colCount} className="text-center py-16"><Loader2 className="w-6 h-6 animate-spin text-slate-400 inline" /></td></tr>
+        ) : rows.length === 0 ? (
+          <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No active employees for the selected date range.</td></tr>
+        ) : rows.map(row => (
+          <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-own-row">
+            <td className="px-3 py-2.5 min-w-[220px]">
+              <div className="flex items-center gap-2.5">
+                <Avatar name={row.target_employee_name} src={avatarOf?.(row.target_employee_id)} />
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
+                  {row.target_email && <div className="text-[11px] text-slate-400 truncate">{row.target_email}</div>}
+                </div>
+              </div>
+            </td>
+            <td className={td}>{row.date_display}</td>
+            <td className={td}>{row.target_team || '—'}</td>
+            <td className={`${td} border-l border-slate-100`}>{row.punch_in || '—'}</td>
+            <td className={td}>{row.punch_out || '—'}</td>
+            <td className="px-3 py-3 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{row.total_hours || '—'}</td>
+            <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap border-l border-slate-100">{row.total_research_hours || '—'}</td>
+            <td className="px-3 py-3 text-[13px] text-slate-700 whitespace-nowrap">{row.total_break_hours || '—'}</td>
+            <td className="px-3 py-2.5 border-l border-slate-100">
+              <RowActions row={row} submission={row} onView={onView} onEdit={onEdit} onDelete={onDelete}
+                canView={!!row.id} editTitle={row.id ? 'Edit' : 'Add observation'} />
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// ===================== Admin merged table (3-tier grouped header, single View action) =====================
+// Fixed employee/attendance columns, then a dynamic "Vigilance Team" band with one
+// two-column group (Research + Break) per vigilance member (from data.uploaders).
+// A single View (eye) button per row opens the centered detail modal with every
+// submission for that employee/day. No frozen columns — the synced top scrollbar
+// handles horizontal scroll when many members exist.
+function AdminMergedTable({ data, rows, loading, sort, onSort, onOpenDetail, avatarOf }) {
+  const uploaders = data.uploaders || [];
+  const colCount = 6 + uploaders.length * 2 + 1;
+  const base = 'vig-sticky-h2 z-20 bg-slate-50 px-3 py-2.5 text-left text-[12px] font-semibold text-slate-600 whitespace-nowrap border-b border-slate-200';
+  const band1 = 'vig-sticky-h1 top-0 z-30 bg-[#eef2f9] px-3 py-2.5 text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-slate-200';
+  const baseScalars = [['Team', 'team'], ['Punch-In', 'punch_in'], ['Punch-Out', 'punch_out'], ['Total Hours', 'total_hours']];
+  return (
+    <table className="text-sm border-collapse min-w-full" data-testid="vig-admin-table">
+      <thead>
+        {/* Tier 1 — top group bands */}
+        <tr>
+          <th colSpan={3} className={`${band1} text-left`}>Employee</th>
+          <th colSpan={3} className={`${band1} text-left border-l border-slate-200`}>Attendance</th>
+          {uploaders.length > 0 && (
+            <th colSpan={uploaders.length * 2} className={`${band1} text-center border-l border-slate-200 bg-[#0b1f3b]/[0.07] tracking-widest`} data-testid="vig-team-band">Vigilance Team</th>
+          )}
+          <th rowSpan={3} className="vig-sticky-h1 top-0 z-40 bg-slate-100 px-3 py-2.5 text-center text-[11px] font-bold uppercase tracking-wide text-[#0b1f3b] border-b border-l border-slate-200 min-w-[90px]">Actions</th>
+        </tr>
+        {/* Tier 2 — base column labels (rowSpan 2) + per-member name band */}
+        <tr>
+          <SortHeader label="Name" sortKey="name" sort={sort} onSort={onSort} rowSpan={2} className={`${base} min-w-[220px]`} />
+          <SortHeader label="Date" sortKey="date" sort={sort} onSort={onSort} rowSpan={2} className={`${base} min-w-[110px]`} />
+          {baseScalars.map(([h, k], i) => (
+            <SortHeader key={k} label={h} sortKey={k} sort={sort} onSort={onSort} rowSpan={2} className={`${base} ${i === 0 ? 'border-l border-slate-200' : ''}`} />
+          ))}
+          {uploaders.map((u, idx) => (
+            <th key={u.employee_id} colSpan={2} className={`vig-sticky-h2 z-20 px-3 py-2 text-center text-[12px] font-bold text-[#0b1f3b] border-l-2 border-b border-slate-200 whitespace-nowrap ${idx % 2 ? 'bg-indigo-50/70' : 'bg-[#eef2f9]'}`} data-testid="vig-member-band">
+              <span className="inline-flex items-center gap-1.5">
+                <Avatar name={u.name} src={avatarOf?.(u.employee_id)} className="h-5 w-5" />
+                {u.name}
+              </span>
+            </th>
+          ))}
+        </tr>
+        {/* Tier 3 — per-member Research / Break */}
+        <tr>
+          {uploaders.map((u) => (
+            <FragmentCols key={u.employee_id} ukey={u.employee_id} sort={sort} onSort={onSort} firstClass="border-l-2 border-slate-200" />
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {loading ? (
+          <tr><td colSpan={colCount} className="text-center py-16"><Loader2 className="w-6 h-6 animate-spin text-slate-400 inline" /></td></tr>
+        ) : rows.length === 0 ? (
+          <tr><td colSpan={colCount} className="text-center py-16 text-slate-400" data-testid="vig-empty">No active employees for the selected date range.</td></tr>
+        ) : rows.map(row => {
+          const subByUp = Object.fromEntries((row.submissions || []).map(s => [s.uploaded_by_employee_id, s]));
+          return (
+            <tr key={row.key} className="border-t border-slate-100 hover:bg-slate-50/60 transition-colors" data-testid="vig-admin-row">
+              <td className="px-3 py-2.5 min-w-[220px]">
+                <div className="flex items-center gap-2.5">
+                  <Avatar name={row.target_employee_name} src={avatarOf?.(row.target_employee_id)} />
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-semibold text-slate-800 truncate">{row.target_employee_name}</div>
+                    {row.target_email && <div className="text-[11px] text-slate-400 truncate">{row.target_email}</div>}
+                  </div>
+                </div>
+              </td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.date_display}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap border-l border-slate-100">{row.target_team || '—'}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.punch_in || '—'}</td>
+              <td className="px-3 py-2.5 text-[13px] text-slate-600 whitespace-nowrap">{row.punch_out || '—'}</td>
+              <td className="px-3 py-2.5 text-[13px] font-semibold text-slate-900 whitespace-nowrap tabular-nums">{row.total_hours || '—'}</td>
+              {uploaders.map((u) => (
+                <FragmentData key={u.employee_id} s={subByUp[u.employee_id]} firstClass="border-l-2 border-slate-100" />
+              ))}
+              <td className="px-2 py-2.5 border-l border-slate-100 text-center" data-testid="vig-admin-actions">
+                <TooltipProvider delayDuration={150}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button onClick={() => onOpenDetail(row)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-[#0b1f3b] hover:bg-[#0b1f3b]/10 transition-colors" data-testid="vig-view-detail-btn" aria-label="View vigilance details"><Eye className="w-4 h-4" /></button>
+                    </TooltipTrigger>
+                    <TooltipContent>View all vigilance submissions</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function FragmentCols({ firstClass, ukey, sort, onSort }) {
+  const th = 'vig-sticky-h3 z-10 bg-slate-50 px-3 py-1.5 text-center whitespace-nowrap border-b border-slate-200';
+  const subs = [['Research', `up:${ukey}:total_research_hours`], ['Break', `up:${ukey}:total_break_hours`]];
+  return (
+    <>
+      {subs.map(([label, key], i) => (
+        <SortHeader key={key} label={label} sortKey={key} sort={sort} onSort={onSort} align="center" className={`${th} ${i === 0 ? firstClass : ''}`} />
+      ))}
+    </>
+  );
+}
+
+function FragmentData({ s, firstClass }) {
+  const cell = (v, extra = '') => <td className={`px-3 py-2.5 text-center text-[13px] whitespace-nowrap ${v ? 'text-slate-700' : 'text-slate-400'} ${extra}`}>{v || '—'}</td>;
+  if (!s) return (<>{cell('', firstClass)}{cell('')}</>);
+  return (<>{cell(s.total_research_hours, firstClass)}{cell(s.total_break_hours)}</>);
+}
+
+// ===================== Centered vigilance detail modal =====================
+function VigilanceDetailModal({ row, onClose, onEdit, onDelete, avatarOf }) {
+  if (!row) return null;
+  const subs = row.submissions || [];
+  const att = [
+    { label: 'Punch-In', value: row.punch_in, icon: LogIn, tint: 'text-emerald-600 bg-emerald-50' },
+    { label: 'Punch-Out', value: row.punch_out, icon: LogOut, tint: 'text-rose-600 bg-rose-50' },
+    { label: 'Total Hours', value: row.total_hours, icon: Clock, tint: 'text-[#0b1f3b] bg-[#0b1f3b]/[0.08]', strong: true },
+  ];
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-[840px] w-[95vw] max-h-[86vh] p-0 gap-0 overflow-hidden flex flex-col bg-white rounded-2xl border-0 shadow-2xl [&>button]:text-white/70 [&>button]:hover:text-white [&>button]:z-10" data-testid="vig-detail-modal">
+        {/* Sticky header — navy banner */}
+        <div className="relative shrink-0 bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
+          <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">Vigilance Details</DialogTitle>
+          <div className="mt-3 flex items-start gap-3.5">
+            <BannerAvatar name={row.target_employee_name} src={avatarOf?.(row.target_employee_id)} />
+            <div className="min-w-0 flex-1">
+              <div className="text-lg font-bold leading-tight truncate">{row.target_employee_name}</div>
+              {row.target_email && <div className="text-[13px] text-white/60 truncate">{row.target_email}</div>}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-white/90"><CalendarDays className="w-3.5 h-3.5" />{row.date_display}</span>
+                {row.target_team && <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-white/90"><User className="w-3.5 h-3.5" />{row.target_team}</span>}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Scrollable content */}
+        <div className="px-6 py-5 space-y-6 overflow-y-auto scroll-premium bg-slate-50/40">
+          {/* Attendance */}
+          <div>
+            <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2.5">Attendance</h4>
+            <div className="grid grid-cols-3 gap-3">
+              {att.map(({ label, value, icon: Icon, tint, strong }) => (
+                <div key={label} className="rounded-xl border border-slate-200 bg-white p-3.5 shadow-sm">
+                  <div className={`inline-flex h-8 w-8 items-center justify-center rounded-lg ${tint}`}><Icon className="w-4 h-4" /></div>
+                  <div className="mt-2.5 text-[11px] font-medium uppercase tracking-wide text-slate-400">{label}</div>
+                  <div className={`mt-0.5 tabular-nums ${strong ? 'text-xl font-bold text-slate-900' : 'text-base font-semibold text-slate-700'}`}>{value || '—'}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Vigilance submissions */}
+          <div>
+            <h4 className="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2.5">Vigilance Team Submissions ({subs.length})</h4>
+            {subs.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-white px-4 py-10 text-center text-sm text-slate-400">No vigilance submissions for this employee/date.</div>
+            ) : (
+              <div className="space-y-3.5">
+                {subs.map(s => <SubmissionCard key={s.id} s={s} row={row} onEdit={onEdit} onDelete={onDelete} avatarOf={avatarOf} />)}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Sticky footer */}
+        <div className="px-6 py-4 border-t border-slate-100 bg-white flex justify-end shrink-0">
+          <Button onClick={onClose} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg px-6" data-testid="vig-detail-close">Close</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SubmissionCard({ s, row, onEdit, onDelete, avatarOf }) {
+  const [open, setOpen] = useState(false);
+  const breaks = s.breaks || [];
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden transition-shadow hover:shadow-md" data-testid="vig-submission-card">
+      {/* Card header */}
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-slate-100">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Avatar name={s.uploaded_by_name} src={avatarOf?.(s.uploaded_by_employee_id)} className="h-9 w-9" />
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800 truncate">{s.uploaded_by_name || 'Vigilance member'}</div>
+            <div className="text-[11px] text-slate-400 truncate">Submitted by {s.uploaded_by_name || '—'}</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <TooltipProvider delayDuration={150}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={() => onEdit(s, row)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-3 text-[13px] font-medium text-[#0b1f3b] hover:bg-[#0b1f3b]/5 transition-colors" data-testid="vig-submission-edit"><Pencil className="w-3.5 h-3.5" /> Edit</button>
+              </TooltipTrigger>
+              <TooltipContent>Edit this submission</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button onClick={() => onDelete(s, row)} className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-red-200 text-red-500 hover:bg-red-50 hover:text-red-600 transition-colors" data-testid="vig-submission-delete" aria-label="Delete submission"><Trash2 className="w-3.5 h-3.5" /></button>
+              </TooltipTrigger>
+              <TooltipContent>Delete this submission</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        </div>
+      </div>
+
+      {/* Stat tiles */}
+      <div className="grid grid-cols-2 gap-3 p-3">
+        <div className="rounded-lg bg-slate-50 px-3.5 py-3">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400"><Microscope className="w-3.5 h-3.5" /> Research Hours</div>
+          <div className="mt-1 text-lg font-bold text-slate-900 tabular-nums">{s.total_research_hours || '—'}</div>
+        </div>
+        {/* Break tile — toggles accordion */}
+        <button
+          type="button"
+          onClick={() => setOpen(o => !o)}
+          aria-expanded={open}
+          data-testid="vig-break-accordion-toggle"
+          className={`text-left rounded-lg px-3.5 py-3 transition-colors ${open ? 'bg-[#0b1f3b]/[0.06] ring-1 ring-[#0b1f3b]/15' : 'bg-slate-50 hover:bg-slate-100'}`}>
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-slate-400"><Coffee className="w-3.5 h-3.5" /> Total Break {breaks.length > 0 && <span className="text-slate-400">({breaks.length})</span>}</span>
+            <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${open ? 'rotate-180 text-[#0b1f3b]' : ''}`} />
+          </div>
+          <div className="mt-1 text-lg font-bold text-slate-900 tabular-nums">{s.total_break_hours || '—'}</div>
+        </button>
+      </div>
+
+      {/* Break details accordion */}
+      <div className={`grid transition-all duration-200 ease-out ${open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}`}>
+        <div className="overflow-hidden">
+          <div className="px-3 pb-3.5 pt-0.5" data-testid="vig-break-details" aria-hidden={!open}>
+            {breaks.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/60 px-3 py-4 text-center text-sm text-slate-400">No individual breaks recorded.</div>
+            ) : (
+              <div className="rounded-lg border border-slate-100 overflow-hidden divide-y divide-slate-100">
+                {breaks.map((b, i) => (
+                  <div key={i} className="flex items-center justify-between gap-3 px-3.5 py-2.5 hover:bg-slate-50/60 transition-colors">
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium text-slate-700 truncate">{b.label || `Break ${i + 1}`}</div>
+                      <div className="text-[12px] text-slate-400 tabular-nums">{b.from || '—'} <span className="text-slate-300">→</span> {b.to || '—'}</div>
+                    </div>
+                    <span className="inline-flex items-center rounded-md bg-[#0b1f3b]/[0.06] px-2 py-0.5 text-[13px] font-semibold text-[#0b1f3b] tabular-nums shrink-0">
+                      {b.total || computeBreakTotal(b.from, b.to) || '—'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ===================== Pagination bar =====================
+function PaginationBar({ page, setPage, rowsPerPage, setRowsPerPage, total }) {
+  const totalPages = Math.max(1, Math.ceil(total / rowsPerPage));
+  const current = Math.min(page, totalPages);
+  const start = total === 0 ? 0 : (current - 1) * rowsPerPage + 1;
+  const end = Math.min(total, current * rowsPerPage);
+
+  const pageNumbers = [];
+  const win = 2;
+  for (let p = Math.max(1, current - win); p <= Math.min(totalPages, current + win); p++) pageNumbers.push(p);
+
+  return (
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3.5 border-t border-slate-100 bg-slate-50/60" data-testid="vig-pagination">
+      <div className="text-[13px] text-slate-500" data-testid="vig-record-count">
+        Showing <span className="font-semibold text-slate-700">{start.toLocaleString()}</span> to <span className="font-semibold text-slate-700">{end.toLocaleString()}</span> of <span className="font-semibold text-slate-700">{total.toLocaleString()}</span> records
+      </div>
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1">
+          <Button variant="outline" size="sm" className="h-8 px-3 rounded-lg text-[13px]" disabled={current <= 1} onClick={() => setPage(current - 1)} data-testid="vig-prev-page">
+            <ChevronLeft className="w-4 h-4 mr-1" /> Previous
+          </Button>
+          {pageNumbers[0] > 1 && <span className="px-1 text-slate-400">…</span>}
+          {pageNumbers.map(p => (
+            <Button key={p} variant={p === current ? 'default' : 'outline'} size="icon"
+              className={`h-8 w-8 rounded-lg text-[13px] ${p === current ? 'bg-[#0b1f3b] hover:bg-[#0b1f3b]/90' : ''}`}
+              onClick={() => setPage(p)} data-testid={`vig-page-${p}`}>{p}</Button>
+          ))}
+          {pageNumbers[pageNumbers.length - 1] < totalPages && <span className="px-1 text-slate-400">…</span>}
+          <Button variant="outline" size="sm" className="h-8 px-3 rounded-lg text-[13px]" disabled={current >= totalPages} onClick={() => setPage(current + 1)} data-testid="vig-next-page">
+            Next <ChevronRight className="w-4 h-4 ml-1" />
+          </Button>
+        </div>
+        <div className="flex items-center gap-2 text-[13px] text-slate-500 border-l border-slate-200 pl-3">
+          <span className="hidden sm:inline">Rows</span>
+          <Select value={String(rowsPerPage)} onValueChange={(v) => setRowsPerPage(Number(v))}>
+            <SelectTrigger className="h-8 w-[72px] rounded-lg" data-testid="vig-rows-per-page"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {[10, 25, 50, 100].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===================== Upload progress overlay =====================
+function UploadProgressOverlay({ upload, onClose }) {
+  const { phase, percent = 0, status, result, message, errors } = upload;
+  const inProgress = phase === 'uploading' || phase === 'processing';
+  const pct = Math.min(100, Math.round(percent));
+
+  return (
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/45 backdrop-blur-sm p-4"
+      onMouseDown={(e) => { if (!inProgress && e.target === e.currentTarget) onClose(); }}
+      data-testid="vig-upload-overlay">
+      <div className="w-full max-w-md rounded-2xl bg-white shadow-2xl ring-1 ring-slate-200 overflow-hidden">
+        <div className="px-7 pt-7 pb-6">
+          <div className="flex items-center gap-3 mb-5">
+            <div className={`flex h-11 w-11 items-center justify-center rounded-xl ${
+              phase === 'success' ? 'bg-emerald-50 text-emerald-600'
+              : phase === 'error' ? 'bg-red-50 text-red-600'
+              : 'bg-[#0b1f3b]/5 text-[#0b1f3b]'}`}>
+              {phase === 'success' ? <CheckCircle2 className="h-6 w-6" data-testid="vig-upload-success-icon" />
+                : phase === 'error' ? <AlertCircle className="h-6 w-6" data-testid="vig-upload-error-icon" />
+                : <UploadCloud className="h-6 w-6" />}
+            </div>
+            <div className="min-w-0">
+              <h3 className="text-base font-semibold text-slate-900">
+                {phase === 'success' ? 'Upload completed successfully'
+                  : phase === 'error' ? 'Upload failed'
+                  : 'Uploading vigilance sheet'}
+              </h3>
+              <p className="text-sm text-slate-500 truncate" data-testid="vig-upload-status">
+                {phase === 'error' ? 'Please review the details below.' : status}
+              </p>
+            </div>
+            {inProgress && <Loader2 className="ml-auto h-5 w-5 animate-spin text-[#0b1f3b]/60" />}
+          </div>
+
+          {phase !== 'error' && (
+            <>
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-medium text-slate-500">{phase === 'success' ? 'Done' : 'Progress'}</span>
+                <span className="text-sm font-semibold text-[#0b1f3b] tabular-nums" data-testid="vig-upload-percent">{pct}%</span>
+              </div>
+              <div className="h-2.5 w-full rounded-full bg-slate-100 overflow-hidden">
+                <div
+                  className={`h-full rounded-full bg-gradient-to-r from-[#0b1f3b] to-[#2563a8] transition-[width] duration-300 ease-out ${inProgress ? 'vig-progress-sheen' : ''}`}
+                  style={{ width: `${pct}%` }}
+                  data-testid="vig-upload-bar"
+                />
+              </div>
+            </>
+          )}
+
+          {phase === 'success' && result && (
+            <div className="mt-5 grid grid-cols-3 gap-3" data-testid="vig-upload-result">
+              {[['New records', result.created], ['Rows updated', result.updated], ['Total processed', result.total]].map(([l, v]) => (
+                <div key={l} className="rounded-xl bg-slate-50 px-3 py-3 text-center">
+                  <div className="text-xl font-bold text-[#0b1f3b] tabular-nums">{v ?? 0}</div>
+                  <div className="text-[11px] font-medium text-slate-500 mt-0.5">{l}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {phase === 'error' && (
+            <div className="mt-1">
+              <p className="text-sm font-medium text-red-700">{message}</p>
+              {errors?.length > 0 && (
+                <div className="mt-3 max-h-44 overflow-y-auto rounded-lg border border-red-100 bg-red-50/60 divide-y divide-red-100" data-testid="vig-upload-errors">
+                  {errors.slice(0, 50).map((x, i) => (
+                    <div key={i} className="px-3 py-2 text-xs text-red-800">
+                      <span className="font-semibold">Row {x.row}:</span> {x.message}
+                    </div>
+                  ))}
+                  {errors.length > 50 && <div className="px-3 py-2 text-xs text-red-500">+ {errors.length - 50} more…</div>}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {!inProgress && (
+          <div className="flex justify-end gap-2 border-t border-slate-100 bg-slate-50/60 px-7 py-4">
+            <Button onClick={onClose} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg" data-testid="vig-upload-close">
+              {phase === 'success' ? 'Done' : 'Close'}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ===================== Add / Edit / View dialog =====================
+function EntryDialog({ draft, setDraft, onSave, saving, employees, avatarOf }) {
+  if (!draft) return null;
+  const ro = !!draft.readOnly;
+  const isEdit = !!draft.id;
+  const update = (patch) => setDraft({ ...draft, ...patch });
+  const updateBreak = (i, patch) => {
+    const breaks = draft.breaks.map((b, idx) => {
+      if (idx !== i) return b;
+      const nb = { ...b, ...patch };
+      // Total is always auto-derived from From & To (overnight allowed).
+      nb.total = computeBreakTotal(nb.from, nb.to);
+      return nb;
+    });
+    update({ breaks });
+  };
+  const addBreak = () => update({ breaks: [...draft.breaks, { label: `Extra-Break${draft.breaks.length + 1}`, from: '', to: '', total: '' }] });
+  const removeBreak = (i) => update({ breaks: draft.breaks.filter((_, idx) => idx !== i) });
+
+  // ---------- Polished read-only VIEW ----------
+  if (ro) {
+    const metrics = [
+      { icon: LogIn, label: 'System Login', value: draft.system_login, tint: 'text-emerald-600 bg-emerald-50' },
+      { icon: LogOut, label: 'System Logout', value: draft.system_logout, tint: 'text-rose-600 bg-rose-50' },
+      { icon: Microscope, label: 'Total Research Hours', value: draft.total_research_hours, tint: 'text-[#0b1f3b] bg-[#0b1f3b]/[0.07]' },
+      { icon: Coffee, label: 'Total Break Hours', value: draft.total_break_hours, tint: 'text-amber-600 bg-amber-50' },
+    ];
+    return (
+      <Dialog open onOpenChange={(o) => !o && setDraft(null)}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0 bg-white rounded-2xl border-0 shadow-2xl [&>button]:text-white/70 [&>button]:hover:text-white [&>button]:z-10" data-testid="vig-entry-dialog">
+          {/* Header — navy banner */}
+          <div className="relative bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
+            <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">{draft.uploaded_by_name ? 'Vigilance Submission' : 'Vigilance Entry'}</DialogTitle>
+            <div className="mt-3 flex items-start gap-3.5">
+              <BannerAvatar name={draft.target_employee_name} src={avatarOf?.(draft.target_employee_id)} />
+              <div className="min-w-0 flex-1">
+                <div className="text-lg font-bold leading-tight truncate">{draft.target_employee_name || 'Vigilance Entry'}</div>
+                <DialogDescription className="text-[13px] text-white/60 mt-0.5">
+                  {draft.uploaded_by_name ? <>Submitted by <span className="font-semibold text-white/80">{draft.uploaded_by_name}</span> · {draft.date_display || fmtDisplayDate(draft.date)}</> : 'Read-only view of this vigilance entry'}
+                </DialogDescription>
+              </div>
+            </div>
+          </div>
+
+          <div className="px-6 py-5 space-y-5 bg-slate-50/40">
+            {/* Reported employee vs. vigilance submitter context */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <ContextCard icon={User} label="Reported Employee" name={draft.target_employee_name} sub={draft.target_email} avatar={avatarOf?.(draft.target_employee_id) || null} />
+              {draft.uploaded_by_name && (
+                <ContextCard icon={ShieldCheck} label="Vigilance Team Member" name={draft.uploaded_by_name} sub="Submitted by" avatar={avatarOf?.(draft.uploaded_by_employee_id) || null} accent />
+              )}
+              <ContextCard icon={CalendarDays} label="Date" name={draft.date_display || fmtDisplayDate(draft.date)} />
+            </div>
+
+            {/* Metric cards */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {metrics.map(({ icon: Icon, label, value, tint }) => (
+                <div key={label} className="rounded-xl border border-slate-200 bg-white p-3.5">
+                  <div className={`inline-flex h-8 w-8 items-center justify-center rounded-lg ${tint}`}>
+                    <Icon className="w-4 h-4" />
+                  </div>
+                  <div className="mt-2.5 text-[11px] font-medium uppercase tracking-wide text-slate-400 leading-tight">{label}</div>
+                  <div className="mt-0.5 text-lg font-bold text-slate-900 tabular-nums">{value || '—'}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Breaks */}
+            <div>
+              <div className="flex items-center gap-2 mb-2.5">
+                <Clock className="w-4 h-4 text-slate-400" />
+                <h4 className="text-sm font-semibold text-slate-700">Breaks</h4>
+                <span className="text-xs text-slate-400">({draft.breaks.length})</span>
+              </div>
+              {draft.breaks.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/60 px-4 py-6 text-center text-sm text-slate-400">No breaks recorded for this entry.</div>
+              ) : (
+                <div className="rounded-xl border border-slate-200 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                        <th className="text-left px-4 py-2.5">Break</th>
+                        <th className="text-left px-4 py-2.5">From</th>
+                        <th className="text-left px-4 py-2.5">To</th>
+                        <th className="text-right px-4 py-2.5">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {draft.breaks.map((b, i) => (
+                        <tr key={i} className="hover:bg-slate-50/60 transition-colors">
+                          <td className="px-4 py-3 font-medium text-slate-700">{b.label || `Break ${i + 1}`}</td>
+                          <td className="px-4 py-3 text-slate-600 tabular-nums">{b.from || '—'}</td>
+                          <td className="px-4 py-3 text-slate-600 tabular-nums">{b.to || '—'}</td>
+                          <td className="px-4 py-3 text-right">
+                            <span className="inline-flex items-center rounded-md bg-[#0b1f3b]/[0.06] px-2 py-0.5 text-[13px] font-semibold text-[#0b1f3b] tabular-nums">
+                              {b.total || computeBreakTotal(b.from, b.to) || '—'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end px-6 py-4 border-t border-slate-100 bg-white">
+            <Button onClick={() => setDraft(null)} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg px-6" data-testid="vig-dialog-close">Close</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  const fields = [
+    { key: 'system_login', label: 'System Login', hint: '24h e.g. 13:45', ph: '13:45', icon: LogIn, tint: 'text-emerald-600 bg-emerald-50', testid: 'vig-dialog-sys-login' },
+    { key: 'system_logout', label: 'System Logout', hint: '24h e.g. 18:30', ph: '18:30', icon: LogOut, tint: 'text-rose-600 bg-rose-50', testid: 'vig-dialog-sys-logout' },
+    { key: 'total_research_hours', label: 'Total Research Hours', hint: 'HH:MM or HH:MM:SS', ph: '10:00', icon: Microscope, tint: 'text-[#0b1f3b] bg-[#0b1f3b]/[0.07]', testid: 'vig-dialog-research' },
+    { key: 'total_break_hours', label: 'Total Break Hours', hint: 'HH:MM or HH:MM:SS', ph: '01:00', icon: Coffee, tint: 'text-amber-600 bg-amber-50', testid: 'vig-dialog-break' },
+  ];
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && setDraft(null)}>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto p-0 gap-0 bg-white rounded-2xl border-0 shadow-2xl [&>button]:text-white/70 [&>button]:hover:text-white [&>button]:z-10" data-testid="vig-entry-dialog">
+        {/* Header — navy banner */}
+        <div className="relative bg-gradient-to-br from-[#0b1f3b] to-[#132f57] px-6 pt-5 pb-5 text-white">
+          <DialogTitle className="text-[13px] font-semibold uppercase tracking-widest text-white/60">{isEdit ? (draft.uploaded_by_name ? 'Edit Vigilance Submission' : 'Edit Vigilance Entry') : 'Add Vigilance Entry'}</DialogTitle>
+          <div className="mt-3 flex items-start gap-3.5">
+            {draft.target_employee_id
+              ? <BannerAvatar name={draft.target_employee_name} src={avatarOf?.(draft.target_employee_id)} />
+              : <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-white/15 text-white ring-1 ring-white/20"><ShieldCheck className="w-5 h-5" /></div>}
+            <div className="min-w-0 flex-1">
+              <div className="text-lg font-bold leading-tight truncate">{draft.target_employee_name || (isEdit ? 'Vigilance Entry' : 'New Vigilance Entry')}</div>
+              <DialogDescription className="text-[13px] text-white/60 mt-0.5">
+                {draft.uploaded_by_name ? <>Submitted by <span className="font-semibold text-white/80">{draft.uploaded_by_name}</span> · {draft.date_display || fmtDisplayDate(draft.date)}</> : 'Record observational data. Clock times are 24h; durations accept HH:MM or HH:MM:SS.'}
+              </DialogDescription>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-6 py-5 space-y-5 bg-slate-50/40">
+          {/* Employee + Date (add mode) */}
+          {!isEdit && (
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-slate-200 bg-white p-3.5">
+                <Label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"><User className="w-3.5 h-3.5" /> Employee</Label>
+                <Select value={draft.target_employee_id} onValueChange={(v) => update({ target_employee_id: v })}>
+                  <SelectTrigger className="rounded-lg" data-testid="vig-dialog-employee"><SelectValue placeholder="Select employee" /></SelectTrigger>
+                  <SelectContent className="max-h-64">
+                    {employees.map(e => <SelectItem key={e.id} value={e.id}>{e.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white p-3.5">
+                <Label className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5"><CalendarDays className="w-3.5 h-3.5" /> Date</Label>
+                <DatePicker value={draft.date} onChange={(v) => update({ date: v })} className="rounded-lg" data-testid="vig-dialog-date" />
+              </div>
+            </div>
+          )}
+          {isEdit && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <ContextCard icon={User} label="Reported Employee" name={draft.target_employee_name} sub={draft.target_email} avatar={avatarOf?.(draft.target_employee_id) || null} />
+              {draft.uploaded_by_name && (
+                <ContextCard icon={ShieldCheck} label="Vigilance Team Member" name={draft.uploaded_by_name} sub="Submitted by" avatar={avatarOf?.(draft.uploaded_by_employee_id) || null} accent />
+              )}
+              <ContextCard icon={CalendarDays} label="Date" name={draft.date_display || fmtDisplayDate(draft.date)} />
+            </div>
+          )}
+
+          {/* Metric fields */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {fields.map(({ key, label, hint, ph, icon: Icon, tint, testid }) => (
+              <div key={key} className="rounded-xl border border-slate-200 bg-white p-3.5">
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`inline-flex h-7 w-7 items-center justify-center rounded-lg ${tint}`}><Icon className="w-3.5 h-3.5" /></span>
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-semibold text-slate-700 leading-tight">{label}</div>
+                    <div className="text-[10px] text-slate-400 leading-tight">{hint}</div>
+                  </div>
+                </div>
+                <Input value={draft[key]} onChange={(e) => update({ [key]: e.target.value })} placeholder={ph} className="rounded-lg tabular-nums" data-testid={testid} />
+              </div>
+            ))}
+          </div>
+
+          {/* Breaks editor */}
+          <div>
+            <div className="flex items-center justify-between mb-2.5">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-slate-400" />
+                <h4 className="text-sm font-semibold text-slate-700">Breaks</h4>
+                <span className="text-xs text-slate-400">({draft.breaks.length})</span>
+              </div>
+              <Button size="sm" variant="outline" onClick={addBreak} className="h-8 rounded-lg" data-testid="vig-dialog-add-break"><Plus className="w-3.5 h-3.5 mr-1" /> Add Break</Button>
+            </div>
+            <div className="rounded-xl border border-slate-200 overflow-hidden">
+              <div className="grid grid-cols-12 gap-2 bg-slate-50 px-3 py-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                <div className="col-span-4">Break</div>
+                <div className="col-span-3">From</div>
+                <div className="col-span-2">To</div>
+                <div className="col-span-2">Total</div>
+                <div className="col-span-1" />
+              </div>
+              {draft.breaks.length === 0 ? (
+                <div className="px-4 py-6 text-center text-sm text-slate-400">No breaks added. Use “Add Break” to record one.</div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {draft.breaks.map((b, i) => (
+                    <div key={i} className="grid grid-cols-12 gap-2 items-center px-3 py-2.5">
+                      <Input className="col-span-4 h-9 rounded-lg" value={b.label} onChange={(e) => updateBreak(i, { label: e.target.value })} placeholder="Break label" />
+                      <Input className="col-span-3 h-9 rounded-lg tabular-nums" value={b.from || ''} onChange={(e) => updateBreak(i, { from: e.target.value })} placeholder="13:00" />
+                      <Input className="col-span-2 h-9 rounded-lg tabular-nums" value={b.to || ''} onChange={(e) => updateBreak(i, { to: e.target.value })} placeholder="13:15" />
+                      <Input className="col-span-2 h-9 rounded-lg bg-slate-50 text-[#0b1f3b] font-semibold tabular-nums" disabled value={computeBreakTotal(b.from, b.to)} placeholder="auto" title="Auto-calculated: To − From" data-testid={`vig-dialog-break-total-${i}`} />
+                      <button onClick={() => removeBreak(i)} className="col-span-1 flex items-center justify-center text-slate-400 hover:text-red-600 transition-colors" aria-label="Remove break"><X className="w-4 h-4" /></button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 px-6 py-4 border-t border-slate-100 bg-white">
+          <Button variant="outline" onClick={() => setDraft(null)} className="rounded-lg">Cancel</Button>
+          <Button onClick={onSave} disabled={saving} className="bg-[#0b1f3b] hover:bg-[#0b1f3b]/90 rounded-lg px-6" data-testid="vig-dialog-save">
+            {saving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null} Save
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

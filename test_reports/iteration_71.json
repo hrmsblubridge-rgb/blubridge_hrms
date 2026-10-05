@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 71 — BRSF strict star-value validation (backend + frontend) fully verified. Backend: 26/26 pytest scenarios PASSED in /app/backend/tests/test_brsf_validation.py, covering (1) the new `limits` + `validation` payload on all 14 codes (parent min/max/allowed, child.allowed/fixed, monthly range, child_count, instance-driven parents for P06/N01/N02/N05/N07/N08 and N04 = weekly-bucket count, N03/N06 = [0,-3] exact); (2) parent-override rejections for the matrix rows the main agent asked to focus on (P04, P06 beyond child_count, N01 beyond -(instances), N02 beyond -(2*instances), N06 intermediate values, N08 beyond -(4*incidents)); (3) whole-number / NaN / Infinity / string / decimal rejection on P01; (4) manual monthly rejections (P02=6/-1, P03=4/0.5, P04=6) plus a valid P03=3 save + cleanup; (5) weekly rejections (P02 week value=2, P02 all-1 total>5 skipped when <=5 weeks) and a valid 3-week +1 save summing to Final Stars=3; (6) N07 fixed -3 (rejects -1/-2/-4/+3, default = -3, 2 incidents aggregate correctly, delete reduces parent) and N08 fixed -4; (7) invalid historical data flagging — injected override_value=-9 on an N03 line directly in Mongo, verified GET returned the value UNCHANGED plus validation.invalid=true with a reason mentioning Override/-9, then cleared the injection and confirmed the flag disappears. Frontend: HR admin login -> /star-reward -> Employees tab (24 rows for Sep-2026) -> Edit Stars for Adithya Charan -> all 14-row grid rendered. Verified: N03 override dialog uses a Select trigger with exactly two options ['0','-3'] (data-testid=brsf-override-value); P01 override is a number Input with min=0/max=2/step=1 plus the criterion rule hint (brsf-override-rule) 'Full Attendance stars must be between 0 and +2.'; entering 3 triggers exactly that toast error and the save is blocked; P03 manual dialog has NO entry-mode selector and monthly input max=3; P02 has mode selector, monthly max=5, weekly mode renders per-week 0/+1 dropdowns (brsf-manual-week-N) with a live weekly-total-vs-max hint; N07 and N08 instance dialogs pre-fill the star value field with -3 / -4 and the field is both readOnly and disabled. Row totals and Final Stars column unchanged after the rejected save (P01 stayed at +2 system value, override never applied).",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_scenarios_verified": [
+    "GET /api/brsf/stars returns `limits` + `validation` on every one of the 14 lines.",
+    "Parent bounds match matrix: P01=0..2, P02/P04/P05=0..5, P03=0..3, N03/N06 allowed=[0,-3], P06/N01=n*1, N02=n*2, N05=n*3, N07=incidents*3, N08=incidents*4, N04=weekly_buckets.",
+    "Override rejections: P04 6 & -1, P06 span+1 & -1, N01 lo-1 & +1, N02 lo-1, N06 -1/-2/-6/1, N08 lo-1, P01 1.5/'abc'/null/'NaN', Infinity via 1e309.",
+    "Valid overrides: P01=+2 saves; N03=-3 and N03=0 both save; reset endpoints clear override.",
+    "Manual monthly rejections: P02 6 & -1, P03 4 & 0.5, P04 6. Valid P03=3 saves + is returned pre-filled.",
+    "Weekly rejections: P02 week value=2 rejected with '0 or +1' text. Valid 3-week +1 save -> Final Stars = 3.",
+    "N07 accepts only -3 (rejects -1/-2/-4/+3), defaults to -3, 2 incidents aggregate correctly, delete reduces parent. N08 -3 rejected, -4 saves.",
+    "Invalid historical value (N03 override_value=-9 via Mongo) is flagged (validation.invalid=true, reason mentions -9/Override) without being auto-corrected; clearing the injected value clears the flag.",
+    "Frontend: N03 override -> Select with only 0/-3; P01 override -> number Input min=0/max=2/step=1 + rule hint; P03 manual -> no mode selector + monthly max=3; P02 manual -> mode selector + monthly max=5 + weekly per-week Select with live total hint; N07/N08 instance value field is readOnly+disabled and pre-filled to -3/-4.",
+    "Rejected P01=3 save shows toast 'Full Attendance stars must be between 0 and +2.' and does NOT PUT (row Final Stars unchanged).",
+    "Regression smoke: Sep-2026 shows exactly 24 summary rows in Table view; Edit Stars opens the 14-row grid; Auto/Manual/Manually Overridden status badges + Invalid-value badge machinery all rendered as expected."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_brsf_validation.py",
+    "/app/test_reports/pytest/brsf_validation.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "brsf_validation.line_violation() only flags integer-valued overrides that fall outside the range — a stored decimal (e.g. override_value = -2.5) will still be caught because it fails both the range check and the integer check, but the fractional test only runs when the value is IN range; ensure this covers all real-world data patterns (add a dedicated unit test for a fractional in-range value if that pattern is possible in prod).",
+    "BrsfFramework.jsx OverrideDialog uses Number(value) inside Number.isInteger — '1.5' -> 1.5 correctly flagged, but an empty string collapses to 0 and would silently save 0; consider explicitly rejecting empty input.",
+    "InstanceDialog hard-codes the fixedValue fallback to (line.code === 'N07' ? -3 : -4) — if a future N-code is added with a different fixed value, only the limits payload will drive it correctly; safe today.",
+    "BrsfFramework.jsx is now ~808 lines with three dialog components — recommend extracting OverrideDialog/ManualDialog/InstanceDialog into their own files (also noted in iteration_70).",
+    "Existing StarReward.js still ships unreachable dialogs (AutoStarDialog / BulkAutoStarDialog / EditStarsDialog / LeaveAdjustDialog / EntryOverrideDialog) — dead code from the iteration_70 cleanup that is safe to prune."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_brsf_validation.py (new)"
+  ],
+  "success_rate": { "backend": "100% (26/26, 1 skipped when <6 weekly buckets)", "frontend": "100% (all dialog + read-only + rule-hint checks passed)" },
+  "test_credentials": "admin / HrAdmin786$ (HR Admin, pinned)",
+  "seed_data_creation": "During test_flag_n03_out_of_range the N03 line for the first eligible Sep-2026 employee (Adithya Charan) had override_value temporarily set to -9 in Mongo and then $unset in the same test's finally block — verified reverted at teardown. TestValidOverrides and TestManualEntryValidation transiently set P01=+2 override, P03=3 monthly, P02 weekly = [1,1,1] and then reset/zeroed them within the same test. TestInstanceValidation added 2xN07 and 1xN08 test instances and DELETE'd each one before finishing. No residual data.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Full BRSF strict-validation regression file at /app/backend/tests/test_brsf_validation.py — reuse for future BRSF matrix changes. Run with `REACT_APP_BACKEND_URL=<preview> MONGO_URL=<from /app/backend/.env> DB_NAME=hrms_blubridge pytest backend/tests/test_brsf_validation.py -v` (needs both env vars because the invalid-data-flag test injects via pymongo directly). Iteration_70's test_brsf_cleanup.py remains the eligibility/idempotency regression file. UI dialog testids to reuse: brsf-override-value, brsf-override-rule, brsf-manual-mode, brsf-manual-monthly-value, brsf-manual-week-<N>, brsf-manual-weekly-rule, brsf-instance-value, brsf-invalid-<CODE>.",
+  "rca of the issue": "N/A — all matrix rows validated end-to-end. One flaky path fixed during test authoring: Motor client is session-scoped to a single event loop, so directly injecting invalid data through `server.db` from a new loop raised 'attached to a different loop'. Switched the flagging test to a synchronous pymongo client which reads MONGO_URL/DB_NAME from env — no impact on the app code."
+}

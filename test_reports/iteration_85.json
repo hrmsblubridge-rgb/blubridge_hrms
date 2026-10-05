@@ -1,0 +1,28 @@
+{
+  "summary": "Frontend-only verification of the redesigned Operational Vigilance Report at /vigilance (admin) and /employee/vigilance (vigilance employee). All redesign elements are present and functional: breadcrumb 'Vigilance / Operational Report', shield-icon page header, 2-row filter card with Reset, action toolbar (Filter primary, Download Sample Template / Upload Filled Sheet / Add Entry / Export / Help Guide secondary), 4 summary cards (Total Records=1113, Employees=51, Date Range=01-Sep-2026 → 24-Sep-2026, Research Entries=681 admin / 594 own), merged admin table with per-uploader break groups, grouped 'Employee / Attendance / Vigilance-Research' headers on own view, avatars w/ initials, icon row-actions (View/Edit/Delete) with tooltips, and pagination reading 'Showing X to Y of Z records'. All required data-testids are present. Interactive flows (filter, sort, pagination, rows-per-page radix select, Add/View/Edit/Delete dialogs, Help dropdown, employee-name clear) all work. Vigilance employee madhan.s sees the own-table with grouped headers and User Guide button. Normal user 'user/pass123' is correctly redirected away from both /vigilance and /employee/vigilance (no data leak). Mobile 390px layout stacks filters, wraps action buttons, and has no horizontal overflow (scrollWidth==innerWidth). Only 403 console noise is from unrelated notification-bell polling before login (pre-existing, not caused by this redesign).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {"flow": "Reset filter button", "issue": "After changing rows-per-page to 50 and navigating to page 2, clicking vig-reset-btn reloads data with defaults (dates/dept/desig/team) but the pagination state (current page and rows-per-page) is NOT reset — record-count text still read 'Showing 51 to 100 of 1,113 records' after Reset instead of 'Showing 1 to 25'. Minor UX inconsistency; filter values themselves reset correctly.", "affected_selectors": ["vig-reset-btn","vig-record-count","vig-rows-per-page"]}
+    ],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [
+    "(Optional/minor) On vig-reset-btn click, also reset page index to 1 and rows-per-page to the default (25) so the pagination text matches the new default filters.",
+    "(Housekeeping) Vigilance employee passwords (madhan.s / dinesh.t) drifted again in this environment — I resynced them to Vigil@123 (SHA256, method=agent_rbac_test_resync) so testing could proceed. Main agent may want to make the seed idempotent to stop the drift, per the note in /app/memory/test_credentials.md."
+  ],
+  "critical_code_review_comments": [
+    "OperationalVigilance.js is 1257 lines — exceeds the >700-line threshold. Consider splitting SummaryCards, AdminMergedTable, VigilanceOwnTable, EntryDialog, PaginationBar, UploadProgressOverlay into their own files under /components/vigilance/ to improve maintainability.",
+    "Reset handler should also reset page/pageSize state, not just filter fields."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (not tested per request)", "frontend": "98%"},
+  "test_credentials": "admin/HrAdmin@2109 (works). madhan.s and dinesh.t had drifted — resynced to Vigil@123 via mongo SHA256 during this run. user/pass123 correctly denied.",
+  "seed_data_creation": "None. Only password resync for madhan.s and dinesh.t (data-level, existing accounts).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All redesign data-testids exist and work. If /employee/vigilance login fails as madhan.s/dinesh.t, resync passwords via python + hashlib.sha256('Vigil@123').hexdigest() into users.password_hash — this is expected drift per test_credentials.md. Ignore the pre-login 403s on notification-bell endpoints (unrelated to vigilance).",
+  "rca of the issue": "Reset button only clears filter state (employee/dates/dropdowns) and refetches, but the pagination reducer keeps the last page/pageSize, so if the user was on page 2 with 50/page before Reset, the UI still reads 'Showing 51 to 100' post-reset even though the underlying dataset was reloaded from defaults."
+}

@@ -1,0 +1,20806 @@
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Query, UploadFile, File as FastAPIFile, Body, Request, BackgroundTasks
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.responses import StreamingResponse
+from dotenv import load_dotenv
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+import os
+import logging
+import asyncio
+import re
+import base64
+import math
+from pathlib import Path
+from pydantic import BaseModel, Field, ConfigDict, EmailStr
+from typing import List, Optional, Literal
+import uuid
+from datetime import datetime, timezone, timedelta
+import jwt
+import hashlib
+import cloudinary
+import cloudinary.utils
+import cloudinary.uploader
+import resend
+import time
+import io
+import csv
+import openpyxl
+import settings_module
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / '.env')
+
+# Indian Standard Time (IST) - UTC+5:30
+IST = timezone(timedelta(hours=5, minutes=30))
+
+def get_ist_now():
+    """Get current datetime in Indian Standard Time"""
+    return datetime.now(IST)
+
+def get_ist_today():
+    """Get today's date string in IST (format: DD-MM-YYYY)"""
+    return get_ist_now().strftime("%d-%m-%Y")
+
+# ============================================================
+# Cross-midnight attendance handling (configurable)
+# ------------------------------------------------------------
+# Punches occurring at or before CROSS_MIDNIGHT_THRESHOLD_MINUTES
+# (minutes since midnight, default 300 = 05:00 AM) are treated as
+# belonging to the PREVIOUS working day (i.e., the OUT punch of an
+# overnight shift). Punches after the threshold are treated as
+# belonging to their own calendar date (a new working day).
+# Configure via env var CROSS_MIDNIGHT_THRESHOLD_MINUTES.
+# ============================================================
+CROSS_MIDNIGHT_THRESHOLD_MINUTES = int(os.environ.get("CROSS_MIDNIGHT_THRESHOLD_MINUTES", "300"))
+
+def get_effective_attendance_date(punch_dt: datetime) -> str:
+    """Return DD-MM-YYYY attendance date for a punch, handling cross-midnight.
+
+    If the punch time is at or before the configured threshold, the punch is
+    attributed to the previous calendar day. Otherwise, its own calendar day.
+    """
+    minutes_since_midnight = punch_dt.hour * 60 + punch_dt.minute
+    effective = punch_dt - timedelta(days=1) if minutes_since_midnight <= CROSS_MIDNIGHT_THRESHOLD_MINUTES else punch_dt
+    return effective.strftime("%d-%m-%Y")
+
+def attendance_shift_offset(time_24h: str) -> Optional[int]:
+    """Compute shift-time offset in minutes for an HH:MM time string.
+
+    Times at or before the cross-midnight threshold are treated as occurring
+    in the NEXT calendar day relative to the effective attendance date, so
+    their offset is minutes_since_midnight + 1440. This allows MIN/MAX
+    comparisons to correctly identify IN (earliest in shift) and OUT
+    (latest in shift) across cross-midnight shifts.
+    """
+    if not time_24h:
+        return None
+    try:
+        hours, minutes = map(int, time_24h.split(":"))
+    except (ValueError, AttributeError):
+        return None
+    mins = hours * 60 + minutes
+    if mins <= CROSS_MIDNIGHT_THRESHOLD_MINUTES:
+        return mins + 1440
+    return mins
+
+def is_sunday_ddmmyyyy(date_str: str) -> bool:
+    """Return True if a DD-MM-YYYY date string falls on a Sunday."""
+    if not date_str:
+        return False
+    try:
+        d = datetime.strptime(date_str, "%d-%m-%Y")
+        return d.weekday() == 6
+    except (ValueError, TypeError):
+        return False
+
+# Temporary onboarding-skip window. New employees created within this
+# window (inclusive of both endpoints, evaluated in IST) are auto-approved
+# so they can log in and land directly on the employee dashboard without
+# going through the onboarding flow. Outside this window the standard
+# onboarding flow auto-resumes (no further code changes needed).
+# --------------------------------------------------------------------------
+# TEMPORARY DOCUMENT-VERIFICATION BYPASS (14-day window)
+# --------------------------------------------------------------------------
+# During this window, NEWLY CREATED employees skip the mandatory document
+# upload onboarding gate and get direct dashboard access. The bypass is
+# surfaced on the user record as `documents_bypassed_until` so the frontend
+# can also hide the "My Documents" menu / block the route. After the end
+# date the original behaviour resumes automatically — no manual rollback
+# required. Existing employees (created outside the window) are NOT touched.
+# To extend or shorten this window, change the two dates below.
+ONBOARDING_SKIP_WINDOW_START = datetime(2026, 5, 8, 0, 0, 0, tzinfo=IST)
+ONBOARDING_SKIP_WINDOW_END = datetime(2026, 5, 22, 23, 59, 59, tzinfo=IST)
+
+def should_skip_onboarding_now() -> bool:
+    """Return True if the current IST time falls within the temporary
+    skip-onboarding window."""
+    now = get_ist_now()
+    return ONBOARDING_SKIP_WINDOW_START <= now <= ONBOARDING_SKIP_WINDOW_END
+
+def add_hours_to_24h(time_24h: str, hours: float) -> Optional[str]:
+    """Return HH:MM string for time_24h + hours (wraps modulo 24)."""
+    if not time_24h or hours is None:
+        return None
+    try:
+        h, m = map(int, time_24h.split(":"))
+    except (ValueError, AttributeError):
+        return None
+    total_minutes = (h * 60 + m + int(round(float(hours) * 60))) % (24 * 60)
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+# MongoDB connection
+mongo_url = os.environ['MONGO_URL']
+client = AsyncIOMotorClient(
+    mongo_url,
+    serverSelectionTimeoutMS=10000,
+    connectTimeoutMS=10000,
+    retryWrites=True,
+    retryReads=True,
+    maxPoolSize=50,
+    minPoolSize=5
+)
+db = client[os.environ['DB_NAME']]
+
+# JWT Configuration
+# SECURITY: JWT secret comes from the environment (never hardcoded in code).
+# Deploy-safe fallback: if JWT_SECRET is not set on the host (e.g. Render env
+# vars not yet configured), derive a deterministic secret from MONGO_URL —
+# secret material that is already private, stable across restarts/instances,
+# and never committed to the repo. Setting JWT_SECRET explicitly always wins.
+JWT_SECRET = os.environ.get('JWT_SECRET')
+if not JWT_SECRET:
+    import hashlib as _hl
+    JWT_SECRET = _hl.sha256(f"hrms-jwt-v1::{os.environ['MONGO_URL']}".encode()).hexdigest()
+    logging.getLogger(__name__).warning(
+        "JWT_SECRET env var not set — using a secret derived from MONGO_URL. "
+        "Set JWT_SECRET explicitly in the deployment environment for best practice."
+    )
+JWT_ALGORITHM = "HS256"
+# Short-lived access tokens + long-lived ROTATING refresh tokens.
+# No sliding expiration: protected API calls never extend token validity.
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get('ACCESS_TOKEN_EXPIRE_MINUTES', '10'))
+REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get('REFRESH_TOKEN_EXPIRE_DAYS', '7'))
+
+# ---------------------------------------------------------------------------
+# SLIDING INACTIVITY TIMEOUT (server-side authority)
+# A session dies after this many minutes with NO authenticated activity. Real
+# API calls slide the window forward; background polls do NOT (see
+# NON_ACTIVITY_PATHS) so an idle open tab cannot keep a session alive.
+# ---------------------------------------------------------------------------
+INACTIVITY_TIMEOUT_MINUTES = int(os.environ.get('INACTIVITY_TIMEOUT_MINUTES', '30'))
+ACTIVITY_TOUCH_THROTTLE_SECONDS = 60
+INACTIVITY_MESSAGE = (
+    f"Your session expired due to {INACTIVITY_TIMEOUT_MINUTES} minutes of inactivity. "
+    "Please log in again."
+)
+# Requests fired by timers/widgets rather than by the user.
+NON_ACTIVITY_PATHS = {
+    "/api/notifications/unread-count",
+    "/api/dashboard/birthdays",
+}
+
+# Cloudinary Configuration
+cloudinary.config(
+    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.environ.get("CLOUDINARY_API_KEY"),
+    api_secret=os.environ.get("CLOUDINARY_API_SECRET"),
+    secure=True
+)
+
+# Resend Configuration
+resend.api_key = os.environ.get("RESEND_API_KEY")
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
+
+# HRMS automated email system (centralized)
+from email_service import ensure_email_indexes as _ensure_email_indexes, ensure_cron_settings_seed as _ensure_cron_settings_seed, absolute_url  # noqa: E402
+from email_jobs import start_email_scheduler as _start_email_scheduler, get_job_handlers as _get_email_job_handlers, JOB_META as _CRON_JOB_META  # noqa: E402
+
+# Create the main app
+app = FastAPI(title="BluBridge HRMS API")
+api_router = APIRouter(prefix="/api")
+security = HTTPBearer()
+
+# Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# ============== ENUMS ==============
+
+class UserRole:
+    HR = "hr"
+    SYSTEM_ADMIN = "system_admin"
+    OFFICE_ADMIN = "office_admin"
+    EMPLOYEE = "employee"
+
+# Role permission groups for authorization checks
+ADMIN_ROLES = ["hr"]  # Full write/approve/delete access
+ALL_ADMIN_ROLES = ["hr", "system_admin", "office_admin"]  # View access to admin pages
+SYSTEM_ROLES = ["hr", "system_admin"]  # System management (audit logs, roles, settings)
+
+def require_admin(user):
+    """Check if user has full admin (HR) access"""
+    if user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient permissions. HR access required.")
+
+def require_any_admin(user):
+    """Check if user has any admin role (view access)"""
+    if user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient permissions. Admin access required.")
+
+def require_system_admin(user):
+    """Check if user has system admin access"""
+    if user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Insufficient permissions. System admin access required.")
+
+class EmploymentType:
+    FULL_TIME = "Full-time"
+    PART_TIME = "Part-time"
+    CONTRACT = "Contract"
+    INTERN = "Intern"
+
+class EmployeeStatus:
+    ACTIVE = "Active"
+    INACTIVE = "Inactive"
+    RESIGNED = "Resigned"
+
+class TierLevel:
+    JUNIOR = "Junior"
+    MID = "Mid"
+    SENIOR = "Senior"
+    LEAD = "Lead"
+
+class WorkLocation:
+    REMOTE = "Remote"
+    OFFICE = "Office"
+    HYBRID = "Hybrid"
+
+# ============== SHIFT CONFIGURATION ==============
+
+# Predefined shift timings (24-hour format for calculations)
+SHIFT_DEFINITIONS = {
+    "General": {
+        "login_time": "10:00",  # 10:00 AM
+        "logout_time": "21:00",  # 9:00 PM
+        "total_hours": 11,
+        "description": "Standard shift (10:00 AM - 9:00 PM)"
+    },
+    "Morning": {
+        "login_time": "06:00",  # 6:00 AM
+        "logout_time": "14:00",  # 2:00 PM
+        "total_hours": 8,
+        "description": "Morning shift (6:00 AM - 2:00 PM)"
+    },
+    "Evening": {
+        "login_time": "14:00",  # 2:00 PM
+        "logout_time": "22:00",  # 10:00 PM
+        "total_hours": 8,
+        "description": "Evening shift (2:00 PM - 10:00 PM)"
+    },
+    "Night": {
+        "login_time": "22:00",  # 10:00 PM
+        "logout_time": "06:00",  # 6:00 AM (next day)
+        "total_hours": 8,
+        "description": "Night shift (10:00 PM - 6:00 AM)"
+    },
+    "Flexible": {
+        "login_time": None,  # No fixed time
+        "logout_time": None,
+        "total_hours": 8,
+        "description": "Flexible shift (8 hours required, no fixed time)"
+    },
+    "Custom": {
+        "login_time": None,  # Set by admin per employee
+        "logout_time": None,
+        "total_hours": None,  # Auto-calculated
+        "description": "Custom shift (admin-defined timings)"
+    }
+}
+
+class AttendanceStatus:
+    PRESENT = "Present"
+    LATE_LOGIN = "Late Login"
+    EARLY_OUT = "Early Out"
+    LOSS_OF_PAY = "Loss of Pay"
+    LEAVE = "Leave"
+    ABSENT = "Absent"
+    NOT_LOGGED = "Not Logged"
+    LOGIN = "Login"
+    COMPLETED = "Completed"
+    SUNDAY = "Sunday"
+    WORKED_ON_SUNDAY = "Worked on Sunday"
+
+# ============== ONBOARDING ENUMS ==============
+
+class OnboardingStatus:
+    NOT_STARTED = "not_started"  # No documents uploaded yet (derived)
+    PENDING = "pending"  # Employee created, not started onboarding (legacy)
+    IN_PROGRESS = "in_progress"  # Employee has started uploading docs (legacy)
+    UNDER_REVIEW = "under_review"  # Docs uploaded, awaiting HR review ("Pending")
+    APPROVED = "approved"  # All required docs verified by HR
+    REJECTED = "rejected"  # A required doc rejected, needs re-upload
+
+class DocumentStatus:
+    NOT_UPLOADED = "not_uploaded"
+    UPLOADED = "uploaded"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+
+class DocumentType:
+    AADHAAR_CARD = "aadhaar_card"
+    PAN_CARD = "pan_card"
+    PASSPORT = "passport"
+    VOTER_ID = "voter_id"
+    EDUCATION = "education"
+    EXPERIENCE = "experience"
+    OFFER_LETTER = "offer_letter"
+    RELIEVING_LETTER = "relieving_letter"
+    PHOTO = "photo"
+
+REQUIRED_DOCUMENTS = [
+    {"type": DocumentType.AADHAAR_CARD, "label": "Aadhaar Card", "required": True},
+    {"type": DocumentType.PAN_CARD, "label": "PAN Card", "required": True},
+    {"type": DocumentType.PASSPORT, "label": "Passport", "required": False},
+    {"type": DocumentType.VOTER_ID, "label": "Voter ID", "required": False},
+    {"type": DocumentType.EDUCATION, "label": "Education Certificates", "required": True},
+    {"type": DocumentType.EXPERIENCE, "label": "Experience Certificates", "required": False},
+    {"type": DocumentType.OFFER_LETTER, "label": "Offer / Appointment Letter", "required": False},
+    {"type": DocumentType.RELIEVING_LETTER, "label": "Relieving Letter", "required": False},
+    # NOTE (2026-05-20): Passport-size Photograph removed from onboarding —
+    # the employee's profile picture (avatar) already serves this purpose and
+    # is managed from the Employee Profile page. Old `photo` rows in
+    # `onboarding_documents` are pruned on startup (see _prune_onboarding_photo_docs).
+]
+
+
+def derive_onboarding_status(documents: list) -> str:
+    """Single source of truth for an employee's onboarding/verification status,
+    derived PURELY from their actual `onboarding_documents`. This eliminates the
+    long-standing data-integrity bug where employees with ZERO uploaded documents
+    were stored/shown as "Approved" (e.g. via the now-expired skip-onboarding
+    bypass window).
+
+    Mapping (per HR spec):
+      • No document activity at all          -> NOT_STARTED
+      • Any REQUIRED document rejected        -> REJECTED
+      • All REQUIRED documents verified       -> APPROVED
+      • Otherwise (uploaded / mixed / pending)-> UNDER_REVIEW ("Pending")
+    """
+    required_types = [d["type"] for d in REQUIRED_DOCUMENTS if d.get("required")]
+    by_type = {}
+    for d in (documents or []):
+        by_type[d.get("document_type")] = (d.get("status") or DocumentStatus.NOT_UPLOADED)
+
+    req_statuses = [by_type.get(t, DocumentStatus.NOT_UPLOADED) for t in required_types]
+    any_activity = any(
+        (d.get("status") in (DocumentStatus.UPLOADED, DocumentStatus.VERIFIED, DocumentStatus.REJECTED))
+        for d in (documents or [])
+    )
+
+    if any(s == DocumentStatus.REJECTED for s in req_statuses):
+        return OnboardingStatus.REJECTED
+    if req_statuses and all(s == DocumentStatus.VERIFIED for s in req_statuses):
+        return OnboardingStatus.APPROVED
+    if not any_activity:
+        return OnboardingStatus.NOT_STARTED
+    return OnboardingStatus.UNDER_REVIEW
+
+
+async def recompute_onboarding_status(employee_id: str) -> str:
+    """Recompute the derived onboarding status from live documents and PERSIST it
+    on the `onboarding` record so list/stat/filter queries (which read the stored
+    `status`) stay consistent. NOTE: deliberately does NOT touch
+    `users.onboarding_status` / `employees.onboarding_status` (which gate HRMS
+    access) — this only corrects the Verification view, never revokes access.
+
+    Stickiness (2026-07-15): HR's explicit "Approve Onboarding" click is
+    treated as authoritative. Once an onboarding sits at APPROVED, a
+    subsequent per-document verify/upload will NOT demote it back to
+    UNDER_REVIEW just because an optional-but-required doc (e.g. Education
+    Certificates never uploaded) still fails the strict derive rule. Only a
+    NEW rejection on a required document can pull APPROVED down to REJECTED,
+    matching HR's mental model of "we approved this employee — pending means
+    we haven't decided yet, not that we've already decided but forgot".
+    """
+    if not employee_id:
+        return OnboardingStatus.NOT_STARTED
+    docs = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(50)
+    derived = derive_onboarding_status(docs)
+
+    # Read the current stored status so we can honour a manual APPROVED.
+    current_row = await db.onboarding.find_one(
+        {"employee_id": employee_id}, {"_id": 0, "status": 1}
+    )
+    current_status = (current_row or {}).get("status")
+
+    # Permanent verification lock: an employee explicitly flagged
+    # `verification_completed=True` (e.g. EMP0125 per user mandate 2026-07-23)
+    # is ALWAYS approved — no derivation, sync or rejection may demote them.
+    locked = await db.employees.find_one(
+        {"id": employee_id, "verification_completed": True}, {"_id": 0, "id": 1}
+    )
+    if locked:
+        derived = OnboardingStatus.APPROVED
+
+    # APPROVED is sticky except when a required doc is now REJECTED (safety
+    # override — surface the regression to HR immediately).
+    elif current_status == OnboardingStatus.APPROVED and derived != OnboardingStatus.REJECTED:
+        derived = OnboardingStatus.APPROVED
+
+    await db.onboarding.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"status": derived, "updated_at": get_ist_now().isoformat()}},
+    )
+    return derived
+
+
+# ============== HOLIDAYS DATA ==============
+
+COMPANY_HOLIDAYS_2026 = [
+    {"id": "h1", "name": "New Year's Day", "date": "2026-01-01", "day": "Thursday", "type": "national"},
+    {"id": "h2", "name": "Pongal", "date": "2026-01-15", "day": "Thursday", "type": "regional"},
+    {"id": "h3", "name": "Thiruvalluvar Day", "date": "2026-01-16", "day": "Friday", "type": "regional"},
+    {"id": "h4", "name": "Republic Day", "date": "2026-01-26", "day": "Monday", "type": "national"},
+    {"id": "h5", "name": "Ramzan (Eid ul-Fitr)", "date": "2026-03-21", "day": "Saturday", "type": "religious", "note": "Subject to lunar calendar"},
+    {"id": "h6", "name": "Good Friday", "date": "2026-04-03", "day": "Friday", "type": "religious"},
+    {"id": "h7", "name": "Mahavir Jayanti", "date": "2026-04-03", "day": "Friday", "type": "religious"},
+    {"id": "h8", "name": "Tamil New Year (Puthandu)", "date": "2026-04-14", "day": "Tuesday", "type": "regional"},
+    {"id": "h9", "name": "May Day (Labour Day)", "date": "2026-05-01", "day": "Friday", "type": "national"},
+    {"id": "h10", "name": "Bakrid (Eid ul-Adha)", "date": "2026-05-27", "day": "Wednesday", "type": "religious", "note": "Subject to lunar calendar"},
+    {"id": "h11", "name": "Muharram", "date": "2026-07-06", "day": "Monday", "type": "religious", "note": "Subject to lunar calendar"},
+    {"id": "h12", "name": "Independence Day", "date": "2026-08-15", "day": "Saturday", "type": "national"},
+    {"id": "h13", "name": "Vinayaka Chaturthi", "date": "2026-08-22", "day": "Saturday", "type": "religious"},
+    {"id": "h14", "name": "Gandhi Jayanti", "date": "2026-10-02", "day": "Friday", "type": "national"},
+    {"id": "h15", "name": "Diwali", "date": "2026-11-09", "day": "Monday", "type": "religious"},
+    {"id": "h16", "name": "Christmas Day", "date": "2026-12-25", "day": "Friday", "type": "religious"},
+]
+
+# ============== COMPANY POLICIES ==============
+
+COMPANY_POLICIES = [
+    {
+        "id": "policy_leave",
+        "name": "Notice \u2013 List of Holidays",
+        "category": "HR",
+        "version": "2026.2",
+        "effective_date": "2026-01-01",
+        "applicable_to": "All Employees & Interns",
+        "content": {
+            "overview": "This is to formally notify all employees and interns that the holidays listed below are company-declared holidays for the calendar year 2026.",
+            "sections": [
+                {
+                    "title": "Operating Framework",
+                    "text": "As a research-focused organization, we follow a flexible operating framework to ensure uninterrupted access to research infrastructure and learning environments. Accordingly, the declaration of holidays is for reference and compensation purposes only and does not imply a mandatory office closure.\n\nEmployees and interns may, based on individual preference and project requirements, choose to either avail leave or remain actively engaged in research and learning activities on these days. Those who choose to remain actively engaged shall be eligible for additional compensation, in accordance with the Holiday Work / Extra Pay Policy and the terms governing their respective engagement.\n\nEngagement in research and learning activities on declared holidays is purely voluntary, and no employee or intern is obligated to avail leave on the listed dates."
+                },
+                {
+                    "title": "A. Standard Holidays",
+                    "table": {
+                        "headers": ["Sl. No", "Holiday", "Date", "Day"],
+                        "rows": [
+                            ["1", "New Year's Day", "01-Jan-2026", "Thursday"],
+                            ["2", "Republic Day", "26-Jan-2026", "Monday"],
+                            ["3", "Tamil New Year (Puthandu)", "14-Apr-2026", "Tuesday"],
+                            ["4", "May Day (Labour Day)", "01-May-2026", "Friday"],
+                            ["5", "Independence Day", "15-Aug-2026", "Saturday"],
+                            ["6", "Gandhi Jayanthi", "02-Oct-2026", "Friday"]
+                        ]
+                    }
+                },
+                {
+                    "title": "B. Optional Festival Holiday Bucket",
+                    "text": "Employees and interns may choose any four (4) days only from the list below in a calendar year.",
+                    "table": {
+                        "headers": ["Sl. No", "Festival", "Date", "Day"],
+                        "rows": [
+                            ["1", "Pongal", "15-Jan-2026", "Thursday"],
+                            ["2", "Thiruvallur Day", "16-Jan-2026", "Friday"],
+                            ["3", "Ramzan*", "21-Mar-2026*", "Saturday*"],
+                            ["4", "Mahavir Jayanti", "31-Mar-2026", "Tuesday"],
+                            ["5", "Good Friday", "03-Apr-2026", "Friday"],
+                            ["6", "Bakrid*", "28-May-2026*", "Thursday*"],
+                            ["7", "Muharram*", "06-Jul-2026*", "Monday*"],
+                            ["8", "Vinayaka Chaturthi", "22-Aug-2026", "Saturday"],
+                            ["9", "Diwali", "09-Nov-2026", "Monday"],
+                            ["10", "Christmas Day", "25-Dec-2026", "Friday"]
+                        ]
+                    },
+                    "footer": "* Dates marked are subject to change based on official or lunar calendar announcements."
+                },
+                {
+                    "title": "Mid-Year Joiner Eligibility \u2014 Optional Festival Holiday Bucket",
+                    "text": "For employees and interns joining during the course of the calendar year, eligibility under the Optional Festival Holiday Bucket shall apply on a pro-rated basis according to the date of joining, as set out below. Optional festival holidays may be chosen only from the declared Optional Festival Holiday Bucket, cannot be carried forward, shall lapse if not used within the same calendar year, and remain subject to prior intimation, approval, and organizational requirements. This clarification applies only to the Optional Festival Holiday Bucket and does not affect the Standard Holidays declared by the Company.",
+                    "table": {
+                        "headers": ["Joining Period", "Maximum Optional Festival Holidays Eligible"],
+                        "rows": [
+                            ["01 January to 31 March", "4 Days"],
+                            ["01 April to 30 June", "3 Days"],
+                            ["01 July to 30 September", "2 Days"],
+                            ["01 October to 31 December", "1 Day"]
+                        ]
+                    }
+                },
+                {
+                    "title": "Important Clarification",
+                    "text": "The holiday framework consists of six (6) standard holidays and up to four (4) optional festival holidays in a calendar year, subject to the eligibility framework applicable to mid-year joiners. All holidays are non-mandatory, the office remains accessible for research and learning activities at all times, and this list is issued solely for internal reference and planning purposes, subject to organizational requirements."
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_it",
+        "name": "BluBridge IT and Communication Policy",
+        "category": "Company-wide",
+        "version": "1.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "All employees, contractors, and third-party users who access company systems",
+        "content": {
+            "overview": "This IT and Communication Policy sets forth the guidelines for the proper use of BluBridge information technology (IT) resources, communication tools, and data to ensure the security, privacy, and integrity of company assets. It applies to all employees, contractors, and third-party users who access company systems.",
+            "sections": [
+                {
+                    "title": "1. Purpose",
+                    "items": [
+                        "This IT and Communication Policy sets forth the guidelines for the proper use of BluBridge information technology (IT) resources, communication tools, and data to ensure the security, privacy, and integrity of company assets.",
+                        "It applies to all employees, contractors, and third-party users who access company systems."
+                    ]
+                },
+                {
+                    "title": "2. Scope",
+                    "items": [
+                        "Company-provided devices and IT systems.",
+                        "Network and internet usage.",
+                        "Email and communication platforms.",
+                        "Data security and confidentiality.",
+                        "Social media and public communication.",
+                        "Remote work."
+                    ]
+                },
+                {
+                    "title": "3. Acceptable Use of IT Resources",
+                    "items": [
+                        "Company Devices: All employees are responsible for the security, maintenance, and appropriate use of company-owned devices (laptops, mobile phones, tablets, etc.).",
+                        "Network Access: Employees must use secure login credentials to access company systems and are prohibited from sharing passwords with unauthorized individuals.",
+                        "Software and Applications: Only authorized software approved by BluBridge IT department may be installed on company devices. Use of pirated or unauthorized software is strictly prohibited."
+                    ]
+                },
+                {
+                    "title": "4. Internet and Email Usage",
+                    "items": [
+                        "Internet Access: Employees are granted access to the internet for business-related purposes. Personal use of the internet should be limited and must not interfere with job responsibilities.",
+                        "Email Use: Company-provided email accounts must be used for work-related communications. Employees should not use personal email accounts for business purposes.",
+                        "Prohibited Activities: The following activities are not permitted using company resources — accessing or distributing illegal, offensive, or inappropriate content; engaging in personal business activities or unauthorized file sharing; downloading large files that are not business-related, which could burden network resources."
+                    ]
+                },
+                {
+                    "title": "5. Data Security and Confidentiality",
+                    "items": [
+                        "Data Protection: Employees are responsible for protecting sensitive and confidential company data, including customer information, proprietary materials, and financial records.",
+                        "Password Security: Employees must use strong, unique passwords and enable multi-factor authentication (MFA) where required. Passwords must not be shared or reused across multiple platforms.",
+                        "Confidentiality: Confidential company information must not be disclosed to unauthorized individuals or entities, both inside and outside the organization.",
+                        "Reporting Security Breaches: Any suspected data breach, loss, or theft of company devices or sensitive information must be reported to the IT department immediately."
+                    ]
+                },
+                {
+                    "title": "6. Remote Workers",
+                    "items": [
+                        "Remote Access: Remote workers must use secure methods, such as a Virtual Private Network (VPN), to access the company's network from offsite locations."
+                    ]
+                },
+                {
+                    "title": "7. Social Media and Public Communication",
+                    "items": [
+                        "Social Media Use: Employees are prohibited from posting confidential or proprietary company information on social media platforms. Personal opinions expressed on social media must not be presented as those of BluBridge.",
+                        "Communication with External Parties: Employees must obtain approval before sharing company-related information with the media, clients, or third-party vendors. Any public statements or press releases must be vetted through the appropriate department."
+                    ]
+                },
+                {
+                    "title": "8. Monitoring and Privacy",
+                    "items": [
+                        "Company Rights to Monitor: BluBridge reserves the right to monitor its IT systems, including email, internet use, and company devices, to ensure compliance with this policy and to maintain security. Employees should have no expectation of privacy when using company systems.",
+                        "Data Retention: Emails, files, and other communications may be retained for legal and business purposes. Employees are responsible for managing their email inboxes and other storage systems in accordance with retention policies."
+                    ]
+                },
+                {
+                    "title": "9. Violation of Policy",
+                    "items": [
+                        "Disciplinary Action: Violations of this policy may result in disciplinary action, up to and including termination of employment, as well as potential legal consequences.",
+                        "Reporting Violations: Employees are encouraged to report any suspected violations of this policy to their supervisor or the IT department."
+                    ]
+                },
+                {
+                    "title": "10. Review and Amendments",
+                    "items": [
+                        "This policy will be reviewed annually by the IT and HR departments and updated as necessary to reflect changes in technology, legal requirements, and business needs."
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_research",
+        "name": "BluBridge — HR Induction, Company Conduct & Leave Policy (Research Unit)",
+        "category": "Department",
+        "version": "2.3",
+        "effective_date": "2026-02-12",
+        "applicable_to": "Research Unit",
+        "content": {
+            "overview": "Mandatory HR induction document covering working hours, EOD reporting, leave protocol, company conduct, and reimbursement guidelines for every employee and intern of the Research Unit. Read carefully and acknowledge at the end.",
+            "sections": [
+                {
+                    "title": "1. Working Hours & Productivity Expectations",
+                    "text": "Working Hours Framework",
+                    "items": [
+                        "Total working duration expected per day: 11 hours",
+                        "Active productive learning/research/work engagement: 9 hours 30 minutes",
+                        "Total break duration permitted during the day: 1 hour 30 minutes"
+                    ],
+                    "footer": "Important Clarification: The minimum productive engagement requirement of 9 hours 30 minutes is calculated exclusive of all breaks, lunch, snacks, dinner, and personal downtime. Employees are expected to remain actively involved in learning, research, task execution, collaboration, or company-assigned activities during this duration. The above timings represent the minimum expected standards and should not be interpreted as a restriction on additional productive contribution wherever required by project priorities or learning objectives.",
+                    "table": {
+                        "headers": ["Break", "Window"],
+                        "rows": [
+                            ["Morning Break", "11:00 AM"],
+                            ["Lunch Break", "01:00 PM"],
+                            ["Evening Break", "05:00 PM"],
+                            ["Dinner Break", "09:00 PM"]
+                        ]
+                    }
+                },
+                {
+                    "title": "2. End of Day (EOD) Reporting Policy",
+                    "text": "Mandatory Daily EOD Submission — All employees are required to submit a detailed End of Day (EOD) report via official email communication on every working day without exception.",
+                    "table": {
+                        "headers": ["Field", "Detail"],
+                        "rows": [
+                            ["To", "Manoj"],
+                            ["CC", "Praveen, Kripa & Team"],
+                            ["Submission Timeline", "EOD reports must be submitted before logging off for the day."]
+                        ]
+                    },
+                    "items": [
+                        "Tasks completed",
+                        "Research/work undertaken",
+                        "Learning progress",
+                        "Pending activities",
+                        "Challenges/blockers (if any)",
+                        "Planned priorities for the next working day"
+                    ],
+                    "footer": "Compliance Requirement: Reports must be structured, professional, accurate, and sufficiently detailed. Incomplete, vague, or misleading updates will be treated as non-compliance. Failure to submit EOD reports consistently may impact performance evaluation, accountability assessment, and internal review processes."
+                },
+                {
+                    "title": "3. Leave Communication Format",
+                    "text": "All leave-related communication must strictly follow the below-mentioned formal structure.",
+                    "table": {
+                        "headers": ["Field", "Detail"],
+                        "rows": [
+                            ["To", "Manoj"],
+                            ["CC", "Praveen, Kripa, HR Team"],
+                            ["Subject Line Format", "[Leave Type] – [Full Day/Half Day] – [Date]"],
+                            ["Example", "Sick Leave – Full Day – 12 Feb 2026"]
+                        ]
+                    },
+                    "items": [
+                        "Email opening: \"Hello Sir,\"",
+                        "Type of Leave: (Emergency / Sick / Pre-Planned / Late Coming)",
+                        "Date(s): (Mention exact date or duration)",
+                        "Reason: (Provide a clear, professional, and detailed explanation)",
+                        "Expected Rejoining Time: (If applicable)",
+                        "Closing: \"Kindly approve my request. Thanks & Regards, [Employee Name]\""
+                    ],
+                    "footer": "Important: All details must be complete, accurate, and professionally communicated. Incomplete leave requests may result in delays or rejection of approval. Employees must adhere strictly to the timelines defined under the leave policy."
+                },
+                {
+                    "title": "4. Leave Policy & Attendance Compliance",
+                    "text": "Refer to the table below for the four sanctioned leave categories and their compliance requirements.",
+                    "table": {
+                        "headers": ["Leave Type", "Intimation Window", "Documentation", "Notes"],
+                        "rows": [
+                            ["Emergency Leave (Half / Full Day)", "Intimation must be provided no later than 9:30 AM.", "Supporting documents/evidence mandatory wherever applicable", "Only for unforeseen, urgent, or unavoidable situations"],
+                            ["Sick Leave (Half / Full Day)", "Before 9:00 AM", "Medical documentation is mandatory only when Sick Leave is availed for two (2) or more consecutive days. For Sick Leave of less than two days, documentation is generally not required unless specifically requested by management or HR.", "Employees required to submit medical documentation should ensure that the certificate or supporting documents are authentic, clearly indicate the period of illness, and are submitted promptly to facilitate timely verification and approval."],
+                            ["Pre-Planned Leave (Half / Full Day)", "Minimum of 4 days in advance", "Formal application required", "Subject to managerial approval"],
+                            ["Late Coming (LC)", "Before 10:00 AM (max 10:30 AM)", "Communication must include reason for delay & expected arrival time", "Repeated instances reviewed under performance & discipline policies"]
+                        ]
+                    },
+                    "footer": "Attendance & Productivity Compliance: Employees reporting late shall still be required to complete a minimum of 9 hours 30 minutes of active productive engagement (excluding breaks, lunch, snacks, dinner) AND a minimum total working duration of 11 hours. Upon completion of the above, the day shall be considered a Full Working Day, and salary/stipend eligibility for that day shall remain unaffected, subject to management approval and overall attendance compliance. Half-Day Eligibility: Employees must complete a minimum of 5 hours of productive engagement (excluding breaks and meal durations) to qualify."
+                },
+                {
+                    "title": "Leave Approval Process",
+                    "text": "All leave requests are subject to the following mandatory approval workflow. Leave shall be considered approved only upon completion of all steps below.",
+                    "items": [
+                        "Formal leave email submission",
+                        "HRMS portal update and regularization"
+                    ]
+                },
+                {
+                    "title": "Leave and Attendance Policy Non-Compliance Framework",
+                    "table": {
+                        "headers": ["Instance of Non-Compliance", "Action"],
+                        "rows": [
+                            ["First Instance",  "Warning Notice 1"],
+                            ["Second Instance", "Warning Notice 2 – Final Warning"],
+                            ["Third Instance",  "Termination of Employment/Internship"],
+                        ]
+                    },
+                    "footer": "Note: This framework applies to any failure to adhere to the Leave and Attendance Policy, including prescribed timelines, leave categories, required documentation, email and HRMS submission requirements, and defined communication formats."
+                },
+                {
+                    "title": "5. Company Conduct & Workplace Protocol",
+                    "text": "Salary / Stipend Processing — Salary or stipend shall normally be processed on the 1st day of every month. If the 1st falls on a Sunday or declared holiday, payment shall be processed on the previous working day.",
+                    "items": [
+                        "Workplace Discipline — Sleeping on the office floor or within work premises is strictly prohibited. Employees feeling fatigued are advised to utilize approved break durations responsibly and resume work promptly.",
+                        "Professional Communication — Remain active and reachable on Microsoft Teams and Google Chat during working hours; monitor official channels regularly.",
+                        "Stay logged into Official Email, Microsoft Teams, and HRMS Portal on personal mobile devices for operational accessibility and urgent communication.",
+                        "Attendance Compliance — Biometric attendance punch and attendance register signing are mandatory. Non-compliance may result in attendance discrepancies and payroll processing delays.",
+                        "Device Usage Policy — Mobile phone usage is restricted on the work floor unless officially permitted. Personal devices must be kept in the designated reception/storage area during working hours.",
+                        "Professional Presence & Branding — Update your LinkedIn profile appropriately after joining the organization."
+                    ],
+                    "footer": "Employee Facilities Provided: Lunch, Evening snacks, Dinner, Tea and coffee. These facilities are provided as employee support amenities and shall NOT be considered part of productive working duration."
+                },
+                {
+                    "title": "6. Reimbursement Policy (If Applicable)",
+                    "text": "PG (Paying Guest) Accommodation Reimbursement — Eligibility: Interns. The company may reimburse 50% of PG accommodation expenses, subject to a maximum limit of ₹5,000 per month. Reimbursement is applicable only against valid bills/invoices.",
+                    "table": {
+                        "headers": ["Field", "Detail"],
+                        "rows": [
+                            ["To", "Accounts Team, Front Office"],
+                            ["CC", "HR Team, Kripa, Praveen"],
+                            ["Required attachments", "Expense details, valid supporting bills/invoices, relevant approval references (if applicable)"]
+                        ]
+                    },
+                    "footer": "Compliance Guidelines: Claims must be submitted promptly within the applicable reimbursement cycle."
+                },
+                {
+                    "title": "Acknowledgment & Acceptance",
+                    "text": "I, the undersigned, acknowledge that I have carefully read, understood, and agreed to comply with the BLUBRIDGE HR Induction, Company Conduct, Attendance, and Leave Policy guidelines stated above. I understand that failure to adhere to these policies may result in disciplinary review, performance implications, or administrative action as deemed appropriate by the management.",
+                    "items": [
+                        "Employee Name: _______________________",
+                        "Employee Signature: ____________________",
+                        "Date: ____________________"
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_admin_induction",
+        "name": "Admin Induction Guidelines",
+        "category": "Admin",
+        "version": "1.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "All Employees",
+        "content": {
+            "overview": "Office layout, facilities, communication channels, and admin support guidelines for every BluBridge employee.",
+            "sections": [
+                {
+                    "title": "1. Office Layout",
+                    "items": [
+                        "Employees are introduced to the complete office premises, including parking area, restrooms, cafeteria, mini pantry, and restricted zones.",
+                        "Please ensure you use only the designated areas as permitted."
+                    ]
+                },
+                {
+                    "title": "2. Lunch & Snack Timings",
+                    "items": [
+                        "Beverages (Coffee, Tea, etc.): Available from 11:00 AM in the cafeteria.",
+                        "Lunch: Available from 1:00 PM in the cafeteria.",
+                        "Evening Snack: Available from 5:00 PM in the cafeteria."
+                    ]
+                },
+                {
+                    "title": "3. Food & Snack Guidelines",
+                    "items": [
+                        "Employees are requested to consume food responsibly and adhere to portion guidelines (e.g., limited number of eggs, chicken pieces, etc.) to ensure availability for all."
+                    ]
+                },
+                {
+                    "title": "4. Point of Contact for Issues",
+                    "items": [
+                        "For any concerns, issues, or requirements, please reach out to the Admin Team."
+                    ]
+                },
+                {
+                    "title": "5. Communication Channels",
+                    "items": [
+                        "Connect with the Admin Team through: G Space, Gmail, G Chat.",
+                        "If there is no response online, you may approach the Reception Desk directly."
+                    ]
+                },
+                {
+                    "title": "6. Mobile & Bag Deposit Policy",
+                    "items": [
+                        "All employees are required to deposit mobile phones and bags in the designated cupboards at the reception before entering the work area.",
+                        "These can be accessed during break times if required."
+                    ]
+                },
+                {
+                    "title": "7. Library & Leisure Area",
+                    "items": [
+                        "A dedicated library is available on the 1st floor, containing educational, fiction, and non-fiction books.",
+                        "Employees are encouraged to utilize this space during their leisure time."
+                    ]
+                },
+                {
+                    "title": "8. Stationery Requirements",
+                    "items": [
+                        "For any stationery needs, please raise a request with the Admin Team through the communication channels.",
+                        "Items will be arranged accordingly."
+                    ]
+                },
+                {
+                    "title": "9. Workstation & Facility Support",
+                    "items": [
+                        "For any issues related to chairs, desks, air conditioning, or refreshment areas, the Admin Team will provide prompt support and resolution."
+                    ]
+                },
+                {
+                    "title": "10. IT Support",
+                    "items": [
+                        "For any system or technical issues, please contact the IT Team. The IT Head, Anbu, will assist in resolving all IT-related concerns."
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_support_hr",
+        "name": "Support Team — HR & Leave Policy",
+        "category": "Department",
+        "version": "1.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "Support Staff team",
+        "content": {
+            "overview": "HR Induction, working-hour expectations, EOD reporting, leave format, company protocol and reimbursement rules for the Support team.",
+            "sections": [
+                {
+                    "title": "1. Working Hours Policies",
+                    "items": [
+                        "Total working hours: 10 hours per day",
+                        "Productive learning/work time: 8 hours 30 minutes",
+                        "Break time: 1 hour 30 minutes",
+                        "Productivity Criteria — Minimum learning hours: 8 hours 30 minutes; Total working hours requirement: 10 hours",
+                        "Break Schedule — 1st Break: 11:00 AM | 2nd Break (Lunch): 01:00 PM | 3rd Break: 05:00 PM",
+                        "(Break time can be utilized flexibly within the total allowed duration)"
+                    ]
+                },
+                {
+                    "title": "2. End of Day (EOD) Reporting",
+                    "items": [
+                        "EOD Submission is Mandatory.",
+                        "All employees must submit a detailed End of Day (EOD) report via email on a daily basis without exception.",
+                        "Email Details — To: Manoj | CC: Praveen, Kripa & Team",
+                        "Submission Timeline — EOD must be sent before logging off for the day.",
+                        "Reports must be clear, structured, and detailed.",
+                        "Incomplete or vague updates will be considered non-compliance.",
+                        "Failure to submit EOD may impact performance evaluation and accountability."
+                    ]
+                },
+                {
+                    "title": "3. Leave Email Format",
+                    "items": [
+                        "All leave requests must strictly follow the format below.",
+                        "Email Recipients — To: Manoj | CC: Praveen, Kripa, HR Team",
+                        "Subject Line Format: [Leave Type] – [Full Day/Half Day] – [Date] (e.g. Sick Leave – Full Day – 12 Feb 2026)",
+                        "Email Body should specify: Type of Leave (Emergency / Sick / Pre-Planned / Late Coming), Date(s), Reason.",
+                        "Ensure all details are accurate and complete.",
+                        "Incomplete emails may lead to delay or rejection of leave approval.",
+                        "Must be sent within the defined timelines as per leave policy."
+                    ]
+                },
+                {
+                    "title": "4. Leave Policy",
+                    "items": [
+                        "Emergency Leave (Half/Full Day) — for unforeseen or urgent situations. Must inform via email between 9:45 AM – 10:00 AM. Supporting documents are mandatory.",
+                        "Sick Leave (Half/Full Day) — Email intimation required before 9:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
+                        "Pre-Planned Leave (Half/Full Day) — Must be applied at least 4 days in advance.",
+                        "Late Coming (LC) — Must inform before 10:00 AM (latest by 10:30 AM); should include expected arrival time.",
+                        "Half Day Criteria — Minimum 5 hours of productive work.",
+                        "Leave Approval Process — All leaves must be approved by management (via Teams). Post approval: send email and update in HRMS portal."
+                    ]
+                },
+                {
+                    "title": "5. Company Protocol",
+                    "items": [
+                        "Salary / Stipend — Processed on the 1st day of every month. If the 1st falls on a Sunday or declared holiday, payment is processed on the last working day of the previous month.",
+                        "Workplace Discipline — Sleeping on the floor is strictly prohibited. If feeling drowsy, take a short break and resume work.",
+                        "Communication — Employees must remain active on Teams and Google Chat. All official communication will be shared through these platforms. Official mail, Teams and HRMS must be logged in on personal mobile.",
+                        "Attendance Compliance — Biometric punch and register signing are mandatory. Failure will result in payroll processing issues.",
+                        "Device Policy — Mobile phones are restricted on the work floor; must be kept at the reception area.",
+                        "Professional Presence — Employees must update their LinkedIn profile after joining.",
+                        "Facilities Provided — Lunch, dinner, evening snacks; tea and coffee available."
+                    ]
+                },
+                {
+                    "title": "6. Reimbursement Policy (If Any)",
+                    "items": [
+                        "All reimbursements require prior management approval. No exceptions.",
+                        "Without approval, claims will not be processed.",
+                        "Submission Process — Send email with: Expense details and Valid bills/invoices (mandatory).",
+                        "Email Details — To: Accounts Team, Front Office | CC: HR Team, Kripa, Praveen.",
+                        "Claims must be submitted promptly.",
+                        "Incomplete or unclear submissions will be rejected.",
+                        "Fake or invalid bills will lead to strict disciplinary action."
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_research_hr",
+        "name": "Research Team — HR & Leave Policy",
+        "category": "Department",
+        "version": "1.0",
+        "effective_date": "2026-01-01",
+        "applicable_to": "Research Unit",
+        "content": {
+            "overview": "HR Induction, working-hour expectations (11 hrs), EOD reporting, leave format, company protocol and reimbursement rules (incl. PG accommodation) for the Research team.",
+            "sections": [
+                {
+                    "title": "1. Working Hours Policies",
+                    "items": [
+                        "Total working hours: 11 hours per day",
+                        "Productive learning/work time: 9 hours 30 minutes",
+                        "Break time: 1 hour 30 minutes",
+                        "Productivity Criteria — Minimum learning hours: 9 hours 30 minutes; Total working hours requirement: 11 hours",
+                        "Break Schedule — 1st Break: 11:00 AM | 2nd Break (Lunch): 01:00 PM | 3rd Break: 05:00 PM",
+                        "(Break time can be utilized flexibly within the total allowed duration)"
+                    ]
+                },
+                {
+                    "title": "2. End of Day (EOD) Reporting",
+                    "items": [
+                        "EOD Submission is Mandatory.",
+                        "All employees must submit a detailed End of Day (EOD) report via email on a daily basis without exception.",
+                        "Email Details — To: Manoj | CC: Praveen, Kripa & Team",
+                        "Submission Timeline — EOD must be sent before logging off for the day.",
+                        "Reports must be clear, structured, and detailed.",
+                        "Incomplete or vague updates will be considered non-compliance.",
+                        "Failure to submit EOD may impact performance evaluation and accountability."
+                    ]
+                },
+                {
+                    "title": "3. Leave Email Format",
+                    "items": [
+                        "All leave requests must strictly follow the format below.",
+                        "Email Recipients — To: Manoj | CC: Praveen, Kripa, HR Team",
+                        "Subject Line Format: [Leave Type] – [Full Day/Half Day] – [Date] (e.g. Sick Leave – Full Day – 12 Feb 2026)",
+                        "Email Body should specify: Type of Leave (Emergency / Sick / Pre-Planned / Late Coming), Date(s), Reason.",
+                        "Ensure all details are accurate and complete.",
+                        "Incomplete emails may lead to delay or rejection of leave approval.",
+                        "Must be sent within the defined timelines as per leave policy."
+                    ]
+                },
+                {
+                    "title": "4. Leave Policy",
+                    "items": [
+                        "Emergency Leave (Half/Full Day) — for unforeseen or urgent situations. Must inform via email between 9:45 AM – 10:00 AM. Supporting documents are mandatory.",
+                        "Sick Leave (Half/Full Day) — Email intimation required before 9:00 AM. If unwell earlier, inform in advance. On recovery, reply to the same email thread mentioning rejoining time.",
+                        "Pre-Planned Leave (Half/Full Day) — Must be applied at least 4 days in advance.",
+                        "Late Coming (LC) — Must inform before 10:00 AM (latest by 10:30 AM); should include expected arrival time.",
+                        "Half Day Criteria — Minimum 5 hours of productive work.",
+                        "Leave Approval Process — All leaves must be approved by management (via Teams). Post approval: send email and update in HRMS portal."
+                    ]
+                },
+                {
+                    "title": "5. Company Protocol",
+                    "items": [
+                        "Salary / Stipend — Processed on the 1st day of every month. If the 1st falls on a Sunday or declared holiday, payment is processed on the last working day of the previous month.",
+                        "Workplace Discipline — Sleeping on the floor is strictly prohibited. If feeling drowsy, take a short break and resume work.",
+                        "Communication — Employees must remain active on Teams and Google Chat. All official communication will be shared through these platforms. Official mail, Teams and HRMS must be logged in on personal mobile.",
+                        "Attendance Compliance — Biometric punch and register signing are mandatory. Failure will result in payroll processing issues.",
+                        "Device Policy — Mobile phones are restricted on the work floor; must be kept at the reception area.",
+                        "Professional Presence — Employees must update their LinkedIn profile after joining.",
+                        "Facilities Provided — Lunch, dinner, evening snacks; tea and coffee available."
+                    ]
+                },
+                {
+                    "title": "6. Reimbursement Policy",
+                    "items": [
+                        "PG (Paying Guest) Accommodation Reimbursement — The company will cover 50% of PG accommodation expenses, subject to a maximum limit of ₹5,000 per month. This reimbursement is applicable only with valid bills and prior approval.",
+                        "Submission Process — Send email with: Expense details and Valid bills/invoices (mandatory).",
+                        "Email Details — To: Accounts Team, Front Office | CC: HR Team, Kripa, Praveen.",
+                        "Claims must be submitted promptly.",
+                        "Incomplete or unclear submissions will be rejected.",
+                        "Fake or invalid bills will lead to strict disciplinary action."
+                    ]
+                }
+            ]
+        }
+    },
+    {
+        "id": "policy_research_star",
+        "name": "Star Reward Policy",
+        "category": "Research",
+        "version": "2026.9",
+        "effective_date": "2025-10-23",
+        "applicable_to": "Research Unit",
+        "content": {
+            "overview": "Effective from 23nd October 2025",
+            "sections": [
+                {
+                    "title": "1. Introduction",
+                    "text": "This policy defines the attendance, leave, and performance framework for the Research Unit. It establishes a culture of discipline, accountability, and recognition while maintaining flexibility, research autonomy, and a commitment to continuous learning."
+                },
+                {
+                    "title": "2. Working Hours & Research Discipline",
+                    "text": "Researchers are expected to dedicate a minimum of 9.5 hours daily to active research or learning activities, within a total office presence of 11 hours. Breaks are flexible but must not reduce active engagement below the 9.5-hour threshold. This structure ensures consistent engagement, deep work, and scientific rigor.",
+                    "footer": "Note: Researchers maintaining an average of 10+ hours of active research/learning per day are recognized for exceptional commitment. Any consistent shortfall below the expected threshold will impact star retention and reward eligibility."
+                },
+                {
+                    "title": "3. Leave Notification Rules",
+                    "text": "All leave or late-entry requests must be submitted through HRMS and accompanied by an email to the Super team lead, with CC to team members, HR & Management. Failure to follow both steps will be treated as Uninformed Leave.",
+                    "table": {
+                        "headers": ["Type", "Notification Time", "Proof / Documentation", "Remarks"],
+                        "rows": [
+                            ["Pre-Planned Leave", "Minimum 4 days before leave date", "HRMS entry + Email justification", "Unannounced leave auto-flagged"],
+                            ["Sick Leave", "Before 7:00 AM, same day", "Doctor's note if >2 days", "Late notification auto-deducts stars"],
+                            ["Emergency Leave", "Must inform before 9:00 AM (shift start)", "Valid proof (medical, family emergency, etc.) within 24 hours", "More than 2 per month \u2192 Unsafe Flag"],
+                            ["Late Entry Request", "Must inform before 9:30 AM with estimated arrival", "HRMS update + Email justification to HR Team", "More than 3 late entries per month \u2192 \u22121 Star deduction"],
+                            ["No Show / Unreachable", "Not acceptable", "Not acceptable", "Immediate Unsafe \u2013 Commitment flag; triggers HR review"]
+                        ]
+                    }
+                },
+                {
+                    "title": "4. Star & Attendance Credit System",
+                    "text": "The Blubridge Research Star Framework (BRSF) evaluates performance via punctuality, consistency, innovation, learning, and contribution. Stars are automatically calculated based on attendance, performance, and learning metrics."
+                },
+                {
+                    "title": "4A. Positive Star Metrics",
+                    "table": {
+                        "headers": ["Category", "Event", "Star Effect", "Frequency", "Remarks"],
+                        "rows": [
+                            ["Attendance", "Full 26/26 presence", "+2", "Monthly", "Research consistency"],
+                            ["Performance", "Consistent submission of quality deliverables reviewed positively", "+1", "Weekly", "High-quality execution"],
+                            ["Innovation", "Novel contribution improving research or workflow", "+3", "Monthly", "Recognizes creativity"],
+                            ["Learning", "Completion of assigned learning modules / reports", "+1", "Weekly", "Encourages upskilling"],
+                            ["Attendance", "10+ hours average research engagement", "+1", "Weekly", "Research Excellence Bonus"],
+                            ["Extra Effort", "Worked on Sunday/festival (voluntary)", "+1", "Per Day", "Recognizes dedication"]
+                        ]
+                    }
+                },
+                {
+                    "title": "4B. Negative Star Metrics & Enforcement Triggers",
+                    "table": {
+                        "headers": ["Category / Behavior", "Trigger / Violation", "Star Effect / Flag", "Frequency", "Remarks / System Action"],
+                        "rows": [
+                            ["Invalid Leave Request", "Leave applied late, missing HRMS entry, or no prior email notification", "\u22121 Star", "Per Instance", "Procedural non-compliance"],
+                            ["Emergency Leave Violation", "Emergency leave taken without valid proof or justification within 24 hours", "\u22122 Stars", "Per Instance", "Misuse or unverifiable emergency"],
+                            ["Frequent Emergencies", "More than 2 emergency or late-entry cases per month", "Unsafe Flag (\u22123 Stars)", "Monthly", "Indicates irregular pattern"],
+                            ["Short Research Duration", "Average <9.5 hrs active engagement (without valid reason)", "\u22121 Star", "Weekly", "Partial effort or disengagement"],
+                            ["No Proof / Verification", "Leave claimed, but requested supporting proof not submitted", "\u22123 Star", "Per Instance", "Documentation failure"],
+                            ["Frequent Absences", "More than 4 absences/month", "Unsafe Flag (\u22123 Stars)", "Monthly", "Commitment issue"],
+                            ["No Show / Unreachable", "Unavailable by 10:30 AM without notice", "Unsafe Flag (\u22123 Stars)", "Per Instance", "Immediate HR review"],
+                            ["Unsafe Conduct", "Violation of discipline, ethics, or disruptive behavior", "Unsafe Flag (\u22124 Stars)", "Instant", "Management Review"]
+                        ]
+                    }
+                },
+                {
+                    "title": "Escalation Logic:",
+                    "items": [
+                        "Two Unsafe Flags in two months \u2192 HR Counselling",
+                        "Three Unsafe Flags in a quarter \u2192 Formal Warning",
+                        "Four Unsafe Flags in four months \u2192 Management Review / Assessment"
+                    ]
+                },
+                {
+                    "title": "5. Monthly Rating & Rewards",
+                    "table": {
+                        "headers": ["Stars", "Category", "Reward", "Action"],
+                        "rows": [
+                            ["25+", "Research Premier", "\u20b911,000", "Research Premier Performer"],
+                            ["22-24", "Research Champion", "\u20b99,000", "Champion Performer"],
+                            ["19-21", "Research Outstanding", "\u20b97,000", "Outstanding Performer"],
+                            ["16-18", "Research Excellence", "\u20b95,000", "Top Performer"],
+                            ["9\u201315", "Research Elite", "\u20b93,000", "Consistent Excellence"],
+                            ["6\u20138", "Research Consistent", "\u20b92,000", "Reliable Contributor"],
+                            ["4\u20135", "Satisfactory", "\u20b91,000", "Needs Improvement"],
+                            ["1\u20133", "Needs Improvement", "Counselling", "Performance Mentoring"],
+                            ["\u22640", "Unsafe Behavior", "None", "Disciplinary Review"]
+                        ]
+                    }
+                },
+                {
+                    "title": "6. Recognition Framework",
+                    "text": "Blubridge rewards both individual and team performance through recognition programs. The Recognition Framework complements the star system by rewarding exceptional learning, innovation, and collaboration."
+                },
+                {
+                    "title": "6A. Individual Recognition",
+                    "table": {
+                        "headers": ["Award Title", "Eligibility Criteria (Linked to Stars)", "Reward / Recognition (Voucher/Coupons)"],
+                        "rows": [
+                            ["Research Commitment Award", "26/26 presence with \u22659.5 hrs average research daily", "\u20b94,000"],
+                            ["Learning Champion", "Completion of all learning modules + consistent participation", "\u20b92,000"],
+                            ["Recovery Award", "Improved from Unsafe (\u22640) to Elite (\u226512) within 60 days", "\u20b92,000"]
+                        ]
+                    }
+                },
+                {
+                    "title": "6B. Team Recognition & Rewards",
+                    "table": {
+                        "headers": ["Recognition Type", "Team Criteria", "Reward / Funding Value"],
+                        "rows": [
+                            ["Team Excellence Award", "Highest average team star score (monthly)", "Team Lunch (\u20b95,000)"],
+                            ["Research Cohesion Award", "Zero Unsafe Flags in a quarter", "Team Outing (\u20b910,000)"],
+                            ["Research Exposure Award", "Elite-level average stars (\u22659) for 6 months", "Travel Funding (\u20b925,000)"],
+                            ["Collaboration Award", "Joint completion of research milestones", "Lunch/Dinner (\u20b93,000 per team)"],
+                            ["Research Publish (Team)", "Exceptional research impact / Publications", "Cash Prize for the Team"]
+                        ]
+                    }
+                },
+                {
+                    "title": "7. Declaration",
+                    "text": "This system is designed to reward consistency, not control. Each researcher is accountable for maintaining discipline and research rigor. By acknowledging this policy, employees agree to uphold the standards that define Blubridge's culture of research excellence.",
+                    "footer": "Note: A physical copy of this policy will also be circulated for employee acknowledgment and signature."
+                }
+            ]
+        }
+    }
+]
+
+# ============== MODELS ==============
+
+class User(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    username: str
+    email: str
+    password_hash: str
+    name: str
+    role: str = UserRole.EMPLOYEE
+    employee_id: Optional[str] = None
+    department: Optional[str] = None
+    team: Optional[str] = None
+    onboarding_status: str = OnboardingStatus.PENDING  # NEW: Track onboarding state
+    is_first_login: bool = True  # NEW: Track if first login
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    is_active: bool = True
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginResponse(BaseModel):
+    token: str
+    refresh_token: str
+    user: dict
+
+# Comprehensive Employee Model
+class Employee(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    
+    # Personal Information
+    emp_id: str  # Auto-generated
+    full_name: str
+    official_email: str
+    phone_number: Optional[str] = None
+    gender: Optional[str] = None  # Male, Female, Other
+    date_of_birth: Optional[str] = None
+    
+    # Employment Information
+    custom_employee_id: Optional[str] = None  # Admin-defined Employee ID
+    date_of_joining: str
+    # Paid-Leave eligibility start (set when an Intern is confirmed to a
+    # leave-eligible type). Stored ISO YYYY-MM-DD, same as date_of_joining.
+    confirmation_date: Optional[str] = None
+    employment_type: str = EmploymentType.FULL_TIME
+    employee_status: str = EmployeeStatus.ACTIVE
+    designation: str
+    tier_level: str = TierLevel.MID
+    reporting_manager_id: Optional[str] = None
+    
+    # Organization Structure
+    department: str
+    team: str
+    work_location: str = WorkLocation.OFFICE
+    # Office Location (SSOT — /api/settings/office-locations). Optional /
+    # default empty so existing employee profiles are NEVER broken.
+    office_location: Optional[str] = ""
+    
+    # HR Configuration
+    leave_policy: Optional[str] = "Standard"
+    shift_type: Optional[str] = "General"
+    attendance_tracking_enabled: bool = True
+    
+    # Custom Shift Configuration (only for shift_type = "Custom")
+    custom_login_time: Optional[str] = None  # Format: "HH:MM" (24-hour)
+    custom_logout_time: Optional[str] = None  # Format: "HH:MM" (24-hour)
+    custom_total_hours: Optional[float] = None  # Auto-calculated from times
+    
+    # Salary Configuration (for payroll)
+    monthly_salary: Optional[float] = 0.0
+    
+    # System Access
+    user_role: str = UserRole.EMPLOYEE
+    login_enabled: bool = True
+    biometric_id: Optional[str] = None  # For biometric device mapping
+    
+    # Legacy fields for compatibility
+    avatar: Optional[str] = None
+    stars: int = 0
+    unsafe_count: int = 0
+    
+    # Onboarding fields
+    onboarding_status: str = OnboardingStatus.PENDING
+    onboarding_completed_at: Optional[datetime] = None
+    
+    # Soft delete
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
+    
+    # Timestamps
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class EmployeeCreate(BaseModel):
+    # Personal Information
+    full_name: str
+    official_email: str
+    phone_number: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    
+    # Employment Information
+    custom_employee_id: Optional[str] = None  # Admin-defined Employee ID
+    date_of_joining: str
+    confirmation_date: Optional[str] = None
+    employment_type: str = EmploymentType.FULL_TIME
+    designation: str
+    tier_level: str = TierLevel.MID
+    reporting_manager_id: Optional[str] = None
+    
+    # Organization Structure
+    department: str
+    team: str
+    work_location: str = WorkLocation.OFFICE
+    office_location: Optional[str] = ""
+    
+    # HR Configuration
+    leave_policy: Optional[str] = "Standard"
+    shift_type: Optional[str] = "General"
+    attendance_tracking_enabled: bool = True
+    
+    # Custom Shift Configuration
+    custom_login_time: Optional[str] = None
+    custom_logout_time: Optional[str] = None
+    custom_total_hours: Optional[float] = None
+    
+    # Salary Configuration
+    monthly_salary: Optional[float] = 0.0
+    
+    # System Access
+    user_role: str = UserRole.EMPLOYEE
+    login_enabled: bool = True
+    biometric_id: Optional[str] = None  # For biometric device mapping
+
+class EmployeeUpdate(BaseModel):
+    # Personal Information
+    full_name: Optional[str] = None
+    official_email: Optional[str] = None
+    phone_number: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    
+    # Employment Information
+    custom_employee_id: Optional[str] = None
+    date_of_joining: Optional[str] = None
+    confirmation_date: Optional[str] = None
+    employment_type: Optional[str] = None
+    employee_status: Optional[str] = None
+    designation: Optional[str] = None
+    tier_level: Optional[str] = None
+    reporting_manager_id: Optional[str] = None
+    
+    # Organization Structure
+    department: Optional[str] = None
+    team: Optional[str] = None
+    work_location: Optional[str] = None
+    office_location: Optional[str] = None
+    
+    # HR Configuration
+    leave_policy: Optional[str] = None
+    shift_type: Optional[str] = None
+    attendance_tracking_enabled: Optional[bool] = None
+    
+    # Custom Shift Configuration
+    custom_login_time: Optional[str] = None
+    custom_logout_time: Optional[str] = None
+    custom_total_hours: Optional[float] = None
+    
+    # Salary Configuration
+    monthly_salary: Optional[float] = None
+    
+    # System Access
+    user_role: Optional[str] = None
+    login_enabled: Optional[bool] = None
+    biometric_id: Optional[str] = None
+
+class Attendance(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    team: str
+    department: str
+    date: str
+    check_in: Optional[str] = None  # Time in "HH:MM AM/PM" format
+    check_out: Optional[str] = None  # Time in "HH:MM AM/PM" format
+    check_in_24h: Optional[str] = None  # Time in "HH:MM" 24-hour format for calculations
+    check_out_24h: Optional[str] = None  # Time in "HH:MM" 24-hour format for calculations
+    total_hours: Optional[str] = None
+    total_hours_decimal: Optional[float] = None  # For precise calculations
+    status: str = "Not Logged"
+    is_lop: bool = False  # Loss of Pay flag
+    lop_reason: Optional[str] = None  # Reason for LOP
+    shift_type: Optional[str] = "General"  # Employee's shift at time of attendance
+    expected_login: Optional[str] = None  # Expected login time based on shift
+    expected_logout: Optional[str] = None  # Expected logout time based on shift
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class LeaveRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    team: str
+    department: str
+    leave_type: str
+    leave_split: str = "Full Day"  # Full Day, First Half, Second Half
+    start_date: str
+    end_date: str
+    duration: str
+    reason: Optional[str] = None
+    supporting_document_url: Optional[str] = None
+    supporting_document_name: Optional[str] = None
+    status: str = "pending"
+    is_lop: Optional[bool] = None  # Set by admin on approval: True=LOP, False=No LOP
+    lop_remark: Optional[str] = None
+    # Paid Leave (checkbox model, 2026-06): a leave of ANY type can be flagged
+    # "Consider as Paid Leave". paid_leave_amount is the reserved/consumed days
+    # (1 full, 0.5 half). reservation_status: reserved | finalized | released.
+    consider_as_paid_leave: Optional[bool] = False
+    paid_leave_amount: Optional[float] = None
+    paid_leave_reservation_status: Optional[str] = None
+    approved_by: Optional[str] = None
+    applied_by_admin: Optional[bool] = False
+    # Captures any non-standard columns from bulk imports (extended attributes).
+    # Additive — does not affect existing leave flows.
+    extra_data: Optional[dict] = None
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class LeaveRequestCreate(BaseModel):
+    employee_id: str
+    leave_type: str
+    leave_split: str = "Full Day"
+    start_date: str
+    end_date: str
+    reason: Optional[str] = None
+    supporting_document_url: Optional[str] = None
+    supporting_document_name: Optional[str] = None
+    is_lop: Optional[bool] = None
+    auto_approve: Optional[bool] = False
+    consider_as_paid_leave: Optional[bool] = False
+
+# ============== LATE REQUEST / EARLY OUT / MISSED PUNCH MODELS ==============
+
+class LateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    team: str
+    department: str
+    date: str  # YYYY-MM-DD
+    expected_time: Optional[str] = None
+    actual_time: Optional[str] = None
+    reason: str
+    status: str = "pending"  # pending, approved, rejected
+    is_lop: Optional[bool] = None
+    lop_remark: Optional[str] = None
+    approved_by: Optional[str] = None
+    applied_by_admin: Optional[bool] = False
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class LateRequestCreate(BaseModel):
+    employee_id: Optional[str] = None  # For admin applying on behalf
+    date: str
+    expected_time: Optional[str] = None
+    actual_time: Optional[str] = None
+    reason: str
+    is_lop: Optional[bool] = None
+    auto_approve: Optional[bool] = False
+
+class EarlyOutRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    team: str
+    department: str
+    date: str
+    actual_time: Optional[str] = None
+    reason: str
+    status: str = "pending"
+    is_lop: Optional[bool] = None
+    lop_remark: Optional[str] = None
+    approved_by: Optional[str] = None
+    applied_by_admin: Optional[bool] = False
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class EarlyOutRequestCreate(BaseModel):
+    employee_id: Optional[str] = None
+    date: str
+    actual_time: Optional[str] = None
+    reason: str
+    is_lop: Optional[bool] = None
+    auto_approve: Optional[bool] = False
+
+class MissedPunchRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    team: str
+    department: str
+    date: str
+    punch_type: str  # Check-in, Check-out, Both
+    check_in_time: Optional[str] = None
+    check_out_time: Optional[str] = None
+    reason: str
+    status: str = "pending"
+    approved_by: Optional[str] = None
+    applied_by_admin: Optional[bool] = False
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class MissedPunchCreate(BaseModel):
+    employee_id: Optional[str] = None
+    date: str
+    punch_type: str  # Check-in, Check-out, Both
+    check_in_time: Optional[str] = None
+    check_out_time: Optional[str] = None
+    reason: str
+    auto_approve: Optional[bool] = False
+
+class RequestApproveBody(BaseModel):
+    is_lop: Optional[bool] = None
+    lop_remark: Optional[str] = None
+    model_config = ConfigDict(extra="ignore")
+
+class StarRewardCreate(BaseModel):
+    employee_id: str
+    stars: int
+    reason: str
+    type: str = "performance"
+
+class StarReward(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    stars: int
+    reason: str
+    type: str = "performance"  # performance, learning, innovation, unsafe
+    awarded_by: str
+    month: str
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class Team(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    department: str
+    lead_id: Optional[str] = None
+    member_count: int = 0
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class Department(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    head_id: Optional[str] = None
+    team_count: int = 0
+
+class AuditLog(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    action: str
+    resource: str
+    resource_id: Optional[str] = None
+    details: Optional[str] = None
+    timestamp: datetime = Field(default_factory=lambda: get_ist_now())
+
+# ============== NOTIFICATION MODEL ==============
+
+class Notification(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str  # recipient user id
+    title: str
+    message: str
+    type: str = "info"  # info, warning, success, action
+    link: Optional[str] = None  # frontend route to navigate to
+    read: bool = False
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+# ============== OPERATIONAL CHECKLIST MODEL ==============
+
+OPERATIONAL_CHECKLIST_ITEMS = [
+    {"key": "workstation_setup", "label": "Workstation Ready (desk, chair, system/laptop)", "category": "Infrastructure"},
+    {"key": "stationery_issued", "label": "Stationery & Supplies Issued (notebooks, pens)", "category": "Stationery"},
+    {"key": "id_card_issued", "label": "ID Card Issued", "category": "Stationery"},
+    {"key": "attendance_configured", "label": "Attendance Device Configured (biometric/login)", "category": "Access"},
+    {"key": "access_card_setup", "label": "Access Card / Entry Permissions Issued", "category": "Access"},
+    {"key": "system_access_verified", "label": "System Access Created & Verified", "category": "IT"},
+    {"key": "role_access_confirmed", "label": "Role-based Access Confirmed", "category": "IT"},
+    {"key": "hr_coordination_complete", "label": "HR Coordination for Joining Readiness", "category": "Coordination"},
+]
+
+class ChecklistItem(BaseModel):
+    key: str
+    label: str
+    category: str
+    completed: bool = False
+    completed_by: Optional[str] = None
+    completed_at: Optional[str] = None
+    notes: Optional[str] = None
+
+class OperationalChecklist(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    department: Optional[str] = None
+    designation: Optional[str] = None
+    items: List[dict] = []
+    status: str = "pending"  # pending, in_progress, completed
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+# ============== PAYROLL MODEL ==============
+
+class PayrollRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_name: str
+    department: str
+    team: str
+    month: str  # Format: "YYYY-MM"
+    monthly_salary: float = 0.0
+    total_days: int = 0  # Calendar days in month
+    working_days: int = 0  # Non-Sunday, non-Holiday days
+    weekoff_pay: float = 0.0  # "Weekoff Pay / Holiday Pay": week-offs + holidays
+    extra_pay: float = 0.0  # +1/+0.5 for week-off or holiday WORKED (not payable)
+    lop: float = 0.0  # Total LOP days (supports 0.5)
+    final_payable_days: float = 0.0  # Working Days + Weekoff/Holiday Pay + OH - LOP
+    present_days: int = 0  # Backward compat
+    lop_days: float = 0  # Backward compat (= lop)
+    leave_days: int = 0
+    absent_days: int = 0
+    per_day_salary: float = 0.0
+    lop_deduction: float = 0.0
+    net_salary: float = 0.0
+    attendance_details: List[dict] = []  # Daily attendance breakdown
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class ShiftConfigCreate(BaseModel):
+    shift_type: str
+    login_time: Optional[str] = None  # For custom shifts
+    logout_time: Optional[str] = None  # For custom shifts
+
+# ============== ONBOARDING MODELS ==============
+
+class OnboardingDocument(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    document_type: str
+    document_label: str
+    file_url: Optional[str] = None
+    file_public_id: Optional[str] = None
+    file_name: Optional[str] = None
+    status: str = DocumentStatus.NOT_UPLOADED
+    uploaded_at: Optional[datetime] = None
+    verified_at: Optional[datetime] = None
+    verified_by: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class OnboardingRecord(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    emp_id: str
+    emp_name: str
+    department: str
+    team: str
+    designation: str
+    status: str = OnboardingStatus.NOT_STARTED
+    documents: List[dict] = []  # List of document statuses
+    submitted_at: Optional[datetime] = None
+    reviewed_at: Optional[datetime] = None
+    reviewed_by: Optional[str] = None
+    review_notes: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class DocumentUpload(BaseModel):
+    document_type: str
+    file_url: str
+    file_public_id: Optional[str] = None
+    file_name: Optional[str] = None
+
+class DocumentVerification(BaseModel):
+    document_id: str
+    status: str  # "verified" or "rejected"
+    rejection_reason: Optional[str] = None
+
+class OnboardingApproval(BaseModel):
+    status: str  # "approved" or "rejected"
+    review_notes: Optional[str] = None
+
+# ============== ISSUE TICKET SYSTEM ENUMS & MODELS ==============
+
+class TicketCategory:
+    IT_SYSTEM = "IT & System Support"
+    HR_SUPPORT = "HR Support"
+    FINANCE = "Finance & Accounts"
+    ADMIN_STATIONERY = "Admin & Stationery"
+    COMPLIANCE = "Compliance & Legal"
+    OPERATIONS = "Operations"
+
+class TicketStatus:
+    OPEN = "Open"
+    IN_PROGRESS = "In Progress"
+    WAITING_APPROVAL = "Waiting for Approval"
+    ON_HOLD = "On Hold"
+    RESOLVED = "Resolved"
+    CLOSED = "Closed"
+    REJECTED = "Rejected"
+
+class TicketPriority:
+    HIGH = "High"
+    MEDIUM = "Medium"
+    LOW = "Low"
+
+# Department role mapping for ticket assignment
+TICKET_DEPARTMENT_ROLES = {
+    TicketCategory.IT_SYSTEM: "it_admin",
+    TicketCategory.HR_SUPPORT: "hr_admin",
+    TicketCategory.FINANCE: "finance_admin",
+    TicketCategory.ADMIN_STATIONERY: "admin_dept",
+    TicketCategory.COMPLIANCE: "compliance_officer",
+    TicketCategory.OPERATIONS: "operations_manager"
+}
+
+# Subcategories for each ticket category
+TICKET_SUBCATEGORIES = {
+    TicketCategory.IT_SYSTEM: [
+        "Login Issue", "Password Reset", "Email Not Working", "HRMS Access Issue",
+        "Software Installation", "System Slow / Hanging", "Printer Not Working",
+        "Network / Internet Issue", "Biometric Attendance Issue", "Other IT Issue"
+    ],
+    TicketCategory.HR_SUPPORT: [
+        "Salary Not Credited", "Payslip Request", "Leave Balance Issue",
+        "Leave Approval Delay", "Attendance Correction", "Joining Letter / Experience Letter",
+        "Promotion / Designation Change", "Policy Clarification", "Grievance Complaint", "Other HR Issue"
+    ],
+    TicketCategory.FINANCE: [
+        "Expense Reimbursement", "Claim Status", "Salary Calculation Issue",
+        "Bonus / Incentive Issue", "Tax / Form 16 Request", "Bank Detail Update", "Other Finance Issue"
+    ],
+    TicketCategory.ADMIN_STATIONERY: [
+        "Stationery Request", "ID Card Issue", "Access Card Issue", "Cabin / Seat Allocation",
+        "AC / Electricity Issue", "Office Cleanliness", "Furniture Request",
+        "Asset Allocation (Laptop, Mouse, Keyboard)", "Other Admin Issue"
+    ],
+    TicketCategory.COMPLIANCE: [
+        "Code of Conduct Violation", "Harassment Complaint", "Ethics Complaint",
+        "Data Privacy Issue", "Policy Violation Report", "Workplace Safety Concern", "Other Compliance Issue"
+    ],
+    TicketCategory.OPERATIONS: [
+        "Shift Change Request", "Work Location Change", "Project Allocation Issue",
+        "Client Escalation", "Workload Issue", "Other Operations Issue"
+    ]
+}
+
+class TicketStatusUpdate(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    status: str
+    updated_by: str
+    updated_by_name: str
+    notes: Optional[str] = None
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class TicketAttachment(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    file_url: str
+    file_name: str
+    file_type: str
+    file_public_id: Optional[str] = None
+    uploaded_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class TicketFeedback(BaseModel):
+    rating: int  # 1-5
+    comment: Optional[str] = None
+    submitted_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class TicketCreate(BaseModel):
+    category: str
+    subcategory: str
+    subject: str
+    description: str
+    priority: str = TicketPriority.MEDIUM
+    attachments: Optional[List[dict]] = None  # List of {file_url, file_name, file_type, file_public_id}
+    employee_id: Optional[str] = None  # For admin creating on behalf of employee
+
+class Ticket(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    ticket_number: str  # Auto-generated: TKT-YYYYMMDD-XXX
+    employee_id: str
+    emp_name: str
+    emp_email: Optional[str] = None
+    department: str
+    team: Optional[str] = None
+    
+    # Ticket details
+    category: str
+    subcategory: str
+    subject: str
+    description: str
+    priority: str = TicketPriority.MEDIUM
+    status: str = TicketStatus.OPEN
+    
+    # Assignment
+    assigned_department: str  # Department role responsible
+    assigned_to: Optional[str] = None  # User ID of assigned admin
+    assigned_to_name: Optional[str] = None
+    
+    # Resolution
+    resolution: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    resolved_by_name: Optional[str] = None
+    
+    # Attachments
+    attachments: List[dict] = []  # List of TicketAttachment
+    
+    # Status history
+    status_history: List[dict] = []  # List of TicketStatusUpdate
+    
+    # Feedback
+    feedback: Optional[dict] = None  # TicketFeedback
+    
+    # Metadata
+    created_by: Optional[str] = None  # If created by admin on behalf
+    created_by_name: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class TicketStatusUpdateRequest(BaseModel):
+    status: str
+    notes: Optional[str] = None
+    resolution: Optional[str] = None
+
+class TicketFeedbackRequest(BaseModel):
+    rating: int
+    comment: Optional[str] = None
+
+class TicketAssignRequest(BaseModel):
+    assigned_to: str  # User ID
+
+# ============== SALARY MANAGEMENT MODELS ==============
+
+class SalaryComponentType:
+    EARNING = "earning"
+    DEDUCTION = "deduction"
+
+class AdjustmentType:
+    BONUS = "bonus"
+    INCENTIVE = "incentive"
+    REIMBURSEMENT = "reimbursement"
+    DEDUCTION = "deduction"
+    LOP = "lop"
+    ADVANCE_RECOVERY = "advance_recovery"
+    PENALTY = "penalty"
+    OTHER = "other"
+
+class AdjustmentFrequency:
+    ONE_TIME = "one_time"
+    RECURRING = "recurring"
+
+# Default salary structure percentages (of Basic)
+DEFAULT_SALARY_STRUCTURE = {
+    "basic_percentage": 40,  # 40% of CTC
+    "hra_percentage": 50,    # 50% of Basic
+    "da_percentage": 10,     # 10% of Basic
+    "conveyance": 1600,      # Fixed amount
+    "medical_allowance": 1250,  # Fixed amount
+    "special_allowance_percentage": 0,  # Remaining after other components
+    "pf_percentage": 12,     # 12% of Basic (employee contribution)
+    "esi_percentage": 0.75,  # 0.75% of Gross (if applicable, gross < 21000)
+    "professional_tax": 200, # Fixed (varies by state)
+    "tds_percentage": 0      # Calculated based on tax slab
+}
+
+class SalaryStructure(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    
+    # CTC and Basic
+    annual_ctc: float = 0
+    monthly_ctc: float = 0
+    
+    # Earnings
+    basic: float = 0
+    hra: float = 0
+    da: float = 0
+    conveyance: float = 0
+    medical_allowance: float = 0
+    special_allowance: float = 0
+    other_allowances: float = 0
+    
+    # Gross
+    gross_salary: float = 0
+    
+    # Deductions
+    pf_employee: float = 0      # Employee PF contribution
+    pf_employer: float = 0      # Employer PF contribution
+    esi_employee: float = 0     # Employee ESI
+    esi_employer: float = 0     # Employer ESI
+    professional_tax: float = 0
+    tds: float = 0
+    other_deductions: float = 0
+    
+    # Net
+    total_deductions: float = 0
+    net_salary: float = 0
+    
+    # Metadata
+    effective_from: str = ""
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class SalaryAdjustment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    employee_id: str
+    
+    # Adjustment details
+    adjustment_type: str  # bonus, incentive, reimbursement, deduction, lop, advance_recovery, penalty
+    category: str  # earning or deduction
+    description: str
+    amount: float
+    
+    # Frequency
+    frequency: str = AdjustmentFrequency.ONE_TIME  # one_time or recurring
+    
+    # For one-time: specific month
+    applicable_month: Optional[str] = None  # Format: "YYYY-MM"
+    
+    # For recurring: start and end
+    start_month: Optional[str] = None
+    end_month: Optional[str] = None  # None means ongoing
+    is_active: bool = True
+    
+    # Audit
+    created_by: str
+    created_by_name: str
+    approved_by: Optional[str] = None
+    approved_by_name: Optional[str] = None
+    
+    created_at: datetime = Field(default_factory=lambda: get_ist_now())
+    updated_at: datetime = Field(default_factory=lambda: get_ist_now())
+
+class SalaryAdjustmentCreate(BaseModel):
+    adjustment_type: str
+    description: str
+    amount: float
+    frequency: str = AdjustmentFrequency.ONE_TIME
+    applicable_month: Optional[str] = None
+    start_month: Optional[str] = None
+    end_month: Optional[str] = None
+
+class SalaryStructureUpdate(BaseModel):
+    annual_ctc: Optional[float] = None
+    basic: Optional[float] = None
+    hra: Optional[float] = None
+    da: Optional[float] = None
+    conveyance: Optional[float] = None
+    medical_allowance: Optional[float] = None
+    special_allowance: Optional[float] = None
+    other_allowances: Optional[float] = None
+    pf_employee: Optional[float] = None
+    esi_employee: Optional[float] = None
+    professional_tax: Optional[float] = None
+    tds: Optional[float] = None
+    other_deductions: Optional[float] = None
+
+# ============== HELPERS ==============
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def verify_password(password: str, hashed: str) -> bool:
+    return hash_password(password) == hashed
+
+def _hash_token(token: str) -> str:
+    # Refresh tokens are stored server-side ONLY as SHA-256 hashes.
+    return hashlib.sha256(token.encode()).hexdigest()
+
+def create_access_token(user_id: str, role: str, session_id: str) -> str:
+    """Short-lived access JWT (ACCESS_TOKEN_EXPIRE_MINUTES). Never extended."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "user_id": user_id,
+        "role": role,
+        "token_type": "access",
+        "session_id": session_id,
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def create_refresh_token(user_id: str, session_id: str, ttl: timedelta) -> tuple:
+    """Long-lived refresh JWT. Returns (token, jti). Single-use: rotated on refresh."""
+    now = datetime.now(timezone.utc)
+    jti = str(uuid.uuid4())
+    payload = {
+        "user_id": user_id,
+        "token_type": "refresh",
+        "session_id": session_id,
+        "jti": jti,
+        "iat": now,
+        "exp": now + ttl,
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM), jti
+
+async def create_auth_session(user: dict, http_request: Optional[Request] = None,
+                              refresh_ttl: Optional[timedelta] = None) -> tuple:
+    """Create a server-side auth session and return (access_token, refresh_token).
+
+    The session record is the revocation authority: revoking it kills BOTH the
+    access token (middleware check) and the refresh token (refresh check).
+    """
+    ttl = refresh_ttl or timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    session_id = str(uuid.uuid4())
+    refresh_token, refresh_jti = create_refresh_token(user["id"], session_id, ttl)
+    now = datetime.now(timezone.utc)
+    await db.auth_sessions.insert_one({
+        "id": str(uuid.uuid4()),
+        "user_id": user["id"],
+        "session_id": session_id,
+        "refresh_token_hash": _hash_token(refresh_token),
+        "refresh_jti": refresh_jti,
+        "user_agent": (http_request.headers.get("user-agent") if http_request else None),
+        "ip_address": (http_request.client.host if http_request and http_request.client else None),
+        "expires_at": (now + ttl).isoformat(),
+        "last_activity_at": now.isoformat(),
+        "revoked_at": None,
+        "revoke_reason": None,
+        "replaced_by_jti": None,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+    })
+    return create_access_token(user["id"], user["role"], session_id), refresh_token
+
+async def revoke_auth_session(session_id: str, reason: str = "logout"):
+    await db.auth_sessions.update_one(
+        {"session_id": session_id, "revoked_at": None},
+        {"$set": {
+            "revoked_at": datetime.now(timezone.utc).isoformat(),
+            "revoke_reason": reason,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+
+async def enforce_session_activity(session: dict, session_id: str, touch: bool = True):
+    """Sliding inactivity window for an auth session.
+
+    Raises 401 (and revokes the session) once the user has been inactive for
+    INACTIVITY_TIMEOUT_MINUTES. Otherwise slides the window forward, throttled
+    so a burst of requests does not hammer Mongo. Login time is irrelevant —
+    only the time since the last authenticated activity matters.
+    """
+    now = datetime.now(timezone.utc)
+    raw = session.get("last_activity_at") or session.get("created_at")
+    last = None
+    if raw:
+        try:
+            last = datetime.fromisoformat(raw)
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            last = None
+
+    if last and (now - last) >= timedelta(minutes=INACTIVITY_TIMEOUT_MINUTES):
+        await revoke_auth_session(session_id, "inactivity_timeout")
+        raise HTTPException(status_code=401, detail=INACTIVITY_MESSAGE)
+
+    if touch and (last is None or (now - last).total_seconds() >= ACTIVITY_TOUCH_THROTTLE_SECONDS):
+        await db.auth_sessions.update_one(
+            {"session_id": session_id},
+            {"$set": {"last_activity_at": now.isoformat(), "updated_at": now.isoformat()}},
+        )
+
+
+async def get_current_user(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+):
+    """Protected-API auth middleware.
+
+    SECURITY checks (in order): signature valid → token_type == "access" →
+    exp valid (no sliding extension) → session exists AND not revoked →
+    30-minute sliding INACTIVITY window not exhausted → user exists AND is
+    active. Refresh tokens are rejected here.
+    """
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    if payload.get("token_type") != "access":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Server-side revocation check: logout kills the access token instantly.
+    session = await db.auth_sessions.find_one(
+        {"session_id": session_id},
+        {"_id": 0, "revoked_at": 1, "last_activity_at": 1, "created_at": 1},
+    )
+    if session is None or session.get("revoked_at"):
+        raise HTTPException(status_code=401, detail="Session revoked. Please login again.")
+
+    # Sliding 30-minute inactivity window (server is the source of truth).
+    await enforce_session_activity(
+        session,
+        session_id,
+        touch=(request.url.path not in NON_ACTIVITY_PATHS),
+    )
+
+    user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=401, detail="Account is inactive")
+    return user
+
+async def log_audit(user_id: str, action: str, resource: str, resource_id: str = None, details: str = None):
+    log = AuditLog(user_id=user_id, action=action, resource=resource, resource_id=resource_id, details=details)
+    doc = log.model_dump()
+    doc['timestamp'] = doc['timestamp'].isoformat()
+    await db.audit_logs.insert_one(doc.copy())
+
+async def create_notification(user_ids: list, title: str, message: str, notif_type: str = "info", link: str = None):
+    """Create notifications for multiple users"""
+    for uid in user_ids:
+        notif = Notification(user_id=uid, title=title, message=message, type=notif_type, link=link)
+        doc = notif.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.notifications.insert_one(doc.copy())
+
+async def notify_role(role: str, title: str, message: str, notif_type: str = "info", link: str = None):
+    """Send notification to all users with a specific role"""
+    users = await db.users.find({"role": role, "is_active": True}, {"_id": 0, "id": 1}).to_list(1000)
+    user_ids = [u["id"] for u in users]
+    if user_ids:
+        await create_notification(user_ids, title, message, notif_type, link)
+
+async def notify_roles(roles: list, title: str, message: str, notif_type: str = "info", link: str = None):
+    """Send notification to all users with any of the specified roles"""
+    users = await db.users.find({"role": {"$in": roles}, "is_active": True}, {"_id": 0, "id": 1}).to_list(1000)
+    user_ids = [u["id"] for u in users]
+    if user_ids:
+        await create_notification(user_ids, title, message, notif_type, link)
+
+def serialize_doc(doc: dict) -> dict:
+    if not doc:
+        return doc
+    if 'created_at' in doc and doc['created_at'] is not None and not isinstance(doc['created_at'], str):
+        doc['created_at'] = doc['created_at'].isoformat()
+    if 'updated_at' in doc and not isinstance(doc['updated_at'], str):
+        doc['updated_at'] = doc['updated_at'].isoformat()
+    if 'deleted_at' in doc and doc['deleted_at'] and not isinstance(doc['deleted_at'], str):
+        doc['deleted_at'] = doc['deleted_at'].isoformat()
+    if 'timestamp' in doc and not isinstance(doc['timestamp'], str):
+        doc['timestamp'] = doc['timestamp'].isoformat()
+    return doc
+
+async def generate_emp_id():
+    """Generate unique employee ID"""
+    count = await db.employees.count_documents({})
+    return f"EMP{str(count + 1).zfill(4)}"
+
+async def generate_ticket_number():
+    """Generate unique ticket number: TKT-YYYYMMDD-XXX"""
+    today = get_ist_now().strftime("%Y%m%d")
+    # Count tickets created today
+    start_of_day = get_ist_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    count = await db.issue_tickets.count_documents({
+        "created_at": {"$gte": start_of_day.isoformat()}
+    })
+    return f"TKT-{today}-{str(count + 1).zfill(3)}"
+
+# ============== SHIFT & LOP CALCULATION HELPERS ==============
+
+def parse_time_12h_to_24h(time_str: str) -> str:
+    """Convert 12-hour format (e.g., '10:00 AM') to 24-hour format (e.g., '10:00')"""
+    if not time_str:
+        return None
+    try:
+        time_str = time_str.strip().upper()
+        if 'AM' in time_str or 'PM' in time_str:
+            dt = datetime.strptime(time_str.replace(' ', ''), "%I:%M%p")
+            return dt.strftime("%H:%M")
+        return time_str  # Already in 24h format
+    except Exception:
+        return None
+
+def parse_time_24h_to_minutes(time_str: str) -> int:
+    """Convert 24-hour time string to minutes since midnight"""
+    if not time_str:
+        return None
+    try:
+        hours, minutes = map(int, time_str.split(':'))
+        return hours * 60 + minutes
+    except Exception:
+        return None
+
+def minutes_to_time_24h(minutes: int) -> str:
+    """Convert minutes since midnight to 24-hour time string"""
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours:02d}:{mins:02d}"
+
+def get_shift_timings(employee: dict) -> dict:
+    """Get shift timings for an employee based on their shift type"""
+    shift_type = employee.get('shift_type', 'General')
+    # Grace minutes (defaults 0) come from the Settings module via sync
+    late_grace = int(employee.get('late_grace_minutes', 0) or 0)
+    early_grace = int(employee.get('early_out_grace_minutes', 0) or 0)
+    
+    if shift_type == "Custom":
+        login_time = employee.get('custom_login_time')
+        logout_time = employee.get('custom_logout_time')
+        
+        if login_time and logout_time:
+            login_mins = parse_time_24h_to_minutes(login_time)
+            logout_mins = parse_time_24h_to_minutes(logout_time)
+            
+            # Handle overnight shifts
+            if logout_mins < login_mins:
+                total_hours = (24 * 60 - login_mins + logout_mins) / 60
+            else:
+                total_hours = (logout_mins - login_mins) / 60
+            
+            return {
+                "login_time": login_time,
+                "logout_time": logout_time,
+                "total_hours": total_hours,
+                "late_grace_minutes": late_grace,
+                "early_out_grace_minutes": early_grace,
+            }
+        return None
+    
+    shift_def = SHIFT_DEFINITIONS.get(shift_type, SHIFT_DEFINITIONS["General"])
+    return {
+        "login_time": shift_def["login_time"],
+        "logout_time": shift_def["logout_time"],
+        "total_hours": shift_def["total_hours"],
+        "late_grace_minutes": late_grace,
+        "early_out_grace_minutes": early_grace,
+    }
+
+
+# ============== EFFECTIVE-DATED SHIFT RESOLUTION (central Late-In source) ==============
+# Single source of truth for "which shift timing applied to THIS employee on
+# THIS attendance date". Resolves the effective-dated assignment snapshot stored
+# on `employee_shifts` (frozen at assignment time) so historical Late-In stays
+# correct even after the shift master is edited. Falls back to the employee's
+# current static shift when a date is not covered by any assignment (legacy).
+
+async def _load_employee_shift_assignments(employee_id: str) -> list:
+    """All non-deleted effective-dated shift assignments for an employee,
+    newest effective_from first. Each carries a frozen shift snapshot."""
+    if not employee_id:
+        return []
+    return await db.employee_shifts.find(
+        {"employee_id": employee_id, "is_deleted": {"$ne": True}},
+        {"_id": 0},
+    ).sort("effective_from", -1).to_list(500)
+
+
+def _ddmmyyyy_to_iso(date_str) -> Optional[str]:
+    """DD-MM-YYYY (or ISO/other tolerated) → YYYY-MM-DD for effective-date compare."""
+    d = _parse_date_flex(date_str)
+    return d.strftime("%Y-%m-%d") if d else None
+
+
+def _shift_snapshot_to_timings(snap: dict) -> Optional[dict]:
+    """Build the timings dict the attendance engine expects from a shift snapshot
+    (or live shift doc). Returns None when no usable start time is present."""
+    start = snap.get("shift_start_time") or snap.get("start_time")
+    if not start:
+        return None
+    total = float(snap.get("shift_total_hours") or snap.get("total_hours") or 0) or 0
+    login_mins = parse_time_24h_to_minutes(start) or 0
+    logout_mins = (login_mins + int(round(total * 60))) % (24 * 60)
+    logout = f"{logout_mins // 60:02d}:{logout_mins % 60:02d}"
+    return {
+        "login_time": start,
+        "logout_time": logout,
+        "total_hours": total,
+        "late_grace_minutes": int(snap.get("shift_late_grace_minutes", snap.get("late_grace_minutes", 0)) or 0),
+        "early_out_grace_minutes": int(snap.get("shift_early_out_grace_minutes", snap.get("early_out_grace_minutes", 0)) or 0),
+    }
+
+
+def _resolve_assignment_for_date(assignments: list, date_iso: str) -> Optional[dict]:
+    """Pick the assignment whose [effective_from, effective_to] window covers
+    date_iso. `assignments` must be sorted newest effective_from first."""
+    for a in assignments or []:
+        ef = a.get("effective_from")
+        et = a.get("effective_to")
+        if ef and ef <= date_iso and (not et or et >= date_iso):
+            return a
+    return None
+
+
+async def get_effective_shift_timings(employee: dict, attendance_date, assignments: Optional[list] = None) -> Optional[dict]:
+    """Central resolver used by ALL Late-In writers (attendance, biometric,
+    recompute, payroll, corrections). Returns the shift timings applicable to
+    this employee on this attendance date, honouring effective-dated assignment
+    snapshots. Falls back to the current static shift (get_shift_timings) when
+    the date is not covered by any assignment, preserving legacy behaviour.
+
+    Pass a preloaded `assignments` list (from _load_employee_shift_assignments)
+    inside per-date loops to avoid N+1 queries.
+    """
+    if employee and attendance_date:
+        date_iso = _ddmmyyyy_to_iso(attendance_date)
+        if date_iso:
+            if assignments is None:
+                assignments = await _load_employee_shift_assignments(employee.get("id"))
+            a = _resolve_assignment_for_date(assignments, date_iso)
+            if a:
+                timings = _shift_snapshot_to_timings(a)
+                if timings:
+                    return timings
+                # Legacy assignment without a snapshot → live shift (best effort)
+                shift = await db.shifts.find_one(
+                    {"id": a.get("shift_id"), "is_deleted": {"$ne": True}}, {"_id": 0}
+                )
+                if shift:
+                    return _shift_snapshot_to_timings(shift)
+    return get_shift_timings(employee)
+
+
+
+async def _apply_settings_shift_to_employee_payload(payload: dict, shift_identifier: Optional[str]) -> dict:
+    """If `shift_identifier` matches a shift configured in Settings (by id OR
+    by name), expand the payload with all the legacy fields the existing
+    attendance engine expects (`shift_type='Custom'`, `custom_login_time`,
+    `custom_logout_time`, `custom_total_hours`, grace minutes, `active_shift_*`).
+
+    The Add-Employee form sends the picked shift in `shift_type`; this helper
+    transparently turns that name into a fully-resolved Settings-shift binding
+    on the employee record. If the identifier doesn't match any Settings
+    shift, the payload is returned unchanged (legacy behaviour preserved).
+    """
+    if not shift_identifier or shift_identifier in ("Custom",):
+        if shift_identifier == "Custom":
+            # Plain "Custom" means the user is explicitly opting out of central
+            # shift config — clear the binding so reports / dashboards don't
+            # mis-attribute the previous Settings shift to this employee.
+            payload["active_shift_id"] = None
+            payload["active_shift_name"] = None
+        return payload
+
+    # Try id first, then name. Honour soft-delete + active status from settings.
+    shift = await db.shifts.find_one(
+        {"$or": [{"id": shift_identifier}, {"name": shift_identifier}],
+         "is_deleted": {"$ne": True}},
+        {"_id": 0},
+    )
+    if not shift:
+        return payload
+
+    login = shift["start_time"]
+    total = float(shift["total_hours"])
+    total_mins = int(round(total * 60))
+    login_mins = parse_time_24h_to_minutes(login) or 0
+    logout_mins = (login_mins + total_mins) % (24 * 60)
+    logout = f"{logout_mins // 60:02d}:{logout_mins % 60:02d}"
+
+    payload.update({
+        "shift_type": "Custom",
+        "custom_login_time": login,
+        "custom_logout_time": logout,
+        "custom_total_hours": total,
+        "late_grace_minutes": int(shift.get("late_grace_minutes", 0) or 0),
+        "early_out_grace_minutes": int(shift.get("early_out_grace_minutes", 0) or 0),
+        "active_shift_id": shift["id"],
+        "active_shift_name": shift["name"],
+    })
+    return payload
+
+def calculate_attendance_status(check_in_24h: str, check_out_24h: str, shift_timings: dict, attendance_date: Optional[str] = None) -> dict:
+    """
+    Calculate attendance status with effective-start (early-arrival) handling:
+      * effective_start_time = actual punch-in (always)
+      * expected_logout = effective_start_time + required_hours (dynamic)
+      * Late entry still applies LOP based on existing late_grace_minutes
+      * Early-out / short-hours uses TOTAL WORKED HOURS vs required_hours;
+        an employee who completes >= required_hours is NEVER flagged
+        early-out, regardless of clock time.
+      * Sundays: status = "Sunday" (no LOP). If they punch on Sunday →
+        "Worked on Sunday" (no LOP).
+    """
+    result = {
+        "status": AttendanceStatus.PRESENT,
+        "is_lop": False,
+        "lop_reason": None,
+        "total_hours_decimal": 0.0,
+        "expected_logout": None,
+    }
+
+    # Sunday guard: never flag late/early/LOP/absent on Sundays.
+    if attendance_date and is_sunday_ddmmyyyy(attendance_date):
+        result["expected_logout"] = None
+        if check_in_24h:
+            result["status"] = AttendanceStatus.WORKED_ON_SUNDAY
+            if check_out_24h:
+                in_mins = parse_time_24h_to_minutes(check_in_24h)
+                out_mins = parse_time_24h_to_minutes(check_out_24h)
+                total_mins = (out_mins - in_mins) if out_mins >= in_mins else (24 * 60 - in_mins + out_mins)
+                result["total_hours_decimal"] = total_mins / 60
+        else:
+            result["status"] = AttendanceStatus.SUNDAY
+        return result
+
+    required_hours = shift_timings.get("total_hours", 8) if shift_timings else 8
+
+    # Flexible shift - only check total hours (honors early_out grace)
+    if not shift_timings or shift_timings.get("login_time") is None:
+        if check_in_24h:
+            result["expected_logout"] = add_hours_to_24h(check_in_24h, required_hours)
+        if check_in_24h and check_out_24h:
+            in_mins = parse_time_24h_to_minutes(check_in_24h)
+            out_mins = parse_time_24h_to_minutes(check_out_24h)
+            
+            if out_mins < in_mins:
+                total_mins = 24 * 60 - in_mins + out_mins
+            else:
+                total_mins = out_mins - in_mins
+            
+            result["total_hours_decimal"] = total_mins / 60
+            early_grace = int((shift_timings or {}).get("early_out_grace_minutes", 0) or 0)
+            required_worked = required_hours - (early_grace / 60.0)
+            
+            if result["total_hours_decimal"] < required_worked:
+                result["status"] = AttendanceStatus.LOSS_OF_PAY
+                result["is_lop"] = True
+                result["lop_reason"] = f"Insufficient hours: {result['total_hours_decimal']:.2f}h < {required_worked}h required"
+        return result
+    
+    # Fixed shift - strict rules apply
+    expected_login = parse_time_24h_to_minutes(shift_timings["login_time"])
+    late_grace = int(shift_timings.get("late_grace_minutes", 0) or 0)
+    early_grace = int(shift_timings.get("early_out_grace_minutes", 0) or 0)
+    
+    if not check_in_24h:
+        result["status"] = AttendanceStatus.NOT_LOGGED
+        return result
+    
+    actual_login = parse_time_24h_to_minutes(check_in_24h)
+    # Dynamic expected logout: punch-in + required_hours (always)
+    result["expected_logout"] = add_hours_to_24h(check_in_24h, required_hours)
+    
+    # Check for late login (respects late_grace_minutes; 0 means any minute past start is LATE)
+    is_late = actual_login > expected_login + late_grace
+    
+    # Compute total hours if checked out
+    total_hours_decimal = 0.0
+    if check_out_24h:
+        actual_logout = parse_time_24h_to_minutes(check_out_24h)
+        if actual_logout < actual_login:
+            total_mins = 24 * 60 - actual_login + actual_logout
+        else:
+            total_mins = actual_logout - actual_login
+        total_hours_decimal = total_mins / 60
+        result["total_hours_decimal"] = total_hours_decimal
+
+    # Late-login handling (HR rule 2026-05-26):
+    #   - Late + completed required hours  → status = "Late Login" (NOT LOP),
+    #     so the Early-Out cron does NOT email these employees.
+    #   - Late + did NOT complete required hours → "Loss of Pay" (cron emails).
+    if is_late:
+        late_mins = actual_login - expected_login
+        if check_out_24h:
+            required_worked = required_hours - (early_grace / 60.0)
+            if total_hours_decimal >= required_worked:
+                # Late but met required hours — record as Late Login only.
+                result["status"] = AttendanceStatus.LATE_LOGIN
+                result["lop_reason"] = (
+                    f"Late by {late_mins} minute(s); required hours completed "
+                    f"({total_hours_decimal:.2f}h ≥ {required_worked:.2f}h)."
+                )
+                return result
+            # Late AND under-worked → LOP
+            short_mins = int(round((required_worked - total_hours_decimal) * 60))
+            result["status"] = AttendanceStatus.LOSS_OF_PAY
+            result["is_lop"] = True
+            result["lop_reason"] = (
+                f"Late login by {late_mins} minute(s) and short by {short_mins} "
+                f"minute(s). Worked: {total_hours_decimal:.2f}h, Required: "
+                f"{required_worked:.2f}h"
+            )
+            return result
+        # Late and still logged in (no checkout yet) — mark Late Login provisionally.
+        result["status"] = AttendanceStatus.LATE_LOGIN
+        result["lop_reason"] = (
+            f"Late login by {late_mins} minute(s). Expected: "
+            f"{shift_timings['login_time']}, Actual: {check_in_24h}"
+        )
+        return result
+    
+    # Not late — check early logout / short hours using TOTAL WORKED vs REQUIRED.
+    # Employees who complete >= required hours are NEVER flagged as early-out,
+    # regardless of clock time (early-arrival is preserved).
+    if check_out_24h:
+        required_worked = required_hours - (early_grace / 60.0)
+        if total_hours_decimal < required_worked:
+            short_mins = int(round((required_worked - total_hours_decimal) * 60))
+            result["status"] = AttendanceStatus.LOSS_OF_PAY
+            result["is_lop"] = True
+            result["lop_reason"] = f"Early out / short hours by {short_mins} minute(s). Worked: {total_hours_decimal:.2f}h, Required: {required_worked:.2f}h"
+            return result
+        result["status"] = AttendanceStatus.PRESENT
+    else:
+        # Only logged in, not logged out yet
+        result["status"] = AttendanceStatus.LOGIN
+    
+    return result
+
+def calculate_total_hours_str(total_hours_decimal: float) -> str:
+    """Convert decimal hours to string format (e.g., '8h 30m')"""
+    if not total_hours_decimal:
+        return "-"
+    hours = int(total_hours_decimal)
+    minutes = int((total_hours_decimal - hours) * 60)
+    return f"{hours}h {minutes}m"
+
+# ============== DEPARTMENT WORK HOURS (PAYROLL ENGINE) ==============
+
+DEPARTMENT_WORK_HOURS = {
+    "Research Unit": {"full": 11, "half": 5},
+    "Business & Product": {"full": 10, "half": 5},
+    "Support Staff": {"full": 9, "half": 5},
+}
+
+def _parse_date_flex(date_str):
+    """Parse a date from many tolerant formats → ``date`` (or ``None``).
+
+    Centralised parser used by the birthday widget, payroll engine, and
+    several CSV importers. **Returns `None` only for genuinely invalid
+    input** — never for legitimate stored formats. Robust against the
+    formats that the global DD-MMM-YYYY rollout introduced.
+
+    Accepts:
+      • Python ``datetime`` / ``date`` (passes through, naturally
+        timezone-stripped to a date)
+      • ``YYYY-MM-DD``                — ISO date
+      • ``YYYY-MM-DDTHH:MM[:SS][Z]``  — ISO datetime (drops time)
+      • ``DD-MM-YYYY``                — Indian numeric
+      • ``DD/MM/YYYY``                — slash variant
+      • ``DD-Mon-YYYY`` / ``DD Mon YYYY``  — display format (03-Jun-2004)
+      • Trailing/leading whitespace is stripped.
+
+    Silent `None` returns historically caused the birthday widget to
+    drop legitimate employees; the regression test
+    ``test_birthday_widget_consistency.py`` guards every format above.
+    """
+    if not date_str:
+        return None
+    # Native datetime / date — pass through.
+    if isinstance(date_str, datetime):
+        return date_str.date()
+    try:
+        from datetime import date as _date_cls
+        if isinstance(date_str, _date_cls):
+            return date_str
+    except Exception:
+        pass
+    s = str(date_str).strip()
+    if not s:
+        return None
+    # Drop ISO time component if present (e.g. "2004-06-03T00:00:00.000Z").
+    if "T" in s:
+        s = s.split("T", 1)[0]
+    for fmt in (
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%d-%b-%Y",      # 03-Jun-2004 (DD-Mon-YYYY)
+        "%d %b %Y",      # 03 Jun 2004
+        "%d-%B-%Y",      # 03-June-2004
+    ):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+def _calc_hours_worked(att_record: dict) -> float:
+    """Calculate hours worked from an attendance record."""
+    hw = att_record.get("total_hours_decimal", 0) or 0
+    if hw > 0:
+        return hw
+    ci = att_record.get("check_in_24h")
+    co = att_record.get("check_out_24h")
+    if ci and co:
+        in_mins = parse_time_24h_to_minutes(ci)
+        out_mins = parse_time_24h_to_minutes(co)
+        if in_mins is not None and out_mins is not None:
+            diff = out_mins - in_mins if out_mins > in_mins else (1440 - in_mins + out_mins)
+            return diff / 60
+    return 0
+
+
+def _leave_code_for_status(leave_type: str, leave_split: str) -> str:
+    """Map a (leave_type, leave_split) pair to the user-facing payroll grid code.
+
+    Used only for approved-non-LOP leave-day rows in the payroll Attendance View
+    grid. The mapping (per HR instruction 2026-05-07) is:
+
+        Pre-Planned   Full → PF | Half → PH
+        Sick          Full → SF | Half → SH
+        Emergency     Full → EF | Half → EH
+        Optional      Any  → OH        (Optional Holiday — no half/full split)
+        Paid Leave    Full → PA | Half → PH
+        Casual / Earned / Annual / Maternity / Paternity / Bereavement /
+        General Leave Full → PA | Half → PH   (Paid Leave bucket)
+    """
+    lt = (leave_type or "").strip().lower()
+    is_half = (leave_split or "").strip().lower() in (
+        "first half", "second half", "half day", "half"
+    )
+    if lt.startswith("pre-planned") or lt.startswith("preplanned"):
+        return "PH" if is_half else "PF"
+    if lt.startswith("sick"):
+        return "SH" if is_half else "SF"
+    if lt.startswith("emergency"):
+        return "EH" if is_half else "EF"
+    if lt.startswith("optional"):
+        # Optional Holiday — single code regardless of split
+        return "OH"
+    if lt.startswith("paid"):
+        # HR update 2026-08-24: half-day Paid Leave now surfaces as PH
+        # (previously PP). PA / PH are the ONLY paid-leave codes displayed
+        # in the payroll grid — see Section 6A / 6B mappings.
+        return "PH" if is_half else "PA"
+    # Everything else → Paid Leave bucket
+    return "PH" if is_half else "PA"
+
+
+# ============== PAID LEAVE BALANCE HELPERS ==============
+# Paid Leave business rules (HR spec 2026-05-23):
+# - Every employee earns 1 Paid Leave credit per calendar month (counting the
+#   joining month).
+# - Unused balance carries forward indefinitely.
+# - Half-day usage consumes 0.5; the remaining 0.5 stays usable.
+# - Balance is validated against the LEAVE START DATE (so past-date applications
+#   only see credits earned up to that date — no future credits borrowed).
+# - is_lop is forced to False for any Paid Leave (it is, by definition, paid).
+
+def _is_paid_leave_type(leave_type: Optional[str]) -> bool:
+    if not leave_type:
+        return False
+    return leave_type.strip().lower().startswith("paid")
+
+
+def _is_intern_category(employment_type: Optional[str]) -> bool:
+    """True for ANY Intern-category employment type (Intern / Internship /
+    Trainee / Probationary Intern / etc.). Interns are never Paid-Leave eligible."""
+    s = (employment_type or "").strip().lower()
+    return any(k in s for k in ("intern", "internship", "trainee", "probation"))
+
+
+def _paid_leave_eligibility(employee: dict) -> tuple[bool, str]:
+    """SINGLE SOURCE OF TRUTH for Paid-Leave eligibility (FINAL business rule).
+
+    Eligible only when BOTH hold:
+      1. Employment type is NOT an Intern-category type, AND
+      2. a valid Confirmation Date exists on the (current) employee master record.
+
+    Returns ``(eligible, reason)``. ``reason`` is a user-facing message when not
+    eligible. This is intentionally computed from the live employee document so
+    UI/API/approval layers can never drift or rely on stale/cached data.
+    """
+    etype = employee.get("employment_type") if employee else None
+    if _is_intern_category(etype):
+        return False, "Paid Leave is not available for Intern/Trainee employees."
+    if not _parse_date_flex(employee.get("confirmation_date") if employee else None):
+        return False, "Paid Leave is available only for confirmed employees (a valid Confirmation Date must be set by HR)."
+    return True, ""
+
+
+def _leave_days_count(start_date: str, end_date: str, leave_split: str) -> float:
+    """Number of leave-days consumed by a single leave record."""
+    split = (leave_split or "Full Day").strip()
+    if split in ("First Half", "Second Half", "Half Day", "Half"):
+        return 0.5
+    try:
+        sd = datetime.strptime(start_date, "%Y-%m-%d").date()
+        ed = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return 1.0
+    return float(max(1, (ed - sd).days + 1))
+
+
+def _normalize_and_validate_confirmation_date(confirmation_date, date_of_joining):
+    """Validate + normalise the Paid-Leave Confirmation Date.
+
+    Returns ``(normalized_iso_or_None, error_msg)``. Rules:
+      • cannot be a future date,
+      • cannot be earlier than the Date of Joining.
+    Stored ISO ``YYYY-MM-DD`` (same standard as date_of_joining). Mandatory-when
+    -leave-eligible is enforced in the Edit UI; the backend stays
+    backward-compatible (skips when absent) so partial updates / legacy records
+    are never blocked.
+    """
+    if confirmation_date in (None, ""):
+        return None, None
+    cd = _parse_date_flex(confirmation_date)
+    if not cd:
+        return None, "Confirmation Date is invalid. Use a valid date."
+    if isinstance(cd, datetime):
+        cd = cd.date()
+    if cd > get_ist_now().date():
+        return None, "Confirmation Date cannot be a future date."
+    doj = _parse_date_flex(date_of_joining)
+    if doj:
+        if isinstance(doj, datetime):
+            doj = doj.date()
+        if cd < doj:
+            return None, "Confirmation Date cannot be earlier than the Date of Joining."
+    return cd.strftime("%Y-%m-%d"), None
+
+
+# ============== STORED PAID-LEAVE BALANCE (checkbox model, 2026-06) ==============
+# A confirmed Full-Time employee holds a STORED balance in
+# employees.available_paid_leave. Admin builds it via monthly Generate / Import.
+# Applying a "Consider as Paid Leave" leave RESERVES (decrements) immediately;
+# approval FINALIZES (no change); rejection RELEASES (increments back).
+
+def _is_confirmed_fulltime(employee: dict, ref_date=None) -> tuple[bool, str]:
+    """Confirmed Full-Time = employment_type Full-Time AND a Confirmation Date
+    that is set and on/before ref_date (default today, IST). Single source of
+    truth for the Paid-Leave checkbox, monthly generation and import."""
+    if not employee:
+        return False, "Employee not found."
+    etype = (employee.get("employment_type") or "").strip().lower()
+    if etype != EmploymentType.FULL_TIME.strip().lower():
+        return False, "Consider as Paid Leave is available only for confirmed Full-Time employees."
+    cd = _parse_date_flex(employee.get("confirmation_date"))
+    if not cd:
+        return False, "Consider as Paid Leave is available only for confirmed employees (a valid Confirmation Date must be set by HR)."
+    if isinstance(cd, datetime):
+        cd = cd.date()
+    ref = ref_date or get_ist_now().date()
+    if isinstance(ref, datetime):
+        ref = ref.date()
+    if cd > ref:
+        return False, "Employee is not yet confirmed (Confirmation Date is in the future)."
+    return True, ""
+
+
+def _leave_is_paid(leave: dict) -> bool:
+    """True when a leave should be treated as PAID by payroll/display — either
+    the new checkbox flag OR a legacy 'Paid' leave-type record."""
+    if not leave:
+        return False
+    return bool(leave.get("consider_as_paid_leave")) or _is_paid_leave_type(leave.get("leave_type"))
+
+
+async def _get_paid_balance(employee_id: str) -> float:
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "available_paid_leave": 1})
+    return round(float((emp or {}).get("available_paid_leave") or 0.0), 1)
+
+
+async def _write_paid_history(employee_id, emp_name, prev, new, action_type, current_user,
+                               month=None, year=None, note=None):
+    """Append a paid-leave ledger row. Never blocks the balance change."""
+    try:
+        await db.paid_leave_history.insert_one({
+            "id": str(uuid.uuid4()),
+            "employee_id": employee_id,
+            "emp_name": emp_name,
+            "previous_balance": round(float(prev), 1),
+            "new_balance": round(float(new), 1),
+            "change_amount": round(float(new) - float(prev), 1),
+            "action_type": action_type,
+            "month": month,
+            "year": year,
+            "changed_by": (current_user or {}).get("id"),
+            "changed_by_name": (current_user or {}).get("full_name") or (current_user or {}).get("username"),
+            "changed_at": get_ist_now().isoformat(),
+            "note": note,
+        })
+    except Exception as e:
+        logger.warning(f"paid_leave_history write failed for {employee_id}: {e}")
+
+
+async def _reserve_paid_leave(employee_id, emp_name, amount, current_user, note=None) -> float:
+    """Atomically decrement the stored balance by `amount`; raises 400 when
+    insufficient. Prevents concurrent pending requests from over-drawing."""
+    amount = round(float(amount or 0), 1)
+    if amount <= 0:
+        return await _get_paid_balance(employee_id)
+    prev = await _get_paid_balance(employee_id)
+    updated = await db.employees.find_one_and_update(
+        {"id": employee_id, "available_paid_leave": {"$gte": amount - 1e-9}},
+        {"$inc": {"available_paid_leave": -amount}},
+        projection={"_id": 0, "available_paid_leave": 1},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=400,
+            detail=f"You do not have sufficient available paid leave for this request. Available: {prev:g}, requested: {amount:g}.",
+        )
+    new = round(float(updated.get("available_paid_leave") or 0.0), 1)
+    await _write_paid_history(employee_id, emp_name, prev, new, "PAID_LEAVE_RESERVED", current_user, note=note)
+    return new
+
+
+async def _release_paid_leave(employee_id, emp_name, amount, current_user,
+                               action_type="PAID_LEAVE_REJECTED", note=None) -> float:
+    """Return reserved days to the stored balance."""
+    amount = round(float(amount or 0), 1)
+    if amount <= 0:
+        return await _get_paid_balance(employee_id)
+    prev = await _get_paid_balance(employee_id)
+    await db.employees.update_one({"id": employee_id}, {"$inc": {"available_paid_leave": amount}})
+    new = round(prev + amount, 1)
+    await _write_paid_history(employee_id, emp_name, prev, new, action_type, current_user, note=note)
+    return new
+
+
+async def calculate_paid_leave_balance(
+    employee_id: str,
+    reference_date=None,
+    ignore_leave_id: Optional[str] = None,
+) -> dict:
+    """Return {earned, used, balance} as of ``reference_date`` (inclusive).
+
+    earned = number of calendar months from employee.date_of_joining through
+             reference_date (1 credit per month, including the joining month).
+    used   = sum of approved + pending Paid Leave days whose start_date <=
+             reference_date. Pending leaves are also counted to prevent
+             double-booking the same credit while a request is awaiting
+             approval.
+    balance = earned - used  (can be 0 but not negative; the validator below
+             guards against over-booking).
+
+    For DISPLAY (no reference_date), we use today's earned credits but count
+    ALL committed (approved + pending) Paid Leaves regardless of date, so the
+    employee correctly sees future-booked leaves drawing from their balance.
+
+    For VALIDATION (reference_date = new leave's start_date), we use the
+    strict point-in-time semantics above — earned-by-then minus already-used-
+    by-then. This is the correct check because by the time the new leave is
+    consumed, the employee will have at least `earned-by-then` credits.
+
+    ``ignore_leave_id`` lets edit/approve flows recalculate balance without
+    double-counting the leave currently being updated.
+    """
+    if reference_date is None:
+        reference_date = get_ist_now().date()
+        display_mode = True
+    else:
+        display_mode = False
+    if isinstance(reference_date, datetime):
+        reference_date = reference_date.date()
+
+    emp = await db.employees.find_one(
+        {"id": employee_id, "is_deleted": {"$ne": True}},
+        {"_id": 0, "date_of_joining": 1, "confirmation_date": 1, "employment_type": 1},
+    )
+    if not emp:
+        return {"earned": 0.0, "used": 0.0, "balance": 0.0}
+
+    # Interns (any Intern-category type) are NOT eligible for Paid Leave — balance
+    # is always zero (consistent with the eligibility rule enforced on apply/approve).
+    if _is_intern_category(emp.get("employment_type")):
+        return {"earned": 0.0, "used": 0.0, "balance": 0.0}
+
+    doj = _parse_date_flex(emp.get("date_of_joining")) or reference_date
+    if isinstance(doj, datetime):
+        doj = doj.date()
+
+    # Paid-Leave accrual starts from the Confirmation Date when set (the official
+    # date the employee became eligible — e.g. converted from Intern to a
+    # leave-eligible type), otherwise from the Date of Joining (direct
+    # leave-eligible hires — unchanged legacy behaviour). The Confirmation Date
+    # is therefore the single source of truth for when eligibility starts, and
+    # backdated credits are produced AUTOMATICALLY: because the balance is
+    # COMPUTED (never stored as credit rows), the result is inherently
+    # idempotent / duplicate-proof and all leave usage history is preserved.
+    accrual_start = _parse_date_flex(emp.get("confirmation_date")) or doj
+    if isinstance(accrual_start, datetime):
+        accrual_start = accrual_start.date()
+
+    if accrual_start > reference_date:
+        earned = 0.0
+    else:
+        earned = float(
+            (reference_date.year - accrual_start.year) * 12
+            + (reference_date.month - accrual_start.month)
+            + 1
+        )
+
+    ref_iso = reference_date.strftime("%Y-%m-%d")
+    used = 0.0
+    query = {
+        "employee_id": employee_id,
+        "leave_type": {"$regex": "^paid", "$options": "i"},
+        "status": {"$in": ["approved", "pending"]},
+    }
+    # In validation mode, restrict to leaves whose start <= reference_date.
+    # In display mode, count ALL committed Paid Leaves regardless of date.
+    if not display_mode:
+        query["start_date"] = {"$lte": ref_iso}
+
+    cursor = db.leaves.find(
+        query,
+        {"_id": 0, "id": 1, "leave_split": 1, "start_date": 1, "end_date": 1},
+    )
+    async for lv in cursor:
+        if ignore_leave_id and lv.get("id") == ignore_leave_id:
+            continue
+        sd = _parse_date_flex(lv.get("start_date"))
+        ed = _parse_date_flex(lv.get("end_date")) or sd
+        if not sd:
+            continue
+        if isinstance(sd, datetime):
+            sd = sd.date()
+        if isinstance(ed, datetime):
+            ed = ed.date()
+        # In validation mode, clamp to reference_date so a multi-day leave
+        # that overlaps the reference only counts its consumed-by-then days.
+        if not display_mode:
+            ed = min(ed, reference_date)
+        # Paid Leave taken BEFORE eligibility (the accrual/confirmation start
+        # date) is NEVER deducted — credits only begin accruing (and being
+        # consumed) on/after that date. A leave entirely before it is ignored;
+        # a leave that straddles the boundary only counts its on/after portion.
+        if ed < accrual_start:
+            continue
+        if sd < accrual_start:
+            sd = accrual_start
+        split = (lv.get("leave_split") or "Full Day").strip()
+        if split in ("First Half", "Second Half", "Half Day", "Half"):
+            used += 0.5
+        else:
+            used += float(max(1, (ed - sd).days + 1))
+
+    return {
+        "earned": earned,
+        "used": round(used, 1),
+        "balance": round(earned - used, 1),
+    }
+
+
+async def _validate_paid_leave_balance(
+    employee_id: str,
+    leave_type: str,
+    start_date: str,
+    end_date: str,
+    leave_split: str,
+    ignore_leave_id: Optional[str] = None,
+) -> None:
+    """Raise HTTPException(400) if the employee does not have enough Paid Leave
+    balance for the requested range. No-op for non-Paid leave types."""
+    if not _is_paid_leave_type(leave_type):
+        return
+    try:
+        ref_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return  # let the caller's date-format validation handle this
+
+    needed = _leave_days_count(start_date, end_date, leave_split)
+    bal = await calculate_paid_leave_balance(employee_id, ref_date, ignore_leave_id=ignore_leave_id)
+    if bal["balance"] + 1e-9 < needed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Insufficient Paid Leave balance. As of {start_date}: "
+                f"earned={bal['earned']:g}, used={bal['used']:g}, "
+                f"available={bal['balance']:g}, requested={needed:g}."
+            ),
+        )
+
+async def _prefetch_payroll_data(employee_ids: list, year: int, month_num: int, days_in_month: int) -> dict:
+    """Batch-prefetch all payroll-related data for a set of employees in one month."""
+    # 1. Attendance (both date formats)
+    all_att = await db.attendance.find({
+        "employee_id": {"$in": employee_ids},
+        "$or": [
+            {"date": {"$regex": f"^\\d{{2}}-{month_num:02d}-{year}$"}},
+            {"date": {"$regex": f"^{year}-{month_num:02d}-"}}
+        ]
+    }, {"_id": 0}).to_list(len(employee_ids) * 35)
+    att_by_emp = {}
+    for r in all_att:
+        att_by_emp.setdefault(r["employee_id"], []).append(r)
+
+    # 2. Leaves
+    all_leaves = await db.leaves.find({
+        "employee_id": {"$in": employee_ids},
+        "$or": [
+            {"start_date": {"$regex": f"^{year}-{month_num:02d}"}},
+            {"end_date": {"$regex": f"^{year}-{month_num:02d}"}}
+        ]
+    }, {"_id": 0}).to_list(len(employee_ids) * 10)
+    leaves_by_emp = {}
+    for lv in all_leaves:
+        leaves_by_emp.setdefault(lv["employee_id"], []).append(lv)
+
+    # 3. Approved late requests
+    all_late = await db.late_requests.find({
+        "employee_id": {"$in": employee_ids},
+        "status": "approved",
+        "date": {"$regex": f"^{year}-{month_num:02d}"}
+    }, {"_id": 0}).to_list(len(employee_ids) * 10)
+    late_by_emp = {}
+    for lr in all_late:
+        late_by_emp.setdefault(lr["employee_id"], []).append(lr)
+
+    # 4. Missed punches
+    all_mp = await db.missed_punches.find({
+        "employee_id": {"$in": employee_ids},
+        "date": {"$regex": f"^{year}-{month_num:02d}"}
+    }, {"_id": 0}).to_list(len(employee_ids) * 10)
+    mp_by_emp = {}
+    for mp in all_mp:
+        mp_by_emp.setdefault(mp["employee_id"], []).append(mp)
+
+    # 4b. Early-out requests (approved) — drive the with/without-LOP payroll outcome
+    all_eo = await db.early_out_requests.find({
+        "employee_id": {"$in": employee_ids},
+        "status": "approved",
+        "date": {"$regex": f"^{year}-{month_num:02d}"}
+    }, {"_id": 0}).to_list(len(employee_ids) * 10)
+    eo_by_emp = {}
+    for eo in all_eo:
+        eo_by_emp.setdefault(eo["employee_id"], []).append(eo)
+
+    # 5. Holidays
+    holiday_records = await db.holidays.find({
+        "date": {
+            "$gte": f"{year}-{month_num:02d}-01",
+            "$lte": f"{year}-{month_num:02d}-{days_in_month:02d}"
+        }
+    }, {"_id": 0}).to_list(50)
+    holiday_dates = set()
+    for h in holiday_records:
+        # Only STANDARD (paid) holidays count as company holidays for payroll.
+        # Unpaid holidays (is_paid=False) are normal working days — an approved
+        # Optional Holiday (OH) leave is the only way such a day becomes off.
+        if h.get("is_paid", True) is False:
+            continue
+        hd = _parse_date_flex(h.get("date"))
+        if hd:
+            holiday_dates.add(hd)
+
+    return {
+        "att_by_emp": att_by_emp,
+        "leaves_by_emp": leaves_by_emp,
+        "late_by_emp": late_by_emp,
+        "mp_by_emp": mp_by_emp,
+        "eo_by_emp": eo_by_emp,
+        "holiday_dates": holiday_dates,
+    }
+
+async def calculate_payroll_for_employee(employee_id: str, month: str, employee: dict = None, prefetched: dict = None) -> dict:
+    """
+    Payroll engine aligned to strict specification.
+    - Department-based work hour mapping (Research 11h, Business 10h, Support 9h)
+    - Sunday: Weekoff Pay +1; if worked Full→FD Extra+1, Half→HD Extra+0.5
+    - Holiday (Admin → Holidays): Weekoff/Holiday Pay +1 always; if worked
+      Full→FD Extra+1, Half→HD Extra+0.5 (Extra Pay is NOT payable)
+    - Working day classification cross-references leaves, late requests, missed punches
+    - LOP: A=1, LC=0.5, PH(working day)=0.5, pending/LOP leave
+    - Payable Days = Working Days + Weekoff/Holiday Pay + OH Pay - LOP
+    - Relieved employee: if last_day_payable=0 → subtract 1 day
+    """
+    import calendar
+    from datetime import date, timedelta
+    from datetime import timezone as tz
+
+    if not employee:
+        employee = await db.employees.find_one(
+            {"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0}
+        )
+    if not employee:
+        return None
+
+    year, month_num = map(int, month.split('-'))
+    days_in_month = calendar.monthrange(year, month_num)[1]
+
+    # --- Parse employee dates ---
+    joining_date = _parse_date_flex(employee.get("date_of_joining"))
+    emp_status = employee.get("employee_status", "Active")
+    relieving_date = None
+    if emp_status == EmployeeStatus.INACTIVE:
+        relieving_date = _parse_date_flex(employee.get("inactive_date"))
+        # Inactive without a date → cannot calculate payroll
+        if not relieving_date:
+            return None
+
+    payroll_start = date(year, month_num, 1)
+    payroll_end = date(year, month_num, days_in_month)
+
+    if joining_date and joining_date > payroll_end:
+        return None
+    if relieving_date and relieving_date < payroll_start:
+        return None
+
+    dept = employee.get("department", "")
+    work_cfg = DEPARTMENT_WORK_HOURS.get(dept, {"full": 10, "half": 5})
+    full_hours = work_cfg["full"]
+    half_hours = work_cfg["half"]
+
+    # --- Load data (prefetched or individual queries) ---
+    if prefetched:
+        holiday_dates = prefetched["holiday_dates"]
+        att_records = prefetched["att_by_emp"].get(employee_id, [])
+        leave_records = prefetched["leaves_by_emp"].get(employee_id, [])
+        late_records = prefetched["late_by_emp"].get(employee_id, [])
+        all_missed = prefetched["mp_by_emp"].get(employee_id, [])
+        early_out_records = prefetched.get("eo_by_emp", {}).get(employee_id, [])
+    else:
+        holiday_records_q = await db.holidays.find({
+            "date": {"$gte": f"{year}-{month_num:02d}-01", "$lte": f"{year}-{month_num:02d}-{days_in_month:02d}"}
+        }, {"_id": 0}).to_list(50)
+        holiday_dates = set()
+        for h in holiday_records_q:
+            # Only STANDARD (paid) holidays count as company holidays (see prefetch note).
+            if h.get("is_paid", True) is False:
+                continue
+            hd = _parse_date_flex(h.get("date"))
+            if hd:
+                holiday_dates.add(hd)
+        att_records = await db.attendance.find({
+            "employee_id": employee_id,
+            "$or": [
+                {"date": {"$regex": f"^\\d{{2}}-{month_num:02d}-{year}$"}},
+                {"date": {"$regex": f"^{year}-{month_num:02d}-"}}
+            ]
+        }, {"_id": 0}).to_list(50)
+        leave_records = await db.leaves.find({
+            "employee_id": employee_id,
+            "$or": [
+                {"start_date": {"$regex": f"^{year}-{month_num:02d}"}},
+                {"end_date": {"$regex": f"^{year}-{month_num:02d}"}}
+            ]
+        }, {"_id": 0}).to_list(100)
+        late_records = await db.late_requests.find({
+            "employee_id": employee_id, "status": "approved",
+            "date": {"$regex": f"^{year}-{month_num:02d}"}
+        }, {"_id": 0}).to_list(50)
+        early_out_records = await db.early_out_requests.find({
+            "employee_id": employee_id, "status": "approved",
+            "date": {"$regex": f"^{year}-{month_num:02d}"}
+        }, {"_id": 0}).to_list(50)
+        all_missed = await db.missed_punches.find({
+            "employee_id": employee_id,
+            "date": {"$regex": f"^{year}-{month_num:02d}"}
+        }, {"_id": 0}).to_list(50)
+    # --- Build attendance map with merging ---
+    attendance_map = {}
+    for r in att_records:
+        d = r.get("date", "")
+        if len(d) >= 10 and d[4] == '-':
+            parts = d.split('-')
+            normalized = f"{parts[2]}-{parts[1]}-{parts[0]}"
+        else:
+            normalized = d
+        if normalized in attendance_map:
+            existing = attendance_map[normalized]
+            for fld in ("check_in", "check_in_24h", "check_out", "check_out_24h", "total_hours", "total_hours_decimal"):
+                if r.get(fld) and not existing.get(fld):
+                    existing[fld] = r[fld]
+            # Recalculate hours if both timestamps now present
+            ci_ = existing.get("check_in_24h")
+            co_ = existing.get("check_out_24h")
+            if ci_ and co_ and not existing.get("total_hours_decimal"):
+                try:
+                    i_m = parse_time_24h_to_minutes(ci_)
+                    o_m = parse_time_24h_to_minutes(co_)
+                    diff = o_m - i_m if o_m > i_m else (1440 - i_m + o_m)
+                    existing["total_hours_decimal"] = round(diff / 60, 2)
+                    existing["total_hours"] = f"{int(diff // 60)}h {int(diff % 60)}m"
+                except Exception:
+                    pass
+        else:
+            attendance_map[normalized] = r
+
+    # --- Build leave map ---
+    leave_map = {}
+    for lv in leave_records:
+        s = _parse_date_flex(lv.get("start_date"))
+        e = _parse_date_flex(lv.get("end_date"))
+        if s and e:
+            cur = s
+            while cur <= e:
+                if payroll_start <= cur <= payroll_end:
+                    leave_map[cur.strftime("%Y-%m-%d")] = lv
+                cur += timedelta(days=1)
+
+    # Late & Early-Out approvals carry an admin "with/without LOP" decision
+    # (is_lop). Map date → is_lop so payroll calculates from the approval type.
+    late_by_date = {lr["date"]: bool(lr.get("is_lop")) for lr in late_records}
+    late_approved_dates = set(late_by_date)
+    early_out_by_date = {eo["date"]: bool(eo.get("is_lop")) for eo in early_out_records}
+
+    mp_approved_dates = set()
+    mp_pending_dates = set()
+    for mp in all_missed:
+        md = _parse_date_flex(mp.get("date"))
+        if md and payroll_start <= md <= payroll_end:
+            iso = md.strftime("%Y-%m-%d")
+            if mp.get("status") == "approved":
+                mp_approved_dates.add(iso)
+            elif mp.get("status") == "pending":
+                mp_pending_dates.add(iso)
+
+    # IST today
+    ist = tz(timedelta(hours=5, minutes=30))
+    today = datetime.now(ist).date()
+
+    # --- Payroll accumulators ---
+    total_days = days_in_month
+    working_days = 0
+    weekoff_pay = 0.0
+    extra_pay = 0.0
+    oh_pay = 0.0  # Approved Optional Holiday (Without LOP) — payable holiday days
+    lop = 0.0
+    attendance_details = []
+
+    # Preload effective-dated shift assignments once (avoids N+1 in the day loop)
+    _payroll_shift_assignments = await _load_employee_shift_assignments(employee_id)
+
+    for day in range(1, days_in_month + 1):
+        current_date = date(year, month_num, day)
+        date_dd = f"{day:02d}-{month_num:02d}-{year}"
+        date_iso = current_date.strftime("%Y-%m-%d")
+        day_name = current_date.strftime("%a")
+        is_sun = current_date.weekday() == 6
+        is_hol = current_date in holiday_dates
+        is_future = current_date > today
+
+        detail = {
+            "date": date_dd,
+            "day_name": day_name,
+            "is_sunday": is_sun,
+            "is_holiday": is_hol,
+            "status": "NA",
+            "lop_value": 0,
+            "weekoff_value": 0,
+            "extra_value": 0,
+            "oh_value": 0,
+            "check_in": None,
+            "check_out": None,
+            "total_hours": None,
+            "is_lop": False,
+        }
+
+        # --- Before joining → BLANK ---
+        if joining_date and current_date < joining_date:
+            detail["status"] = "BLANK"
+            attendance_details.append(detail)
+            continue
+
+        # --- After relieving → R ---
+        if relieving_date and current_date > relieving_date:
+            detail["status"] = "R"
+            attendance_details.append(detail)
+            continue
+
+        # --- Future dates ---
+        # CUTOFF RULE (user spec 2026-07-29): days after TODAY (IST) are never
+        # eligible — they must not contribute to Working Days, Weekoff Pay or
+        # Payable Days. For a future month every day lands here → payable 0.
+        if is_future:
+            if is_sun:
+                detail["status"] = "Su"
+            elif is_hol:
+                detail["status"] = "H"
+            else:
+                detail["status"] = "NA"
+            attendance_details.append(detail)
+            continue
+
+        att = attendance_map.get(date_dd)
+        leave = leave_map.get(date_iso)
+
+        # ===== APPROVED OPTIONAL HOLIDAY (Without LOP) =====
+        # An approved Optional Holiday request (Without LOP) is a fully payable
+        # day off. When it falls on a calendar HOLIDAY, the holiday branch (5B)
+        # below would otherwise swallow it as "H" (0 pay) and the approval would
+        # never reflect in payroll. Intercept it here so it renders "OH" and is
+        # credited as a payable holiday (oh_pay). Sundays are skipped — they are
+        # already paid via Weekoff, so an OH there must never double-pay. On a
+        # normal working day OH is handled by the leave sections (6A/6B), where
+        # it is already payable inside working_days, so we only special-case the
+        # holiday overlap here.
+        if (
+            is_hol
+            and not is_sun
+            and leave
+            and leave.get("status") == "approved"
+            and not leave.get("is_lop")
+            and (leave.get("leave_type") or "").strip().lower().startswith("optional")
+        ):
+            detail["status"] = "OH"
+            detail["oh_value"] = 1
+            oh_pay += 1
+            if att:
+                detail["check_in"] = att.get("check_in")
+                detail["check_out"] = att.get("check_out")
+                detail["total_hours"] = att.get("total_hours")
+            attendance_details.append(detail)
+            continue
+
+        # ===== SECTION 5A: SUNDAY =====
+        if is_sun:
+            weekoff_pay += 1
+            detail["weekoff_value"] = 1
+
+            if att:
+                detail["check_in"] = att.get("check_in")
+                detail["check_out"] = att.get("check_out")
+                detail["total_hours"] = att.get("total_hours")
+                has_in = bool(att.get("check_in") or att.get("check_in_24h"))
+                has_out = bool(att.get("check_out") or att.get("check_out_24h"))
+                hw = _calc_hours_worked(att)
+                if has_in != has_out:
+                    # Incomplete punch on a week-off — no extra pay until an
+                    # approved missed-punch correction completes the record.
+                    detail["status"] = "MP"
+                elif hw >= full_hours:
+                    detail["status"] = "FD"  # Full Day extra work on Week-Off
+                    extra_pay += 1
+                    detail["extra_value"] = 1
+                elif hw >= half_hours:
+                    detail["status"] = "HD"  # Half Day extra work on Week-Off
+                    extra_pay += 0.5
+                    detail["extra_value"] = 0.5
+                else:
+                    detail["status"] = "WO"
+            else:
+                detail["status"] = "WO"
+
+            attendance_details.append(detail)
+            continue
+
+        # ===== SECTION 5B: HOLIDAY (non-Sunday) =====
+        if is_hol:
+            # HR spec 2026-08-29: a holiday configured in Admin → Holidays is
+            # ALWAYS payable — it contributes exactly +1 to the combined
+            # "Weekoff Pay / Holiday Pay" column (`weekoff_value`) whether or
+            # not the employee works. If the employee ALSO works, that work is
+            # credited separately as Extra Pay (FD → +1, HD → +0.5), which is
+            # NOT part of Payable Days. The holiday itself is never counted
+            # twice. The FD/HD determination below is the pre-existing logic
+            # and is deliberately unchanged.
+            detail["weekoff_value"] = 1
+            if att:
+                detail["check_in"] = att.get("check_in")
+                detail["check_out"] = att.get("check_out")
+                detail["total_hours"] = att.get("total_hours")
+                has_in = bool(att.get("check_in") or att.get("check_in_24h"))
+                has_out = bool(att.get("check_out") or att.get("check_out_24h"))
+                hw = _calc_hours_worked(att)
+                if has_in != has_out:
+                    detail["status"] = "MP"
+                elif hw >= full_hours:
+                    detail["status"] = "FD"  # Full Day worked on Holiday
+                    detail["extra_value"] = 1
+                elif hw >= half_hours:
+                    detail["status"] = "HD"  # Half Day worked on Holiday
+                    detail["extra_value"] = 0.5
+                else:
+                    detail["status"] = "H"
+            else:
+                detail["status"] = "H"
+
+            attendance_details.append(detail)
+            continue
+
+        # ===== WORKING DAY =====
+        working_days += 1
+
+        # --- SECTION 6A: LEAVE ONLY (no attendance) ---
+        if leave and not att:
+            ls = leave.get("status", "pending")
+            is_lop_flag = leave.get("is_lop")
+            split = leave.get("leave_split", "Full Day")
+
+            if ls == "approved":
+                # Display rule (HR spec 2026-06): Without LOP → "P" (fully
+                # payable day). With LOP → the actual approved leave code
+                # (PF/PH/SF/SH/EF/EH/PA/PP/OH …); deduction stays internal.
+                if is_lop_flag is True:
+                    detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
+                    detail["is_lop"] = True
+                    if split == "Full Day":
+                        lop += 1
+                        detail["lop_value"] = 1
+                    else:
+                        lop += 0.5
+                        detail["lop_value"] = 0.5
+                else:
+                    # Approved without LOP. HR fix 2026-08-24: an approved
+                    # Paid Leave day must display PA (full) / PH (half),
+                    # NOT the generic "P" that all other non-LOP approved
+                    # leaves still use.
+                    if _leave_is_paid(leave):
+                        detail["status"] = _leave_code_for_status("Paid" if leave.get("consider_as_paid_leave") else leave.get("leave_type"), split)
+                    else:
+                        detail["status"] = "P"
+            elif ls == "pending":
+                if split == "Full Day":
+                    lop += 1
+                    detail["lop_value"] = 1
+                else:
+                    lop += 0.5
+                    detail["lop_value"] = 0.5
+                detail["status"] = "LOP"
+                detail["is_lop"] = True
+            else:
+                detail["status"] = "A"
+                lop += 1
+                detail["lop_value"] = 1
+
+            attendance_details.append(detail)
+            continue
+
+        # --- SECTION 6B: APPROVED LEAVE + ATTENDANCE ---
+        # Only an APPROVED leave turns the day into a leave-coded day. Pending or
+        # rejected leaves are NOT granted, so they must NOT mask the real
+        # attendance — they fall through to the hours-based engine (6C) below
+        # (fixes the bug where a pending leave forced "P" regardless of login
+        # hours, e.g. a 3h13m corrected punch showing Present).
+        if leave and att and leave.get("status") == "approved":
+            detail["check_in"] = att.get("check_in")
+            detail["check_out"] = att.get("check_out")
+            detail["total_hours"] = att.get("total_hours")
+            is_lop_flag = leave.get("is_lop")
+            split = leave.get("leave_split", "Full Day")
+
+            if split in ("First Half", "Second Half"):
+                if is_lop_flag is not True:
+                    # Approved Without LOP half-day + worked the other half → present.
+                    # HR fix 2026-08-24: for approved Paid Leave surface PH,
+                    # every other non-LOP half-day keeps the existing "P".
+                    if _leave_is_paid(leave):
+                        detail["status"] = _leave_code_for_status("Paid" if leave.get("consider_as_paid_leave") else leave.get("leave_type"), split)
+                    else:
+                        detail["status"] = "P"
+                else:
+                    # Approved With LOP half-day → display the half leave code
+                    # (PH/SH/EH/PP…); the 0.5 LOP is applied internally only.
+                    detail["status"] = _leave_code_for_status(leave.get("leave_type"), split)
+                    detail["is_lop"] = True
+                    lop += 0.5
+                    detail["lop_value"] = 0.5
+            else:
+                if is_lop_flag is True:
+                    # Approved With LOP full-day leave → display the leave code;
+                    # the full-day LOP is applied internally for salary only.
+                    detail["status"] = _leave_code_for_status(leave.get("leave_type"), "Full Day")
+                    detail["is_lop"] = True
+                    lop += 1
+                    detail["lop_value"] = 1
+                else:
+                    # Approved Without LOP → fully payable day → display "P".
+                    # HR fix 2026-08-24: an approved Paid Leave full-day
+                    # surfaces PA; every other non-LOP leave keeps "P".
+                    if _leave_is_paid(leave):
+                        detail["status"] = _leave_code_for_status("Paid" if leave.get("consider_as_paid_leave") else leave.get("leave_type"), "Full Day")
+                    else:
+                        detail["status"] = "P"
+
+            attendance_details.append(detail)
+            continue
+
+        # --- SECTION 6C: ATTENDANCE ONLY (no leave) ---
+        if att:
+            detail["check_in"] = att.get("check_in")
+            detail["check_out"] = att.get("check_out")
+            detail["total_hours"] = att.get("total_hours")
+            ci24 = att.get("check_in_24h")
+            co24 = att.get("check_out_24h")
+            hw = _calc_hours_worked(att)
+
+            if not co24:
+                # --- Without Checkout ---
+                if current_date == today:
+                    if date_iso in late_approved_dates:
+                        detail["status"] = "P"
+                    else:
+                        detail["status"] = "P"
+                else:
+                    # Past day, no checkout = missed OUT-punch. We cannot compute
+                    # login hours without a checkout, so the employee can NEVER be
+                    # auto-marked Present here (fixes the bug where a check-in time
+                    # alone forced "P" despite unknown/insufficient login hours).
+                    # Surface it as MP (Missed Punch) so it flows through the
+                    # existing missed-punch correction workflow. MP carries 0 LOP
+                    # (salary-neutral) until corrected — approving the missed punch
+                    # then yields the correct hours-based status.
+                    detail["status"] = "MP"
+            else:
+                # --- With Checkout ---
+                is_late = False
+                if ci24:
+                    shift_timings = await get_effective_shift_timings(employee, date_iso, _payroll_shift_assignments)
+                    exp_login = shift_timings.get("login_time") if shift_timings else None
+                    if exp_login:
+                        act_mins = parse_time_24h_to_minutes(ci24)
+                        exp_mins = parse_time_24h_to_minutes(exp_login)
+                        if act_mins is not None and exp_mins is not None and act_mins > exp_mins:
+                            is_late = True
+                # An APPROVED Late Coming request is the authoritative "late"
+                # signal — the employee raised it and admin approved it. Honour it
+                # even when the check-in-vs-shift recomputation above doesn't flag
+                # the day (e.g. shift timing not matched). This lets payroll apply
+                # the current LOP/NO_LOP decision: LOP → LC (0.5), NO_LOP → excused
+                # (P). Without this, a NO_LOP→LOP change was left showing P.
+                if date_iso in late_by_date:
+                    is_late = True
+
+                if hw >= full_hours and not is_late:
+                    detail["status"] = "P"
+                elif hw >= full_hours and is_late:
+                    if date_iso in late_by_date:
+                        # Approved Late request: Without LOP → excused → "P"
+                        # (0 LOP). With LOP → "LC" with 0.5 LOP penalty.
+                        if late_by_date[date_iso]:
+                            detail["status"] = "LC"
+                            detail["is_lop"] = True
+                            lop += 0.5
+                            detail["lop_value"] = 0.5
+                        else:
+                            detail["status"] = "P"
+                    else:
+                        # No/unapproved late → penalty.
+                        detail["status"] = "LC"
+                        detail["is_lop"] = True
+                        lop += 0.5
+                        detail["lop_value"] = 0.5
+                elif hw >= half_hours:
+                    detail["status"] = "HD"
+                    detail["is_lop"] = True
+                    lop += 0.5
+                    detail["lop_value"] = 0.5
+                else:
+                    detail["status"] = "A"
+                    lop += 1
+                    detail["lop_value"] = 1
+
+                # Early-Out approval overrides the hours-based penalty per the
+                # admin's with/without-LOP decision (Bug 1). Without LOP → the
+                # early departure is excused: mark Present and refund any LOP that
+                # the hours-based rule applied. With LOP → keep the hours-based
+                # penalty (HD/A) as the admin chose to deduct.
+                if date_iso in early_out_by_date and detail["status"] in ("HD", "A", "LC"):
+                    if not early_out_by_date[date_iso]:
+                        lop -= detail.get("lop_value", 0)
+                        detail["status"] = "P"
+                        detail["is_lop"] = False
+                        detail["lop_value"] = 0
+
+            attendance_details.append(detail)
+            continue
+
+        # --- SECTION 6D: NO ATTENDANCE (and no leave) ---
+        if date_iso in mp_approved_dates:
+            detail["status"] = "P"
+        elif date_iso in mp_pending_dates:
+            detail["status"] = "MP"
+        else:
+            detail["status"] = "A"
+            lop += 1
+            detail["lop_value"] = 1
+
+        attendance_details.append(detail)
+
+    # ===== SECTION 8: RELIEVED EMPLOYEE ADJUSTMENT (row-level) =====
+    # If a relieved employee's last working day is not payable, reflect that as
+    # a 1-day LOP on the relieving-date row itself (rather than a hidden
+    # subtraction on the final total). This keeps the summary fully reconciled
+    # with the attendance rows while preserving the exact same net pay.
+    last_day_payable = employee.get("last_day_payable", True)
+    if (
+        emp_status == EmployeeStatus.INACTIVE
+        and relieving_date
+        and last_day_payable in (False, 0, "0", "false", "False")
+    ):
+        rel_dd = f"{relieving_date.day:02d}-{relieving_date.month:02d}-{relieving_date.year}"
+        for d in attendance_details:
+            if d["date"] == rel_dd and d["status"] not in ("BLANK", "R"):
+                # SINGLE-DAY RULE (user, 2026-07-29): the relieving day can
+                # never cost more than ONE day of LOP in total — whether the
+                # employee never came, or came and left early. Top the row UP
+                # to 1 instead of stacking on any LOP it already carries.
+                d["lop_value"] = max(d.get("lop_value", 0) or 0, 1)
+                d["is_lop"] = True
+                break
+
+    # ===== SECTION 9: SUMMARY — DERIVED STRICTLY FROM FINAL ATTENDANCE ROWS =====
+    # Single source of truth: the final attendance_details rows. Every summary
+    # field is recomputed from the rows so the displayed totals can never drift
+    # out of sync with the per-day statuses (no stale accumulators).
+    working_days = sum(
+        1 for d in attendance_details
+        if (not d["is_sunday"]) and (not d["is_holiday"])
+        and d["status"] not in ("BLANK", "R", "NA")  # "NA" = future (after today) — not eligible
+    )
+    weekoff_pay = sum(d.get("weekoff_value", 0) or 0 for d in attendance_details)
+    extra_pay = sum(d.get("extra_value", 0) or 0 for d in attendance_details)
+    oh_pay = sum(d.get("oh_value", 0) or 0 for d in attendance_details)
+    lop = sum(d.get("lop_value", 0) or 0 for d in attendance_details)
+
+    # Payable Days = Working Days + "Weekoff Pay / Holiday Pay" (week-offs AND
+    #                configured holidays) + Optional-Holiday Pay - LOP
+    # Extra Pay (week-off / holiday work) stays an INDEPENDENT payroll component
+    # and is EXCLUDED from Payable Days (HR spec 2026-06-30 §8, 2026-08-29 §9).
+    final_payable_days = working_days + weekoff_pay + oh_pay - lop
+    final_payable_days = max(0, final_payable_days)
+
+    # Salary calculation
+    monthly_salary = employee.get("monthly_salary", 0.0) or 0.0
+    per_day_salary = monthly_salary / total_days if total_days > 0 else 0
+    net_salary = per_day_salary * final_payable_days
+    lop_deduction = monthly_salary - net_salary
+
+    # Derived counts for backward compatibility
+    _present_codes = ("P", "FD", "HD", "LC", "PF", "PH", "SF", "SH", "EF", "EH", "PA", "PP", "OH")
+    _leave_codes = ("PF", "PH", "SF", "SH", "EF", "EH", "PA", "PP", "OH")
+    present_count = sum(1 for d in attendance_details if d["status"] in _present_codes)
+    leave_count = sum(1 for d in attendance_details if d["status"] in _leave_codes)
+    absent_count = sum(1 for d in attendance_details if d["status"] == "A")
+
+    return {
+        "employee_id": employee_id,
+        "emp_name": employee.get("full_name"),
+        "emp_id": employee.get("emp_id"),
+        "department": dept,
+        "team": employee.get("team"),
+        "designation": employee.get("designation"),
+        "shift_type": employee.get("shift_type"),
+        "date_of_joining": employee.get("date_of_joining"),
+        "employee_status": emp_status,
+        "month": month,
+        "monthly_salary": monthly_salary,
+        # Spec-defined output fields
+        "total_days": total_days,
+        "working_days": working_days,
+        "weekoff_pay": weekoff_pay,
+        "extra_pay": extra_pay,
+        "oh_pay": oh_pay,
+        "lop": lop,
+        "final_payable_days": final_payable_days,
+        # Salary
+        "per_day_salary": round(per_day_salary, 2),
+        "lop_deduction": round(max(0, lop_deduction), 2),
+        "net_salary": round(max(0, net_salary), 2),
+        # Daily breakdown
+        "attendance_details": attendance_details,
+        # Backward compatibility fields
+        "present_days": present_count,
+        "lop_days": lop,
+        "leave_days": leave_count,
+        "absent_days": absent_count,
+    }
+
+# ============== EMAIL HELPERS ==============
+
+async def send_email_notification(to_email: str, subject: str, html_content: str):
+    """Send email notification using Resend"""
+    if not resend.api_key:
+        logger.warning("Resend API key not configured, skipping email")
+        return None
+    
+    try:
+        params = {
+            "from": SENDER_EMAIL,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content
+        }
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        logger.info(f"Email sent to {to_email}: {result.get('id')}")
+        return result
+    except Exception as e:
+        logger.error(f"Failed to send email: {str(e)}")
+        return None
+
+def get_leave_approval_email(emp_name: str, leave_type: str, start_date: str, end_date: str, status: str):
+    """Generate HTML email for leave approval/rejection"""
+    status_color = "#10b981" if status == "approved" else "#ef4444"
+    status_text = "Approved" if status == "approved" else "Rejected"
+    
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #0b1f3b; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">BluBridge HRMS</h1>
+        </div>
+        <div style="background: #fffdf7; padding: 30px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 8px 8px;">
+            <h2 style="color: #0b1f3b; margin-top: 0;">Leave Request {status_text}</h2>
+            <p style="color: #666;">Dear {emp_name},</p>
+            <p style="color: #666;">Your leave request has been <span style="color: {status_color}; font-weight: bold;">{status_text.lower()}</span>.</p>
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                <p style="margin: 5px 0;"><strong>Leave Type:</strong> {leave_type}</p>
+                <p style="margin: 5px 0;"><strong>From:</strong> {start_date}</p>
+                <p style="margin: 5px 0;"><strong>To:</strong> {end_date}</p>
+                <p style="margin: 5px 0;"><strong>Status:</strong> <span style="color: {status_color};">{status_text}</span></p>
+            </div>
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">This is an automated notification from BluBridge HRMS.</p>
+        </div>
+    </div>
+    """
+
+def get_star_reward_email(emp_name: str, stars: int, reason: str, awarded_by: str):
+    """Generate HTML email for star reward notification"""
+    star_color = "#10b981" if stars > 0 else "#ef4444"
+    star_text = f"+{stars}" if stars > 0 else str(stars)
+    
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #0b1f3b; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">BluBridge HRMS</h1>
+        </div>
+        <div style="background: #fffdf7; padding: 30px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 8px 8px;">
+            <h2 style="color: #0b1f3b; margin-top: 0;">Star Reward Notification</h2>
+            <p style="color: #666;">Dear {emp_name},</p>
+            <p style="color: #666;">You have received a star reward!</p>
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0; text-align: center;">
+                <p style="font-size: 48px; margin: 0; color: {star_color};">{star_text} ⭐</p>
+                <p style="margin: 10px 0 0 0; color: #666;">{reason}</p>
+            </div>
+            <p style="color: #999; font-size: 12px;">Awarded by: {awarded_by}</p>
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">This is an automated notification from BluBridge HRMS.</p>
+        </div>
+    </div>
+    """
+
+def get_welcome_email(emp_name: str, emp_id: str, username: str, password: str, login_url: str):
+    """Generate HTML email for new employee welcome with credentials"""
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: linear-gradient(135deg, #0b1f3b 0%, #1e3a5f 100%); padding: 30px; border-radius: 12px 12px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 28px; font-weight: 600;">Welcome to BluBridge!</h1>
+            <p style="color: rgba(255,255,255,0.8); margin: 10px 0 0 0; font-size: 14px;">Your Employee Account Has Been Created</p>
+        </div>
+        <div style="background: #fffdf7; padding: 35px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 12px 12px;">
+            <p style="color: #333; font-size: 16px; margin-top: 0;">Dear <strong>{emp_name}</strong>,</p>
+            <p style="color: #666; line-height: 1.6;">Welcome to the BluBridge team! Your employee account has been successfully created. Below are your login credentials to access the BluBridge HRMS portal.</p>
+            
+            <div style="background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 25px; border-radius: 10px; margin: 25px 0; border-left: 4px solid #0b1f3b;">
+                <h3 style="color: #0b1f3b; margin: 0 0 15px 0; font-size: 16px;">🔐 Your Login Credentials</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                        <td style="padding: 8px 0; color: #666; width: 120px;">Employee ID:</td>
+                        <td style="padding: 8px 0; color: #333; font-weight: 600;">{emp_id}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #666;">Username:</td>
+                        <td style="padding: 8px 0; color: #333; font-weight: 600;">{username}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 8px 0; color: #666;">Password:</td>
+                        <td style="padding: 8px 0; color: #333; font-weight: 600; font-family: monospace; background: #fff; padding: 5px 10px; border-radius: 4px;">{password}</td>
+                    </tr>
+                </table>
+            </div>
+            
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{login_url}" style="display: inline-block; background: #0b1f3b; color: white; padding: 14px 35px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 15px;">Login to HRMS Portal</a>
+            </div>
+            
+            <div style="background: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;">
+                <p style="color: #856404; margin: 0; font-size: 13px;">⚠️ <strong>Security Reminder:</strong> Please change your password after your first login for security purposes.</p>
+            </div>
+            
+            <hr style="border: none; border-top: 1px solid #e5e5e5; margin: 25px 0;">
+            
+            <p style="color: #999; font-size: 12px; margin-bottom: 5px;">If you have any questions, please contact HR at hrms@blubridge.ai</p>
+            <p style="color: #999; font-size: 12px; margin: 0;">This is an automated notification from BluBridge HRMS.</p>
+        </div>
+    </div>
+    """
+
+async def send_welcome_email(emp_name: str, emp_id: str, email: str, username: str, password: str, login_url: str):
+    """Send welcome email with credentials to new employee"""
+    resend_api_key = os.environ.get('RESEND_API_KEY')
+    sender_email = os.environ.get('SENDER_EMAIL', 'hrms@blubridge.ai')
+    
+    if not resend_api_key:
+        logger.warning("RESEND_API_KEY not configured - skipping welcome email")
+        return None
+    
+    resend.api_key = resend_api_key
+    
+    html_content = get_welcome_email(emp_name, emp_id, username, password, login_url)
+    
+    params = {
+        "from": sender_email,
+        "to": [email],
+        "subject": f"Welcome to BluBridge - Your Login Credentials ({emp_id})",
+        "html": html_content
+    }
+    
+    try:
+        email_result = await asyncio.to_thread(resend.Emails.send, params)
+        logger.info(f"Welcome email sent to {email}")
+        return email_result
+    except Exception as e:
+        logger.error(f"Failed to send welcome email to {email}: {str(e)}")
+        return None
+
+# ============== CLOUDINARY ROUTES ==============
+
+@api_router.get("/cloudinary/signature")
+async def get_cloudinary_signature(
+    resource_type: str = Query("auto", enum=["image", "video", "auto", "raw"]),
+    folder: str = Query("employees"),
+    current_user: dict = Depends(get_current_user)
+):
+    """Generate signed upload params for Cloudinary"""
+    ALLOWED_FOLDERS = ("employees", "documents", "avatars")
+    if folder not in ALLOWED_FOLDERS:
+        raise HTTPException(status_code=400, detail="Invalid folder path")
+    
+    timestamp = int(time.time())
+    # Simple params for public upload
+    params = {
+        "timestamp": timestamp,
+        "folder": f"blubridge/{folder}",
+        "type": "upload"  # Ensure public upload type
+    }
+    
+    signature = cloudinary.utils.api_sign_request(
+        params,
+        os.environ.get("CLOUDINARY_API_SECRET")
+    )
+    
+    return {
+        "signature": signature,
+        "timestamp": timestamp,
+        "cloud_name": os.environ.get("CLOUDINARY_CLOUD_NAME"),
+        "api_key": os.environ.get("CLOUDINARY_API_KEY"),
+        "folder": f"blubridge/{folder}",
+        "resource_type": resource_type,
+        "type": "upload"  # Ensure public access
+    }
+
+@api_router.delete("/cloudinary/{public_id:path}")
+async def delete_cloudinary_asset(
+    public_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete asset from Cloudinary"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    try:
+        result = await asyncio.to_thread(
+            cloudinary.uploader.destroy,
+            public_id,
+            invalidate=True
+        )
+        return {"success": True, "result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============== SERVER-SIDE PDF COMPRESS + UPLOAD (fallback) ==============
+# The browser compressor (frontend/src/lib/pdfCompressor.js) can fail in
+# production builds (pdf.js worker loading) or on unusual PDFs. This chunked
+# fallback lets the frontend stream the ORIGINAL oversized PDF to the backend,
+# which rasterise-recompresses it with PyMuPDF below Cloudinary's 10 MB
+# free-plan cap and uploads it server-side. Chunks are base64 JSON (≤4 MB)
+# so Kubernetes ingress body limits are never hit.
+
+_PDF_COMPRESS_TMP = "/tmp/pdf_compress"
+_UUID_RE = re.compile(r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$")
+
+
+def _compress_pdf_bytes(data: bytes, target_bytes: int) -> bytes:
+    """Rasterise-recompress a PDF below target_bytes (best effort).
+    Walks a DPI/JPEG-quality ladder; returns the smallest output produced."""
+    import fitz
+    presets = [(150, 80), (120, 70), (100, 60), (85, 50), (72, 40)]
+    src = fitz.open(stream=data, filetype="pdf")
+    best = None
+    try:
+        for dpi, quality in presets:
+            out = fitz.open()
+            for page in src:
+                pix = page.get_pixmap(dpi=dpi)
+                img = pix.tobytes("jpeg", jpg_quality=quality)
+                rect = page.rect
+                new_page = out.new_page(width=rect.width, height=rect.height)
+                new_page.insert_image(rect, stream=img)
+            buf = out.tobytes(deflate=True, garbage=3)
+            out.close()
+            if best is None or len(buf) < len(best):
+                best = buf
+            if len(buf) <= target_bytes:
+                break
+    finally:
+        src.close()
+    return best
+
+
+@api_router.post("/documents/compress-upload/chunk")
+async def pdf_compress_upload_chunk(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Receive one base64 chunk of an oversized PDF (appended in order)."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    upload_id = str(payload.get("upload_id") or "")
+    if not _UUID_RE.match(upload_id):
+        raise HTTPException(status_code=400, detail="Invalid upload_id")
+    try:
+        chunk = base64.b64decode(payload.get("data") or "")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid chunk data")
+    if not chunk:
+        raise HTTPException(status_code=400, detail="Empty chunk")
+    os.makedirs(_PDF_COMPRESS_TMP, exist_ok=True)
+    path = os.path.join(_PDF_COMPRESS_TMP, f"{upload_id}.part")
+    if int(payload.get("chunk_index") or 0) == 0 and os.path.exists(path):
+        os.remove(path)  # idempotent restart of the same upload
+    with open(path, "ab") as f:
+        f.write(chunk)
+    size = os.path.getsize(path)
+    if size > 30 * 1024 * 1024:
+        os.remove(path)
+        raise HTTPException(status_code=413, detail="File exceeds 30 MB limit")
+    return {"received": len(chunk), "total_bytes": size}
+
+
+@api_router.post("/documents/compress-upload/finish")
+async def pdf_compress_upload_finish(
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Assemble chunks → compress below 10 MB → upload to Cloudinary."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    upload_id = str(payload.get("upload_id") or "")
+    if not _UUID_RE.match(upload_id):
+        raise HTTPException(status_code=400, detail="Invalid upload_id")
+    path = os.path.join(_PDF_COMPRESS_TMP, f"{upload_id}.part")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Upload not found — send chunks first")
+    with open(path, "rb") as f:
+        data = f.read()
+    os.remove(path)
+    if not data.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="File is not a valid PDF")
+
+    target = 9 * 1024 * 1024        # 9 MB → headroom below the 10 MB cap
+    hard_cap = 10 * 1024 * 1024
+    original_bytes = len(data)
+    try:
+        compressed = await asyncio.to_thread(_compress_pdf_bytes, data, target)
+    except Exception as e:
+        logger.warning(f"Server PDF compression failed for {upload_id}: {e}")
+        raise HTTPException(status_code=422, detail=f"PDF compression failed: {e}")
+    if not compressed or len(compressed) > hard_cap:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not compress the PDF below 10 MB "
+                   f"(best: {len(compressed or b'') / 1024 / 1024:.1f} MB)."
+        )
+
+    file_name = str(payload.get("file_name") or "document.pdf")
+    safe_base = re.sub(r"[^A-Za-z0-9_-]+", "_", file_name.rsplit(".", 1)[0])[:80] or "document"
+    try:
+        result = await asyncio.to_thread(
+            cloudinary.uploader.upload,
+            io.BytesIO(compressed),
+            resource_type="auto",
+            folder="blubridge/documents",
+            public_id=f"{safe_base}_{upload_id[:8]}",
+            type="upload",
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Cloudinary upload failed: {e}")
+
+    logger.info(
+        f"Server-side PDF compress+upload: {file_name} "
+        f"{original_bytes/1024/1024:.1f}MB -> {len(compressed)/1024/1024:.1f}MB "
+        f"public_id={result.get('public_id')}"
+    )
+    return {
+        "secure_url": result.get("secure_url"),
+        "public_id": result.get("public_id"),
+        "original_bytes": original_bytes,
+        "final_bytes": len(compressed),
+    }
+
+
+# ============== SECURE DOCUMENT VIEWING ==============
+# Cloudinary's default account security blocks public delivery of PDF/ZIP via
+# /image/upload/ — resulting in 401 "deny or ACL failure" when the admin clicks
+# View/Download on an onboarding document. This endpoint generates a short-lived,
+# server-signed Cloudinary Admin-API download URL that ALWAYS works regardless
+# of the public-delivery setting. RBAC ensures only admins/HR or the owning
+# employee can request a signed URL for a given document.
+
+def _ext_from_file_url(file_url: str, file_name: Optional[str] = None) -> Optional[str]:
+    """Extract lowercase extension (e.g. 'pdf', 'jpg') from file_url or file_name."""
+    for candidate in (file_url or "", file_name or ""):
+        if not candidate:
+            continue
+        # strip query string + path
+        path = candidate.split("?", 1)[0]
+        last = path.rsplit("/", 1)[-1]
+        if "." in last:
+            ext = last.rsplit(".", 1)[-1].lower().strip()
+            if 1 <= len(ext) <= 6 and ext.isalnum():
+                return ext
+    return None
+
+
+_DOC_STREAM_TOKEN_TTL_SECONDS = 600   # 10 minutes – matches the new-tab use case
+_DOC_STREAM_AUD = "doc-stream"        # JWT audience claim, isolates from auth tokens
+
+
+def _mint_doc_stream_token(*, user_id: str, employee_id: str, document_type: str, source: str) -> str:
+    """Mint a short-lived JWT for the document streaming proxy.
+
+    Embedded in the URL (query string) because ``window.open`` cannot attach
+    an Authorization header.  Distinct ``aud`` claim so a leaked stream token
+    cannot be replayed against the rest of the API.
+    """
+    now = datetime.now(timezone.utc)
+    payload = {
+        "aud": _DOC_STREAM_AUD,
+        "uid": user_id,
+        "eid": employee_id,
+        "dt": document_type,
+        "src": source,
+        "iat": now,
+        "exp": now + timedelta(seconds=_DOC_STREAM_TOKEN_TTL_SECONDS),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def _decode_doc_stream_token(token: str) -> dict:
+    """Decode + validate a doc-stream token; raises HTTPException on failure."""
+    try:
+        return jwt.decode(
+            token, JWT_SECRET, algorithms=[JWT_ALGORITHM], audience=_DOC_STREAM_AUD,
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Document link expired — please reopen")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid document link")
+
+
+@api_router.get("/documents/secure-url")
+async def get_document_secure_url(
+    request: Request,
+    employee_id: str = Query(..., description="Employee UUID owning the document"),
+    document_type: str = Query(..., description="Document type key (e.g. aadhaar_card, pan_card)"),
+    disposition: str = Query("inline", regex="^(inline|attachment)$"),
+    source: str = Query("onboarding", regex="^(onboarding|employee)$",
+                        description="onboarding=KYC docs, employee=HR-issued letters"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate a short-lived signed Cloudinary download URL for an employee document.
+
+    Bypasses Cloudinary's default PDF/ZIP delivery restriction by using the
+    Admin-API signed download endpoint. URL is valid for 15 minutes.
+    Supports both onboarding KYC docs and HR-issued letters via `source`.
+    """
+    # --- RBAC: admin/HR roles OR the owning employee ---
+    role = current_user.get("role")
+    is_privileged = role in (UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN)
+    is_owner = current_user.get("employee_id") == employee_id
+    if not (is_privileged or is_owner):
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # --- Locate the document record (search the requested collection, then
+    # fall back to the other one so callers don't have to guess) ---
+    collections = (
+        [db.onboarding_documents, db.employee_documents]
+        if source == "onboarding"
+        else [db.employee_documents, db.onboarding_documents]
+    )
+    doc = None
+    for coll in collections:
+        doc = await coll.find_one(
+            {"employee_id": employee_id, "document_type": document_type},
+            {"_id": 0},
+        )
+        if doc:
+            break
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    public_id = doc.get("file_public_id")
+    file_url = doc.get("file_url")
+    file_name = doc.get("file_name")
+    if not public_id and not file_url:
+        raise HTTPException(status_code=404, detail="Document has not been uploaded")
+
+    ext = _ext_from_file_url(file_url, file_name)
+
+    # --- INLINE VIEW: route through our streaming proxy ---------------------
+    # Cloudinary's signed `private_download_url` endpoint forces
+    # `Content-Disposition: attachment` (it's the *download* API). Pointing
+    # `window.open` at it yields a blank tab in modern browsers (they refuse
+    # to inline-render a response marked as attachment, or the inline preview
+    # fails for PDFs depending on account security). The proxy below fetches
+    # the bytes server-side and re-streams them with `Content-Disposition:
+    # inline`, which renders correctly in every browser.
+    if disposition == "inline":
+        stream_token = _mint_doc_stream_token(
+            user_id=current_user["id"],
+            employee_id=employee_id,
+            document_type=document_type,
+            source=source,
+        )
+        # Build the absolute stream URL from the request the browser actually
+        # made (handles preview vs. prod vs. local dev without configuration).
+        # Honour the standard reverse-proxy forwarded headers our ingress
+        # sets so the URL matches what the browser can reach.
+        fwd_proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+        fwd_host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+        base = f"{fwd_proto}://{fwd_host}".rstrip("/")
+        stream_url = f"{base}/api/documents/stream?token={stream_token}"
+        if is_privileged:
+            try:
+                await log_audit(
+                    current_user["id"], "view_document", "employee_document",
+                    employee_id, f"Issued inline stream URL for {document_type}",
+                )
+            except Exception:
+                pass
+        return {
+            "url": stream_url,
+            "expires_in": _DOC_STREAM_TOKEN_TTL_SECONDS,
+            "signed": True,
+            "file_name": file_name,
+            "proxied": True,
+        }
+
+    # --- DOWNLOAD: Cloudinary signed download URL (unchanged, working path) -
+    # If we don't have a public_id (legacy records), fall back to the stored URL
+    # (works for images that aren't blocked by the PDF restriction).
+    if not public_id:
+        return {"url": file_url, "expires_in": 0, "signed": False}
+
+    # Cloudinary `image` resource_type covers JPG/PNG/PDF (PDFs are stored as
+    # image type with format=pdf by the uploader). Raw type would only be used
+    # for non-image binaries — none of our employee docs use that today.
+    expires_at = int(time.time()) + 900  # 15 minutes
+    try:
+        signed_url = await asyncio.to_thread(
+            cloudinary.utils.private_download_url,
+            public_id,
+            ext or "",
+            resource_type="image",
+            type="upload",
+            expires_at=expires_at,
+            attachment=True,
+        )
+    except Exception as e:
+        # Fall back to the stored URL rather than 500 — at worst the user sees
+        # the same 401 they had before for PDFs (images still work).
+        return {"url": file_url, "expires_in": 0, "signed": False, "error": str(e)}
+
+    # Audit (privileged users only — owner views are noisy/redundant)
+    if is_privileged:
+        try:
+            await log_audit(
+                current_user["id"],
+                "view_document",
+                "employee_document",
+                employee_id,
+                f"Issued signed URL for {document_type} ({disposition})",
+            )
+        except Exception:
+            pass
+
+    return {
+        "url": signed_url,
+        "expires_in": 900,
+        "signed": True,
+        "file_name": file_name,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Document streaming proxy
+# ---------------------------------------------------------------------------
+# Purpose:
+#   • `window.open(signed_cloudinary_url)` renders blank for PDFs because
+#     Cloudinary's `/download` endpoint returns Content-Disposition: attachment.
+#   • Embedding a Bearer header on `window.open` is impossible (no header
+#     control on a new-tab navigation), so the auth token rides in the query
+#     string as a short-lived, audience-scoped JWT (NOT the user session
+#     token — that one never leaves localStorage).
+# Behaviour:
+#   • Validates the short-lived token + re-authorizes against the document
+#     record (defence in depth — token forgery still has to match a real doc).
+#   • Streams the asset bytes from Cloudinary with the correct Content-Type
+#     and `Content-Disposition: inline; filename=...` so the browser renders
+#     the PDF / image inline.
+_DOC_MIME_BY_EXT = {
+    "pdf": "application/pdf",
+    "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic", "heif": "image/heif",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
+
+
+@api_router.get("/documents/stream")
+async def stream_document(token: str = Query(..., min_length=10)):
+    """Stream a previously authorised document inline so it renders in
+    the browser's new-tab viewer. See module docstring above for design notes."""
+    payload = _decode_doc_stream_token(token)
+    employee_id = payload["eid"]
+    document_type = payload["dt"]
+    source = payload.get("src", "onboarding")
+
+    # Re-fetch the document record (the JWT only proves *which* doc was
+    # authorised, not that the asset still exists / hasn't been replaced).
+    collections = (
+        [db.onboarding_documents, db.employee_documents]
+        if source == "onboarding"
+        else [db.employee_documents, db.onboarding_documents]
+    )
+    doc = None
+    for coll in collections:
+        doc = await coll.find_one(
+            {"employee_id": employee_id, "document_type": document_type},
+            {"_id": 0},
+        )
+        if doc:
+            break
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    public_id = doc.get("file_public_id")
+    file_url = doc.get("file_url")
+    file_name = doc.get("file_name") or f"{document_type}"
+
+    # Build the upstream URL we will pull bytes from.
+    # 1) If we have a public_id → mint a signed Cloudinary download URL
+    #    server-side (bypasses public-delivery PDF restriction).
+    # 2) Otherwise fall back to whatever stored URL we have.
+    ext = _ext_from_file_url(file_url, file_name) or ""
+    upstream_url: Optional[str] = None
+    if public_id:
+        expires_at = int(time.time()) + 300
+        try:
+            upstream_url = await asyncio.to_thread(
+                cloudinary.utils.private_download_url,
+                public_id,
+                ext,
+                resource_type="image",
+                type="upload",
+                expires_at=expires_at,
+                attachment=True,  # download from CDN; we re-serve as inline
+            )
+        except Exception as exc:
+            logger.warning("Cloudinary signed URL build failed: %s", exc)
+            upstream_url = None
+    if not upstream_url:
+        upstream_url = file_url
+    if not upstream_url:
+        raise HTTPException(status_code=404, detail="Document has not been uploaded")
+
+    content_type = _DOC_MIME_BY_EXT.get(ext, "application/octet-stream")
+
+    # Stream the bytes back. `httpx.AsyncClient.stream` keeps memory usage
+    # bounded for large files (e.g. multi-MB scanned PDFs).
+    import httpx  # local import keeps cold-start light
+
+    async def _iter_bytes():
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+            async with client.stream("GET", upstream_url) as upstream:
+                if upstream.status_code != 200:
+                    # Surface a meaningful error instead of an empty body that
+                    # would also render as a blank tab.
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Upstream document fetch failed ({upstream.status_code})",
+                    )
+                async for chunk in upstream.aiter_bytes(chunk_size=64 * 1024):
+                    yield chunk
+
+    # `inline` so the browser renders it (PDF viewer / <img>) rather than
+    # downloading. The filename is still set for "Save As".
+    safe_name = (file_name or document_type).replace('"', '')
+    headers = {
+        "Content-Disposition": f'inline; filename="{safe_name}"',
+        "Cache-Control": "private, max-age=0, no-store",
+        # Allow embedding in our own app if the frontend ever wants to iframe it
+        "X-Content-Type-Options": "nosniff",
+    }
+    return StreamingResponse(_iter_bytes(), media_type=content_type, headers=headers)
+
+
+# ============== AUTH ROUTES ==============
+
+@api_router.post("/auth/login", response_model=LoginResponse)
+async def login(request: LoginRequest, http_request: Request):
+    # Case-insensitive username/email match + trim whitespace (users often type with capital letter / autofill trailing space)
+    raw_identifier = (request.username or "").strip()
+    if not raw_identifier:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    safe_regex = re.escape(raw_identifier)
+    user = await db.users.find_one(
+        {"$or": [
+            {"username": {"$regex": f"^{safe_regex}$", "$options": "i"}},
+            {"email": {"$regex": f"^{safe_regex}$", "$options": "i"}},
+        ]},
+        {"_id": 0},
+    )
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Your account is deactivated. Contact admin.")
+    if not verify_password(request.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    
+    token, refresh_token = await create_auth_session(user, http_request)
+    await log_audit(user["id"], "login", "auth")
+    
+    user_response = {k: v for k, v in user.items() if k != "password_hash"}
+    
+    # Add onboarding info + avatar for employees
+    if user.get("role") == UserRole.EMPLOYEE and user.get("employee_id"):
+        onboarding = await db.onboarding.find_one({"employee_id": user["employee_id"]}, {"_id": 0})
+        # ACCESS gating uses the USER record's onboarding_status (the granted-access
+        # truth, set on HR approval / bypass). The `onboarding` RECORD status is now
+        # document-DERIVED (for the HR Verification module) and must NOT gate login —
+        # otherwise correcting a stale "approved" record would lock the employee out.
+        user_response["onboarding_status"] = (
+            user.get("onboarding_status")
+            or (onboarding.get("status") if onboarding else None)
+            or OnboardingStatus.PENDING
+        )
+        user_response["is_first_login"] = user.get("is_first_login", True)
+        user_response["onboarding_completed"] = user_response["onboarding_status"] == OnboardingStatus.APPROVED
+        emp = await db.employees.find_one({"id": user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1, "team": 1})
+        if emp:
+            if emp.get("avatar"):
+                user_response["avatar"] = emp["avatar"]
+            user_response["designation"] = emp.get("designation")
+            user_response["team"] = emp.get("team")
+    
+    return {"token": token, "refresh_token": refresh_token, "user": user_response}
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@api_router.post("/auth/refresh")
+async def refresh_auth_tokens(body: RefreshRequest):
+    """Rotate the refresh token and issue a new short-lived access token.
+
+    SECURITY: refresh tokens are single-use. Replaying a rotated (old) refresh
+    token is treated as possible token theft — the ENTIRE session is revoked.
+    """
+    try:
+        payload = jwt.decode(body.refresh_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Refresh token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+    # Access tokens must never be usable on the refresh endpoint.
+    if payload.get("token_type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+
+    session_id = payload.get("session_id")
+    session = await db.auth_sessions.find_one({"session_id": session_id}, {"_id": 0})
+    if not session:
+        raise HTTPException(status_code=401, detail="Session not found. Please login again.")
+    if session.get("revoked_at"):
+        raise HTTPException(status_code=401, detail="Session revoked. Please login again.")
+
+    now = datetime.now(timezone.utc)
+    try:
+        session_exp = datetime.fromisoformat(session["expires_at"])
+    except (KeyError, TypeError, ValueError):
+        session_exp = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
+    if session_exp <= now:
+        await revoke_auth_session(session_id, "expired")
+        raise HTTPException(status_code=401, detail="Session expired. Please login again.")
+
+    # A token refresh is NOT user activity: it only checks the sliding window,
+    # so a background refresh loop can never keep an idle session alive.
+    await enforce_session_activity(session, session_id, touch=False)
+
+    # Rotation reuse detection: jti/hash mismatch means an OLD refresh token
+    # is being replayed after rotation → revoke the whole session.
+    if (payload.get("jti") != session.get("refresh_jti")
+            or _hash_token(body.refresh_token) != session.get("refresh_token_hash")):
+        await revoke_auth_session(session_id, "refresh_token_reuse")
+        await log_audit(payload.get("user_id"), "refresh_token_reuse_detected", "auth", session_id)
+        raise HTTPException(status_code=401, detail="Refresh token reuse detected. Session revoked.")
+
+    user = await db.users.find_one({"id": payload.get("user_id")}, {"_id": 0})
+    if not user or not user.get("is_active", True):
+        await revoke_auth_session(session_id, "user_inactive")
+        raise HTTPException(status_code=401, detail="Account is inactive")
+
+    # Rotate: new refresh token capped at the session's ABSOLUTE expiry
+    # (refreshing never extends the session beyond its original lifetime).
+    new_refresh, new_jti = create_refresh_token(user["id"], session_id, session_exp - now)
+    await db.auth_sessions.update_one(
+        {"session_id": session_id},
+        {"$set": {
+            "refresh_token_hash": _hash_token(new_refresh),
+            "refresh_jti": new_jti,
+            "replaced_by_jti": new_jti,
+            "updated_at": now.isoformat(),
+        }},
+    )
+    access = create_access_token(user["id"], user["role"], session_id)
+    return {"token": access, "refresh_token": new_refresh}
+
+
+@api_router.post("/auth/logout")
+async def logout(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Server-side logout: revokes the session so BOTH the access token and
+    the refresh token immediately stop working. Signature is still verified,
+    but exp is ignored so an already-expired access token can end its session.
+    """
+    try:
+        payload = jwt.decode(
+            credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    session_id = payload.get("session_id")
+    if session_id:
+        await revoke_auth_session(session_id, "logout")
+    if payload.get("user_id"):
+        await log_audit(payload["user_id"], "logout", "auth")
+    return {"message": "Logged out"}
+
+
+@api_router.get("/auth/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    out = {k: v for k, v in current_user.items() if k != "password_hash"}
+    # Enrich with employee avatar + designation so sidebar/header + route guards
+    # (e.g. the Vigilance module access exception) work after a page refresh.
+    if current_user.get("role") == UserRole.EMPLOYEE and current_user.get("employee_id"):
+        emp = await db.employees.find_one({"id": current_user["employee_id"]}, {"_id": 0, "avatar": 1, "designation": 1, "employment_type": 1, "team": 1})
+        if emp:
+            if emp.get("avatar"):
+                out["avatar"] = emp["avatar"]
+            out["designation"] = emp.get("designation")
+            out["employment_type"] = emp.get("employment_type")
+            out["team"] = emp.get("team")
+        # ACCESS gating uses the USER record's onboarding_status (not the
+        # document-derived Verification record). Keep onboarding_completed in sync.
+        out["onboarding_completed"] = out.get("onboarding_status") == OnboardingStatus.APPROVED
+    return out
+
+@api_router.put("/auth/update-profile")
+async def update_admin_profile(
+    name: Optional[str] = None,
+    email: Optional[str] = None,
+    phone: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update admin user profile"""
+    update_data = {}
+    if name:
+        update_data["name"] = name
+    if email:
+        update_data["email"] = email
+    if phone:
+        update_data["phone"] = phone
+    
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No data to update")
+    
+    update_data["updated_at"] = get_ist_now().isoformat()
+    
+    await db.users.update_one({"id": current_user["id"]}, {"$set": update_data})
+    
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0, "password_hash": 0})
+    return serialize_doc(user)
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+# ============================================================
+# PROTECTED ADMIN ACCOUNTS — credential overwrite firewall
+# ============================================================
+# These username/role pairs may ONLY have their password_hash modified via:
+#   • /auth/change-password (self-change)
+#   • /auth/reset-password (token-based forgot-password)
+# Any other code path attempting to write password_hash to one of these
+# users MUST go through `_safe_user_update()` which strips the field with a
+# loud warning. Prevents the recurring "admin password reverted" bug where
+# employee rehire flows could collide on usernames like "admin@xxx.com" and
+# silently overwrite the real admin user.
+PROTECTED_ADMIN_USERNAMES = {"admin", "sysadmin", "offadmin", "workforce"}
+PROTECTED_ADMIN_ROLES = {"hr", "system_admin", "office_admin"}
+
+
+def _is_protected_admin(user_doc: Optional[dict]) -> bool:
+    if not user_doc:
+        return False
+    if (user_doc.get("username") or "").lower() in PROTECTED_ADMIN_USERNAMES:
+        return True
+    if (user_doc.get("role") or "") in PROTECTED_ADMIN_ROLES:
+        return True
+    return False
+
+
+async def _safe_user_update(filter_query: dict, update_doc: dict, *, source: str) -> None:
+    """Surgical wrapper around `db.users.update_one` that REFUSES to write
+    `password_hash` against a protected admin record.
+
+    `source` is a short tag (e.g. 'employee_rehire', 'employee_create_legacy')
+    logged for forensics. The actual password value is never logged.
+    """
+    set_clause = update_doc.get("$set") or {}
+    if "password_hash" in set_clause:
+        target = await db.users.find_one(filter_query, {"_id": 0, "username": 1, "role": 1, "password_updated_at": 1})
+        if _is_protected_admin(target) or (target and target.get("password_updated_at")):
+            logger.warning(
+                "BLOCKED password_hash overwrite on protected user "
+                "(username=%s role=%s source=%s) — stripping password_hash from update.",
+                (target or {}).get("username"),
+                (target or {}).get("role"),
+                source,
+            )
+            # Strip ONLY the password fields; let the rest of the update proceed.
+            stripped = {k: v for k, v in set_clause.items() if k not in ("password_hash", "password_updated_at", "password_updated_by", "password_updated_method")}
+            if stripped:
+                update_doc = {**update_doc, "$set": stripped}
+            else:
+                # Nothing left to update — no-op.
+                return
+    await db.users.update_one(filter_query, update_doc)
+
+
+@api_router.post("/auth/change-password")
+async def change_admin_password(
+    data: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Change admin user password.
+
+    Persistence-audit: every password change writes `password_updated_at`,
+    `password_updated_by`, and `password_updated_method` so any unexpected
+    revert can be forensically traced. The actual password is NEVER logged.
+    """
+    user = await db.users.find_one({"id": current_user["id"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Verify current password
+    current_hash = hashlib.sha256(data.current_password.encode()).hexdigest()
+    if user.get("password_hash") != current_hash:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    
+    # Update to new password
+    new_hash = hashlib.sha256(data.new_password.encode()).hexdigest()
+    now_iso = get_ist_now().isoformat()
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {
+            "password_hash": new_hash,
+            "updated_at": now_iso,
+            "password_updated_at": now_iso,
+            "password_updated_by": current_user["id"],
+            "password_updated_method": "self_change",
+        }}
+    )
+
+    # Audit log — actor + timestamp, no password values.
+    try:
+        await log_audit(
+            current_user["id"], "change_password", "user", current_user["id"],
+            f"Self-changed password (user={user.get('username')}, role={user.get('role')})",
+        )
+    except Exception as _e:
+        logger.warning("change-password audit log failed (non-fatal): %s", _e)
+
+    return {"message": "Password changed successfully"}
+
+
+# ============== CREDENTIAL RESET — TWO INDEPENDENT FLOWS ==============
+# Flow A: Admin Direct Reset    (no email; admin sets/auto-generates password)
+# Flow B: Employee Self Reset   (login → "Forgot Password?" → username/email →
+#                                token sent to registered email → set new pwd)
+# Both flows reuse the existing SHA-256 hash_password() so the login engine and
+# password storage shape are UNCHANGED. The reset TOKEN itself is a separate
+# random secret (secrets.token_urlsafe), stored in `password_reset_tokens`.
+import secrets as _secrets
+
+
+def _generate_strong_password(length: int = 12) -> str:
+    """Generate a strong password: ≥1 lower, upper, digit, symbol; ≥12 chars."""
+    if length < 12:
+        length = 12
+    upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"     # excludes I, O for readability
+    lower = "abcdefghijkmnopqrstuvwxyz"   # excludes l
+    digits = "23456789"                   # excludes 0, 1
+    symbols = "!@#$%^&*?-_"
+    pools = [upper, lower, digits, symbols]
+    pwd = [_secrets.choice(p) for p in pools]
+    all_chars = upper + lower + digits + symbols
+    pwd += [_secrets.choice(all_chars) for _ in range(length - len(pwd))]
+    _secrets.SystemRandom().shuffle(pwd)
+    return "".join(pwd)
+
+
+def _validate_password_strength(pw: str) -> tuple[bool, str]:
+    if not pw or len(pw) < 8:
+        return False, "Password must be at least 8 characters long"
+    if len(pw) > 128:
+        return False, "Password is too long (max 128 chars)"
+    has_letter = any(c.isalpha() for c in pw)
+    has_digit = any(c.isdigit() for c in pw)
+    if not (has_letter and has_digit):
+        return False, "Password must contain at least one letter and one digit"
+    return True, ""
+
+
+class AdminResetCredentialsRequest(BaseModel):
+    password: Optional[str] = None
+    confirm_password: Optional[str] = None
+    auto_generate: bool = False
+    force_change_on_next_login: bool = True
+
+
+@api_router.post("/admin/employees/{employee_id}/reset-credentials")
+async def admin_reset_employee_credentials(
+    employee_id: str,
+    payload: AdminResetCredentialsRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """ADMIN DIRECT RESET — no email is sent. Admin either supplies a password
+    or asks the system to auto-generate one. The generated/new password is
+    returned ONCE in the response so the admin can hand it to the employee.
+
+    Behavior:
+      • Old password is invalidated immediately (hash overwritten).
+      • `force_change_on_next_login=True` (default) sets `must_change_password`
+        on the user, which the FE can use to redirect to /change-password.
+      • Audit log entry recorded.
+      • Password is NEVER stored or logged in plain text.
+    """
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    user = await db.users.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="No login account exists for this employee")
+
+    # Decide the new password
+    if payload.auto_generate:
+        new_password = _generate_strong_password(12)
+        generated = True
+    else:
+        if not payload.password:
+            raise HTTPException(status_code=400, detail="Password is required (or set auto_generate=true)")
+        if payload.confirm_password is not None and payload.password != payload.confirm_password:
+            raise HTTPException(status_code=400, detail="Passwords do not match")
+        ok, msg = _validate_password_strength(payload.password)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        new_password = payload.password
+        generated = False
+
+    new_hash = hash_password(new_password)
+    update = {
+        "password_hash": new_hash,
+        "must_change_password": bool(payload.force_change_on_next_login),
+        "password_updated_at": get_ist_now().isoformat(),
+        "password_updated_by": current_user.get("id"),
+        "password_updated_method": "admin_reset",
+    }
+    await db.users.update_one({"id": user["id"]}, {"$set": update})
+
+    # Invalidate any pending self-service reset tokens for this user
+    try:
+        await db.password_reset_tokens.update_many(
+            {"user_id": user["id"], "used": False},
+            {"$set": {"used": True, "invalidated_reason": "admin_reset", "used_at": get_ist_now().isoformat()}},
+        )
+    except Exception:
+        pass
+
+    await log_audit(
+        current_user.get("id"),
+        action="admin_reset_credentials",
+        resource="user",
+        resource_id=user["id"],
+        details=f"Admin reset password for employee {employee_id} ({employee.get('full_name','')}); generated={generated}; force_change={payload.force_change_on_next_login}",
+    )
+
+    response: dict = {
+        "ok": True,
+        "employee_id": employee_id,
+        "username": user.get("username"),
+        "force_change_on_next_login": bool(payload.force_change_on_next_login),
+        "generated": generated,
+    }
+    # Per spec: surface the password ONCE only when auto-generated. When the
+    # admin typed it themselves, they already know it — never echo it back.
+    if generated:
+        response["password"] = new_password
+    return response
+
+
+# ---------------- Flow B: Employee Self Reset -------------------------------
+RESET_TOKEN_TTL_MINUTES = 30
+
+
+class ForgotPasswordRequest(BaseModel):
+    identifier: str  # username OR email
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+    confirm_password: Optional[str] = None
+
+
+async def _ensure_password_reset_token_indexes() -> None:
+    try:
+        await db.password_reset_tokens.create_index([("token", 1)], unique=True)
+        # TTL index: Mongo deletes the doc once expires_at is in the past
+        await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    except Exception as _e:  # noqa: F841
+        pass
+
+
+def _resolve_employee_email(user: dict) -> Optional[str]:
+    """Pick the best email for sending a reset link. Prefer official_email
+    on the linked employee record, fall back to the user's own email."""
+    email = (user.get("email") or "").strip()
+    return email if email and "@" in email else None
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest):
+    """EMPLOYEE SELF RESET — accepts either username or email.
+
+    Per product spec: when no match is found, we explicitly tell the user
+    "User not found" (NOT the typical generic "if the account exists" message).
+    A token is created (single-use, 30 min TTL) and a reset link is emailed
+    to the REGISTERED EMAIL ONLY.
+    """
+    raw = (payload.identifier or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Please enter your username or email")
+    safe = re.escape(raw)
+    user = await db.users.find_one(
+        {"$or": [
+            {"username": {"$regex": f"^{safe}$", "$options": "i"}},
+            {"email": {"$regex": f"^{safe}$", "$options": "i"}},
+        ]},
+        {"_id": 0},
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found. Please check your username or email.")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Your account is deactivated. Contact admin.")
+
+    # Prefer the linked employee's official_email; fall back to user.email.
+    email_to: Optional[str] = None
+    employee_id = user.get("employee_id")
+    if employee_id:
+        emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "official_email": 1, "email": 1, "full_name": 1})
+        if emp:
+            email_to = emp.get("official_email") or emp.get("email")
+    if not email_to:
+        email_to = _resolve_employee_email(user)
+    if not email_to:
+        raise HTTPException(status_code=400, detail="No registered email on file. Please contact admin.")
+
+    # Issue a single-use token (32 bytes ≈ 43 url-safe chars)
+    token = _secrets.token_urlsafe(32)
+    now_utc = datetime.utcnow()
+    expires_at = now_utc + timedelta(minutes=RESET_TOKEN_TTL_MINUTES)
+    await db.password_reset_tokens.insert_one({
+        "id": str(uuid.uuid4()),
+        "token": token,
+        "user_id": user["id"],
+        "username": user.get("username"),
+        "email": email_to,
+        "created_at": now_utc.isoformat(),
+        # Mongo TTL index needs a real BSON datetime in UTC (naive is treated as UTC).
+        "expires_at": expires_at,
+        "used": False,
+    })
+
+    reset_url = absolute_url("/reset-password", query={"token": token})
+
+    # Send via existing email engine. NOT routed through cron audit dedup —
+    # this is transactional, must always go.
+    try:
+        from email_templates import password_reset_email
+        from email_service import send_hrms_email
+        display_name = user.get("name") or (user.get("username") or "there").title()
+        if employee_id:
+            emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "full_name": 1})
+            if emp and emp.get("full_name"):
+                display_name = emp["full_name"]
+        html = password_reset_email(display_name, reset_url, RESET_TOKEN_TTL_MINUTES)
+        await send_hrms_email(
+            db,
+            email_type="password_reset",
+            scope_key=f"password_reset:{token}",
+            to_email=email_to,
+            subject="Reset Your BluBridge HRMS Password",
+            html=html,
+            employee_id=employee_id,
+            force=True,  # always send; never dedup transactional resets
+        )
+    except Exception as e:
+        logger.error("forgot-password: email send failed: %s", e)
+        raise HTTPException(status_code=502, detail="Could not send reset email — please try again or contact admin.")
+
+    await log_audit(
+        user["id"],
+        action="forgot_password_request",
+        resource="user",
+        resource_id=user["id"],
+        details=f"Reset email sent to {email_to[:3]}***@{email_to.split('@',1)[1] if '@' in email_to else 'unknown'}",
+    )
+
+    # Mask the email in the response so we don't enumerate addresses to a third party
+    if "@" in email_to:
+        local, domain = email_to.split("@", 1)
+        masked = f"{local[:2]}***@{domain}" if len(local) > 2 else f"***@{domain}"
+    else:
+        masked = "your registered email"
+    return {"ok": True, "message": "Reset link sent. Please check your inbox.", "sent_to": masked}
+
+
+@api_router.get("/auth/reset-password/validate")
+async def validate_reset_token(token: str):
+    """Lightweight pre-flight check used by the FE before showing the form."""
+    if not token:
+        raise HTTPException(status_code=400, detail="Token is required")
+    doc = await db.password_reset_tokens.find_one({"token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    if doc.get("used"):
+        raise HTTPException(status_code=400, detail="This reset link has already been used")
+    expires_at = doc.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except Exception:
+            expires_at = None
+    if expires_at:
+        # Normalize to naive UTC to compare with utcnow()
+        if expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if expires_at < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="This reset link has expired")
+    username = doc.get("username") or "your account"
+    return {"ok": True, "username": username}
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(payload: ResetPasswordRequest):
+    """Complete the self-service password reset using a one-time token."""
+    if not payload.token:
+        raise HTTPException(status_code=400, detail="Reset token is required")
+    if payload.confirm_password is not None and payload.new_password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+    ok, msg = _validate_password_strength(payload.new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+
+    doc = await db.password_reset_tokens.find_one({"token": payload.token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset link")
+    if doc.get("used"):
+        raise HTTPException(status_code=400, detail="This reset link has already been used")
+    expires_at = doc.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at)
+        except Exception:
+            expires_at = None
+    if expires_at:
+        if expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+        if expires_at < datetime.utcnow():
+            raise HTTPException(status_code=400, detail="This reset link has expired")
+
+    user = await db.users.find_one({"id": doc.get("user_id")}, {"_id": 0})
+    if not user or not user.get("is_active", True):
+        raise HTTPException(status_code=400, detail="Account not found or deactivated")
+
+    new_hash = hash_password(payload.new_password)
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "password_hash": new_hash,
+            "must_change_password": False,  # they just chose it themselves
+            "password_updated_at": get_ist_now().isoformat(),
+            "password_updated_method": "self_reset",
+        }},
+    )
+    # Mark token used (one-time enforcement)
+    await db.password_reset_tokens.update_one(
+        {"token": payload.token},
+        {"$set": {"used": True, "used_at": get_ist_now().isoformat()}},
+    )
+    # Invalidate any other outstanding tokens for the same user
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "invalidated_reason": "superseded_by_reset", "used_at": get_ist_now().isoformat()}},
+    )
+
+    await log_audit(
+        user["id"],
+        action="self_reset_password",
+        resource="user",
+        resource_id=user["id"],
+        details="Password reset via self-service flow",
+    )
+    return {"ok": True, "message": "Password reset successfully. Please login."}
+
+
+# ============== EMPLOYEE MASTER ROUTES ==============
+
+@api_router.get("/employees")
+async def get_employees(
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    designation: Optional[str] = None,
+    status: Optional[str] = None,
+    employment_type: Optional[str] = None,
+    tier_level: Optional[str] = None,
+    work_location: Optional[str] = None,
+    office_location: Optional[str] = None,
+    inactive_type: Optional[str] = None,
+    search: Optional[str] = None,
+    include_deleted: bool = False,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    current_user: dict = Depends(get_current_user)
+):
+    require_any_admin(current_user)
+    query = {}
+    
+    # Exclude soft-deleted by default, but include them when filtering by inactive status or inactive type
+    if not include_deleted:
+        if (status and status == EmployeeStatus.INACTIVE) or (inactive_type and inactive_type != "All"):
+            pass  # Don't exclude — we want to see inactive employees
+        else:
+            query["is_deleted"] = {"$ne": True}
+    
+    if department and department != "All":
+        query["department"] = department
+    if team and team != "All":
+        query["team"] = team
+    if designation and designation != "All":
+        query["designation"] = designation
+    if status and status != "All":
+        query["employee_status"] = status
+    if employment_type and employment_type != "All":
+        query["employment_type"] = employment_type
+    if tier_level and tier_level != "All":
+        query["tier_level"] = tier_level
+    if work_location and work_location != "All":
+        query["work_location"] = work_location
+    if office_location and office_location != "All":
+        query["office_location"] = office_location
+    if inactive_type and inactive_type != "All":
+        query["inactive_type"] = inactive_type
+    if search:
+        query["$or"] = [
+            {"full_name": {"$regex": search, "$options": "i"}},
+            {"official_email": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}},
+            {"designation": {"$regex": search, "$options": "i"}},
+            {"custom_employee_id": {"$regex": search, "$options": "i"}},
+            {"biometric_id": {"$regex": search, "$options": "i"}}
+        ]
+    
+    skip = (page - 1) * limit
+    # Run the count and the page-fetch concurrently — they hit the same query
+    # but are two independent MongoDB round-trips. On Atlas this shaves the
+    # per-request latency roughly in half.
+    total, employees = await asyncio.gather(
+        db.employees.count_documents(query),
+        db.employees.find(query, {"_id": 0}).skip(skip).limit(limit).sort("created_at", -1).to_list(limit),
+    )
+
+    # Attach reporting manager name in a SINGLE round-trip.
+    # (Before: N+1 find_one per employee — dominated the response time when
+    # rendering the Employees list against MongoDB Atlas.)
+    manager_ids = list({e["reporting_manager_id"] for e in employees if e.get("reporting_manager_id")})
+    if manager_ids:
+        mgrs = await db.employees.find(
+            {"id": {"$in": manager_ids}},
+            {"_id": 0, "id": 1, "full_name": 1},
+        ).to_list(len(manager_ids))
+        name_by_id = {m["id"]: m.get("full_name") for m in mgrs}
+        for emp in employees:
+            mid = emp.get("reporting_manager_id")
+            if mid:
+                emp["reporting_manager_name"] = name_by_id.get(mid)
+    
+    return {
+        "employees": [serialize_doc(e) for e in employees],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
+
+@api_router.get("/employees/all")
+async def get_all_employees(current_user: dict = Depends(get_current_user)):
+    """Get all active employees (for dropdowns) — ADMIN ONLY.
+
+    Contains the full internal directory (biometric ids, official emails,
+    department/team). Employees must use `/api/employee/profile` for their own
+    record instead.
+    """
+    require_any_admin(current_user)
+    query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
+    employees = await db.employees.find(query, {"_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1, "team": 1, "custom_employee_id": 1, "biometric_id": 1, "avatar": 1, "designation": 1, "official_email": 1, "employment_type": 1}).to_list(1000)
+    return employees
+
+@api_router.get("/employees/autocomplete")
+async def employee_autocomplete(
+    q: str = Query("", min_length=0),
+    current_user: dict = Depends(get_current_user)
+):
+    """Lightweight autocomplete: returns max 10 matches by name/email/emp_id."""
+    require_any_admin(current_user)
+    if not q or len(q.strip()) < 1:
+        return []
+    q = q.strip()
+    query = {
+        "is_deleted": {"$ne": True},
+        "$or": [
+            {"full_name": {"$regex": q, "$options": "i"}},
+            {"official_email": {"$regex": q, "$options": "i"}},
+            {"emp_id": {"$regex": q, "$options": "i"}},
+            {"custom_employee_id": {"$regex": q, "$options": "i"}},
+        ]
+    }
+    results = await db.employees.find(
+        query,
+        {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "emp_id": 1, "department": 1}
+    ).limit(10).to_list(10)
+    return results
+
+@api_router.get("/employees/stats")
+async def get_employee_stats(current_user: dict = Depends(get_current_user)):
+    """Employee statistics for the dashboard cards.
+
+    Uses a SINGLE aggregation ($group by department + employment_type + work
+    location + status) so the whole endpoint completes in one MongoDB
+    round-trip instead of ~40 concurrent count_documents calls (which was
+    the dominant reason the Employees page took 2.4s to render on Atlas).
+    """
+    require_any_admin(current_user)
+    base_query = {"is_deleted": {"$ne": True}}
+
+    def _norm_intern(t: str) -> bool:
+        s = (t or "").strip().lower()
+        return any(k in s for k in ("intern", "trainee", "internship"))
+
+    def _norm_full_time(t: str) -> bool:
+        return (t or "").strip().lower() in ("full-time", "full time", "fulltime", "permanent")
+
+    # Fetch the department roster + run the single grouping in parallel.
+    departments, groups = await asyncio.gather(
+        db.departments.find({}, {"_id": 0, "name": 1}).to_list(200),
+        db.employees.aggregate([
+            {"$match": base_query},
+            {"$group": {
+                "_id": {
+                    "status": "$employee_status",
+                    "department": "$department",
+                    "employment_type": "$employment_type",
+                    "work_location": "$work_location",
+                },
+                "count": {"$sum": 1},
+            }},
+        ]).to_list(10_000),
+    )
+    dept_names = [d["name"] for d in departments]
+    emp_types = [EmploymentType.FULL_TIME, EmploymentType.PART_TIME, EmploymentType.CONTRACT, EmploymentType.INTERN]
+    locations = [WorkLocation.REMOTE, WorkLocation.OFFICE, WorkLocation.HYBRID]
+
+    # Roll-up in Python — 129 rows tops, negligible cost.
+    total = active = inactive = resigned = 0
+    by_department = {n: 0 for n in dept_names}
+    by_type       = {t: 0 for t in emp_types}
+    by_location   = {l: 0 for l in locations}
+
+    workforce_dept_targets = ["Research Unit", "Business & Product", "Support Staff"]
+    workforce = {
+        "full_time": 0,
+        "intern": 0,
+        "by_department": {d: {"full_time": 0, "intern": 0} for d in workforce_dept_targets},
+    }
+
+    for g in groups:
+        k = g["_id"] or {}
+        cnt = g.get("count", 0)
+        status = k.get("status")
+        dept = k.get("department")
+        etype = k.get("employment_type")
+        loc = k.get("work_location")
+
+        total += cnt
+        if status == EmployeeStatus.ACTIVE:
+            active += cnt
+            # Card breakdowns are ACTIVE-only (matches previous endpoint).
+            if dept in by_department:
+                by_department[dept] += cnt
+            if etype in by_type:
+                by_type[etype] += cnt
+            if loc in by_location:
+                by_location[loc] += cnt
+            # Workforce roll-up (Full-Time vs Intern) — same normalisation as before.
+            is_intern = _norm_intern(etype)
+            is_ft = _norm_full_time(etype)
+            if is_ft:
+                workforce["full_time"] += cnt
+            if is_intern:
+                workforce["intern"] += cnt
+            if dept in workforce["by_department"]:
+                if is_ft:
+                    workforce["by_department"][dept]["full_time"] += cnt
+                if is_intern:
+                    workforce["by_department"][dept]["intern"] += cnt
+        elif status == EmployeeStatus.INACTIVE:
+            inactive += cnt
+        elif status == EmployeeStatus.RESIGNED:
+            resigned += cnt
+
+    return {
+        "total": total,
+        "active": active,
+        "inactive": inactive,
+        "resigned": resigned,
+        "by_department": by_department,
+        "by_employment_type": by_type,
+        "by_work_location": by_location,
+        "workforce": workforce,
+    }
+
+# ============== BULK IMPORT ENDPOINTS ==============
+
+IMPORT_TEMPLATE_COLUMNS = [
+    "Employee Name", "Employee ID", "Biometric ID", "Email", "Phone",
+    "Gender", "Date of Birth", "Date of Joining", "Department", "Team",
+    "Designation", "Employment Type", "Tier Level", "Work Location",
+    "Shift Type", "Monthly Salary", "User Role"
+]
+
+@api_router.get("/employees/import-template")
+async def get_import_template(current_user: dict = Depends(get_current_user)):
+    """Download sample Excel template for bulk employee import"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Employee Import"
+    
+    # Header row
+    for col_idx, header in enumerate(IMPORT_TEMPLATE_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = openpyxl.styles.Font(bold=True)
+        cell.fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+        cell.font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    
+    # Sample row
+    sample_data = [
+        "John Doe", "EID-001", "BIO-001", "john.doe@company.com", "9876543210",
+        "Male", "1990-01-15", "2026-01-01", "Technology", "Backend",
+        "Software Engineer", "Full-time", "Mid", "Office",
+        "General", "50000", "employee"
+    ]
+    for col_idx, val in enumerate(sample_data, 1):
+        ws.cell(row=2, column=col_idx, value=val)
+    
+    # Auto-adjust column widths
+    for col_idx in range(1, len(IMPORT_TEMPLATE_COLUMNS) + 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 20
+    
+    # Add instructions sheet
+    ws2 = wb.create_sheet("Instructions")
+    instructions = [
+        ["Field", "Required", "Notes"],
+        ["Employee Name", "Yes", "Full name of the employee"],
+        ["Employee ID", "Yes", "Unique alphanumeric ID (e.g., EID-001)"],
+        ["Biometric ID", "Yes", "Unique ID for biometric device mapping"],
+        ["Email", "Yes", "Must be unique, used for login credentials"],
+        ["Phone", "No", "10-digit phone number"],
+        ["Gender", "No", "Male / Female / Other"],
+        ["Date of Birth", "No", "Format: YYYY-MM-DD"],
+        ["Date of Joining", "Yes", "Format: YYYY-MM-DD"],
+        ["Department", "Yes", "Must match existing department"],
+        ["Team", "Yes", "Must match existing team"],
+        ["Designation", "Yes", "Job title"],
+        ["Employment Type", "No", "Full-time / Part-time / Contract / Intern (default: Full-time)"],
+        ["Tier Level", "No", "Junior / Mid / Senior / Lead (default: Mid)"],
+        ["Work Location", "No", "Remote / Office / Hybrid (default: Office)"],
+        ["Shift Type", "No", "General / Morning / Evening / Night / Flexible (default: General)"],
+        ["Monthly Salary", "No", "Numeric value in INR (default: 0)"],
+        ["User Role", "No", "employee / hr / system_admin / office_admin (default: employee)"]
+    ]
+    for row_idx, row_data in enumerate(instructions, 1):
+        for col_idx, val in enumerate(row_data, 1):
+            cell = ws2.cell(row=row_idx, column=col_idx, value=val)
+            if row_idx == 1:
+                cell.font = openpyxl.styles.Font(bold=True)
+    for col_idx in range(1, 4):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 25
+    
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=employee_import_template.xlsx"}
+    )
+
+@api_router.get("/employees/export")
+async def export_employees(
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    status: Optional[str] = None,
+    employment_type: Optional[str] = None,
+    tier_level: Optional[str] = None,
+    work_location: Optional[str] = None,
+    inactive_type: Optional[str] = None,
+    search: Optional[str] = None,
+    include_deleted: bool = False,
+    current_user: dict = Depends(get_current_user)
+):
+    """Export ALL employees matching the given filters as a styled .xlsx file.
+
+    Columns match the bulk import template (17 fields) so the export is a
+    valid round-trip with the import flow.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Build the same query as GET /employees so the export honors current filters.
+    query = {}
+    if not include_deleted:
+        if (status and status == EmployeeStatus.INACTIVE) or (inactive_type and inactive_type != "All"):
+            pass
+        else:
+            query["is_deleted"] = {"$ne": True}
+
+    if department and department != "All":
+        query["department"] = department
+    if team and team != "All":
+        query["team"] = team
+    if status and status != "All":
+        query["employee_status"] = status
+    if employment_type and employment_type != "All":
+        query["employment_type"] = employment_type
+    if tier_level and tier_level != "All":
+        query["tier_level"] = tier_level
+    if work_location and work_location != "All":
+        query["work_location"] = work_location
+    if inactive_type and inactive_type != "All":
+        query["inactive_type"] = inactive_type
+    if search:
+        query["$or"] = [
+            {"full_name": {"$regex": search, "$options": "i"}},
+            {"official_email": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}},
+            {"designation": {"$regex": search, "$options": "i"}},
+            {"custom_employee_id": {"$regex": search, "$options": "i"}},
+            {"biometric_id": {"$regex": search, "$options": "i"}}
+        ]
+
+    employees = await db.employees.find(query, {"_id": 0}).sort("created_at", -1).to_list(length=None)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Employees"
+
+    # Styled header (dark-blue background, bold white) — matches import template
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(IMPORT_TEMPLATE_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 22
+
+    # Data rows (mapped exactly to IMPORT_TEMPLATE_COLUMNS order)
+    for row_idx, e in enumerate(employees, start=2):
+        salary = e.get("monthly_salary")
+        try:
+            salary_val = float(salary) if salary is not None else 0
+        except (TypeError, ValueError):
+            salary_val = 0
+        row_values = [
+            e.get("full_name") or "",
+            e.get("custom_employee_id") or "",
+            e.get("biometric_id") or "",
+            e.get("official_email") or "",
+            e.get("phone_number") or "",
+            e.get("gender") or "",
+            e.get("date_of_birth") or "",
+            e.get("date_of_joining") or "",
+            e.get("department") or "",
+            e.get("team") or "",
+            e.get("designation") or "",
+            e.get("employment_type") or "",
+            e.get("tier_level") or "",
+            e.get("work_location") or "",
+            e.get("shift_type") or "",
+            salary_val,
+            e.get("user_role") or "",
+        ]
+        for col_idx, val in enumerate(row_values, 1):
+            ws.cell(row=row_idx, column=col_idx, value=val)
+
+    # Column widths sized for content
+    widths = [22, 14, 14, 28, 14, 10, 14, 14, 18, 16, 22, 14, 12, 14, 12, 14, 14]
+    for col_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = w
+    ws.freeze_panes = "A2"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"employees-{get_ist_now().strftime('%Y%m%d')}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+@api_router.post("/employees/bulk-import")
+async def bulk_import_employees(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk import employees from CSV or Excel file"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    # Read file content
+    content = await file.read()
+    filename = file.filename.lower() if file.filename else ""
+    
+    rows = []
+    if filename.endswith('.csv'):
+        # Parse CSV
+        try:
+            text_content = content.decode('utf-8-sig')  # Handle BOM
+            reader = csv.DictReader(io.StringIO(text_content))
+            for row in reader:
+                rows.append(row)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse CSV: {str(e)}")
+    elif filename.endswith('.xlsx') or filename.endswith('.xls'):
+        # Parse Excel
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+            ws = wb.active
+            headers = [cell.value for cell in ws[1]]
+            for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                if all(cell is None for cell in row):
+                    continue
+                row_dict = {}
+                for col_idx, header in enumerate(headers):
+                    if header and col_idx < len(row):
+                        row_dict[header] = row[col_idx]
+                if row_dict:
+                    rows.append(row_dict)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {str(e)}")
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported file format. Please upload .csv or .xlsx file")
+    
+    if not rows:
+        raise HTTPException(status_code=400, detail="No data rows found in file")
+    
+    # Static allowed values (matching frontend dropdowns)
+    VALID_DEPARTMENTS = {"research unit", "support staff", "business & product"}
+    VALID_TEAMS = {"data", "parallelism", "quantization", "compiler", "tensor & ops", "hardware", "administation", "it", "product team", "unknown"}
+    VALID_DESIGNATIONS = {"ai research scientist", "ai research - intern", "research", "front office", "junior admin", "junior system admin", "business & product - product team", "system engineer"}
+    
+    # Canonical name mapping (lowercase -> proper case)
+    DEPT_CANONICAL = {d.lower(): d for d in ["Research Unit", "Support Staff", "Business & Product"]}
+    TEAM_CANONICAL = {t.lower(): t for t in ["Data", "Parallelism", "Quantization", "Compiler", "Tensor & Ops", "Hardware", "Administation", "IT", "Product Team", "Unknown"]}
+    DESIG_CANONICAL = {d.lower(): d for d in ["AI Research scientist", "AI Research - Intern", "Research", "Front Office", "Junior Admin", "Junior System admin", "Business & Product - Product Team", "System Engineer"]}
+    
+    # Ensure department and team records exist in DB (auto-create if missing)
+    existing_depts = {d["name"].lower() for d in await db.departments.find({}, {"_id": 0, "name": 1}).to_list(100)}
+    existing_teams = {t["name"].lower() for t in await db.teams.find({}, {"_id": 0, "name": 1}).to_list(500)}
+    
+    for dept_lower, dept_name in DEPT_CANONICAL.items():
+        if dept_lower not in existing_depts:
+            await db.departments.insert_one({"id": str(uuid.uuid4()), "name": dept_name, "description": "", "head_id": None, "member_count": 0, "created_at": get_ist_now().isoformat()})
+    
+    for team_lower, team_name in TEAM_CANONICAL.items():
+        if team_lower not in existing_teams:
+            await db.teams.insert_one({"id": str(uuid.uuid4()), "name": team_name, "department": "", "description": "", "lead_id": None, "member_count": 0, "created_at": get_ist_now().isoformat()})
+    
+    # Get existing employee IDs and biometric IDs for uniqueness check
+    existing_employees = await db.employees.find(
+        {"is_deleted": {"$ne": True}},
+        {"_id": 0, "official_email": 1, "custom_employee_id": 1, "biometric_id": 1}
+    ).to_list(10000)
+    
+    existing_emails = {e.get("official_email", "").lower() for e in existing_employees if e.get("official_email")}
+    existing_emp_ids = {e.get("custom_employee_id", "").lower() for e in existing_employees if e.get("custom_employee_id")}
+    existing_bio_ids = {e.get("biometric_id", "").lower() for e in existing_employees if e.get("biometric_id")}
+    
+    # Track IDs in current batch for duplicates within file
+    batch_emails = set()
+    batch_emp_ids = set()
+    batch_bio_ids = set()
+    
+    results = {
+        "total": len(rows),
+        "success": 0,
+        "failed": 0,
+        "errors": []
+    }
+    
+    # Column name mapping (flexible)
+    def get_value(row, *keys):
+        for key in keys:
+            for row_key in row.keys():
+                if row_key and row_key.strip().lower() == key.lower():
+                    return row.get(row_key)
+        return None
+    
+    def parse_date(val):
+        """Parse date from various formats to YYYY-MM-DD. Handles Excel numeric/datetime dates too."""
+        if val is None or str(val).strip() == "" or str(val).strip().lower() == "none":
+            return None
+        
+        # Handle Python datetime objects (openpyxl may return these directly)
+        if isinstance(val, datetime):
+            return val.strftime("%Y-%m-%d")
+        
+        # Handle Excel numeric date serial (float/int)
+        if isinstance(val, (int, float)):
+            try:
+                from datetime import datetime as dt_cls, timedelta as td_cls
+                excel_epoch = dt_cls(1899, 12, 30)
+                return (excel_epoch + td_cls(days=int(val))).strftime("%Y-%m-%d")
+            except Exception:
+                return None
+        
+        raw = str(val).strip()
+        # If already ISO YYYY-MM-DD
+        if len(raw) == 10 and raw[4] == '-' and raw[7] == '-':
+            try:
+                datetime.strptime(raw, "%Y-%m-%d")
+                return raw
+            except ValueError:
+                pass
+        
+        # MM/DD/YYYY (primary), then other formats
+        for fmt in ("%m/%d/%Y", "%m-%d-%Y", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        
+        return "__INVALID__"
+    
+    for idx, row in enumerate(rows, start=2):
+        row_errors = []
+        
+        # Extract values with flexible column names
+        full_name = get_value(row, "Employee Name", "Full Name", "Name")
+        custom_employee_id = get_value(row, "Employee ID", "Custom Employee ID", "Emp ID")
+        biometric_id = get_value(row, "Biometric ID", "Bio ID", "Biometric")
+        email = get_value(row, "Email", "Official Email", "Email Address")
+        phone = get_value(row, "Phone", "Phone Number", "Contact")
+        gender = get_value(row, "Gender")
+        dob = get_value(row, "Date of Birth", "DOB", "Birth Date")
+        doj = get_value(row, "Date of Joining", "DOJ", "Joining Date", "Start Date")
+        department = get_value(row, "Department", "Dept")
+        team = get_value(row, "Team")
+        designation = get_value(row, "Designation", "Title", "Job Title", "Position")
+        employment_type = get_value(row, "Employment Type", "Type") or "Full-time"
+        tier_level = get_value(row, "Tier Level", "Tier", "Level") or "Mid"
+        work_location = get_value(row, "Work Location", "Location") or "Office"
+        shift_type = get_value(row, "Shift Type", "Shift") or "General"
+        monthly_salary = get_value(row, "Monthly Salary", "Salary")
+        user_role = get_value(row, "User Role", "Role") or "employee"
+        
+        # Convert values
+        full_name = str(full_name).strip() if full_name else ""
+        custom_employee_id = str(custom_employee_id).strip() if custom_employee_id else ""
+        biometric_id = str(biometric_id).strip() if biometric_id else ""
+        email = str(email).strip() if email else ""
+        phone = str(phone).strip() if phone else None
+        gender = str(gender).strip() if gender else None
+        
+        # Parse dates BEFORE string conversion (preserves datetime/numeric types from Excel)
+        parsed_dob = parse_date(dob)
+        if dob is not None and parsed_dob == "__INVALID__":
+            row_errors.append(f"Invalid Date Format for Date of Birth: '{dob}'")
+            parsed_dob = None
+        dob = parsed_dob
+        
+        parsed_doj = parse_date(doj)
+        if doj is not None and parsed_doj == "__INVALID__":
+            row_errors.append(f"Invalid Date Format for Date of Joining: '{doj}'")
+            parsed_doj = ""
+        doj = parsed_doj if parsed_doj else ""
+        
+        department = str(department).strip() if department else ""
+        team = str(team).strip() if team else ""
+        designation = str(designation).strip() if designation else ""
+        
+        try:
+            monthly_salary = float(monthly_salary) if monthly_salary else 0.0
+        except Exception:
+            monthly_salary = 0.0
+        
+        # Validate required fields
+        if not full_name:
+            row_errors.append("Employee Name is required")
+        if not custom_employee_id:
+            row_errors.append("Employee ID is required")
+        if not biometric_id:
+            row_errors.append("Biometric ID is required")
+        if not email:
+            row_errors.append("Email is required")
+        if not doj:
+            row_errors.append("Date of Joining is required")
+        if not department:
+            row_errors.append("Department is required")
+        if not team:
+            row_errors.append("Team is required")
+        if not designation:
+            row_errors.append("Designation is required")
+        
+        # Validate department (case-insensitive, static list)
+        if department:
+            dept_lower = department.lower().strip()
+            if dept_lower in DEPT_CANONICAL:
+                department = DEPT_CANONICAL[dept_lower]
+            # Accept as-is if not in static list (no rejection)
+        
+        # Validate team (case-insensitive, static list)
+        if team:
+            team_lower = team.lower().strip()
+            if team_lower in TEAM_CANONICAL:
+                team = TEAM_CANONICAL[team_lower]
+        
+        # Normalize designation (case-insensitive)
+        if designation:
+            desig_lower = designation.lower().strip()
+            if desig_lower in DESIG_CANONICAL:
+                designation = DESIG_CANONICAL[desig_lower]
+        
+        # Normalize employment type (flexible matching)
+        emp_type_map = {"full time": "Full-time", "full-time": "Full-time", "fulltime": "Full-time",
+                        "part time": "Part-time", "part-time": "Part-time", "parttime": "Part-time",
+                        "contract": "Contract", "intern": "Intern", "internship": "Intern"}
+        employment_type = emp_type_map.get(str(employment_type).lower().strip(), employment_type)
+        
+        # Normalize tier level
+        tier_map = {"junior": "Junior", "mid": "Mid", "senior": "Senior", "lead": "Lead"}
+        tier_level = tier_map.get(str(tier_level).lower().strip(), tier_level)
+        
+        # Normalize user role
+        user_role = str(user_role).lower().strip()
+        role_map = {"employee": "employee", "hr": "hr", "system_admin": "system_admin",
+                    "office_admin": "office_admin"}
+        user_role = role_map.get(user_role, "employee")
+        
+        # Extract deactivation fields (optional)
+        row_status = get_value(row, "Status", "Employee Status")
+        row_inactive_type = get_value(row, "Inactive Type", "Inactive_Type", "InactiveType")
+        row_inactive_date = get_value(row, "Inactive Date", "Inactive_Date", "Deactivation Date")
+        row_inactive_reason = get_value(row, "Reason", "Inactive Reason", "Deactivation Reason")
+        row_last_day_payable = get_value(row, "Last Day Payable", "Last_Day_Payable")
+        
+        # Check for duplicate email
+        if email:
+            email_lower = email.lower()
+            if email_lower in existing_emails:
+                row_errors.append(f"Email '{email}' already exists")
+            elif email_lower in batch_emails:
+                row_errors.append(f"Duplicate email '{email}' in file")
+            else:
+                batch_emails.add(email_lower)
+        
+        # Check for duplicate Employee ID
+        if custom_employee_id:
+            emp_id_lower = custom_employee_id.lower()
+            if emp_id_lower in existing_emp_ids:
+                row_errors.append(f"Employee ID '{custom_employee_id}' already exists")
+            elif emp_id_lower in batch_emp_ids:
+                row_errors.append(f"Duplicate Employee ID '{custom_employee_id}' in file")
+            else:
+                batch_emp_ids.add(emp_id_lower)
+        
+        # Check for duplicate Biometric ID
+        if biometric_id:
+            bio_id_lower = biometric_id.lower()
+            if bio_id_lower in existing_bio_ids:
+                row_errors.append(f"Biometric ID '{biometric_id}' already exists")
+            elif bio_id_lower in batch_bio_ids:
+                row_errors.append(f"Duplicate Biometric ID '{biometric_id}' in file")
+            else:
+                batch_bio_ids.add(bio_id_lower)
+        
+        if row_errors:
+            results["failed"] += 1
+            results["errors"].append({
+                "row": idx,
+                "employee_name": full_name or f"Row {idx}",
+                "errors": row_errors
+            })
+            continue
+        
+        # Create employee
+        try:
+            emp_id = await generate_emp_id()
+            
+            employee = Employee(
+                emp_id=emp_id,
+                full_name=full_name,
+                official_email=email,
+                phone_number=phone,
+                gender=gender,
+                date_of_birth=dob,
+                custom_employee_id=custom_employee_id,
+                date_of_joining=doj,
+                employment_type=employment_type,
+                designation=designation,
+                tier_level=tier_level,
+                department=department,
+                team=team,
+                work_location=work_location,
+                shift_type=shift_type,
+                monthly_salary=monthly_salary,
+                user_role=user_role.lower() if user_role else "employee",
+                login_enabled=True,
+                biometric_id=biometric_id
+            )
+            
+            emp_doc = employee.model_dump()
+            emp_doc['created_at'] = emp_doc['created_at'].isoformat()
+            emp_doc['updated_at'] = emp_doc['updated_at'].isoformat()
+            
+            await db.employees.insert_one(emp_doc.copy())
+            
+            # Create user account for login
+            username = email.split('@')[0]
+            name_part = full_name.replace(' ', '').lower()[:4]
+            phone_part = str(phone)[-4:] if phone and len(str(phone)) >= 4 else str(uuid.uuid4())[:4]
+            temp_password = f"{name_part}@{phone_part}"
+            
+            existing_user = await db.users.find_one({"username": username})
+            if not existing_user:
+                new_user = User(
+                    username=username,
+                    email=email,
+                    password_hash=hash_password(temp_password),
+                    name=full_name,
+                    role=user_role.lower() if user_role else "employee",
+                    employee_id=employee.id,
+                    department=department,
+                    team=team
+                )
+                user_doc = new_user.model_dump()
+                user_doc['created_at'] = user_doc['created_at'].isoformat()
+                await db.users.insert_one(user_doc.copy())
+            
+            # Queue credential email via robust retry pipeline
+            from credential_email import schedule_credential_email
+            await db.employees.update_one(
+                {"id": employee.id},
+                {"$set": {"credential_email_status": "pending",
+                          "credential_email_last_error": "",
+                          "credential_email_attempts": 0}},
+            )
+            schedule_credential_email(
+                background_tasks,
+                employee.id,
+                username=username,
+                password=temp_password,
+                force=False,
+                triggered_by=current_user.get("id", "system"),
+            )
+
+            # Temporary policy: skip onboarding within configured window so
+            # bulk-imported employees can log in directly. We also stamp
+            # `documents_bypassed_until` so the frontend hides upload entry
+            # points for the affected accounts only.
+            if should_skip_onboarding_now():
+                _now_iso = get_ist_now().isoformat()
+                _bypass_until = ONBOARDING_SKIP_WINDOW_END.isoformat()
+                await db.employees.update_one(
+                    {"id": employee.id},
+                    {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "onboarding_completed_at": _now_iso}}
+                )
+                await db.users.update_many(
+                    {"employee_id": employee.id},
+                    {"$set": {
+                        "onboarding_status": OnboardingStatus.APPROVED,
+                        "is_first_login": False,
+                        "documents_bypassed_until": _bypass_until,
+                    }}
+                )
+            
+            # Add to existing sets to prevent duplicates in same batch
+            existing_emails.add(email.lower())
+            existing_emp_ids.add(custom_employee_id.lower())
+            existing_bio_ids.add(biometric_id.lower())
+            
+            # Handle bulk deactivation if status=inactive
+            if row_status and str(row_status).lower().strip() == "inactive":
+                deact_type = str(row_inactive_type).strip() if row_inactive_type else "Terminated"
+                parsed_inactive_date = parse_date(row_inactive_date) if row_inactive_date else get_ist_now().strftime("%Y-%m-%d")
+                if parsed_inactive_date == "__INVALID__":
+                    parsed_inactive_date = get_ist_now().strftime("%Y-%m-%d")
+                deact_reason = str(row_inactive_reason).strip() if row_inactive_reason else ""
+                ldp = str(row_last_day_payable).strip().lower() in ("yes", "true", "1") if row_last_day_payable else False
+                
+                await db.employees.update_one({"id": employee.id}, {"$set": {
+                    "employee_status": EmployeeStatus.INACTIVE,
+                    "login_enabled": False,
+                    "inactive_type": deact_type,
+                    "inactive_date": parsed_inactive_date,
+                    "inactive_reason": deact_reason,
+                    "last_day_payable": ldp,
+                    "deactivated_by": current_user["id"]
+                }})
+                await db.users.update_one({"employee_id": employee.id}, {"$set": {"is_active": False}})
+            
+            results["success"] += 1
+            
+        except Exception as e:
+            results["failed"] += 1
+            results["errors"].append({
+                "row": idx,
+                "employee_name": full_name,
+                "errors": [str(e)]
+            })
+    
+    return results
+
+@api_router.get("/employees/{employee_id}")
+async def get_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Add reporting manager details
+    if employee.get("reporting_manager_id"):
+        manager = await db.employees.find_one({"id": employee["reporting_manager_id"]}, {"_id": 0, "full_name": 1, "emp_id": 1})
+        employee["reporting_manager_name"] = manager.get("full_name") if manager else None
+        employee["reporting_manager_emp_id"] = manager.get("emp_id") if manager else None
+
+    # Attach the linked login username (read-only, detail-view only).
+    # Auth tables are NOT modified — we only project the username for display.
+    user_doc = await db.users.find_one({"employee_id": employee_id}, {"_id": 0, "username": 1})
+    employee["username"] = user_doc.get("username") if user_doc else None
+
+    return serialize_doc(employee)
+
+@api_router.post("/employees")
+async def create_employee(data: EmployeeCreate, background_tasks: BackgroundTasks, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Office Location is a required field on the Employee form.
+    if not (data.office_location and str(data.office_location).strip()):
+        raise HTTPException(status_code=400, detail="Office Location is required")
+
+    # Case-insensitive duplicate guards (Email + Biometric ID)
+    email_norm = (data.official_email or "").strip()
+    # Normalize to lowercase for stable storage + duplicate detection
+    if email_norm:
+        email_norm = email_norm.lower()
+        data.official_email = email_norm
+    bio_norm = (data.biometric_id or "").strip() if data.biometric_id else ""
+
+    # Check for duplicate email among active employees (case-insensitive)
+    if email_norm:
+        existing_active = await db.employees.find_one({
+            "official_email": {"$regex": f"^{re.escape(email_norm)}$", "$options": "i"},
+            "is_deleted": {"$ne": True},
+        })
+        if existing_active:
+            raise HTTPException(status_code=400, detail="Employee with this Email already exists")
+    
+    # Validate uniqueness of custom_employee_id
+    if data.custom_employee_id:
+        existing_cid = await db.employees.find_one({"custom_employee_id": data.custom_employee_id, "is_deleted": {"$ne": True}})
+        if existing_cid:
+            raise HTTPException(status_code=400, detail=f"Employee ID '{data.custom_employee_id}' already exists")
+    
+    # Validate uniqueness of biometric_id (case-insensitive)
+    if bio_norm:
+        existing_bio = await db.employees.find_one({
+            "biometric_id": {"$regex": f"^{re.escape(bio_norm)}$", "$options": "i"},
+            "is_deleted": {"$ne": True},
+        })
+        if existing_bio:
+            raise HTTPException(status_code=400, detail="Employee with this Biometric ID already exists")
+    
+    # Check if there's a deleted employee with same email - reactivate instead (case-insensitive)
+    existing_deleted = await db.employees.find_one({
+        "official_email": {"$regex": f"^{re.escape(email_norm)}$", "$options": "i"},
+        "is_deleted": True,
+    }) if email_norm else None
+    
+    # Validate / normalise the Paid-Leave Confirmation Date when provided.
+    if data.confirmation_date:
+        norm_cd, cd_err = _normalize_and_validate_confirmation_date(data.confirmation_date, data.date_of_joining)
+        if cd_err:
+            raise HTTPException(status_code=400, detail=cd_err)
+        data.confirmation_date = norm_cd
+
+    username = data.official_email.split('@')[0]
+    name_part = data.full_name.replace(' ', '').lower()[:4]
+    if data.phone_number and len(data.phone_number) >= 4:
+        phone_part = data.phone_number[-4:]
+    else:
+        phone_part = str(uuid.uuid4())[:4]
+    temp_password = f"{name_part}@{phone_part}"
+    
+    login_url = absolute_url("/login")
+    
+    if existing_deleted:
+        # Reactivate the deleted employee with updated info
+        emp_id = existing_deleted.get("emp_id")
+        employee_id = existing_deleted.get("id")
+        
+        update_data = {
+            "is_deleted": False,
+            "deleted_at": None,
+            "employee_status": EmployeeStatus.ACTIVE,
+            "inactive_type": None,
+            "inactive_date": None,
+            "inactive_reason": None,
+            "full_name": data.full_name,
+            "phone_number": data.phone_number,
+            "gender": data.gender,
+            "date_of_birth": data.date_of_birth,
+            "date_of_joining": data.date_of_joining,
+            "employment_type": data.employment_type,
+            "designation": data.designation,
+            "tier_level": data.tier_level,
+            "reporting_manager_id": data.reporting_manager_id,
+            "department": data.department,
+            "team": data.team,
+            "work_location": data.work_location,
+            "leave_policy": data.leave_policy,
+            "shift_type": data.shift_type,
+            "attendance_tracking_enabled": data.attendance_tracking_enabled,
+            "user_role": data.user_role,
+            "login_enabled": data.login_enabled,
+            "custom_employee_id": data.custom_employee_id,
+            "biometric_id": data.biometric_id,
+            "office_location": data.office_location,
+            "updated_at": get_ist_now().isoformat()
+        }
+        # If the picked shift_type matches a Settings shift, expand all derived fields
+        update_data = await _apply_settings_shift_to_employee_payload(update_data, data.shift_type)
+        
+        await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+        
+        # Update team member count
+        await db.teams.update_one({"name": data.team}, {"$inc": {"member_count": 1}})
+        
+        # Update or create user account with new credentials
+        if data.login_enabled:
+            existing_user = await db.users.find_one({"username": username})
+            if existing_user:
+                # CRITICAL FIREWALL: never overwrite a protected admin's
+                # credentials via a rehire flow. A username collision with a
+                # protected user (e.g. "admin@..." email derives username
+                # "admin") used to silently reset the real admin's password.
+                if _is_protected_admin(existing_user):
+                    logger.warning(
+                        "Refusing employee rehire — username '%s' collides with "
+                        "protected admin role (role=%s). HR must use a different "
+                        "email/username.",
+                        username, existing_user.get("role"),
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"The username '{username}' is reserved for an admin account. "
+                            "Please use a different email address for this employee."
+                        ),
+                    )
+                # Safe path: ordinary employee user reactivation.
+                await _safe_user_update(
+                    {"username": username},
+                    {"$set": {
+                        "password_hash": hash_password(temp_password),
+                        "is_active": True,
+                        "name": data.full_name,
+                        "role": data.user_role if data.user_role else UserRole.EMPLOYEE,
+                        "department": data.department,
+                        "team": data.team
+                    }},
+                    source="employee_rehire",
+                )
+            else:
+                # Create new user
+                new_user = User(
+                    username=username,
+                    email=data.official_email,
+                    password_hash=hash_password(temp_password),
+                    name=data.full_name,
+                    role=data.user_role if data.user_role else UserRole.EMPLOYEE,
+                    employee_id=employee_id,
+                    department=data.department,
+                    team=data.team
+                )
+                user_doc = new_user.model_dump()
+                user_doc['created_at'] = user_doc['created_at'].isoformat()
+                await db.users.insert_one(user_doc.copy())
+            
+            # Reset delivery-status so the new attempt starts clean
+            await db.employees.update_one(
+                {"id": employee_id},
+                {"$set": {"credential_email_status": "pending",
+                          "credential_email_last_error": "",
+                          "credential_email_attempts": 0}},
+            )
+            # Robust queued send with 3-attempt retry (never lost on shutdown)
+            from credential_email import schedule_credential_email
+            schedule_credential_email(
+                background_tasks,
+                employee_id,
+                username=username,
+                password=temp_password,
+                force=True,
+                triggered_by=current_user.get("id", "system"),
+            )
+        
+        await log_audit(current_user["id"], "reactivate", "employee", employee_id, f"Reactivated employee: {data.full_name}")
+        
+        employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+        result = serialize_doc(employee)
+        if data.login_enabled:
+            result['temp_password'] = temp_password
+            result['username'] = username
+            result['reactivated'] = True
+        
+        return result
+    
+    # Create new employee
+    emp_id = await generate_emp_id()
+    
+    employee = Employee(
+        emp_id=emp_id,
+        full_name=data.full_name,
+        official_email=data.official_email,
+        phone_number=data.phone_number,
+        gender=data.gender,
+        date_of_birth=data.date_of_birth,
+        custom_employee_id=data.custom_employee_id,
+        date_of_joining=data.date_of_joining,
+        employment_type=data.employment_type,
+        designation=data.designation,
+        tier_level=data.tier_level,
+        reporting_manager_id=data.reporting_manager_id,
+        department=data.department,
+        team=data.team,
+        work_location=data.work_location,
+        leave_policy=data.leave_policy,
+        shift_type=data.shift_type,
+        attendance_tracking_enabled=data.attendance_tracking_enabled,
+        user_role=data.user_role,
+        login_enabled=data.login_enabled,
+        biometric_id=data.biometric_id,
+        office_location=data.office_location
+    )
+    
+    doc = employee.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    doc['updated_at'] = doc['updated_at'].isoformat()
+    # If the picked shift_type matches a Settings shift, expand all derived fields
+    doc = await _apply_settings_shift_to_employee_payload(doc, data.shift_type)
+    await db.employees.insert_one(doc.copy())
+    
+    # Update team member count
+    await db.teams.update_one({"name": data.team}, {"$inc": {"member_count": 1}})
+    
+    # Create user account if login is enabled
+    if data.login_enabled:
+        # Ensure username is unique by appending a suffix if needed
+        existing_user = await db.users.find_one({"username": username})
+        if existing_user:
+            suffix = 1
+            while await db.users.find_one({"username": f"{username}{suffix}"}):
+                suffix += 1
+            username = f"{username}{suffix}"
+        if True:
+            new_user = User(
+                username=username,
+                email=data.official_email,
+                password_hash=hash_password(temp_password),
+                name=data.full_name,
+                role=data.user_role if data.user_role else UserRole.EMPLOYEE,
+                employee_id=employee.id,
+                department=data.department,
+                team=data.team
+            )
+            user_doc = new_user.model_dump()
+            user_doc['created_at'] = user_doc['created_at'].isoformat()
+            await db.users.insert_one(user_doc.copy())
+        
+        # Queue credential email — 3-attempt retry, delivery-status
+        # persisted on the employee document.
+        from credential_email import schedule_credential_email
+        await db.employees.update_one(
+            {"id": employee.id},
+            {"$set": {"credential_email_status": "pending",
+                      "credential_email_last_error": "",
+                      "credential_email_attempts": 0}},
+        )
+        schedule_credential_email(
+            background_tasks,
+            employee.id,
+            username=username,
+            password=temp_password,
+            force=False,
+            triggered_by=current_user.get("id", "system"),
+        )
+    
+    await log_audit(current_user["id"], "create", "employee", employee.id, f"Created employee: {data.full_name}")
+    
+    # Create onboarding record for new employee
+    onboarding_record = OnboardingRecord(
+        employee_id=employee.id,
+        emp_id=emp_id,
+        emp_name=data.full_name,
+        department=data.department,
+        team=data.team,
+        designation=data.designation
+    )
+    onboarding_doc = onboarding_record.model_dump()
+    onboarding_doc['created_at'] = onboarding_doc['created_at'].isoformat()
+    onboarding_doc['updated_at'] = onboarding_doc['updated_at'].isoformat()
+    await db.onboarding.insert_one(onboarding_doc.copy())
+    
+    # Create document placeholders for onboarding
+    for req_doc in REQUIRED_DOCUMENTS:
+        doc_record = OnboardingDocument(
+            employee_id=employee.id,
+            document_type=req_doc["type"],
+            document_label=req_doc["label"]
+        )
+        doc_data = doc_record.model_dump()
+        doc_data['created_at'] = doc_data['created_at'].isoformat()
+        await db.onboarding_documents.insert_one(doc_data.copy())
+    
+    # Create operational checklist for Office Admin
+    checklist = OperationalChecklist(
+        employee_id=employee.id,
+        emp_name=data.full_name,
+        department=data.department,
+        designation=data.designation,
+        items=[item.copy() for item in OPERATIONAL_CHECKLIST_ITEMS]
+    )
+    checklist_doc = checklist.model_dump()
+    checklist_doc['created_at'] = checklist_doc['created_at'].isoformat()
+    checklist_doc['updated_at'] = checklist_doc['updated_at'].isoformat()
+    await db.operational_checklists.insert_one(checklist_doc.copy())
+
+    # Temporary policy: during the configured window, new employees skip the
+    # onboarding flow entirely and land on the dashboard right after login.
+    # `documents_bypassed_until` is the FE flag used to hide upload menu/route.
+    if should_skip_onboarding_now():
+        now_iso = get_ist_now().isoformat()
+        bypass_until = ONBOARDING_SKIP_WINDOW_END.isoformat()
+        await db.employees.update_one(
+            {"id": employee.id},
+            {"$set": {"onboarding_status": OnboardingStatus.APPROVED, "onboarding_completed_at": now_iso}}
+        )
+        await db.users.update_many(
+            {"employee_id": employee.id},
+            {"$set": {
+                "onboarding_status": OnboardingStatus.APPROVED,
+                "is_first_login": False,
+                "documents_bypassed_until": bypass_until,
+            }}
+        )
+        await db.onboarding.update_one(
+            {"employee_id": employee.id},
+            {"$set": {"status": OnboardingStatus.APPROVED, "approved_at": now_iso, "updated_at": now_iso}}
+        )
+    
+    result = serialize_doc(doc)
+    if data.login_enabled:
+        result['temp_password'] = temp_password
+        result['username'] = username
+    
+    # Notify HR about new employee onboarding
+    asyncio.create_task(notify_role(
+        UserRole.HR,
+        "New Employee Onboarded",
+        f"{data.full_name} has been added to the system. Start verification & induction.",
+        "action",
+        "/verification"
+    ))
+    
+    # Notify Office Admin about operational setup needed
+    asyncio.create_task(notify_role(
+        UserRole.OFFICE_ADMIN,
+        "Operational Setup Required",
+        f"New employee {data.full_name} joining. Prepare workstation, ID card, stationery & access setup.",
+        "action",
+        "/operational-checklist"
+    ))
+    
+    return result
+
+@api_router.put("/employees/{employee_id}")
+async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # Office Location is a required field. Reject explicit blanking on update.
+    if data.office_location is not None and not str(data.office_location).strip():
+        raise HTTPException(status_code=400, detail="Office Location is required")
+
+    # Check for duplicate email if changing (case-insensitive)
+    if data.official_email and (data.official_email or "").strip().lower() != (existing.get("official_email") or "").strip().lower():
+        dup = await db.employees.find_one({
+            "official_email": {"$regex": f"^{re.escape(data.official_email.strip())}$", "$options": "i"},
+            "id": {"$ne": employee_id},
+            "is_deleted": {"$ne": True},
+        })
+        if dup:
+            raise HTTPException(status_code=400, detail="Employee with this Email already exists")
+    
+    # Check uniqueness of custom_employee_id if changing
+    if data.custom_employee_id and data.custom_employee_id != existing.get("custom_employee_id"):
+        dup_cid = await db.employees.find_one({"custom_employee_id": data.custom_employee_id, "id": {"$ne": employee_id}, "is_deleted": {"$ne": True}})
+        if dup_cid:
+            raise HTTPException(status_code=400, detail=f"Employee ID '{data.custom_employee_id}' already exists")
+    
+    # Check uniqueness of biometric_id if changing (case-insensitive)
+    if data.biometric_id and (data.biometric_id or "").strip().lower() != (existing.get("biometric_id") or "").strip().lower():
+        dup_bio = await db.employees.find_one({
+            "biometric_id": {"$regex": f"^{re.escape(data.biometric_id.strip())}$", "$options": "i"},
+            "id": {"$ne": employee_id},
+            "is_deleted": {"$ne": True},
+        })
+        if dup_bio:
+            raise HTTPException(status_code=400, detail="Employee with this Biometric ID already exists")
+    
+    # Validate / normalise the Paid-Leave Confirmation Date when provided.
+    if data.confirmation_date is not None:
+        cd_raw = (data.confirmation_date or "").strip()
+        if cd_raw == "":
+            data.confirmation_date = None
+        else:
+            eff_doj = data.date_of_joining or existing.get("date_of_joining")
+            norm_cd, cd_err = _normalize_and_validate_confirmation_date(cd_raw, eff_doj)
+            if cd_err:
+                raise HTTPException(status_code=400, detail=cd_err)
+            data.confirmation_date = norm_cd
+
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No data to update")
+    
+    update_data["updated_at"] = get_ist_now().isoformat()
+
+    # BUSINESS RULE (2026-07-01): Inactive Type/Date/Reason are valid ONLY while
+    # the employee is Inactive. If this edit leaves the employee Active (including
+    # reactivating Inactive → Active), clear the stored inactive reason so an
+    # active employee never displays "Relieved/Terminated/…". Enforced server-side
+    # because the None-strip above means the client cannot clear these itself.
+    effective_status = update_data.get("employee_status", existing.get("employee_status"))
+    if effective_status == EmployeeStatus.ACTIVE:
+        update_data["inactive_type"] = None
+        update_data["inactive_date"] = None
+        update_data["inactive_reason"] = None
+
+    # If shift_type matches a Settings shift, expand all derived fields so
+    # the employee record stays consistent with central shift configuration.
+    update_data = await _apply_settings_shift_to_employee_payload(update_data, update_data.get("shift_type"))
+
+    # Handle team change
+    old_team = existing.get("team")
+    new_team = update_data.get("team")
+    if new_team and old_team and new_team != old_team:
+        await db.teams.update_one({"name": old_team}, {"$inc": {"member_count": -1}})
+        await db.teams.update_one({"name": new_team}, {"$inc": {"member_count": 1}})
+    
+    result = await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    await log_audit(current_user["id"], "update", "employee", employee_id, f"Updated fields: {list(update_data.keys())}")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    return serialize_doc(employee)
+
+@api_router.delete("/employees/{employee_id}")
+async def deactivate_employee(employee_id: str, request: Request, current_user: dict = Depends(get_current_user)):
+    """Soft deactivate - marks employee as inactive without deleting the record"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    existing = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if existing.get("employee_status") == EmployeeStatus.INACTIVE:
+        raise HTTPException(status_code=400, detail="Employee is already inactive")
+    
+    # Parse optional body (form modal data)
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    
+    inactive_type = body.get("inactive_type", "Terminated")
+    inactive_date = body.get("inactive_date", get_ist_now().strftime("%Y-%m-%d"))
+    reason = body.get("reason", "")
+    last_day_payable = body.get("last_day_payable", False)
+    
+    update_data = {
+        "employee_status": EmployeeStatus.INACTIVE,
+        "login_enabled": False,
+        "inactive_type": inactive_type,
+        "inactive_date": inactive_date,
+        "inactive_reason": reason,
+        "last_day_payable": last_day_payable,
+        "deactivated_by": current_user["id"],
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+    
+    # Update team member count
+    await db.teams.update_one({"name": existing.get("team")}, {"$inc": {"member_count": -1}})
+    
+    # Deactivate the user account as well
+    await db.users.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"is_active": False}}
+    )
+    
+    await log_audit(current_user["id"], "deactivate", "employee", employee_id, f"Deactivated employee: {existing.get('full_name')} | Type: {inactive_type} | Reason: {reason}")
+    return {"message": "Employee deactivated successfully"}
+
+
+# ============== EMPLOYEE PERMANENT DELETE (SAFE + FORCE) ==============
+# Linked collections that hold per-employee data — used by impact preview AND
+# by both delete modes. Keep this list central and explicit; never cascade by
+# heuristic. New per-employee collections must be added here intentionally.
+EMPLOYEE_LINKED_COLLECTIONS = [
+    "attendance",
+    "leaves",
+    "late_requests",
+    "early_out_requests",
+    "missed_punches",
+    "payroll",
+    "salary_adjustments",
+    "employee_documents",
+    "performance_reviews",
+    "timesheets",
+    "star_records",
+    "biometric_devices_map",
+    "shift_overrides",
+    "employee_warnings",
+]
+
+
+async def _employee_record_counts(employee_id: str) -> dict:
+    counts: dict = {}
+    for coll in EMPLOYEE_LINKED_COLLECTIONS:
+        try:
+            counts[coll] = await db[coll].count_documents({"employee_id": employee_id})
+        except Exception:
+            counts[coll] = 0
+    counts["total"] = sum(v for k, v in counts.items() if k != "total")
+    return counts
+
+
+@api_router.get("/employees/{employee_id}/deletion-impact")
+async def employee_deletion_impact(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Counts of related records — drives the safe vs force delete UX.
+    HR + system_admin only."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "id": 1, "full_name": 1, "employee_status": 1})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    counts = await _employee_record_counts(employee_id)
+    return {
+        "employee_id": employee_id,
+        "full_name": emp.get("full_name"),
+        "employee_status": emp.get("employee_status"),
+        "counts": counts,
+        "can_permanent_delete": counts["total"] == 0,
+    }
+
+
+@api_router.delete("/employees/{employee_id}/permanent")
+async def employee_permanent_delete(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Safe permanent delete — hard-deletes the employee row ONLY when there
+    are zero linked records anywhere. HR + system_admin only."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    counts = await _employee_record_counts(employee_id)
+    if counts["total"] > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot permanently delete. Employee has existing records. Please use Deactivate instead.",
+        )
+
+    # Hard delete employee + their user account (no linked-data destruction
+    # possible because we just verified counts are zero).
+    await db.employees.delete_one({"id": employee_id})
+    await db.users.delete_many({"employee_id": employee_id})
+    # Cascade: remove verification/onboarding artifacts so no ghost rows remain
+    # in the Verification Module (these are not in EMPLOYEE_LINKED_COLLECTIONS by
+    # design — they must never block the zero-records safe-delete check).
+    await db.onboarding.delete_many({"employee_id": employee_id})
+    await db.onboarding_documents.delete_many({"employee_id": employee_id})
+
+    await db.employee_deletion_audit.insert_one({
+        "employee_id": employee_id,
+        "full_name": emp.get("full_name"),
+        "action": "permanent_delete",
+        "performed_by": current_user["id"],
+        "performed_by_username": current_user.get("username"),
+        "performed_by_role": current_user.get("role"),
+        "counts": counts,
+        "timestamp": get_ist_now().isoformat(),
+    })
+    await log_audit(current_user["id"], "permanent_delete", "employee", employee_id, f"Permanently deleted: {emp.get('full_name')}")
+    return {"message": "Employee permanently deleted", "employee_id": employee_id}
+
+
+@api_router.delete("/employees/{employee_id}/force")
+async def employee_force_delete(
+    employee_id: str,
+    payload: dict = Body(default={}),
+    current_user: dict = Depends(get_current_user),
+):
+    """DESTRUCTIVE: deletes the employee AND every linked record across all
+    modules. HR + Super Admin allowed.
+
+    Body must include `confirmation_text: "DELETE"` to proceed — mirrors the
+    forced-input safety gate enforced by the UI.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    if (payload or {}).get("confirmation_text", "").strip() != "DELETE":
+        raise HTTPException(status_code=400, detail='Force delete requires confirmation_text="DELETE"')
+
+    emp = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    counts_before = await _employee_record_counts(employee_id)
+
+    deleted_per_collection: dict = {}
+    for coll in EMPLOYEE_LINKED_COLLECTIONS:
+        try:
+            res = await db[coll].delete_many({"employee_id": employee_id})
+            deleted_per_collection[coll] = res.deleted_count
+        except Exception as e:
+            deleted_per_collection[coll] = f"error:{e}"
+
+    await db.employees.delete_one({"id": employee_id})
+    await db.users.delete_many({"employee_id": employee_id})
+    # Cascade: remove verification/onboarding artifacts (kept out of
+    # EMPLOYEE_LINKED_COLLECTIONS by design) so no ghost rows survive.
+    onb_del = (await db.onboarding.delete_many({"employee_id": employee_id})).deleted_count
+    onbdoc_del = (await db.onboarding_documents.delete_many({"employee_id": employee_id})).deleted_count
+    deleted_per_collection["onboarding"] = onb_del
+    deleted_per_collection["onboarding_documents"] = onbdoc_del
+
+    await db.employee_deletion_audit.insert_one({
+        "employee_id": employee_id,
+        "full_name": emp.get("full_name"),
+        "action": "force_delete",
+        "performed_by": current_user["id"],
+        "performed_by_username": current_user.get("username"),
+        "performed_by_role": current_user.get("role"),
+        "counts_before": counts_before,
+        "deleted_per_collection": deleted_per_collection,
+        "timestamp": get_ist_now().isoformat(),
+    })
+    await log_audit(
+        current_user["id"], "force_delete", "employee", employee_id,
+        f"FORCE deleted: {emp.get('full_name')} | total_records_destroyed={counts_before['total']}",
+    )
+    return {
+        "message": "Employee and all related records permanently deleted",
+        "employee_id": employee_id,
+        "counts_before": counts_before,
+        "deleted_per_collection": deleted_per_collection,
+    }
+
+
+# ============== EMPLOYEE BULK DEACTIVATE ==============
+
+INACTIVE_IMPORT_COLUMNS = [
+    "Email", "Inactive Date", "Reason", "Type", "Last Day Payable"
+]
+
+INACTIVE_COLUMN_ALIASES: dict[str, str] = {
+    # email
+    "Email": "email",
+    "Emp Mail ID": "email",
+    "Employee Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # inactive date
+    "Inactive Date": "inactive_date",
+    "Inactive_Date": "inactive_date",
+    "Relived_date": "inactive_date",
+    "Relieved Date": "inactive_date",
+    "Relieving Date": "inactive_date",
+    "Last Working Day": "inactive_date",
+    "Termination Date": "inactive_date",
+    "Date": "inactive_date",
+    # type (Relieved / Terminated)
+    "Type": "inactive_type",
+    "Inactive Type": "inactive_type",
+    "Inactive_Type": "inactive_type",
+    "Status Type": "inactive_type",
+    "Action": "inactive_type",
+    # reason
+    "Reason": "reason",
+    "Remarks": "reason",
+    "Notes": "reason",
+    "Comments": "reason",
+    # last day payable
+    "Last Day Payable": "last_day_payable",
+    "Last_day_payable": "last_day_payable",
+    "Last_Day_Payable": "last_day_payable",
+    "LDP": "last_day_payable",
+    "Payable": "last_day_payable",
+}
+
+
+def _build_inactive_alias_index() -> dict[str, str]:
+    return {_normalize_header(k): v for k, v in INACTIVE_COLUMN_ALIASES.items()}
+
+
+def _normalize_inactive_type(value) -> str:
+    """Map Type column → 'Relieved' or 'Terminated'. Default 'Terminated'."""
+    if value in (None, ""):
+        return "Terminated"
+    s = str(value).strip().lower()
+    if s in ("relieved", "relived", "resigned", "resignation", "retired", "retirement"):
+        return "Relieved"
+    if s in ("terminated", "termination", "fired", "dismissed"):
+        return "Terminated"
+    return "Terminated"
+
+
+def _normalize_payable(value) -> bool:
+    """Map Last Day Payable cell → bool. 1/yes/true → True; 0/no/false/blank → False."""
+    if value in (None, ""):
+        return False
+    s = str(value).strip().lower()
+    if s in ("1", "yes", "y", "true", "t"):
+        return True
+    return False
+
+
+@api_router.get("/employees/bulk-deactivate/template")
+async def download_inactive_template(current_user: dict = Depends(get_current_user)):
+    """Download styled .xlsx template for bulk-deactivation."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Inactive Employees"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(INACTIVE_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["employee@blubridge.com", "2026-04-22", "Resigned voluntarily", "Relieved", 0],
+        ["another@blubridge.com", "22/04/2026", "Performance issues", "Terminated", 0],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [32, 14, 36, 14, 18]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Email", "Yes", "employee_id (via email)", "Aliases: Emp Mail ID, Employee Email, Email ID, Mail"])
+    ws2.append(["Inactive Date", "Yes", "inactive_date", "Aliases: Relived_date, Relieving Date, Last Working Day. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, or Excel datetime"])
+    ws2.append(["Reason", "Yes", "inactive_reason", "Aliases: Remarks, Notes, Comments. Free text"])
+    ws2.append(["Type", "No", "inactive_type", "Aliases: Inactive Type, Action. 'Relieved' or 'Terminated' (default: Terminated)"])
+    ws2.append(["Last Day Payable", "No", "last_day_payable", "Aliases: LDP, Payable. 1/Yes/True → payable; 0/No/False/blank → not payable"])
+    ws2.append(["", "", "", ""])
+    ws2.append(["⚠️ This action will:", "", "", ""])
+    ws2.append(["• Set employee_status = 'Inactive'", "", "", ""])
+    ws2.append(["• Disable login (login_enabled = false, user.is_active = false)", "", "", ""])
+    ws2.append(["• Decrement team member count", "", "", ""])
+    ws2.append(["• Log to audit trail", "", "", ""])
+    ws2.append(["• Skip employees not found by email (silent)", "", "", ""])
+    ws2.append(["• Skip employees already inactive (silent)", "", "", ""])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=inactive_employees_template.xlsx"}
+    )
+
+
+@api_router.post("/employees/bulk-deactivate/preview")
+async def preview_bulk_deactivate(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + sample rows + match counts for bulk deactivation."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    alias_index = _build_inactive_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
+
+    required_fields = ["email", "inactive_date", "reason"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
+
+    # Match check
+    will_deactivate = 0
+    already_inactive = 0
+    not_found = 0
+    if not missing_required:
+        for r in rows:
+            row = _remap_row(r, alias_index)
+            email = (str(row.get("email") or "")).strip().lower()
+            if not email:
+                not_found += 1
+                continue
+            emp = await db.employees.find_one(
+                {"official_email": email, "is_deleted": {"$ne": True}},
+                {"_id": 0, "id": 1, "employee_status": 1}
+            )
+            if not emp:
+                not_found += 1
+            elif emp.get("employee_status") == EmployeeStatus.INACTIVE:
+                already_inactive += 1
+            else:
+                will_deactivate += 1
+
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else (str(v) if v is not None else None)) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "column_mapping": mapped,
+        "ignored_columns": ignored,
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
+        "will_deactivate": will_deactivate,
+        "already_inactive": already_inactive,
+        "not_found": not_found,
+        "sample_rows": sample,
+    }
+
+
+@api_router.post("/employees/bulk-deactivate")
+async def bulk_deactivate_employees(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-deactivate employees from an .xlsx/.csv file. HR-only.
+
+    For each row:
+    - Look up employee by email (case-insensitive)
+    - If not found OR already inactive → skip silently (counted in summary)
+    - Otherwise: set status=Inactive, login disabled, store inactive_type/date/reason/last_day_payable
+    - Decrement team member count, deactivate user account, write audit log
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    alias_index = _build_inactive_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    missing = []
+    if "email" not in detected_canonical:
+        missing.append("Email")
+    if "inactive_date" not in detected_canonical:
+        missing.append("Inactive Date")
+    if "reason" not in detected_canonical:
+        missing.append("Reason")
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing mandatory column(s): {', '.join(missing)}")
+
+    total = len(rows)
+    deactivated = 0
+    skipped_not_found = 0
+    skipped_already_inactive = 0
+    failed = 0
+    errors: List[dict] = []
+
+    for idx, raw_row in enumerate(rows, start=2):
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
+        if not email:
+            skipped_not_found += 1
+            continue
+
+        emp = await db.employees.find_one(
+            {"official_email": email, "is_deleted": {"$ne": True}},
+            {"_id": 0}
+        )
+        if not emp:
+            skipped_not_found += 1
+            continue
+        if emp.get("employee_status") == EmployeeStatus.INACTIVE:
+            skipped_already_inactive += 1
+            continue
+
+        # Parse date - prefer combined dt then plain date
+        inactive_date_iso, _ = _parse_import_datetime(row.get("inactive_date")) if row.get("inactive_date") not in (None, "") else (None, None)
+        if not inactive_date_iso:
+            inactive_date_iso = _parse_import_date(row.get("inactive_date"))
+        if not inactive_date_iso:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Inactive Date: '{row.get('inactive_date')}'"})
+            continue
+
+        reason = str(row.get("reason")).strip() if row.get("reason") not in (None, "") else ""
+        if not reason:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Reason is required"})
+            continue
+
+        inactive_type = _normalize_inactive_type(row.get("inactive_type"))
+        last_day_payable = _normalize_payable(row.get("last_day_payable"))
+
+        update_data = {
+            "employee_status": EmployeeStatus.INACTIVE,
+            "login_enabled": False,
+            "inactive_type": inactive_type,
+            "inactive_date": inactive_date_iso,
+            "inactive_reason": reason,
+            "last_day_payable": last_day_payable,
+            "deactivated_by": current_user["id"],
+            "updated_at": get_ist_now().isoformat(),
+        }
+        await db.employees.update_one({"id": emp["id"]}, {"$set": update_data})
+        if emp.get("team"):
+            await db.teams.update_one({"name": emp["team"]}, {"$inc": {"member_count": -1}})
+        await db.users.update_one({"employee_id": emp["id"]}, {"$set": {"is_active": False}})
+        await log_audit(
+            current_user["id"], "deactivate", "employee", emp["id"],
+            f"Bulk-deactivated: {emp.get('full_name')} | Type: {inactive_type} | Date: {inactive_date_iso} | Reason: {reason}"
+        )
+        deactivated += 1
+
+    return {
+        "total": total,
+        "deactivated": deactivated,
+        "skipped_not_found": skipped_not_found,
+        "skipped_already_inactive": skipped_already_inactive,
+        "failed": failed,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
+        "errors": errors,
+    }
+
+@api_router.put("/employees/{employee_id}/restore")
+async def restore_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Restore soft-deleted employee"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    existing = await db.employees.find_one({"id": employee_id, "is_deleted": True}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Deleted employee not found")
+    
+    update_data = {
+        "is_deleted": False,
+        "deleted_at": None,
+        "employee_status": EmployeeStatus.ACTIVE,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+    
+    # Update team member count
+    await db.teams.update_one({"name": existing.get("team")}, {"$inc": {"member_count": 1}})
+    
+    await log_audit(current_user["id"], "restore", "employee", employee_id, f"Restored employee: {existing.get('full_name')}")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    return serialize_doc(employee)
+
+@api_router.put("/employees/{employee_id}/reactivate")
+async def reactivate_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Reactivate an inactive employee — restores login access, preserves deactivation history."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    existing = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if existing.get("employee_status") != EmployeeStatus.INACTIVE:
+        raise HTTPException(status_code=400, detail="Employee is not inactive")
+
+    update_data = {
+        "employee_status": EmployeeStatus.ACTIVE,
+        "login_enabled": True,
+        "inactive_type": None,
+        "inactive_date": None,
+        "inactive_reason": None,
+        "updated_at": get_ist_now().isoformat()
+    }
+
+    await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+
+    # Re-enable user login
+    await db.users.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"is_active": True}}
+    )
+
+    # Update team member count
+    await db.teams.update_one({"name": existing.get("team")}, {"$inc": {"member_count": 1}})
+
+    await log_audit(current_user["id"], "reactivate", "employee", employee_id,
+                    f"Reactivated employee: {existing.get('full_name')} (was {existing.get('inactive_type', 'N/A')} since {existing.get('inactive_date', 'N/A')})")
+
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    return serialize_doc(employee)
+
+class AvatarUpdate(BaseModel):
+    avatar_url: str
+    avatar_public_id: Optional[str] = None
+
+@api_router.put("/employees/{employee_id}/avatar")
+async def update_employee_avatar(employee_id: str, data: AvatarUpdate, current_user: dict = Depends(get_current_user)):
+    """Update employee avatar/photo.
+
+    Access rules:
+      • HR / system_admin / office_admin — can update any employee's avatar
+      • Employees — can update ONLY their own avatar (current_user.employee_id == employee_id)
+    """
+    is_admin = current_user.get("role") in ALL_ADMIN_ROLES
+    is_self = current_user.get("employee_id") == employee_id
+    if not (is_admin or is_self):
+        raise HTTPException(status_code=403, detail="You can only update your own profile photo")
+
+    existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # Delete old avatar from Cloudinary if exists
+    old_public_id = existing.get("avatar_public_id")
+    if old_public_id and old_public_id != data.avatar_public_id:
+        try:
+            await asyncio.to_thread(cloudinary.uploader.destroy, old_public_id, invalidate=True)
+        except Exception as e:
+            logger.warning(f"Failed to delete old avatar: {e}")
+
+    # Light/white shirts blend into the enforced #FFFFFF backdrop — recolour
+    # them navy via Cloudinary Generative AI (new uploads only).
+    final_avatar_url = data.avatar_url
+    shirt_recolored = False
+    if data.avatar_url:
+        from avatar_shirt_recolor import maybe_recolor_shirt
+        final_avatar_url, shirt_recolored = await asyncio.to_thread(
+            maybe_recolor_shirt, data.avatar_url
+        )
+
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {
+            "avatar": final_avatar_url,
+            "avatar_public_id": data.avatar_public_id,
+            "avatar_shirt_recolored": shirt_recolored,
+            "updated_at": get_ist_now().isoformat()
+        }}
+    )
+
+    actor = "self" if is_self and not is_admin else current_user.get("role", "admin")
+    # Audit log: capture both previous and new image URLs so HR can trace
+    # who replaced/removed which photo (regulatory ask from 2026-05-20).
+    prev_url = existing.get("avatar") or "(none)"
+    new_url = final_avatar_url or "(removed)"
+    audit_detail = (
+        f"Avatar updated by {actor} | employee={existing.get('full_name','?')} "
+        f"| previous={prev_url} | updated={new_url}"
+        + (" | light shirt auto-recoloured navy" if shirt_recolored else "")
+    )
+    await log_audit(current_user["id"], "update_avatar", "employee", employee_id, audit_detail)
+
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    return serialize_doc(employee)
+
+
+@api_router.put("/employee/me/avatar")
+async def update_my_avatar(data: AvatarUpdate, current_user: dict = Depends(get_current_user)):
+    """Convenience endpoint — the logged-in employee updates THEIR OWN avatar
+    without needing to know their `employee_id`. Internally delegates to the
+    same logic as `PUT /employees/{employee_id}/avatar`."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="No employee profile linked to this user")
+    return await update_employee_avatar(employee_id, data, current_user)
+
+
+@api_router.delete("/employee/me/avatar")
+async def delete_my_avatar(current_user: dict = Depends(get_current_user)):
+    """Logged-in employee removes their own avatar (reverts to initial-letter)."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="No employee profile linked to this user")
+    existing = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    old_public_id = existing.get("avatar_public_id")
+    if old_public_id:
+        try:
+            await asyncio.to_thread(cloudinary.uploader.destroy, old_public_id, invalidate=True)
+        except Exception as e:
+            logger.warning(f"Failed to delete avatar from Cloudinary: {e}")
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {"avatar": None, "avatar_public_id": None, "updated_at": get_ist_now().isoformat()}}
+    )
+    await log_audit(current_user["id"], "delete_avatar", "employee", employee_id, "Avatar removed by self")
+    return {"success": True}
+
+
+@api_router.get("/employee-avatars")
+async def get_employee_avatar_map(current_user: dict = Depends(get_current_user)):
+    """Return a compact id→avatar_url map for all non-deleted employees.
+
+    Used by the admin UI as a single-fetch source of truth so any admin
+    module (Attendance, Leave, Verification, Reports, etc.) can render the
+    correct profile photo by employee_id WITHOUT requiring each individual
+    endpoint to enrich its response. This avoids duplicate storage logic
+    and N+1 lookups while keeping the payload tiny (~50 bytes per employee).
+
+    Path is `/employee-avatars` (NOT `/employees/avatar-map`) to avoid
+    collision with the existing `/employees/{employee_id}` parameterized
+    route which would otherwise swallow the request and 404.
+
+    Returns: { "<employee_id>": "<avatar_url>", ... }
+    Employees without an avatar are omitted (frontend falls back to the
+    gradient initial-letter automatically).
+    """
+    # SECURITY: admins get the company-wide map (needed by Attendance / Leave /
+    # Verification grids). A standard employee gets ONLY their own avatar — the
+    # complete company photo database is never exposed to them.
+    out = {}
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        emp_id = current_user.get("employee_id")
+        if not emp_id:
+            return out
+        me = await db.employees.find_one(
+            {"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "avatar": 1}
+        )
+        if me and me.get("avatar"):
+            out[me["id"]] = me["avatar"]
+        return out
+    async for e in db.employees.find(
+        {"is_deleted": {"$ne": True}, "avatar": {"$exists": True, "$ne": None}},
+        {"_id": 0, "id": 1, "avatar": 1},
+    ):
+        if e.get("avatar"):
+            out[e["id"]] = e["avatar"]
+    return out
+
+
+# =========================================================
+#  PROFILE-PHOTO UPLOAD TEST-EMAIL FLOW
+# =========================================================
+# Implements a tokenized, single-use, time-limited link that an admin can
+# email to one or many employees inviting them to upload their profile
+# photo. Designed for a controlled "pilot" rollout (one employee at a
+# time) before enabling bulk dispatch.
+#
+# Components:
+#   • POST /api/admin/profile-upload-email/send  (admin-only)
+#       Body: { target: "single", employee_id?, email? }   → sends to ONE
+#       Body: { target: "all" }                            → bulk send
+#         (gated by settings.enable_profile_upload_mail_bulk)
+#   • GET  /api/profile-upload/redeem?token=...
+#       Validates + consumes the token, returns a short-lived JWT plus
+#       the employee profile so the frontend can finish the redirect to
+#       /employee/profile.
+#   • Bulk feature-flag lives in `settings` collection:
+#         { _id: "profile_upload_mail", enable_bulk: false }
+# =========================================================
+
+PROFILE_UPLOAD_TOKEN_TTL_HOURS = 72  # 3 days
+
+
+class ProfileUploadEmailRequest(BaseModel):
+    target: str = Field("single", description="'single' or 'all'")
+    employee_id: Optional[str] = None
+    email: Optional[str] = None  # Convenience: identify by official_email
+
+
+def _build_profile_upload_email_html(name: str, upload_url: str, expires_in_hours: int) -> str:
+    """Modern, mobile-responsive, professionally-branded HTML email."""
+    safe_name = (name or "there").split()[0]
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Upload your profile picture · BluBridge</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f4f5f7;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f5f7;padding:32px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:18px;overflow:hidden;box-shadow:0 6px 24px rgba(15,23,42,0.06);">
+          <!-- Banner -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#063c88 0%,#0a5cba 100%);padding:36px 32px;color:#ffffff;">
+              <div style="font-family:'Outfit','Segoe UI',sans-serif;font-size:22px;font-weight:700;letter-spacing:0.3px;">BluBridge HRMS</div>
+              <div style="margin-top:8px;font-size:13px;opacity:0.85;">Workforce experience platform</div>
+            </td>
+          </tr>
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 32px 8px 32px;">
+              <h1 style="margin:0 0 12px 0;font-family:'Outfit','Segoe UI',sans-serif;font-size:24px;color:#0f172a;font-weight:700;">Hi {safe_name},</h1>
+              <p style="margin:0 0 16px 0;font-size:15px;line-height:1.65;color:#334155;">
+                Let's put a face to your name. Your profile picture appears across the entire HRMS — attendance, directory, your digital ID card, and more — and makes it easier for teammates to recognise you instantly.
+              </p>
+              <p style="margin:0 0 28px 0;font-size:15px;line-height:1.65;color:#334155;">
+                It takes less than 30 seconds. Just tap the button below and choose a clear, recent photo.
+              </p>
+            </td>
+          </tr>
+          <!-- CTA -->
+          <tr>
+            <td align="center" style="padding:4px 32px 8px 32px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td align="center" style="border-radius:999px;background:#063c88;">
+                    <a href="{upload_url}" target="_blank" rel="noopener" style="display:inline-block;padding:16px 32px;font-family:'Outfit','Segoe UI',sans-serif;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:999px;letter-spacing:0.2px;">Upload Your Profile Picture →</a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:14px 0 0 0;font-size:12px;color:#94a3b8;">Secure link · valid for {expires_in_hours} hours · single use</p>
+            </td>
+          </tr>
+          <!-- Tips -->
+          <tr>
+            <td style="padding:28px 32px 8px 32px;">
+              <div style="border-top:1px solid #eef0f4;padding-top:24px;">
+                <div style="font-size:13px;font-weight:600;color:#0f172a;margin-bottom:10px;">A few quick tips</div>
+                <ul style="margin:0;padding-left:18px;color:#475569;font-size:13px;line-height:1.7;">
+                  <li>Use a recent, well-lit headshot</li>
+                  <li>Face the camera, neutral background works best</li>
+                  <li>JPG, PNG or WebP · up to 5 MB</li>
+                </ul>
+              </div>
+            </td>
+          </tr>
+          <!-- Fallback link -->
+          <tr>
+            <td style="padding:24px 32px 32px 32px;">
+              <p style="margin:0;font-size:12px;color:#94a3b8;line-height:1.6;">
+                Button not working? Copy and paste this link into your browser:<br />
+                <span style="color:#0a5cba;word-break:break-all;">{upload_url}</span>
+              </p>
+            </td>
+          </tr>
+          <!-- Footer -->
+          <tr>
+            <td style="background:#f8fafc;padding:20px 32px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #eef0f4;">
+              You're receiving this email because you're an active employee at BluBridge.<br />
+              Need help? Reply to this email and we'll assist.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>"""
+
+
+async def _create_profile_upload_token(employee: dict) -> tuple[str, datetime]:
+    """Generate a single-use, time-limited token for the given employee."""
+    raw_token = _secrets.token_urlsafe(48)
+    now = get_ist_now()
+    expires_at = now + timedelta(hours=PROFILE_UPLOAD_TOKEN_TTL_HOURS)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "token": raw_token,
+        "employee_id": employee["id"],
+        "user_id": None,  # filled when we look up the user record
+        "email": employee.get("official_email"),
+        "purpose": "profile_upload",
+        "created_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "used_at": None,
+    }
+    # Best-effort attach user_id so redeem can return a real auth token
+    user = await db.users.find_one({"employee_id": employee["id"]}, {"_id": 0, "id": 1})
+    if user:
+        doc["user_id"] = user["id"]
+    await db.profile_upload_tokens.insert_one(doc)
+    return raw_token, expires_at
+
+
+@api_router.post("/admin/profile-upload-email/send")
+async def send_profile_upload_email(
+    body: ProfileUploadEmailRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Send the "Upload your profile picture" email.
+
+    Strict pilot mode: by default this endpoint allows sending to ONE
+    employee only. Bulk dispatch requires the feature flag
+    `settings.profile_upload_mail.enable_bulk = true` and is intended for
+    use only after the pilot recipient has confirmed the flow works.
+    """
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+
+    if not resend.api_key:
+        raise HTTPException(status_code=500, detail="Email service is not configured (RESEND_API_KEY missing)")
+
+    target = (body.target or "single").lower()
+
+    # ---- Resolve recipients ----
+    recipients: list[dict] = []
+
+    if target == "all":
+        flag = await db.settings.find_one({"_id": "profile_upload_mail"}) or {}
+        if not flag.get("enable_bulk"):
+            raise HTTPException(
+                status_code=400,
+                detail="Bulk dispatch is disabled. Run a successful pilot first, then enable settings.profile_upload_mail.enable_bulk.",
+            )
+        async for e in db.employees.find(
+            {"is_deleted": {"$ne": True}, "employee_status": {"$ne": "Inactive"},
+             "official_email": {"$exists": True, "$ne": None}},
+            {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "avatar": 1},
+        ):
+            if e.get("official_email"):
+                recipients.append(e)
+    else:
+        emp = None
+        if body.employee_id:
+            emp = await db.employees.find_one(
+                {"id": body.employee_id, "is_deleted": {"$ne": True}},
+                {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "avatar": 1},
+            )
+        elif body.email:
+            emp = await db.employees.find_one(
+                {"official_email": {"$regex": f"^{re.escape(body.email)}$", "$options": "i"},
+                 "is_deleted": {"$ne": True}},
+                {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "avatar": 1},
+            )
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        if not emp.get("official_email"):
+            raise HTTPException(status_code=400, detail="Employee has no official_email on file")
+        recipients = [emp]
+
+    # ---- Send ----
+    sent, failed = [], []
+    for emp in recipients:
+        try:
+            token, expires_at = await _create_profile_upload_token(emp)
+            upload_url = absolute_url("/profile-upload", query={"token": token})
+            html = _build_profile_upload_email_html(emp.get("full_name"), upload_url, PROFILE_UPLOAD_TOKEN_TTL_HOURS)
+            result = await send_email_notification(
+                to_email=emp["official_email"],
+                subject="📸 Upload your BluBridge profile picture",
+                html_content=html,
+            )
+            if result and result.get("id"):
+                sent.append({"email": emp["official_email"], "name": emp.get("full_name"), "message_id": result.get("id"), "token_expires_at": expires_at.isoformat()})
+            else:
+                failed.append({"email": emp["official_email"], "reason": "Resend returned no message id"})
+        except Exception as e:
+            logger.exception("Failed to dispatch profile-upload email to %s", emp.get("official_email"))
+            failed.append({"email": emp.get("official_email"), "reason": str(e)})
+
+    await log_audit(
+        current_user["id"],
+        "send_profile_upload_email",
+        "email",
+        target,
+        f"Sent: {len(sent)}, Failed: {len(failed)}",
+    )
+
+    return {"success": True, "target": target, "sent": sent, "failed": failed, "count": len(sent)}
+
+
+@api_router.get("/profile-upload/validate")
+async def validate_profile_upload_token(token: str):
+    """Lightweight, no-side-effect validation used by the public landing
+    page to decide whether to even ask the user to log in."""
+    doc = await db.profile_upload_tokens.find_one({"token": token}, {"_id": 0})
+    if not doc:
+        return {"valid": False, "reason": "Token not found"}
+    if doc.get("used_at"):
+        return {"valid": False, "reason": "This link has already been used. Please request a new one."}
+    try:
+        exp = datetime.fromisoformat(doc["expires_at"])
+        if exp < get_ist_now():
+            return {"valid": False, "reason": "This link has expired. Please request a new one."}
+    except Exception:
+        return {"valid": False, "reason": "Token integrity check failed"}
+    return {"valid": True, "email": doc.get("email"), "expires_at": doc["expires_at"]}
+
+
+@api_router.post("/profile-upload/redeem")
+async def redeem_profile_upload_token(body: dict, http_request: Request = None):
+    """Single-use redemption: validates the token, marks it consumed, and
+    returns a short-lived auth token + the employee profile so the
+    frontend can drop the user straight onto the upload page."""
+    token = (body or {}).get("token")
+    if not token:
+        raise HTTPException(status_code=400, detail="token required")
+
+    doc = await db.profile_upload_tokens.find_one({"token": token}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Invalid link")
+    if doc.get("used_at"):
+        raise HTTPException(status_code=410, detail="This link has already been used")
+    try:
+        exp = datetime.fromisoformat(doc["expires_at"])
+        if exp < get_ist_now():
+            raise HTTPException(status_code=410, detail="This link has expired")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Token integrity check failed")
+
+    if not doc.get("user_id"):
+        raise HTTPException(status_code=400, detail="No login account is linked to this employee yet")
+
+    user = await db.users.find_one({"id": doc["user_id"]}, {"_id": 0})
+    if not user or not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="User account is inactive")
+
+    # Mark token consumed BEFORE issuing the JWT so a race can't re-use it.
+    await db.profile_upload_tokens.update_one(
+        {"id": doc["id"], "used_at": None},
+        {"$set": {"used_at": get_ist_now().isoformat()}},
+    )
+
+    # Issue a proper server-side session (access + refresh token) the frontend
+    # can use as Bearer and auto-refresh, matching the standard login flow.
+    auth_token, refresh_token = await create_auth_session(user, http_request)
+
+    # Fetch employee row (for avatar etc.)
+    emp = await db.employees.find_one({"id": user.get("employee_id")}, {"_id": 0})
+
+    await log_audit(user["id"], "profile_upload_link_used", "auth", user["id"], "Logged in via profile-upload email link")
+
+    return {
+        "token": auth_token,
+        "refresh_token": refresh_token,
+        "user": {k: v for k, v in user.items() if k != "password_hash"},
+        "employee": serialize_doc(emp) if emp else None,
+        "redirect": "/employee/profile?welcome=upload",
+    }
+
+
+@api_router.get("/admin/profile-upload-email/settings")
+async def get_profile_upload_email_settings(current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    doc = await db.settings.find_one({"_id": "profile_upload_mail"}) or {}
+    return {"enable_bulk": bool(doc.get("enable_bulk", False))}
+
+
+@api_router.put("/admin/profile-upload-email/settings")
+async def update_profile_upload_email_settings(body: dict, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    enable_bulk = bool(body.get("enable_bulk", False))
+    await db.settings.update_one(
+        {"_id": "profile_upload_mail"},
+        {"$set": {"enable_bulk": enable_bulk, "updated_at": get_ist_now().isoformat(), "updated_by": current_user["id"]}},
+        upsert=True,
+    )
+    await log_audit(current_user["id"], "toggle_profile_upload_mail_bulk", "settings",
+                    "profile_upload_mail", f"enable_bulk={enable_bulk}")
+    return {"success": True, "enable_bulk": enable_bulk}
+
+
+# =========================================================================
+# Onboarding + Profile Photo Completion Tracking & Email Automation
+# =========================================================================
+#  • GET  /api/admin/onboarding-completion/dashboard   admin tracking grid
+#  • GET  /api/admin/onboarding-completion/settings    feature flag + pilot
+#  • PUT  /api/admin/onboarding-completion/settings
+#  • POST /api/admin/onboarding-completion/run-now     manual trigger
+#  • GET  /api/employee/my-completion                  employee self-status
+# =========================================================================
+from onboarding_completion import (  # noqa: E402
+    compute_completion as _oc_compute,
+    list_completion_dashboard as _oc_list_dashboard,
+    get_settings as _oc_get_settings,
+    update_settings as _oc_update_settings,
+    run_completion_cycle as _oc_run_cycle,
+    ensure_state_indexes as _oc_ensure_indexes,
+    PILOT_RECIPIENT_EMAIL as _OC_PILOT_DEFAULT,
+)
+
+
+@api_router.get("/admin/onboarding-completion/dashboard")
+async def onboarding_completion_dashboard(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    department: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    rows = await _oc_list_dashboard(
+        db, status_filter=status, search=search, department=department,
+    )
+    # Summary counts for filter chips
+    total = len(rows)
+    completed = sum(1 for r in rows if r["is_complete"])
+    no_photo = sum(1 for r in rows if not r["profile_photo_uploaded"])
+    reminder_pending = sum(1 for r in rows if r["reminder_pending"] and not r["is_complete"])
+    success_pending = sum(1 for r in rows if r["is_complete"] and not r["completion_success_mail_sent"])
+    return {
+        "rows": rows,
+        "summary": {
+            "total": total,
+            "completed": completed,
+            "incomplete": total - completed,
+            "no_photo": no_photo,
+            "reminder_pending": reminder_pending,
+            "success_pending": success_pending,
+        },
+    }
+
+
+@api_router.get("/admin/onboarding-completion/settings")
+async def get_onboarding_completion_settings(current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    return await _oc_get_settings(db)
+
+
+@api_router.put("/admin/onboarding-completion/settings")
+async def update_onboarding_completion_settings(
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    enable_bulk = body.get("enable_bulk_onboarding_mail")
+    if enable_bulk is None:
+        enable_bulk = body.get("enable_bulk")  # alias accepted
+    pilot_email = body.get("pilot_email")
+    new_settings = await _oc_update_settings(
+        db,
+        enable_bulk=enable_bulk if enable_bulk is not None else None,
+        pilot_email=pilot_email if pilot_email else None,
+        actor_user_id=current_user["id"],
+    )
+    await log_audit(
+        current_user["id"],
+        "toggle_onboarding_completion_mail",
+        "settings",
+        "onboarding_completion_mail",
+        f"enable_bulk={new_settings.get('enable_bulk_onboarding_mail')}, "
+        f"pilot_email={new_settings.get('pilot_email')}",
+    )
+    return {"success": True, **new_settings}
+
+
+@api_router.post("/admin/onboarding-completion/run-now")
+async def run_onboarding_completion_now(
+    body: Optional[dict] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Manual trigger of the completion cycle. Bypasses the 48-hour cadence
+    so HR can verify the flow end-to-end. Pilot/bulk gating IS still respected
+    — bulk only fires if `enable_bulk_onboarding_mail` has been flipped on.
+    """
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    target_employee_id = (body or {}).get("employee_id") or None
+    summary = await _oc_run_cycle(
+        db, force=True, target_employee_id=target_employee_id,
+    )
+    await log_audit(
+        current_user["id"],
+        "run_onboarding_completion_now",
+        "email",
+        target_employee_id or "all",
+        f"Reminders sent: {summary.get('reminders_sent')}, "
+        f"Success sent: {summary.get('success_sent')}, "
+        f"Pilot mode: {summary.get('pilot_mode')}",
+    )
+    return {"success": True, **summary}
+
+
+@api_router.get("/employee/my-completion")
+async def get_my_onboarding_completion(current_user: dict = Depends(get_current_user)):
+    """Employee self-view — same calculation engine as the admin dashboard."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    emp = await db.employees.find_one(
+        {"id": employee_id},
+        {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "avatar": 1,
+         "department": 1, "designation": 1, "emp_id": 1},
+    )
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    docs = await db.onboarding_documents.find(
+        {"employee_id": employee_id},
+        {"_id": 0, "document_type": 1, "status": 1},
+    ).to_list(20)
+    snap = _oc_compute(emp, docs)
+    state = await db.onboarding_completion_state.find_one(
+        {"employee_id": employee_id}, {"_id": 0}
+    ) or {}
+    return {
+        **snap,
+        "employee_id": employee_id,
+        "full_name": emp.get("full_name"),
+        "avatar": emp.get("avatar"),
+        "reminder_count": int(state.get("reminder_count") or 0),
+        "last_reminder_sent_at": state.get("last_reminder_sent_at"),
+        "completion_success_mail_sent": bool(state.get("completion_success_mail_sent")),
+        "completed_at": state.get("completed_at"),
+    }
+
+
+# ============== ATTENDANCE ROUTES ==============
+
+@api_router.get("/attendance")
+async def get_attendance(
+    employee_name: Optional[str] = None,
+    team: Optional[str] = None,
+    department: Optional[str] = None,
+    designation: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    # SECURITY (object-level authorisation): a standard employee ALWAYS reads
+    # their own attendance only. The scope comes from the verified JWT identity,
+    # never from a client-supplied name / team / department filter.
+    self_only_employee_id = None
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        self_only_employee_id = current_user.get("employee_id") or "__none__"
+        query["employee_id"] = self_only_employee_id
+        employee_name = None
+        team = department = designation = None
+    if employee_name:
+        query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+    if status and status != "All":
+        query["status"] = status
+
+    # Team / Department / Designation are resolved against the EMPLOYEE MASTER
+    # (the live source of truth) — never against the snapshot stored on each
+    # attendance row — so a later team/department change is honoured by both the
+    # filter and the displayed value (see live-enrichment before the return).
+    emp_master_filter = {}
+    if team and team != "All":
+        emp_master_filter["team"] = team
+    if department and department != "All":
+        emp_master_filter["department"] = department
+    if designation and designation != "All":
+        emp_master_filter["designation"] = designation
+    if emp_master_filter:
+        matched = await db.employees.find(emp_master_filter, {"_id": 0, "id": 1}).to_list(5000)
+        query["employee_id"] = {"$in": [e["id"] for e in matched]}
+
+    # Build indexed date range query by enumerating valid DD-MM-YYYY values.
+    # This replaces a previous full-collection scan + Python filter that
+    # dominated dashboard chart load time.
+    def parse_ddmmyyyy(ds):
+        try:
+            parts = ds.split("-")
+            return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+        except Exception:
+            return 0
+
+    if from_date and to_date:
+        try:
+            _f = datetime.strptime(from_date, "%d-%m-%Y").date()
+            _t = datetime.strptime(to_date, "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            _f = _t = None
+        if _f and _t and _f <= _t and (_t - _f).days <= 366:
+            date_list = []
+            cur = _f
+            while cur <= _t:
+                date_list.append(cur.strftime("%d-%m-%Y"))
+                cur += timedelta(days=1)
+            query["date"] = {"$in": date_list}
+
+    attendance = await db.attendance.find(query, {"_id": 0}).sort("date", -1).to_list(10000)
+
+    # Fallback Python filter for any non-DD-MM-YYYY edge cases (legacy data).
+    if from_date or to_date:
+        from_val = parse_ddmmyyyy(from_date) if from_date else 0
+        to_val = parse_ddmmyyyy(to_date) if to_date else 99999999
+        attendance = [a for a in attendance if from_val <= parse_ddmmyyyy(a.get("date", "")) <= to_val]
+    
+    # Gap-fill missing dates with "Absent" stub records (Issue 2 fix).
+    # Only applies when both from_date & to_date are provided AND no specific status
+    # filter is requested (an "Absent" filter would defeat its purpose). The
+    # response shape (field names / order) is preserved exactly.
+    if from_date and to_date and (not status or status in ("All", "", "Absent")):
+        try:
+            f_d = datetime.strptime(from_date, "%d-%m-%Y").date()
+            t_d = datetime.strptime(to_date, "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            f_d = t_d = None
+
+        if f_d and t_d and f_d <= t_d:
+            # Determine candidate employees: union of those already in `attendance`
+            # plus any employees matching the supplied filters (so we still
+            # surface "Absent" days for filtered employees with NO records).
+            emp_query = {"is_deleted": {"$ne": True}}
+            if self_only_employee_id:
+                emp_query["id"] = self_only_employee_id
+            if employee_name:
+                emp_query["full_name"] = {"$regex": employee_name, "$options": "i"}
+            if team and team != "All":
+                emp_query["team"] = team
+            if department and department != "All":
+                emp_query["department"] = department
+            if designation and designation != "All":
+                emp_query["designation"] = designation
+
+            employees_for_fill = await db.employees.find(
+                emp_query,
+                {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1,
+                 "shift_type": 1, "date_of_joining": 1, "employee_status": 1,
+                 "inactive_date": 1, "last_day_payable": 1, "attendance_tracking_enabled": 1}
+            ).to_list(5000)
+
+            existing_keys = {(a.get("employee_id"), a.get("date")) for a in attendance}
+
+            def to_ddmmyyyy(d):
+                return d.strftime("%d-%m-%Y")
+
+            def parse_doj(s):
+                if not s:
+                    return None
+                # Accept ISO strings or DD-MM-YYYY
+                try:
+                    if "T" in s or "-" in s and len(s.split("-")[0]) == 4:
+                        return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+                except Exception:
+                    pass
+                try:
+                    return datetime.strptime(s.split("T")[0], "%Y-%m-%d").date()
+                except Exception:
+                    pass
+                try:
+                    return datetime.strptime(s, "%d-%m-%Y").date()
+                except Exception:
+                    return None
+
+            # Pre-fetch approved leaves for the window so gap-fill Absent
+            # stubs correctly downgrade to "Leave" (not Absent) for employees
+            # on approved leave for that day.
+            approved_lv_docs = await db.leaves.find(
+                {"status": {"$in": ["approved", "Approved", "APPROVED"]}},
+                {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1}
+            ).to_list(20000)
+            leave_ranges: dict = {}
+            for lv in approved_lv_docs:
+                eid = lv.get("employee_id")
+                s_int = _normalize_date_to_int(lv.get("start_date"))
+                e_int = _normalize_date_to_int(lv.get("end_date")) or s_int
+                if not eid or s_int is None:
+                    continue
+                leave_ranges.setdefault(eid, []).append((s_int, e_int))
+
+            stubs = []
+            for emp in employees_for_fill:
+                if emp.get("attendance_tracking_enabled") is False:
+                    continue
+                doj = parse_doj(emp.get("date_of_joining"))
+                last_day = None
+                if emp.get("employee_status") != EmployeeStatus.ACTIVE:
+                    last_day = parse_doj(emp.get("last_day_payable")) or parse_doj(emp.get("inactive_date"))
+                cur = f_d
+                emp_leaves = leave_ranges.get(emp["id"], ())
+                while cur <= t_d:
+                    if doj and cur < doj:
+                        cur += timedelta(days=1)
+                        continue
+                    if last_day and cur > last_day:
+                        cur += timedelta(days=1)
+                        continue
+                    key = (emp["id"], to_ddmmyyyy(cur))
+                    if key not in existing_keys:
+                        # Order: Sunday (non-working) > Leave (approved) > Absent.
+                        d_int_cur = cur.year * 10000 + cur.month * 100 + cur.day
+                        on_leave = any(s <= d_int_cur <= e for s, e in emp_leaves)
+                        if cur.weekday() == 6:
+                            stub_status = AttendanceStatus.SUNDAY
+                        elif on_leave:
+                            stub_status = AttendanceStatus.LEAVE
+                        else:
+                            stub_status = AttendanceStatus.ABSENT
+                        stubs.append({
+                            "id": f"stub-{emp['id']}-{to_ddmmyyyy(cur)}",
+                            "employee_id": emp["id"],
+                            "emp_name": emp.get("full_name", ""),
+                            "team": emp.get("team", ""),
+                            "department": emp.get("department", ""),
+                            "date": to_ddmmyyyy(cur),
+                            "check_in": None,
+                            "check_out": None,
+                            "check_in_24h": None,
+                            "check_out_24h": None,
+                            "total_hours": None,
+                            "total_hours_decimal": None,
+                            "status": stub_status,
+                            "is_lop": False,
+                            "lop_reason": None,
+                            "shift_type": emp.get("shift_type", "General"),
+                            "expected_login": None,
+                            "expected_logout": None,
+                            "created_at": None,
+                            "_synthetic": True,
+                        })
+                    cur += timedelta(days=1)
+
+            if stubs:
+                # Apply same status filter to stubs if user explicitly asked for "Absent"
+                if status == "Absent":
+                    attendance = [s for s in stubs]
+                else:
+                    attendance.extend(stubs)
+    
+    # Sort by date descending (proper chronological order)
+    def date_sort_key(a):
+        try:
+            parts = a.get("date", "01-01-1970").split("-")
+            return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+        except Exception:
+            return 0
+    
+    attendance.sort(key=date_sort_key, reverse=True)
+
+    # Live-resolve Team & Department from the Employee Master so the Attendance
+    # module always reflects the CURRENT assignment. Attendance rows store a
+    # snapshot taken at creation time which goes stale after a team change
+    # (e.g. employee re-assigned to "Trainee"). Defensive: only override when
+    # the employee still exists and has a value — deleted/legacy rows keep their
+    # stored value, never crash.
+    emp_ids = {a.get("employee_id") for a in attendance if a.get("employee_id")}
+    if emp_ids:
+        master = {}
+        async for e in db.employees.find({"id": {"$in": list(emp_ids)}}, {"_id": 0, "id": 1, "team": 1, "department": 1}):
+            master[e["id"]] = e
+        for a in attendance:
+            m = master.get(a.get("employee_id"))
+            if m:
+                if m.get("team"):
+                    a["team"] = m["team"]
+                if m.get("department"):
+                    a["department"] = m["department"]
+
+    # UNIFIED ATTENDANCE PIPELINE — apply the same eligibility + missed-punch
+    # overlay + Completed-hours enforcement used by Dashboard & Reports so all
+    # three modules ALWAYS return the same employees and counts for a date.
+    emp_map = await _load_employees_map(only_tracking=True)
+    win_lo_int = parse_ddmmyyyy(from_date) if from_date else 0
+    win_hi_int = parse_ddmmyyyy(to_date) if to_date else 99999999
+    mp_map = await _load_approved_missed_punches(win_lo_int, win_hi_int)
+    attendance = await _apply_attendance_normalizations(
+        attendance, emp_map, mp_map, enforce_dept_hours=True
+    )
+
+    # Materialize approved missed-punches that have no attendance row yet, so
+    # the grid, dashboard drill-downs and reports all see the same rows.
+    if from_date and to_date:
+        existing_keys = {(a.get("employee_id"), a.get("date")) for a in attendance}
+        for (emp_id, date_ddmmyyyy), mp in mp_map.items():
+            if (emp_id, date_ddmmyyyy) in existing_keys:
+                continue
+            emp = emp_map.get(emp_id)
+            if not emp:
+                continue
+            d_int = _normalize_date_to_int(date_ddmmyyyy)
+            if d_int is None or not (win_lo_int <= d_int <= win_hi_int):
+                continue
+            if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+                continue
+            # Respect employee-name / team / dept / status filters that may
+            # have been used to narrow the query.
+            if employee_name and employee_name.strip().lower() not in (emp.get("full_name") or "").lower():
+                continue
+            if team and team != "All" and emp.get("team") != team:
+                continue
+            if department and department != "All" and emp.get("department") != department:
+                continue
+            if designation and designation != "All" and emp.get("designation") != designation:
+                continue
+            stub = _build_missed_punch_stub(mp, emp)
+            _enforce_completed_hours_threshold(stub, emp_map)
+            if status and status != "All" and stub.get("status") != status:
+                continue
+            attendance.append(stub)
+        attendance.sort(key=date_sort_key, reverse=True)
+
+    # FINAL SECURITY NET: no row belonging to another employee may leave this
+    # endpoint for a non-admin caller (covers stubs/overlays added above).
+    if self_only_employee_id:
+        attendance = [a for a in attendance
+                      if a.get("employee_id") == self_only_employee_id]
+
+    return [serialize_doc(a) for a in attendance]
+
+@api_router.post("/attendance/check-in")
+async def check_in(employee_id: str, current_user: dict = Depends(get_current_user)):
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    if not employee.get("attendance_tracking_enabled", True):
+        raise HTTPException(status_code=400, detail="Attendance tracking disabled for this employee")
+    
+    today = get_ist_today()
+    existing = await db.attendance.find_one({"employee_id": employee_id, "date": today})
+    
+    if existing and existing.get("check_in"):
+        raise HTTPException(status_code=400, detail="Already checked in today")
+    
+    now = get_ist_now()
+    check_in_time = now.strftime("%I:%M %p")
+    check_in_24h = now.strftime("%H:%M")
+    
+    # Get shift timings for the employee (effective-dated for today's date)
+    shift_timings = await get_effective_shift_timings(employee, today)
+    expected_login = shift_timings.get("login_time") if shift_timings else None
+    expected_logout = shift_timings.get("logout_time") if shift_timings else None
+    
+    # Initial status calculation (will be finalized on check-out)
+    initial_status = AttendanceStatus.LOGIN
+    is_lop = False
+    lop_reason = None
+    
+    # For fixed shifts, check if late login
+    if expected_login:
+        expected_mins = parse_time_24h_to_minutes(expected_login)
+        actual_mins = parse_time_24h_to_minutes(check_in_24h)
+        
+        if actual_mins > expected_mins:
+            late_mins = actual_mins - expected_mins
+            initial_status = AttendanceStatus.LOSS_OF_PAY
+            is_lop = True
+            lop_reason = f"Late login by {late_mins} minute(s). Expected: {expected_login}, Actual: {check_in_24h}"
+    
+    attendance = Attendance(
+        employee_id=employee_id,
+        emp_name=employee["full_name"],
+        team=employee["team"],
+        department=employee["department"],
+        date=today,
+        check_in=check_in_time,
+        check_in_24h=check_in_24h,
+        status=initial_status,
+        is_lop=is_lop,
+        lop_reason=lop_reason,
+        shift_type=employee.get("shift_type", "General"),
+        expected_login=expected_login,
+        expected_logout=expected_logout
+    )
+    doc = attendance.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.attendance.insert_one(doc.copy())
+    
+    return serialize_doc(doc)
+
+@api_router.post("/attendance/check-out")
+async def check_out(employee_id: str, current_user: dict = Depends(get_current_user)):
+    today = get_ist_today()
+    attendance = await db.attendance.find_one({"employee_id": employee_id, "date": today}, {"_id": 0})
+    
+    if not attendance:
+        raise HTTPException(status_code=404, detail="No check-in found for today")
+    if attendance.get("check_out"):
+        raise HTTPException(status_code=400, detail="Already checked out")
+    
+    # Get employee for shift info
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    shift_timings = await get_effective_shift_timings(employee, today) if employee else None
+    
+    now = get_ist_now()
+    check_out_time = now.strftime("%I:%M %p")
+    check_out_24h = now.strftime("%H:%M")
+    
+    check_in_24h = attendance.get("check_in_24h")
+    if not check_in_24h and attendance.get("check_in"):
+        check_in_24h = parse_time_12h_to_24h(attendance.get("check_in"))
+    
+    # Calculate attendance status with strict LOP rules
+    if shift_timings:
+        status_result = calculate_attendance_status(check_in_24h, check_out_24h, shift_timings)
+    else:
+        # No shift timings - just mark as completed
+        status_result = {
+            "status": AttendanceStatus.COMPLETED,
+            "is_lop": False,
+            "lop_reason": None,
+            "total_hours_decimal": 0.0
+        }
+        # Calculate hours manually
+        if check_in_24h:
+            in_mins = parse_time_24h_to_minutes(check_in_24h)
+            out_mins = parse_time_24h_to_minutes(check_out_24h)
+            if out_mins < in_mins:
+                total_mins = 24 * 60 - in_mins + out_mins
+            else:
+                total_mins = out_mins - in_mins
+            status_result["total_hours_decimal"] = total_mins / 60
+    
+    total_hours_str = calculate_total_hours_str(status_result.get("total_hours_decimal", 0))
+    
+    # If already marked as LOP from late login, keep it
+    final_is_lop = attendance.get("is_lop", False) or status_result.get("is_lop", False)
+    final_lop_reason = attendance.get("lop_reason") or status_result.get("lop_reason")
+    final_status = AttendanceStatus.LOSS_OF_PAY if final_is_lop else status_result.get("status", AttendanceStatus.COMPLETED)
+    
+    update_data = {
+        "check_out": check_out_time,
+        "check_out_24h": check_out_24h,
+        "total_hours": total_hours_str,
+        "total_hours_decimal": status_result.get("total_hours_decimal", 0),
+        "status": final_status,
+        "is_lop": final_is_lop,
+        "lop_reason": final_lop_reason
+    }
+    
+    await db.attendance.update_one(
+        {"employee_id": employee_id, "date": today},
+        {"$set": update_data}
+    )
+    
+    updated = await db.attendance.find_one({"employee_id": employee_id, "date": today}, {"_id": 0})
+    return serialize_doc(updated)
+
+# ============== BIOMETRIC ATTENDANCE IMPORT ==============
+
+def _single_punch_is_checkout(punch_dt: datetime, date_str: str,
+                              shift_timings: Optional[dict]) -> bool:
+    """Shift-aware classification for a day with EXACTLY ONE punch.
+
+    Returns True when the punch falls in the ENDING portion of the employee's
+    RESOLVED shift window → treat it as the Check-OUT (Check-In stays missing).
+    Returns False when it belongs to the beginning portion → existing
+    behaviour (punch = Check-In) is preserved.
+
+    Rules:
+      • No hard-coded wall-clock cut-off — the boundary is the midpoint of
+        [shift start, shift start + required hours], so extended/long shifts
+        and night shifts classify correctly (a 22:00 punch is an IN for a
+        22:00-start night shift but an OUT for a 10:00-start day shift).
+      • Overnight aware — punch minutes are computed RELATIVE to the resolved
+        attendance date (a 01:00 punch already attributed to the previous
+        working day by get_effective_attendance_date gets +1440).
+      • When the shift cannot be resolved, do NOT guess: return False and
+        keep the legacy behaviour unchanged.
+    Internal helper only — never persisted, never exposed as a status.
+    """
+    if not shift_timings or not shift_timings.get("login_time"):
+        return False
+    try:
+        start_m = parse_time_24h_to_minutes(shift_timings["login_time"])
+        req_h = float(shift_timings.get("total_hours") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if start_m is None or req_h <= 0:
+        return False
+    end_m = start_m + int(round(req_h * 60))  # may exceed 1440 (overnight)
+    try:
+        att_d = datetime.strptime(date_str, "%d-%m-%Y").date()
+    except (ValueError, TypeError):
+        return False
+    day_offset = (punch_dt.date() - att_d).days
+    punch_m = day_offset * 1440 + punch_dt.hour * 60 + punch_dt.minute
+    midpoint = start_m + (end_m - start_m) / 2.0
+    return punch_m >= midpoint
+
+
+@api_router.post("/attendance/import-biometric")
+async def import_biometric_attendance(
+    records: list = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Ingest biometric attendance data from external device sync service."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    if not records or not isinstance(records, list):
+        raise HTTPException(status_code=400, detail="Request body must be a non-empty JSON array")
+    
+    total_records = len(records)
+    processed = 0
+    skipped = 0
+    unmapped = 0
+    unmapped_ids = set()
+    
+    # Pre-fetch all employees with biometric_id for mapping
+    emp_cursor = db.employees.find(
+        {"biometric_id": {"$ne": None}, "is_deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "biometric_id": 1, "full_name": 1, "team": 1, "department": 1, "shift_type": 1,
+         "custom_login_time": 1, "custom_logout_time": 1, "custom_total_hours": 1}
+    )
+    bio_map = {}
+    async for emp in emp_cursor:
+        if emp.get("biometric_id"):
+            # Normalize the mapping key to match the already-stripped incoming
+            # deviceUserId. Some employee biometric_ids carry stray leading/
+            # trailing whitespace from data entry/imports; without stripping
+            # here the lookup silently fails and their punches go "unmapped".
+            bio_key = str(emp["biometric_id"]).strip()
+            if bio_key:
+                bio_map[bio_key] = emp
+    
+    # Group valid punches: { (employee_id, date_str) : [datetime, ...] }
+    grouped = {}
+    device_ips = {}
+    raw_logs = []
+    
+    for rec in records:
+        if not isinstance(rec, dict):
+            skipped += 1
+            continue
+        
+        device_user_id = rec.get("deviceUserId")
+        record_time = rec.get("recordTime")
+        device_ip = rec.get("ip", "")
+        
+        if not device_user_id or not record_time:
+            skipped += 1
+            continue
+        
+        device_user_id = str(device_user_id).strip()
+        
+        # Map to employee
+        employee = bio_map.get(device_user_id)
+        if not employee:
+            unmapped += 1
+            unmapped_ids.add(device_user_id)
+            raw_logs.append({
+                "deviceUserId": device_user_id,
+                "recordTime": record_time,
+                "ip": device_ip,
+                "status": "unmapped"
+            })
+            continue
+        
+        # Parse recordTime
+        try:
+            if isinstance(record_time, str):
+                # Handle ISO format with or without timezone
+                punch_dt = datetime.fromisoformat(record_time.replace("Z", "+00:00"))
+            else:
+                skipped += 1
+                continue
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+        
+        # Convert to IST
+        punch_ist = punch_dt.astimezone(IST)
+        # Cross-midnight handling: punches <= threshold belong to previous day.
+        date_str = get_effective_attendance_date(punch_ist)
+        emp_id = employee["id"]
+        
+        key = (emp_id, date_str)
+        if key not in grouped:
+            grouped[key] = {"punches": [], "employee": employee, "ip": device_ip}
+        grouped[key]["punches"].append(punch_ist)
+        if device_ip:
+            grouped[key]["ip"] = device_ip
+        
+        raw_logs.append({
+            "deviceUserId": device_user_id,
+            "recordTime": record_time,
+            "ip": device_ip,
+            "employee_id": emp_id,
+            "date": date_str,
+            "status": "mapped"
+        })
+    
+    # Store raw punch log for audit
+    if raw_logs:
+        await db.biometric_punch_logs.insert_one({
+            "_id": str(uuid.uuid4()),
+            "imported_at": get_ist_now().isoformat(),
+            "imported_by": current_user["id"],
+            "total_punches": len(raw_logs),
+            "logs": raw_logs
+        })
+    
+    # Process grouped punches - atomic upsert per employee+date
+    _bio_assign_cache: dict = {}
+    for (emp_id, date_str), data in grouped.items():
+        employee = data["employee"]
+        device_ip = data["ip"]
+
+        # SOURCE OF TRUTH: derive IN/OUT from ALL raw punches for
+        # (emp_id, effective_date=date_str) stored in `biometric_punch_logs`,
+        # not from this batch alone. Devices frequently deliver a day's
+        # punches across multiple 10-minute sync batches; a race in the
+        # per-batch merge could leave OUT missing. Pulling from the source
+        # of truth on every write guarantees the row is always consistent.
+        raw_pipeline = [
+            {"$unwind": "$logs"},
+            {"$match": {
+                "logs.employee_id": emp_id,
+                "logs.date": date_str,
+                "logs.status": "mapped",
+            }},
+            {"$group": {"_id": None, "punches": {"$push": "$logs.recordTime"}}},
+        ]
+        all_punches_dt = []
+        async for doc in db.biometric_punch_logs.aggregate(raw_pipeline, allowDiskUse=True):
+            for rt in doc.get("punches", []):
+                if not isinstance(rt, str):
+                    continue
+                try:
+                    dt_utc = datetime.fromisoformat(rt.replace("Z", "+00:00"))
+                    all_punches_dt.append(dt_utc.astimezone(IST))
+                except (ValueError, TypeError):
+                    continue
+
+        # Fallback: if no raw punches surfaced (shouldn't happen since we
+        # just inserted this batch), use the in-memory batch punches.
+        if not all_punches_dt:
+            all_punches_dt = data["punches"]
+
+        # Dedupe by minute — devices commonly re-sync the same punch many
+        # times. Without dedupe a single physical punch can be incorrectly
+        # counted as both IN and OUT.
+        unique = sorted({p.replace(second=0, microsecond=0) for p in all_punches_dt})
+        if not unique:
+            continue
+        if emp_id not in _bio_assign_cache:
+            _bio_assign_cache[emp_id] = await _load_employee_shift_assignments(emp_id)
+        shift_timings = await get_effective_shift_timings(employee, date_str, _bio_assign_cache[emp_id])
+        if len(unique) == 1 and _single_punch_is_checkout(unique[0], date_str, shift_timings):
+            # Single punch in the ENDING portion of the resolved shift window:
+            # it is the Check-OUT — never fabricate a Check-In from it.
+            in_time = None
+            out_time = unique[0]
+        else:
+            in_time = unique[0]
+            out_time = unique[-1] if len(unique) > 1 else None
+
+        in_24h = in_time.strftime("%H:%M") if in_time else None
+        in_12h = in_time.strftime("%I:%M %p") if in_time else None
+        out_24h = out_time.strftime("%H:%M") if out_time else None
+        out_12h = out_time.strftime("%I:%M %p") if out_time else None
+
+        # Respect manual overrides / approved corrections — never blow them
+        # away with an automatic biometric write.
+        existing = await db.attendance.find_one(
+            {"employee_id": emp_id, "date": date_str},
+            {"_id": 0, "check_in_24h": 1, "check_out_24h": 1,
+             "is_manual_override": 1, "is_approved_correction": 1,
+             "missed_punch_corrected": 1}
+        )
+        if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")
+                         or existing.get("missed_punch_corrected")):
+            # Skip biometric overwrite; the manual record wins.
+            processed += 1
+            continue
+
+        # Calculate total hours and status
+        total_hours_decimal = 0.0
+        total_hours_str = None
+        status = AttendanceStatus.LOGIN
+        is_lop = False
+        lop_reason = None
+        dynamic_expected_logout = None
+
+        # Sunday handling
+        if is_sunday_ddmmyyyy(date_str):
+            if in_24h and out_24h:
+                in_m = parse_time_24h_to_minutes(in_24h)
+                out_m = parse_time_24h_to_minutes(out_24h)
+                total_hours_decimal = round((out_m - in_m) / 60, 2) if out_m > in_m else round((24 * 60 - in_m + out_m) / 60, 2)
+                total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            status = AttendanceStatus.WORKED_ON_SUNDAY if in_24h else AttendanceStatus.SUNDAY
+            is_lop = False
+            lop_reason = None
+        elif in_24h and out_24h:
+            in_mins = parse_time_24h_to_minutes(in_24h)
+            out_mins = parse_time_24h_to_minutes(out_24h)
+            if out_mins > in_mins:
+                total_hours_decimal = round((out_mins - in_mins) / 60, 2)
+            else:
+                # Cross-midnight: OUT is on next calendar day
+                total_hours_decimal = round((24 * 60 - in_mins + out_mins) / 60, 2)
+            total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            status = AttendanceStatus.PRESENT
+
+            if shift_timings:
+                status_result = calculate_attendance_status(in_24h, out_24h, shift_timings, attendance_date=date_str)
+                status = status_result.get("status", status)
+                is_lop = status_result.get("is_lop", False)
+                lop_reason = status_result.get("lop_reason")
+                dynamic_expected_logout = status_result.get("expected_logout")
+                if status_result.get("total_hours_decimal"):
+                    total_hours_decimal = status_result["total_hours_decimal"]
+                    total_hours_str = calculate_total_hours_str(total_hours_decimal)
+        elif in_24h and not out_24h:
+            # Single punch - no out time. Compute dynamic expected_logout = IN + required_hours
+            if shift_timings:
+                req_h = shift_timings.get("total_hours", 8)
+                dynamic_expected_logout = add_hours_to_24h(in_24h, req_h)
+                expected_login = shift_timings.get("login_time")
+                if expected_login:
+                    expected_mins = parse_time_24h_to_minutes(expected_login)
+                    actual_mins = parse_time_24h_to_minutes(in_24h)
+                    if actual_mins > expected_mins:
+                        late_mins = actual_mins - expected_mins
+                        is_lop = True
+                        lop_reason = f"Late login by {late_mins} minute(s). Expected: {expected_login}, Actual: {in_24h}"
+                        status = AttendanceStatus.LOSS_OF_PAY
+        elif out_24h and not in_24h:
+            # OUT-only single-punch day — no valid login exists. Never Late
+            # Login, never hours, never Completed from this punch. Uses the
+            # EXISTING "Not Logged" status (no new status introduced).
+            status = AttendanceStatus.NOT_LOGGED
+            is_lop = False
+            lop_reason = None
+        
+        # Atomic upsert: update_one with upsert=True prevents duplicates
+        update_doc = {
+            "$set": {
+                "check_in": in_12h,
+                "check_in_24h": in_24h,
+                "check_out": out_12h,
+                "check_out_24h": out_24h,
+                "total_hours": total_hours_str,
+                "total_hours_decimal": total_hours_decimal,
+                "status": status,
+                "is_lop": is_lop,
+                "lop_reason": lop_reason,
+                "source": "biometric",
+                "device_ip": device_ip,
+                # Dynamic expected_logout (punch_in + required_hours) overrides
+                # any static shift logout previously stored. Falls back to the
+                # shift's logout_time when no IN punch yet.
+                "expected_logout": dynamic_expected_logout if dynamic_expected_logout else (shift_timings.get("logout_time") if shift_timings else None),
+            },
+            "$setOnInsert": {
+                "id": str(uuid.uuid4()),
+                "employee_id": emp_id,
+                "emp_name": employee["full_name"],
+                "team": employee.get("team", ""),
+                "department": employee.get("department", ""),
+                "date": date_str,
+                "shift_type": employee.get("shift_type", "General"),
+                "expected_login": shift_timings.get("login_time") if shift_timings else None,
+                "created_at": get_ist_now().isoformat()
+            }
+        }
+        
+        await db.attendance.update_one(
+            {"employee_id": emp_id, "date": date_str},
+            update_doc,
+            upsert=True
+        )
+        processed += 1
+    
+    await log_audit(
+        current_user["id"], "biometric_import", "attendance", None,
+        f"Biometric import: {processed} processed, {skipped} skipped, {unmapped} unmapped out of {total_records}"
+    )
+    
+    return {
+        "totalRecords": total_records,
+        "processed": processed,
+        "skipped": skipped,
+        "unmapped": unmapped,
+        "unmappedDeviceUserIds": list(unmapped_ids) if unmapped_ids else []
+    }
+
+@api_router.post("/attendance/recompute-from-punches")
+async def recompute_attendance_from_punches(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    employee_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Re-derive check_in (MIN) and check_out (MAX) for each (employee, date) by
+    scanning raw biometric_punch_logs. Useful when historical attendance rows
+    show only an IN time even though multiple punches exist on the device.
+    Single-punch days keep check_out = NULL (do NOT duplicate IN as OUT).
+    Does NOT change schema, response shape, or status calculation rules."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    # Aggregate raw logs: gather ALL mapped punches per employee. We regroup
+    # by the *recomputed* effective date (from `recordTime`) so historical
+    # overnight punches that were stored under the calendar date get moved to
+    # the correct working day. This makes the recompute idempotent with the
+    # current `get_effective_attendance_date` cut-off (env
+    # CROSS_MIDNIGHT_THRESHOLD_MINUTES, default 05:00 IST).
+    match_stage = {"logs.status": "mapped"}
+    if employee_id:
+        match_stage["logs.employee_id"] = employee_id
+
+    pipeline = [
+        {"$unwind": "$logs"},
+        {"$match": match_stage},
+        {"$group": {
+            "_id": "$logs.employee_id",
+            "punches": {"$push": "$logs.recordTime"},
+        }},
+    ]
+    cursor = db.biometric_punch_logs.aggregate(pipeline, allowDiskUse=True)
+
+    def _parse(rt):
+        if not isinstance(rt, str):
+            return None
+        try:
+            dt = datetime.fromisoformat(rt.replace("Z", "+00:00"))
+            return dt.astimezone(IST)
+        except Exception:
+            return None
+
+    def parse_ddmmyyyy(ds):
+        try:
+            parts = ds.split("-")
+            return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+        except Exception:
+            return 0
+
+    f_val = parse_ddmmyyyy(from_date) if from_date else 0
+    t_val = parse_ddmmyyyy(to_date) if to_date else 99999999
+
+    # Pre-fetch employee data for shift recalculation
+    emp_cache = {}
+    assign_cache: dict = {}
+
+    updated = 0
+    skipped_locked = 0
+    no_change = 0
+    examined = 0
+    cleared_orphans = 0
+
+    # Flatten from cursor into an in-memory mapping so we can iterate a second
+    # time to detect stale attendance rows that no longer have any raw punches
+    # matching them (i.e. their punches moved to the previous day).
+    per_emp_groups: dict = {}  # emp_id -> { date_str: [datetime, ...] }
+    async for grp in cursor:
+        emp_id = grp["_id"]
+        # Regroup by RECOMPUTED effective date so overnight punches move to
+        # the previous working day per the current cut-off rule.
+        by_date: dict = {}
+        for rt in grp.get("punches", []):
+            p = _parse(rt)
+            if not p:
+                continue
+            d = get_effective_attendance_date(p)
+            by_date.setdefault(d, []).append(p)
+        per_emp_groups[emp_id] = by_date
+
+    for emp_id, by_date in per_emp_groups.items():
+        for date_str, punches_dt in by_date.items():
+            if from_date or to_date:
+                v = parse_ddmmyyyy(date_str)
+                if not (f_val <= v <= t_val):
+                    continue
+            examined += 1
+
+            # Dedupe by minute (devices commonly re-sync the same punch many times).
+            unique = sorted({p.replace(second=0, microsecond=0) for p in punches_dt})
+            if not unique:
+                continue
+            if emp_id not in emp_cache:
+                emp_cache[emp_id] = await db.employees.find_one({"id": emp_id}, {"_id": 0}) or {}
+            employee = emp_cache[emp_id]
+            if emp_id not in assign_cache:
+                assign_cache[emp_id] = await _load_employee_shift_assignments(emp_id)
+            shift_timings = await get_effective_shift_timings(employee, date_str, assign_cache[emp_id]) if employee else None
+            if len(unique) == 1 and _single_punch_is_checkout(unique[0], date_str, shift_timings):
+                # Shift-aware single-punch rule: an ending-portion punch is
+                # the Check-OUT — never fabricate a Check-In from it.
+                in_dt = None
+                out_dt = unique[0]
+            else:
+                in_dt = unique[0]
+                out_dt = unique[-1] if len(unique) > 1 else None
+
+            in_24h = in_dt.strftime("%H:%M") if in_dt else None
+            in_12h = in_dt.strftime("%I:%M %p") if in_dt else None
+            out_24h = out_dt.strftime("%H:%M") if out_dt else None
+            out_12h = out_dt.strftime("%I:%M %p") if out_dt else None
+
+            existing = await db.attendance.find_one(
+                {"employee_id": emp_id, "date": date_str},
+                {"_id": 0}
+            )
+
+            # Respect manual overrides / approved corrections
+            if existing and (existing.get("is_manual_override") or existing.get("is_approved_correction")
+                             or existing.get("missed_punch_corrected")):
+                skipped_locked += 1
+                continue
+
+            # No-op short-circuit
+            if existing and existing.get("check_in_24h") == in_24h and existing.get("check_out_24h") == out_24h:
+                no_change += 1
+                continue
+
+            # Compute total hours and status
+            total_hours_decimal = 0.0
+            total_hours_str = None
+            status = AttendanceStatus.LOGIN
+            is_lop = False
+            lop_reason = None
+            dynamic_expected_logout = None
+
+            # Sunday handling: never LOP, mark "Sunday" / "Worked on Sunday"
+            if is_sunday_ddmmyyyy(date_str):
+                if in_24h and out_24h:
+                    im = parse_time_24h_to_minutes(in_24h)
+                    om = parse_time_24h_to_minutes(out_24h)
+                    total_hours_decimal = round((om - im) / 60, 2) if om > im else round((24 * 60 - im + om) / 60, 2)
+                    total_hours_str = calculate_total_hours_str(total_hours_decimal)
+                status = AttendanceStatus.WORKED_ON_SUNDAY if in_24h else AttendanceStatus.SUNDAY
+                is_lop = False
+                lop_reason = None
+            elif in_24h and out_24h:
+                in_mins = parse_time_24h_to_minutes(in_24h)
+                out_mins = parse_time_24h_to_minutes(out_24h)
+                if out_mins > in_mins:
+                    total_hours_decimal = round((out_mins - in_mins) / 60, 2)
+                else:
+                    total_hours_decimal = round((24 * 60 - in_mins + out_mins) / 60, 2)
+                total_hours_str = calculate_total_hours_str(total_hours_decimal)
+                status = AttendanceStatus.PRESENT
+                if shift_timings:
+                    sr = calculate_attendance_status(in_24h, out_24h, shift_timings, attendance_date=date_str)
+                    status = sr.get("status", status)
+                    is_lop = sr.get("is_lop", False)
+                    lop_reason = sr.get("lop_reason")
+                    dynamic_expected_logout = sr.get("expected_logout")
+                    if sr.get("total_hours_decimal"):
+                        total_hours_decimal = sr["total_hours_decimal"]
+                        total_hours_str = calculate_total_hours_str(total_hours_decimal)
+            elif in_24h and not out_24h:
+                if shift_timings:
+                    req_h = shift_timings.get("total_hours", 8)
+                    dynamic_expected_logout = add_hours_to_24h(in_24h, req_h)
+                    expected_login = shift_timings.get("login_time")
+                    if expected_login:
+                        em = parse_time_24h_to_minutes(expected_login)
+                        am = parse_time_24h_to_minutes(in_24h)
+                        if am > em:
+                            is_lop = True
+                            lop_reason = f"Late login by {am - em} minute(s). Expected: {expected_login}, Actual: {in_24h}"
+                            status = AttendanceStatus.LOSS_OF_PAY
+            elif out_24h and not in_24h:
+                # OUT-only single-punch day — no valid login (existing status).
+                status = AttendanceStatus.NOT_LOGGED
+                is_lop = False
+                lop_reason = None
+
+            update_doc = {
+                "$set": {
+                    "check_in": in_12h,
+                    "check_in_24h": in_24h,
+                    "check_out": out_12h,
+                    "check_out_24h": out_24h,
+                    "total_hours": total_hours_str,
+                    "total_hours_decimal": total_hours_decimal,
+                    "status": status,
+                    "is_lop": is_lop,
+                    "lop_reason": lop_reason,
+                    "source": "biometric",
+                    "expected_logout": dynamic_expected_logout if dynamic_expected_logout else (shift_timings.get("logout_time") if shift_timings else None),
+                },
+                "$setOnInsert": {
+                    "id": str(uuid.uuid4()),
+                    "employee_id": emp_id,
+                    "emp_name": (employee or {}).get("full_name", ""),
+                    "team": (employee or {}).get("team", ""),
+                    "department": (employee or {}).get("department", ""),
+                    "date": date_str,
+                    "shift_type": (employee or {}).get("shift_type", "General"),
+                    "expected_login": shift_timings.get("login_time") if shift_timings else None,
+                    "created_at": get_ist_now().isoformat(),
+                }
+            }
+            await db.attendance.update_one(
+                {"employee_id": emp_id, "date": date_str},
+                update_doc,
+                upsert=True,
+            )
+            updated += 1
+
+    # After regrouping, clear stale attendance rows whose punches all moved to
+    # the previous working day (i.e. the row no longer corresponds to any raw
+    # biometric punch). This prevents orphan/stale IN/OUT values.
+    # Only touch rows that were biometric-sourced and NOT manually locked.
+    for emp_id, by_date in per_emp_groups.items():
+        # Set of dates that DO have punches after regrouping
+        active_dates = set(by_date.keys())
+        # Scan existing attendance rows for this employee in the requested window
+        query = {"employee_id": emp_id, "source": "biometric",
+                 "is_manual_override": {"$ne": True},
+                 "is_approved_correction": {"$ne": True}}
+        async for row in db.attendance.find(query, {"_id": 0, "date": 1, "check_in_24h": 1, "check_out_24h": 1}):
+            d = row.get("date")
+            if not d:
+                continue
+            if from_date or to_date:
+                v = parse_ddmmyyyy(d)
+                if not (f_val <= v <= t_val):
+                    continue
+            if d in active_dates:
+                continue  # still has punches — handled by the loop above
+            # Orphan: was created from a mis-assigned overnight punch that has
+            # since moved to the previous day. Clear it back to a login-less
+            # row so the corrected day owns the data.
+            if row.get("check_in_24h") or row.get("check_out_24h"):
+                await db.attendance.update_one(
+                    {"employee_id": emp_id, "date": d},
+                    {"$set": {
+                        "check_in": None, "check_in_24h": None,
+                        "check_out": None, "check_out_24h": None,
+                        "total_hours": None, "total_hours_decimal": 0.0,
+                        "status": AttendanceStatus.ABSENT,
+                        "is_lop": True,
+                        "lop_reason": "Reconciled: overnight punch moved to previous working day.",
+                    }},
+                )
+                cleared_orphans += 1
+
+    await log_audit(
+        current_user["id"], "recompute_attendance_in_out", "attendance", None,
+        f"Recompute IN/OUT from punches: examined={examined}, updated={updated}, unchanged={no_change}, locked={skipped_locked}, orphans_cleared={cleared_orphans}"
+    )
+
+    return {
+        "examined": examined,
+        "updated": updated,
+        "unchanged": no_change,
+        "skipped_locked": skipped_locked,
+        "orphans_cleared": cleared_orphans,
+    }
+
+def classify_attendance_bucket(rec: dict) -> str:
+    """Classify attendance record into a STRICTLY mutually exclusive bucket
+    that drives the Dashboard "Today's Attendance Status" tiles.
+
+    Buckets (strict, mutually exclusive):
+      - 'logged_in'  → has IN, no OUT (still working)
+      - 'completed'  → has IN + OUT, full hours (no LOP, no Early Out flag)
+                       — also includes LATE-LOGIN-but-completed days; those are
+                         picked up SEPARATELY by `is_late_login_record`.
+      - 'early_out'  → has IN + OUT, hours short due to EARLY EXIT (not late
+                       arrival). A LOP record whose root cause is "Late Login"
+                       is NEVER classified as early_out — even though it shares
+                       the LOSS_OF_PAY status — because the employee actually
+                       worked their hours, they just came late.
+      - 'no_login'   → no IN at all (synthetic Absent / Sunday / no record)
+
+    'Late Login' is a SECONDARY flag (see is_late_login_record) and overlays
+    on top of these buckets — it is NOT a primary category here.
+    """
+    has_in = bool(rec.get("check_in") or rec.get("check_in_24h"))
+    has_out = bool(rec.get("check_out") or rec.get("check_out_24h"))
+    status = (rec.get("status") or "").strip()
+    is_lop = bool(rec.get("is_lop"))
+    lop_reason = (rec.get("lop_reason") or "").lower()
+
+    if not has_in:
+        return "no_login"
+    if not has_out:
+        return "logged_in"
+    # Has both IN + OUT. The engine writes status=LOSS_OF_PAY for BOTH late
+    # arrivals AND early exits — distinguish them by lop_reason so a late
+    # employee who completed the full day is NOT mis-tiled as early_out.
+    is_late_lop = ("late login" in lop_reason) or status == AttendanceStatus.LATE_LOGIN
+    if status in (AttendanceStatus.EARLY_OUT, AttendanceStatus.LOSS_OF_PAY) or is_lop:
+        if is_late_lop:
+            # Late arrival but full hours worked → counts as completed for
+            # the Early Out tile. Late Login tile still picks it up via
+            # is_late_login_record (which reads the same lop_reason).
+            return "completed"
+        return "early_out"
+    return "completed"
+
+
+def is_late_login_record(rec: dict) -> bool:
+    """Secondary flag — true if the record represents a late-login day,
+    regardless of whether the employee subsequently completed the day."""
+    if not rec:
+        return False
+    if (rec.get("status") or "").strip() == AttendanceStatus.LATE_LOGIN:
+        return True
+    if "late login" in (rec.get("lop_reason") or "").lower():
+        return True
+    return False
+
+
+def is_early_out_record(rec: dict) -> bool:
+    """Secondary overlay flag — true when the employee logged OUT without
+    completing required working hours. A purely-late LOP (full hours worked)
+    is NOT an early out, but late + short-hours IS. Overlays on top of the
+    Completed bucket so the same employee shows under BOTH tiles."""
+    if not rec:
+        return False
+    has_in = bool(rec.get("check_in") or rec.get("check_in_24h"))
+    has_out = bool(rec.get("check_out") or rec.get("check_out_24h"))
+    if not (has_in and has_out):
+        return False
+    status = (rec.get("status") or "").strip()
+    flagged = status in (AttendanceStatus.EARLY_OUT, AttendanceStatus.LOSS_OF_PAY) or bool(rec.get("is_lop"))
+    if not flagged:
+        return False
+    reason = (rec.get("lop_reason") or "").lower()
+    if is_late_login_record(rec) and not ("short" in reason or "early out" in reason):
+        return False
+    return True
+
+
+@api_router.get("/attendance/stats")
+async def get_attendance_stats(
+    date: Optional[str] = None, 
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    require_any_admin(current_user)
+    # Use single date or date range
+    if not date and not from_date:
+        date = get_ist_today()
+    
+    # Helper to parse DD-MM-YYYY to sortable integer
+    def parse_ddmmyyyy(ds):
+        try:
+            parts = ds.split("-")
+            return int(parts[2]) * 10000 + int(parts[1]) * 100 + int(parts[0])
+        except Exception:
+            return 0
+    
+    # Build an indexed query for date range by enumerating valid DD-MM-YYYY
+    # strings between from_date and to_date. This avoids a full-collection
+    # scan (previously ~2s on 5k+ records) by leveraging the `attendance_date`
+    # index with $in.
+    def _enumerate_dates(fd: str, td: str) -> list:
+        try:
+            start = datetime.strptime(fd, "%d-%m-%Y").date()
+            end = datetime.strptime(td, "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            return []
+        if start > end:
+            return []
+        out = []
+        cur = start
+        # Cap at 366 days to prevent abuse
+        for _ in range(367):
+            if cur > end:
+                break
+            out.append(cur.strftime("%d-%m-%Y"))
+            cur += timedelta(days=1)
+        return out
+
+    def _dmy_to_ymd(ds: Optional[str]) -> Optional[str]:
+        if not ds:
+            return None
+        try:
+            return datetime.strptime(ds, "%d-%m-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return ds
+
+    q_from = from_date or date
+    q_to = to_date or date
+    ymd_from = _dmy_to_ymd(q_from)
+    ymd_to = _dmy_to_ymd(q_to)
+
+    # Build attendance query
+    if from_date and to_date:
+        date_list = _enumerate_dates(from_date, to_date)
+        att_query = {"date": {"$in": date_list}} if date_list else None
+    elif date:
+        att_query = {"date": date}
+    else:
+        att_query = None
+
+    # Run all top-level queries CONCURRENTLY (was previously sequential ~1-2s
+    # round-trips on Atlas).
+    # Date-aware employment cohort: include anyone employed during the query
+    # window (DOJ ≤ window end AND exit ≥ window start), regardless of their
+    # CURRENT Active/Inactive status — historical counts stay immutable.
+    emps_task = db.employees.find(
+        {
+            "is_deleted": {"$ne": True},
+            "attendance_tracking_enabled": {"$ne": False},
+        },
+        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1,
+         "shift_type": 1, "employee_status": 1, "date_of_joining": 1,
+         "inactive_date": 1, "last_day_payable": 1,
+         "attendance_tracking_enabled": 1},
+    ).to_list(20000)
+    if att_query is not None:
+        filtered_task = db.attendance.find(att_query, {"_id": 0}).to_list(50000)
+    else:
+        async def _empty_list():
+            return []
+        filtered_task = _empty_list()
+    if ymd_from and ymd_to:
+        leaves_task = db.leaves.find(
+            {
+                "status": {"$in": ["approved", "Approved", "APPROVED"]},
+                "start_date": {"$lte": ymd_to},
+                "end_date": {"$gte": ymd_from},
+            },
+            {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1},
+        ).to_list(5000)
+    else:
+        async def _empty_list2():
+            return []
+        leaves_task = _empty_list2()
+
+    all_emps, filtered, leave_docs = await asyncio.gather(
+        emps_task, filtered_task, leaves_task
+    )
+
+    # Cohort of employees employed during [q_from, q_to]
+    win_from = _normalize_date_to_int(q_from) or 0
+    win_to = _normalize_date_to_int(q_to) or 99999999
+
+    # Build eligibility-aware employee map (needed by the shared normalization
+    # pipeline). Same source of truth as /api/attendance and /api/reports/*.
+    emp_map: dict = {}
+    for e in all_emps:
+        doj_int, last_int = _employment_window(e)
+        e["_doj_int"] = doj_int
+        e["_last_int"] = last_int
+        emp_map[e["id"]] = e
+
+    def _in_window(emp):
+        doj_int = emp.get("_doj_int")
+        last_int = emp.get("_last_int")
+        if doj_int is not None and doj_int > win_to:
+            return False
+        if last_int is not None and last_int < win_from:
+            return False
+        return True
+
+    cohort_ids = {e["id"] for e in all_emps if _in_window(e)}
+
+    # Approved missed-punch overlay + eligibility filter + dept-hours
+    # enforcement — single pipeline shared with /api/attendance & Reports.
+    mp_map = await _load_approved_missed_punches(win_from, win_to)
+    filtered = await _apply_attendance_normalizations(filtered, emp_map, mp_map, enforce_dept_hours=True)
+
+    # Add synthetic rows for approved missed-punch requests on dates that
+    # have NO stored attendance row (so counts reflect the merged reality).
+    existing_keys = {(r.get("employee_id"), r.get("date")) for r in filtered}
+    for (emp_id, date_ddmmyyyy), mp in mp_map.items():
+        if (emp_id, date_ddmmyyyy) in existing_keys:
+            continue
+        emp = emp_map.get(emp_id)
+        if not emp:
+            continue
+        d_int = _normalize_date_to_int(date_ddmmyyyy)
+        if d_int is None:
+            continue
+        if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+            continue
+        stub = _build_missed_punch_stub(mp, emp)
+        _enforce_completed_hours_threshold(stub, emp_map)
+        filtered.append(stub)
+
+    total_employees = len(cohort_ids)
+
+    # Strict mutually-exclusive bucketing — single source of truth.
+    # The frontend tile clicks fetch the same records and apply the same
+    # classification so counts and detail lists ALWAYS line up.
+    logged_in = 0
+    completed = 0
+    early_out = 0
+    late_login = 0
+    lop_count = 0
+    employees_with_in = set()
+
+    for a in filtered:
+        bucket = classify_attendance_bucket(a)
+        if bucket == "logged_in":
+            logged_in += 1
+            employees_with_in.add(a.get("employee_id"))
+        elif bucket in ("completed", "early_out"):
+            # Completed = EVERYONE who logged out (full hours or not).
+            # Early Out overlays on top via is_early_out_record — the same
+            # employee appears under BOTH tiles (user rule, 2026-07-23).
+            completed += 1
+            employees_with_in.add(a.get("employee_id"))
+        if is_early_out_record(a):
+            early_out += 1
+        if is_late_login_record(a):
+            late_login += 1
+        if a.get("is_lop"):
+            lop_count += 1
+
+    # "Leaves / No Login" count — MUST equal the size of /dashboard/leave-list
+    # so the tile number and the table row count always line up.
+    active_ids = cohort_ids
+    # Restrict "with IN" to the employed-in-window cohort (employees_with_in can
+    # include employees whose attendance records fall outside their employment).
+    active_with_in = employees_with_in & active_ids
+
+    # Only include leave for employees who were employed on some overlapping
+    # day within the window (per-date eligibility already trims non-employed
+    # ranges; here we exclude leaves entirely outside their employment).
+    # RULE (user, 2026-07-23): an employee who actually CHECKED IN is counted
+    # under Completed/Logged-In — NEVER under Leaves/No Login, even if an
+    # approved leave overlaps the window.
+    on_leave_ids: set = set()
+    for lv in leave_docs:
+        emp_id = lv.get("employee_id")
+        if not emp_id or emp_id not in active_ids:
+            continue
+        if emp_id in active_with_in:
+            continue
+        emp = emp_map.get(emp_id)
+        s_int = _normalize_date_to_int(lv.get("start_date"))
+        e_int = _normalize_date_to_int(lv.get("end_date") or lv.get("start_date"))
+        if s_int is None:
+            continue
+        e_int = e_int if e_int is not None else s_int
+        # Any overlapping day within the window that the employee was employed on.
+        overlap_lo = max(s_int, win_from)
+        overlap_hi = min(e_int, win_to)
+        if overlap_lo > overlap_hi:
+            continue
+        # Check at least one day where the employee was employed.
+        if emp and (_employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), overlap_lo)
+                    or _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), overlap_hi)):
+            on_leave_ids.add(emp_id)
+
+    # Split buckets per spec: Leave (approved leave), No Login (no valid punch
+    # AND no approved leave). No Login must NEVER include ineligible employees.
+    no_in_ids = active_ids - active_with_in - on_leave_ids
+    leave_count = len(on_leave_ids)
+    no_login_count = len(no_in_ids)
+    # Legacy combined key kept for backward-compat with existing frontend.
+    not_logged = leave_count + no_login_count
+
+    return {
+        "total_employees": total_employees,
+        "logged_in": logged_in,
+        "not_logged": not_logged,
+        "leave": leave_count,
+        "no_login": no_login_count,
+        "early_out": early_out,
+        "late_login": late_login,
+        "logout": completed,  # frontend "Completed" tile reads `logout`
+        "lop_count": lop_count,
+        "present": completed,
+    }
+
+# ============== LEAVE ROUTES ==============
+
+@api_router.get("/leaves/report")
+async def get_leaves_report(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    search: Optional[str] = None,
+    team: Optional[str] = None,
+    leave_type: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 30,
+    current_user: dict = Depends(get_current_user),
+):
+    """Admin-only Leave Management Report.
+
+    Returns a paginated list of leave records matching the filter criteria.
+    Read-only endpoint — no write operations, no side effects, no changes to
+    the existing `/api/leaves` behaviour.
+    """
+    # Admin-only guard. Employees and any non-admin roles are denied.
+    if current_user.get("role") not in ("hr", "system_admin", "office_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    # Validate page_size against the allowed set to keep DB load predictable.
+    allowed_sizes = {30, 60, 100, 250, 500}
+    if page_size not in allowed_sizes:
+        page_size = 30
+    if page < 1:
+        page = 1
+
+    q: dict = {}
+    if team and team != "All":
+        q["team"] = team
+    if leave_type and leave_type != "All":
+        q["leave_type"] = leave_type
+    if status and status != "All":
+        q["status"] = status
+    # Overlapping range filter: a leave row overlaps [from_date, to_date] when
+    # its start_date <= to_date AND end_date >= from_date. This correctly
+    # captures multi-day leaves that partially fall inside the window.
+    if from_date and to_date:
+        q["start_date"] = {"$lte": to_date}
+        q["end_date"] = {"$gte": from_date}
+    elif from_date:
+        q["end_date"] = {"$gte": from_date}
+    elif to_date:
+        q["start_date"] = {"$lte": to_date}
+
+    if search:
+        s = search.strip()
+        if s:
+            # Match against emp_name OR the linked employee's email. Since
+            # emp_name is already denormalised on the leave document, this
+            # covers the common case cheaply; email is an occasional lookup.
+            emails_cursor = db.employees.find(
+                {"email": {"$regex": s, "$options": "i"}, "is_deleted": {"$ne": True}},
+                {"_id": 0, "id": 1},
+            )
+            emp_ids = [e["id"] async for e in emails_cursor]
+            or_clauses = [{"emp_name": {"$regex": s, "$options": "i"}}]
+            if emp_ids:
+                or_clauses.append({"employee_id": {"$in": emp_ids}})
+            q["$or"] = or_clauses
+
+    total = await db.leaves.count_documents(q)
+
+    skip = (page - 1) * page_size
+    cursor = (
+        db.leaves.find(q, {"_id": 0})
+        .sort([("start_date", -1), ("created_at", -1)])
+        .skip(skip)
+        .limit(page_size)
+    )
+    rows = [serialize_doc(r) async for r in cursor]
+
+    # Enrich with employee email for the "Name / Email" column display.
+    emp_ids_needed = list({r.get("employee_id") for r in rows if r.get("employee_id")})
+    email_map: dict = {}
+    if emp_ids_needed:
+        async for e in db.employees.find(
+            {"id": {"$in": emp_ids_needed}},
+            {"_id": 0, "id": 1, "email": 1},
+        ):
+            email_map[e["id"]] = e.get("email")
+    for r in rows:
+        r["email"] = email_map.get(r.get("employee_id"))
+
+    total_pages = max(1, math.ceil(total / page_size)) if total else 1
+    return {
+        "items": rows,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
+
+
+@api_router.get("/leaves")
+async def get_leaves(
+    employee_name: Optional[str] = None,
+    team: Optional[str] = None,
+    department: Optional[str] = None,
+    leave_type: Optional[str] = None,
+    status: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    # SECURITY (object-level authorisation): employees see ONLY their own leave
+    # records — including reasons/remarks. Scope is derived from the verified
+    # JWT identity; client-supplied filters cannot widen it.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        query["employee_id"] = current_user.get("employee_id") or "__none__"
+        employee_name = None
+        team = department = None
+    if employee_name:
+        query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+    if team and team != "All":
+        query["team"] = team
+    if department and department != "All":
+        query["department"] = department
+    if leave_type and leave_type != "All":
+        query["leave_type"] = leave_type
+    if status and status != "All":
+        query["status"] = status
+    if from_date:
+        query["start_date"] = {"$gte": from_date}
+    if to_date:
+        if "start_date" in query:
+            query["start_date"]["$lte"] = to_date
+        else:
+            query["start_date"] = {"$lte": to_date}
+    
+    leaves = await db.leaves.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+
+    # Enrich each leave row with `approved_by_name` so the UI shows a human
+    # name in the Approved-By column instead of a UUID. Single bulk fetch
+    # keeps the cost O(1) per request.
+    approver_ids = {l.get("approved_by") for l in leaves if l.get("approved_by")}
+    name_map = {}
+    if approver_ids:
+        async for u in db.users.find(
+            {"id": {"$in": list(approver_ids)}},
+            {"_id": 0, "id": 1, "full_name": 1, "username": 1, "name": 1, "email": 1},
+        ):
+            name_map[u["id"]] = (
+                u.get("full_name") or u.get("name") or u.get("username") or u.get("email")
+            )
+    for l in leaves:
+        aid = l.get("approved_by")
+        l["approved_by_name"] = name_map.get(aid) if aid else None
+
+    return [serialize_doc(l) for l in leaves]
+
+@api_router.post("/leaves")
+async def create_leave(data: LeaveRequestCreate, current_user: dict = Depends(get_current_user)):
+    employee = await db.employees.find_one({"id": data.employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    # Business rule (FINAL): Paid Leave is available ONLY to non-Intern employees
+    # who have a valid Confirmation Date. Enforced at the API layer (computed from
+    # the LIVE employee record) so no UI bypass, direct request, or stale cache can
+    # create a Paid Leave for an ineligible employee. Eligibility flips
+    # automatically when employment type / confirmation date changes.
+    if _is_paid_leave_type(data.leave_type):
+        eligible, reason = _paid_leave_eligibility(employee)
+        if not eligible:
+            raise HTTPException(status_code=403, detail=reason)
+
+    # Paid Leave: balance must cover the requested range. By definition, Paid
+    # Leave is non-LOP — force is_lop=False below.
+    await _validate_paid_leave_balance(
+        data.employee_id, data.leave_type, data.start_date, data.end_date, data.leave_split,
+    )
+
+    start = datetime.strptime(data.start_date, "%Y-%m-%d")
+    end = datetime.strptime(data.end_date, "%Y-%m-%d")
+
+    # Sick Leave calendar window — same rule as /employee/leaves/apply so
+    # admin & employee portals stay in lock-step. Past dates and today are
+    # always fine; the future is capped at tomorrow (calendar comparison
+    # ignoring time; IST is the SSOT via get_ist_now()).
+    if data.leave_type == "Sick":
+        today = get_ist_now().date()
+        if start.date() > (today + timedelta(days=1)):
+            raise HTTPException(
+                status_code=400,
+                detail="Sick Leave can only be applied for past dates, today, or the immediate next calendar day.",
+            )
+
+    # JOB 7: Single leave per day check
+    current_date = start
+    while current_date <= end:
+        date_str = current_date.strftime("%Y-%m-%d")
+        existing = await db.leaves.find_one({
+            "employee_id": data.employee_id,
+            "status": {"$ne": "rejected"},
+            "start_date": {"$lte": date_str},
+            "end_date": {"$gte": date_str}
+        })
+        if existing:
+            raise HTTPException(status_code=400, detail=f"Leave request already exists for {date_str}")
+        current_date += timedelta(days=1)
+    
+    start = datetime.strptime(data.start_date, "%Y-%m-%d")
+    end = datetime.strptime(data.end_date, "%Y-%m-%d")
+    
+    # Calculate duration based on leave_split
+    if data.leave_split in ["First Half", "Second Half"]:
+        duration_str = "0.5 day(s)"
+    else:
+        duration = (end - start).days + 1
+        duration_str = f"{duration} day(s)"
+    
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+
+    # Paid Leave is — by definition — paid (non-LOP). Override any conflicting
+    # is_lop hint coming from the client/import. The checkbox flag OR a legacy
+    # 'Paid' leave-type both count as paid.
+    paid_leave = _is_paid_leave_type(data.leave_type) or bool(data.consider_as_paid_leave)
+    final_is_lop = (
+        False if paid_leave
+        else (data.is_lop if (data.auto_approve and is_admin) else None)
+    )
+
+    will_approve = bool(data.auto_approve and is_admin)
+
+    # Reserve the stored paid-leave balance immediately when the checkbox is set.
+    paid_amount = None
+    if data.consider_as_paid_leave:
+        ok, reason = _is_confirmed_fulltime(employee)
+        if not ok:
+            raise HTTPException(status_code=403, detail=reason)
+        paid_amount = _leave_days_count(data.start_date, data.end_date, data.leave_split)
+        await _reserve_paid_leave(data.employee_id, employee["full_name"], paid_amount,
+                                  current_user, note=f"Admin applied {data.start_date} ({data.leave_split})")
+
+    leave = LeaveRequest(
+        employee_id=data.employee_id,
+        emp_name=employee["full_name"],
+        team=employee["team"],
+        department=employee["department"],
+        leave_type=data.leave_type,
+        leave_split=data.leave_split,
+        start_date=data.start_date,
+        end_date=data.end_date,
+        duration=duration_str,
+        reason=data.reason,
+        supporting_document_url=data.supporting_document_url,
+        supporting_document_name=data.supporting_document_name,
+        applied_by_admin=is_admin,
+        consider_as_paid_leave=bool(data.consider_as_paid_leave),
+        paid_leave_amount=paid_amount,
+        paid_leave_reservation_status=(("finalized" if will_approve else "reserved") if data.consider_as_paid_leave else None),
+        status="approved" if will_approve else "pending",
+        is_lop=final_is_lop,
+        approved_by=current_user["id"] if will_approve else None
+    )
+    doc = leave.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    try:
+        await db.leaves.insert_one(doc.copy())
+    except Exception:
+        if paid_amount:
+            await _release_paid_leave(data.employee_id, employee["full_name"], paid_amount,
+                                      current_user, action_type="PAID_LEAVE_REJECTED", note="apply rollback")
+        raise
+    if data.consider_as_paid_leave and will_approve:
+        await _write_paid_history(data.employee_id, employee["full_name"],
+                                  await _get_paid_balance(data.employee_id),
+                                  await _get_paid_balance(data.employee_id),
+                                  "PAID_LEAVE_APPROVED", current_user, note="admin auto-approve")
+    
+    await log_audit(current_user["id"], "create", "leave", leave.id)
+    return serialize_doc(doc)
+
+# ============== LEAVE BULK IMPORT ==============
+
+LEAVE_IMPORT_COLUMNS = [
+    "Email", "Leave_Type", "Status", "Action_Type", "Remark",
+    "Applied_on", "Approved_by", "Start_Date", "Leave_Split", "Reason"
+]
+
+# Sheet-column aliases → canonical internal field name. Matching is case-insensitive
+# and whitespace-tolerant (see _normalize_header).
+# Multiple sheet headers can map to the same canonical field — first match wins.
+LEAVE_COLUMN_ALIASES: dict[str, str] = {
+    # email
+    "Employee Email": "email",
+    "Emp Mail ID": "email",
+    "Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # leave type
+    "Leave Type": "leave_type",
+    "Type": "leave_type",
+    "Leave Category": "leave_type",
+    # dates
+    "From Date": "start_date",
+    "Start Date": "start_date",
+    "Leave From": "start_date",
+    "To Date": "end_date",
+    "End Date": "end_date",
+    "Leave To": "end_date",
+    # leave split (replaces No of Days — system auto-calculates days)
+    "Leave Split": "leave_split",
+    "Split": "leave_split",
+    "Day Type": "leave_split",
+    # reason
+    "Reason": "reason",
+    "Purpose": "reason",
+    # status
+    "Status": "status",
+    "Leave Status": "status",
+    # applied at
+    "Applied Date": "applied_at",
+    "Applied On": "applied_at",
+    "Date Applied": "applied_at",
+    # approved by
+    "Approved By": "approved_by",
+    "Approver": "approved_by",
+    "Approving Authority": "approved_by",
+    # approval date
+    "Approval Date": "approved_at",
+    "Approved On": "approved_at",
+    "Date Approved": "approved_at",
+    # comments
+    "Comments": "comments",
+    "Remark": "comments",
+    "Remarks": "comments",
+    "Notes": "comments",
+    # auto-approve & LOP
+    "Auto Approve & Set LOP Status": "auto_approve_lop",
+    "Auto Approve": "auto_approve_lop",
+    "Auto Approve LOP": "auto_approve_lop",
+    # action type → LOP selection (No_LOP / LOP). Maps to is_lop.
+    "Action Type": "action_type",
+    "Action": "action_type",
+    "LOP Action": "action_type",
+}
+
+
+def _normalize_header(s) -> str:
+    """Lowercase + collapse internal whitespace + strip for tolerant matching.
+    Underscores are treated as spaces so 'Start_Date' == 'Start Date',
+    'Leave_Type' == 'Leave Type', 'Action_Type' == 'Action Type', etc."""
+    if s is None:
+        return ""
+    return " ".join(str(s).replace("_", " ").strip().split()).lower()
+
+
+# Cell values that mean "empty" in source exports (literal text, not blanks).
+_NULL_TOKENS = {"null", "none", "n/a", "na", "-", "--", "nil"}
+
+
+def _clean_null(value):
+    """Return None for blank / literal-NULL-like cells, else the trimmed string.
+    Source exports often write the literal text 'NULL' for empty fields."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.lower() in _NULL_TOKENS:
+        return None
+    return s
+
+
+def _normalize_action_type(value):
+    """Map the Action_Type / LOP-selection column to is_lop.
+      No_LOP / No LOP / NoLOP  -> False (No LOP selected)
+      LOP / Loss of Pay        -> True  (LOP selected)
+      NULL / blank / anything else (e.g. stray 'Half Day') -> None (unset)
+    Returns False, True, or None — never raises (import must not break)."""
+    s = _clean_null(value)
+    if s is None:
+        return None
+    norm = s.replace("_", " ").replace("-", " ").lower().strip()
+    norm = " ".join(norm.split())
+    if norm in ("no lop", "nolop", "no loss of pay"):
+        return False
+    if norm in ("lop", "loss of pay", "lop loss of pay"):
+        return True
+    return None
+
+
+def _build_alias_index() -> dict[str, str]:
+    """Lowercased+trimmed alias → canonical field key."""
+    return {_normalize_header(k): v for k, v in LEAVE_COLUMN_ALIASES.items()}
+
+
+def _remap_row(row: dict, alias_index: dict[str, str]) -> dict:
+    """Return a dict keyed by canonical field names. Unknown columns are dropped.
+
+    If multiple sheet columns map to the same canonical field, the first non-empty
+    value wins.
+    """
+    out: dict = {}
+    for header, value in row.items():
+        if header is None:
+            continue
+        canon = alias_index.get(_normalize_header(header))
+        if not canon:
+            continue
+        if canon in out and out[canon] not in (None, ""):
+            continue  # first non-empty value wins
+        out[canon] = value
+    return out
+
+
+# Canonical leave types used in the system. Anything not matching falls back to "General Leave".
+# "Optional" is intentionally a constraint-free type — see create_leave for behaviour.
+CANONICAL_LEAVE_TYPES = [
+    "Sick", "Casual", "Earned", "Maternity", "Annual",
+    "Emergency", "Preplanned", "Optional", "General Leave"
+]
+
+
+def _normalize_leave_type(raw) -> str:
+    """Map an arbitrary leave-type string to a canonical value via case-insensitive
+    fuzzy match. Falls back to "General Leave" if no reasonable match is found."""
+    if raw is None:
+        return "General Leave"
+    s = str(raw).strip()
+    if not s:
+        return "General Leave"
+    # Strip common suffixes like "(SL)", "(CL)" etc.
+    cleaned = s.split("(")[0].strip()
+    cleaned_lower = cleaned.lower()
+
+    # Direct case-insensitive match (handles "sick", "Sick Leave", "sl" etc.)
+    for canon in CANONICAL_LEAVE_TYPES:
+        if cleaned_lower == canon.lower():
+            return canon
+    # "Sick Leave" → starts with "Sick"
+    for canon in CANONICAL_LEAVE_TYPES:
+        if cleaned_lower.startswith(canon.lower()) or canon.lower() in cleaned_lower:
+            return canon
+    # Fuzzy ratio
+    from difflib import SequenceMatcher
+    best = ("General Leave", 0.0)
+    for canon in CANONICAL_LEAVE_TYPES:
+        ratio = SequenceMatcher(None, cleaned_lower, canon.lower()).ratio()
+        if ratio > best[1]:
+            best = (canon, ratio)
+    return best[0] if best[1] >= 0.7 else "General Leave"
+
+
+def _parse_import_date(value) -> Optional[str]:
+    """Parse a date cell (datetime, date, or string in DD-MM-YYYY / DD/MM/YYYY /
+    YYYY-MM-DD) into canonical "YYYY-MM-DD". Returns None if invalid."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d")
+    s = str(value).strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_status(value) -> Optional[str]:
+    """Normalize Status to one of approved/pending/rejected. Returns None if blank."""
+    if value is None:
+        return None
+    s = str(value).strip().lower()
+    if not s:
+        return None
+    if s in ("approved", "approve", "accept", "accepted"):
+        return "approved"
+    if s in ("pending", "open", "new", "in progress", "in-progress"):
+        return "pending"
+    if s in ("rejected", "reject", "denied", "declined"):
+        return "rejected"
+    return None  # unrecognized
+
+
+def _normalize_leave_split(value) -> Optional[str]:
+    """Normalize Leave Split → 'Full Day' | 'First Half'. Returns None when blank,
+    or 'INVALID' sentinel when the value cannot be recognized so caller can reject."""
+    if value in (None, ""):
+        return None
+    s = str(value).strip().lower()
+    if s in ("full day", "full", "fullday", "full_day", "f"):
+        return "Full Day"
+    if s in ("half day", "half", "halfday", "half_day", "h", "first half", "1st half"):
+        return "First Half"
+    if s in ("second half", "2nd half"):
+        return "Second Half"
+    return "INVALID"
+
+
+def _normalize_bool(value) -> Optional[bool]:
+    """Convert an input cell to bool. Returns None when blank, 'INVALID' sentinel
+    string when the value can't be recognized."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value in (0, 1):
+            return bool(value)
+        return "INVALID"
+    s = str(value).strip().lower()
+    if s in ("yes", "y", "true", "t", "1"):
+        return True
+    if s in ("no", "n", "false", "f", "0"):
+        return False
+    return "INVALID"
+
+
+def _read_leave_import_rows(file_bytes: bytes, filename: str) -> tuple[List[str], List[dict]]:
+    """Read .xlsx or .csv into (headers, rows). Each row is a dict header→cell."""
+    name_lower = (filename or "").lower()
+    rows: List[dict] = []
+    if name_lower.endswith(".xlsx") or name_lower.endswith(".xlsm"):
+        wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
+        ws = wb.active
+        headers = [str(ws.cell(1, c).value).strip() if ws.cell(1, c).value is not None else "" for c in range(1, ws.max_column + 1)]
+        for r in range(2, ws.max_row + 1):
+            row = {headers[c - 1]: ws.cell(r, c).value for c in range(1, ws.max_column + 1) if headers[c - 1]}
+            if any(v not in (None, "") for v in row.values()):
+                rows.append(row)
+        return headers, rows
+    if name_lower.endswith(".csv"):
+        text = file_bytes.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        headers = [h.strip() for h in (reader.fieldnames or [])]
+        for raw in reader:
+            row = {(k or "").strip(): (v.strip() if isinstance(v, str) else v) for k, v in raw.items()}
+            if any(v not in (None, "") for v in row.values()):
+                rows.append(row)
+        return headers, rows
+    raise HTTPException(status_code=400, detail="Unsupported file format. Use .xlsx or .csv")
+
+
+@api_router.get("/leaves/import-template")
+async def download_leave_import_template(current_user: dict = Depends(get_current_user)):
+    """Download an .xlsx template for bulk leave import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Leaves Import"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(LEAVE_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["sairupesh@blubridge.com", "Optional Holiday", "Pending", "NULL", "NULL", "30-04-2026 18:59", "NULL", "2/5/2026", "Full Day", "Going to hometown to visit temple"],
+        ["sanjay.krishna@blubridge.com", "Sick", "Approved", "LOP", "Approved by HR", "29-04-2026 21:52", "Admin", "6/4/2026", "Full Day", "Sick Leave"],
+        ["gowtham@blubridge.com", "Emergency", "Approved", "No_LOP", "Approved", "29-04-2026 18:32", "Admin", "28-04-2026", "Second Half", "Emergency"],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [30, 16, 12, 12, 28, 20, 14, 14, 14, 40]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    # Instructions sheet
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Email", "Yes", "email", "Employee official email. Aliases: Emp Mail ID, Employee Email, Email ID, Mail"])
+    ws2.append(["Leave_Type", "Yes", "leave_type", "Emergency → Emergency, Sick → Sick Leave, Preplanned → Preplanned, Optional Holiday → Optional. Anything else → 'General Leave'."])
+    ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending)"])
+    ws2.append(["Action_Type", "No", "is_lop", "LOP selection in approval. No_LOP → No LOP, LOP → LOP (Loss Of Pay), NULL/blank → not set."])
+    ws2.append(["Remark", "No", "lop_remark", "Admin approval/rejection remark. NULL/blank → none."])
+    ws2.append(["Applied_on", "No", "created_at", "Leave application date/time. Accepts DD-MM-YYYY HH:MM, D/M/YYYY H:MM, YYYY-MM-DD. Displayed as DD-Mon-YYYY."])
+    ws2.append(["Approved_by", "No", "approved_by", "Approver username/email/full name → resolved to user. Unknown/numeric IDs fall back to the importing admin for Approved/Rejected rows."])
+    ws2.append(["Start_Date", "Yes", "start_date", "The leave date. Accepts YYYY-MM-DD, DD-MM-YYYY, D/M/YYYY. End date = Start date (single-day)."])
+    ws2.append(["Leave_Split", "No", "leave_split", "Full Day / First Half / Second Half (default Full Day). Halves count as 0.5 day."])
+    ws2.append(["Reason", "No", "reason", "Free text reason entered by the employee."])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 40
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=leaves_import_template.xlsx"}
+    )
+
+
+@api_router.post("/leaves/import/preview")
+async def preview_leave_import(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + first 5 sample rows from an import file.
+
+    Returns the alias mapping (sheet column → DB field) so admin can verify
+    what will happen before committing the import.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    alias_index = _build_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
+
+    required_fields = ["email", "leave_type", "start_date"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
+
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "column_mapping": mapped,           # sheet-header → canonical field
+        "ignored_columns": ignored,         # unrecognized sheet columns
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
+        "sample_rows": sample,
+    }
+
+
+@api_router.post("/leaves/bulk-import")
+async def bulk_import_leaves(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-import leave records from .xlsx or .csv. Admin-only.
+
+    Behaviour (per agreed spec):
+    - Map by Employee Email; unknown emails are skipped with an error.
+    - Leave Type is fuzzy-matched against canonical types; unmatched → 'General Leave'.
+    - Validate date formats; auto-calc Number of Days when blank.
+    - Skip overlapping date ranges with existing non-rejected leaves (duplicate guard).
+    - Default Status when blank = 'pending'.
+    - No emails are sent for imported rows (silent bulk insert).
+    - Approved rows are marked applied_by_admin=true, approved_by=current admin.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    # Build alias index and remap headers → canonical fields
+    alias_index = _build_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    # Validate mandatory canonical fields. End date is optional — when absent
+    # the leave is treated as single-day (end = start), matching the new template.
+    required_fields = ["email", "leave_type", "start_date"]
+    missing_fields = [f for f in required_fields if f not in detected_canonical]
+    if missing_fields:
+        # Reverse-map for friendly error message (show common alias names)
+        canon_to_friendly = {
+            "email": "Email / Emp Mail ID",
+            "leave_type": "Leave_Type",
+            "start_date": "Start_Date",
+        }
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing mandatory column(s): {', '.join(canon_to_friendly[f] for f in missing_fields)}"
+        )
+
+    # Pre-fetch employees by email for O(1) lookup
+    emp_cursor = db.employees.find(
+        {"is_deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1, "employment_type": 1}
+    )
+    email_to_emp: dict = {}
+    async for e in emp_cursor:
+        email = (e.get("official_email") or "").strip().lower()
+        if email:
+            email_to_emp[email] = e
+
+    # Pre-fetch users for "Approved By" resolution (admins/HR + employees)
+    approver_index: dict[str, str] = {}  # normalized name/email → user_id
+    async for u in db.users.find({}, {"_id": 0, "id": 1, "username": 1, "email": 1, "role": 1}):
+        if u.get("username"):
+            approver_index[_normalize_header(u["username"])] = u["id"]
+        if u.get("email"):
+            approver_index[_normalize_header(u["email"])] = u["id"]
+    # Add employees by full_name and email so a manager's display name resolves too
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "official_email": 1}):
+        if e.get("full_name"):
+            key = _normalize_header(e["full_name"])
+            approver_index.setdefault(key, e["id"])
+        if e.get("official_email"):
+            approver_index.setdefault(_normalize_header(e["official_email"]), e["id"])
+
+    def _resolve_approver(value) -> tuple[Optional[str], Optional[str]]:
+        """Return (resolved_id, raw_unresolved). For 'Admin' or known names/usernames/
+        emails, returns (id, None). Otherwise returns (None, raw) so caller can
+        keep raw text as a fallback note."""
+        if value in (None, ""):
+            return (None, None)
+        s = str(value).strip()
+        if not s:
+            return (None, None)
+        norm = _normalize_header(s)
+        if norm in ("admin", "administrator", "hr admin", "hr"):
+            # Default to current admin doing the import
+            return (current_user["id"], None)
+        if norm in approver_index:
+            return (approver_index[norm], None)
+        return (None, s)
+
+    total = len(rows)
+    success = 0
+    skipped_duplicates = 0
+    failed = 0
+    errors: List[dict] = []
+    inserts: List[dict] = []
+
+    # Pre-fetch ALL existing leaves grouped by employee for in-memory duplicate /
+    # overlap checks (one query instead of 2 per row → avoids gateway timeouts on
+    # large files). Newly-accepted rows are appended so in-batch dupes are caught.
+    existing_by_emp: dict[str, list[dict]] = {}
+    async for lv in db.leaves.find(
+        {}, {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1, "leave_type": 1, "status": 1}
+    ):
+        existing_by_emp.setdefault(lv.get("employee_id"), []).append(lv)
+
+    for idx, raw_row in enumerate(rows, start=2):  # row 1 is the header
+        # Remap sheet headers to canonical field names; unknown columns are dropped
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
+        if not email:
+            failed += 1
+            errors.append({"row": idx, "email": "", "reason": "Employee Email is blank"})
+            continue
+
+        emp = email_to_emp.get(email)
+        if not emp:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
+            continue
+
+        from_date = _parse_import_date(_clean_null(row.get("start_date")))
+        # End date is optional in the new template → single-day leave (end = start).
+        to_date = _parse_import_date(_clean_null(row.get("end_date"))) or from_date
+        if not from_date or not to_date:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Invalid/blank Start_Date (use YYYY-MM-DD, DD-MM-YYYY or D/M/YYYY)"})
+            continue
+
+        try:
+            sd = datetime.strptime(from_date, "%Y-%m-%d")
+            ed = datetime.strptime(to_date, "%Y-%m-%d")
+        except ValueError:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Invalid date values"})
+            continue
+
+        if sd > ed:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Start Date must be <= End Date"})
+            continue
+
+        # Leave Split: Full Day / First Half / Second Half. Days auto-calculated.
+        split_norm = _normalize_leave_split(_clean_null(row.get("leave_split")))
+        if split_norm == "INVALID":
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Leave_Split value '{row.get('leave_split')}' (use Full Day / First Half / Second Half)"})
+            continue
+        leave_split = split_norm or "Full Day"  # default to Full Day when blank
+
+        # Duration string — match native create_leave exactly (halves = 0.5 day(s)).
+        if leave_split in ("First Half", "Second Half"):
+            duration_str = "0.5 day(s)"
+        else:
+            duration = (ed - sd).days + 1
+            duration_str = f"{duration} day(s)"
+
+        raw_leave_type = _clean_null(row.get("leave_type")) or ""
+        leave_type = _normalize_leave_type(raw_leave_type)
+        # Preserve an explicit Paid Leave source as the canonical "Paid" type
+        # (fuzzy normalization would otherwise demote it to "General Leave").
+        if _is_paid_leave_type(raw_leave_type):
+            leave_type = "Paid"
+
+        # Intern restriction: Paid Leave can never be created for an Intern, via
+        # ANY path including import (mirrors the create_leave / UI rule).
+        if _is_paid_leave_type(leave_type) and _is_intern_category(emp.get("employment_type")):
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Paid Leave is not available for Intern employees."})
+            continue
+
+        status_norm = _normalize_status(_clean_null(row.get("status"))) or "pending"
+        reason = _clean_null(row.get("reason"))
+        # Remark → admin approval/rejection remark (stored as lop_remark, the
+        # field the approval workflow writes to and the UI shows as the admin remark).
+        remark = _clean_null(row.get("remark")) or _clean_null(row.get("comments"))
+
+        # Applied_on → the leave's application timestamp (native uses created_at).
+        applied_date, applied_time = _parse_import_datetime(row.get("applied_on") if row.get("applied_on") not in (None, "") else row.get("applied_at"))
+        applied_at = applied_date
+
+        # Action_Type → LOP selection (is_lop): No_LOP→False, LOP→True, else None.
+        is_lop_flag: Optional[bool] = _normalize_action_type(row.get("action_type"))
+        # Paid Leave is by definition non-LOP — force False to match native rule.
+        if _is_paid_leave_type(leave_type):
+            is_lop_flag = False
+
+        # Resolve Approved By (name / username / email / "Admin" → user_id).
+        approver_raw = _clean_null(row.get("approved_by"))
+        approver_id, approver_unresolved = _resolve_approver(approver_raw)
+
+        # Duplicate / overlap checks — all in-memory against pre-fetched leaves
+        # (plus rows accepted earlier in this same batch).
+        emp_leaves = existing_by_emp.get(emp["id"], [])
+        # Guard #1 (idempotent re-import): identical record already exists
+        # (same employee + dates + type + status).
+        exact_dupe = any(
+            lv.get("start_date") == from_date and lv.get("end_date") == to_date
+            and lv.get("leave_type") == leave_type and lv.get("status") == status_norm
+            for lv in emp_leaves
+        )
+        if exact_dupe:
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Duplicate — identical {leave_type} leave on {from_date} already exists"})
+            continue
+
+        # Guard #2: non-rejected overlapping leave (native single-leave-per-day rule).
+        # Rejected imports never block / are never blocked.
+        if status_norm != "rejected":
+            overlap = any(
+                lv.get("status") != "rejected"
+                and (lv.get("start_date") or "") <= to_date
+                and (lv.get("end_date") or lv.get("start_date") or "") >= from_date
+                for lv in emp_leaves
+            )
+            if overlap:
+                skipped_duplicates += 1
+                errors.append({"row": idx, "email": email, "reason": f"Overlaps with existing leave between {from_date} and {to_date}"})
+                continue
+
+        # Final approved_by: resolved user id > current admin (when approved/rejected) > None
+        final_approved_by = approver_id
+        if final_approved_by is None and status_norm in ("approved", "rejected"):
+            final_approved_by = current_user["id"]
+
+        # created_at = the original application timestamp when provided (so the
+        # leave behaves exactly like a natively-created record in history/reports),
+        # else the import time.
+        created_at_iso = get_ist_now().isoformat()
+        if applied_date:
+            try:
+                ca = datetime.strptime(f"{applied_date} {applied_time or '00:00'}", "%Y-%m-%d %H:%M")
+                created_at_iso = ca.isoformat()
+            except ValueError:
+                pass
+
+        leave_doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp["id"],
+            "emp_name": emp.get("full_name", ""),
+            "team": emp.get("team", ""),
+            "department": emp.get("department", ""),
+            "leave_type": leave_type,
+            "leave_split": leave_split,
+            "start_date": from_date,
+            "end_date": to_date,
+            "duration": duration_str,
+            "reason": reason,
+            "supporting_document_url": None,
+            "supporting_document_name": None,
+            "status": status_norm,
+            "is_lop": is_lop_flag,
+            "lop_remark": remark,  # admin approval/rejection remark
+            "rejection_reason": remark if status_norm == "rejected" else None,
+            "approved_by": final_approved_by,
+            "applied_by_admin": True,
+            # Preserve original sheet metadata that can't be mapped to a primary column
+            "extra_data": {
+                k: v for k, v in {
+                    "applied_at": applied_at,
+                    "approver_unresolved": approver_unresolved,
+                    "imported": True,
+                }.items() if v is not None
+            } or None,
+            "created_at": created_at_iso,
+        }
+        inserts.append(leave_doc)
+        # Track in-memory so later rows in THIS batch see it (in-batch dupe/overlap).
+        existing_by_emp.setdefault(emp["id"], []).append({
+            "start_date": from_date, "end_date": to_date,
+            "leave_type": leave_type, "status": status_norm,
+        })
+        success += 1
+
+    # Batch insert in chunks of 500 for performance with 1000+ rows
+    if inserts:
+        chunk = 500
+        for i in range(0, len(inserts), chunk):
+            await db.leaves.insert_many([d.copy() for d in inserts[i:i + chunk]])
+
+    await log_audit(
+        current_user["id"], "bulk_import", "leaves", None,
+        f"Leave bulk import: total={total} success={success} duplicates={skipped_duplicates} failed={failed}"
+    )
+
+    return {
+        "total": total,
+        "success": success,
+        "skipped_duplicates": skipped_duplicates,
+        "failed": failed,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
+        "errors": errors[:1000],  # cap to keep response manageable
+    }
+
+
+class LeaveApproveRequest(BaseModel):
+    is_lop: Optional[bool] = None  # True=LOP, False=No LOP
+    lop_remark: Optional[str] = None
+    leave_validity: Optional[str] = None  # 'valid' | 'invalid' — mandatory on approval
+
+class LeaveAdminEdit(BaseModel):
+    """Admin/HR-side edit payload for a leave record. All fields optional —
+    only supplied keys are written. Status is intentionally NOT editable here
+    (use approve/reject endpoints) so approval logic stays the single source
+    of truth."""
+    leave_type: Optional[str] = None
+    leave_split: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    reason: Optional[str] = None
+    is_lop: Optional[bool] = None          # LOP Status, editable after approval
+    leave_validity: Optional[str] = None   # 'valid' | 'invalid'
+    lop_remark: Optional[str] = None
+    consider_as_paid_leave: Optional[bool] = None
+
+
+LEAVE_VALIDITY_VALUES = ("valid", "invalid")
+
+
+def _clean_leave_validity(raw, required: bool):
+    """Leave Validity is a classification independent of LOP — never derived."""
+    value = (raw or "").strip().lower()
+    if value in ("", "select", "not set", "none"):
+        if required:
+            raise HTTPException(
+                status_code=400,
+                detail="Leave Validity is required. Please select whether this is a "
+                       "Valid Leave or Invalid Leave.")
+        return None
+    if value not in LEAVE_VALIDITY_VALUES:
+        raise HTTPException(status_code=400,
+                            detail="Leave Validity must be either 'valid' or 'invalid'.")
+    return value
+
+
+@api_router.put("/leaves/{leave_id}")
+async def admin_edit_leave(leave_id: str, data: LeaveAdminEdit, current_user: dict = Depends(get_current_user)):
+    """HR/Admin can edit ANY leave (Pending / Approved / Rejected). Updates
+    the same record in place — no duplication. Audit fields are written so
+    edits are traceable. Approval status is preserved untouched."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+
+    update = {k: v for k, v in data.model_dump().items() if v is not None}
+    if not update:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    if "leave_validity" in update:
+        update["leave_validity"] = _clean_leave_validity(update["leave_validity"], required=True)
+
+    # Recompute duration if dates / split changed
+    new_split = update.get("leave_split", leave.get("leave_split", "Full Day"))
+    new_start = update.get("start_date", leave.get("start_date"))
+    new_end = update.get("end_date", leave.get("end_date"))
+    new_type = update.get("leave_type", leave.get("leave_type"))
+
+    # Paid Leave: enforce eligibility + revalidate balance for the (possibly new)
+    # range. `ignore_leave_id` avoids double-counting the record being edited.
+    if _is_paid_leave_type(new_type):
+        emp = await db.employees.find_one(
+            {"id": leave["employee_id"], "is_deleted": {"$ne": True}},
+            {"_id": 0, "employment_type": 1, "confirmation_date": 1},
+        )
+        eligible, reason = _paid_leave_eligibility(emp or {})
+        if not eligible:
+            raise HTTPException(status_code=403, detail=reason)
+        await _validate_paid_leave_balance(
+            leave["employee_id"], new_type, new_start, new_end, new_split,
+            ignore_leave_id=leave_id,
+        )
+        # Paid Leave is always non-LOP — force it.
+        update["is_lop"] = False
+
+    # Checkbox Paid-Leave reservation adjustment (pending leaves only).
+    if ("consider_as_paid_leave" in update) or bool(leave.get("consider_as_paid_leave")):
+        want_paid = update.get("consider_as_paid_leave", leave.get("consider_as_paid_leave"))
+        if leave.get("status") == "pending":
+            old_reserved = bool(leave.get("consider_as_paid_leave")) and leave.get("paid_leave_reservation_status") == "reserved"
+            old_amt = float(leave.get("paid_leave_amount") or 0) if old_reserved else 0.0
+            new_amt = _leave_days_count(new_start, new_end or new_start, new_split) if want_paid else 0.0
+            if want_paid:
+                emp2 = await db.employees.find_one(
+                    {"id": leave["employee_id"], "is_deleted": {"$ne": True}},
+                    {"_id": 0, "employment_type": 1, "confirmation_date": 1})
+                ok2, reason2 = _is_confirmed_fulltime(emp2 or {})
+                if not ok2:
+                    raise HTTPException(status_code=403, detail=reason2)
+            delta = round(new_amt - old_amt, 1)
+            if delta > 0:
+                await _reserve_paid_leave(leave["employee_id"], leave.get("emp_name"), delta, current_user, note="Admin edit")
+            elif delta < 0:
+                await _release_paid_leave(leave["employee_id"], leave.get("emp_name"), -delta, current_user, action_type="MANUAL_ADJUSTMENT", note="Admin edit")
+            update["consider_as_paid_leave"] = bool(want_paid)
+            update["paid_leave_amount"] = new_amt if want_paid else None
+            update["paid_leave_reservation_status"] = "reserved" if want_paid else None
+            if want_paid:
+                update["is_lop"] = False
+
+    try:
+        if new_split in ("First Half", "Second Half"):
+            update["duration"] = "0.5 day(s)"
+        elif new_start and new_end:
+            sd = datetime.strptime(new_start, "%Y-%m-%d")
+            ed = datetime.strptime(new_end, "%Y-%m-%d")
+            update["duration"] = f"{(ed - sd).days + 1} day(s)"
+    except ValueError:
+        pass  # leave duration as-is on bad date format
+
+    update["edited_by"] = current_user["id"]
+    update["edited_at"] = get_ist_now().isoformat()
+
+    # Approved-leave classification changes are traceable field-by-field.
+    tracked = {"is_lop": "LOP Status", "leave_validity": "Leave Validity",
+               "lop_remark": "Remark"}
+    changes = [{"field": label, "previous": leave.get(k), "new": update[k]}
+               for k, label in tracked.items() if k in update and update[k] != leave.get(k)]
+    if changes:
+        await db.leave_change_history.insert_one({
+            "id": str(uuid.uuid4()), "leave_id": leave_id,
+            "employee_id": leave["employee_id"], "leave_status": leave.get("status"),
+            "changes": changes,
+            "changed_by": current_user["id"],
+            "changed_by_name": current_user.get("full_name") or current_user.get("username"),
+            "changed_at": get_ist_now().isoformat(),
+        })
+
+    await db.leaves.update_one({"id": leave_id}, {"$set": update})
+    await log_audit(current_user["id"], "edit", "leave", leave_id)
+    updated = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    return serialize_doc(updated)
+
+
+
+@api_router.put("/leaves/{leave_id}/approve")
+async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = None, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+
+    # Layer 3 — Approval protection. A Paid Leave can only be APPROVED if the
+    # employee is currently Paid-Leave eligible (non-Intern + valid Confirmation
+    # Date) AND has sufficient balance (re-validated at approval time, since other
+    # Paid Leaves may have been approved since submission). Blocks approval of any
+    # Paid Leave that slipped in for an ineligible employee (e.g. type changed).
+    if _is_paid_leave_type(leave.get("leave_type")):
+        emp = await db.employees.find_one(
+            {"id": leave["employee_id"], "is_deleted": {"$ne": True}},
+            {"_id": 0, "employment_type": 1, "confirmation_date": 1},
+        )
+        eligible, reason = _paid_leave_eligibility(emp or {})
+        if not eligible:
+            raise HTTPException(status_code=403, detail=f"Cannot approve Paid Leave: {reason}")
+        await _validate_paid_leave_balance(
+            leave["employee_id"], leave["leave_type"], leave["start_date"],
+            leave["end_date"], leave.get("leave_split", "Full Day"),
+            ignore_leave_id=leave_id,
+        )
+
+    update_fields = {
+        "status": "approved",
+        "approved_by": current_user["id"],
+        "approved_at": get_ist_now().isoformat(),
+        "leave_validity": _clean_leave_validity(data.leave_validity if data else None,
+                                                required=True),
+    }
+    if data and data.is_lop is not None:
+        update_fields["is_lop"] = data.is_lop
+    if data and data.lop_remark:
+        update_fields["lop_remark"] = data.lop_remark
+
+    # Paid Leave is always non-LOP, overriding any LOP hint from the approver.
+    # Covers both legacy 'Paid' type and the new "Consider as Paid Leave" flag.
+    if _leave_is_paid(leave):
+        update_fields["is_lop"] = False
+    # Finalize the reservation for a checkbox paid-leave (balance stays deducted).
+    if leave.get("consider_as_paid_leave") and leave.get("paid_leave_reservation_status") != "finalized":
+        update_fields["paid_leave_reservation_status"] = "finalized"
+        bal = await _get_paid_balance(leave["employee_id"])
+        await _write_paid_history(leave["employee_id"], leave.get("emp_name"), bal, bal,
+                                  "PAID_LEAVE_APPROVED", current_user,
+                                  note=f"Approved {leave.get('start_date')}")
+    
+    result = await db.leaves.update_one(
+        {"id": leave_id},
+        {"$set": update_fields}
+    )
+    
+    await log_audit(current_user["id"], "approve", "leave", leave_id)
+    
+    # Send email notification
+    employee = await db.employees.find_one({"id": leave["employee_id"]}, {"_id": 0})
+    if employee and employee.get("official_email"):
+        email_html = get_leave_approval_email(
+            employee["full_name"],
+            leave["leave_type"],
+            leave["start_date"],
+            leave["end_date"],
+            "approved"
+        )
+        asyncio.create_task(send_email_notification(
+            employee["official_email"],
+            "Leave Request Approved - BluBridge HRMS",
+            email_html
+        ))
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    
+    # Notify employee about leave approval
+    emp_user = await db.users.find_one({"employee_id": leave.get("employee_id")}, {"_id": 0})
+    if emp_user:
+        asyncio.create_task(create_notification(
+            [emp_user["id"]],
+            "Leave Approved",
+            f"Your {leave.get('leave_type', '')} leave request has been approved.",
+            "success",
+            "/employee/leave"
+        ))
+    
+    return serialize_doc(leave)
+
+@api_router.put("/leaves/{leave_id}/reject")
+async def reject_leave(leave_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+    
+    reject_set = {"status": "rejected", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
+    # Release a reserved checkbox paid-leave back to the employee's balance.
+    if leave.get("consider_as_paid_leave") and leave.get("paid_leave_reservation_status") == "reserved":
+        await _release_paid_leave(leave["employee_id"], leave.get("emp_name"),
+                                  leave.get("paid_leave_amount") or 0,
+                                  current_user, action_type="PAID_LEAVE_REJECTED",
+                                  note=f"Rejected {leave.get('start_date')}")
+        reject_set["paid_leave_reservation_status"] = "released"
+
+    result = await db.leaves.update_one(
+        {"id": leave_id},
+        {"$set": reject_set}
+    )
+    
+    await log_audit(current_user["id"], "reject", "leave", leave_id)
+    
+    # Send email notification
+    employee = await db.employees.find_one({"id": leave["employee_id"]}, {"_id": 0})
+    if employee and employee.get("official_email"):
+        email_html = get_leave_approval_email(
+            employee["full_name"],
+            leave["leave_type"],
+            leave["start_date"],
+            leave["end_date"],
+            "rejected"
+        )
+        asyncio.create_task(send_email_notification(
+            employee["official_email"],
+            "Leave Request Rejected - BluBridge HRMS",
+            email_html
+        ))
+    
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    
+    # Notify employee about leave rejection
+    emp_user = await db.users.find_one({"employee_id": leave.get("employee_id")}, {"_id": 0})
+    if emp_user:
+        asyncio.create_task(create_notification(
+            [emp_user["id"]],
+            "Leave Rejected",
+            f"Your {leave.get('leave_type', '')} leave request has been rejected.",
+            "warning",
+            "/employee/leave"
+        ))
+    
+    return serialize_doc(leave)
+
+
+# ============== UNIVERSAL REQUEST RESET ENGINE ==============
+#
+# `Reset to Pending` flips a processed request back to its initial state and
+# fully reverses any side-effects (attendance corrections, LOP flags, etc.).
+# Then HR can re-process the request from a clean slate — Approve / Reject /
+# edit LOP — without stacking effects on top of an already-applied state.
+#
+# Audit collection: `request_resets`. Every reset writes a row containing
+# `request_type`, `request_id`, `previous_status`, `previous_snapshot`,
+# `reset_by`, `reset_at`, `reason`, and (for missed-punches) the attendance
+# rollback details.
+
+class RequestResetBody(BaseModel):
+    reason: Optional[str] = None
+
+
+async def _log_request_reset(request_type: str, request_id: str, prev_snapshot: dict,
+                              attendance_rollback: Optional[dict], current_user: dict, reason: Optional[str]):
+    """Single source of truth for the reset audit trail. Failures are logged
+    but never propagate — audit must NEVER block the actual reset."""
+    try:
+        doc = {
+            "id": str(uuid.uuid4()),
+            "request_type": request_type,
+            "request_id": request_id,
+            "previous_status": prev_snapshot.get("status"),
+            "previous_snapshot": prev_snapshot,
+            "attendance_rollback": attendance_rollback,
+            "reset_by": current_user["id"],
+            "reset_at": get_ist_now().isoformat(),
+            "reason": reason,
+        }
+        await db.request_resets.insert_one(doc.copy())
+    except Exception as e:
+        logger.warning(f"Failed to write request_resets audit row for {request_type}/{request_id}: {e}")
+
+
+@api_router.post("/leaves/{leave_id}/reset")
+async def reset_leave(leave_id: str, body: RequestResetBody = RequestResetBody(),
+                       current_user: dict = Depends(get_current_user)):
+    """Reset a Leave request back to `pending`. Side-effects on payroll /
+    attendance are computed dynamically from `is_lop` and `status`, so
+    clearing those fields is sufficient to undo the impact."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+
+    if leave.get("status") == "pending" and leave.get("is_lop") is None and not leave.get("approved_by"):
+        # Already at initial state — idempotent no-op
+        return serialize_doc(leave)
+
+    snapshot = dict(leave)
+    reset_set = {
+        "status": "pending",
+        "reset_at": get_ist_now().isoformat(),
+        "reset_by": current_user["id"],
+    }
+    # Paid-leave reservation on reset: a previously RELEASED (rejected) paid
+    # leave must be RE-RESERVED so returning it to Pending re-holds the days;
+    # a FINALIZED (approved) one stays deducted — just mark it reserved again.
+    if leave.get("consider_as_paid_leave"):
+        amt = leave.get("paid_leave_amount") or _leave_days_count(
+            leave.get("start_date"), leave.get("end_date") or leave.get("start_date"),
+            leave.get("leave_split", "Full Day"))
+        if leave.get("paid_leave_reservation_status") == "released":
+            await _reserve_paid_leave(leave["employee_id"], leave.get("emp_name"), amt,
+                                      current_user, note=f"Reset re-reserve {leave.get('start_date')}")
+        reset_set["paid_leave_reservation_status"] = "reserved"
+    await db.leaves.update_one(
+        {"id": leave_id},
+        {
+            "$set": reset_set,
+            "$unset": {
+                "approved_by": "",
+                "approved_at": "",
+                "is_lop": "",
+                "lop_remark": "",
+                "leave_validity": "",
+                "rejection_reason": "",
+            },
+        },
+    )
+
+    await _log_request_reset("leave", leave_id, snapshot, None, current_user, body.reason)
+    await log_audit(current_user["id"], "reset", "leave", leave_id)
+    leave = await db.leaves.find_one({"id": leave_id}, {"_id": 0})
+    return serialize_doc(leave)
+
+
+@api_router.post("/late-requests/{request_id}/reset")
+async def reset_late_request(request_id: str, body: RequestResetBody = RequestResetBody(),
+                              current_user: dict = Depends(get_current_user)):
+    """Reset a Late Request back to `pending`."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    if rec.get("status") == "pending" and rec.get("is_lop") is None and not rec.get("approved_by"):
+        return serialize_doc(rec)
+
+    snapshot = dict(rec)
+    await db.late_requests.update_one(
+        {"id": request_id},
+        {
+            "$set": {"status": "pending", "reset_at": get_ist_now().isoformat(), "reset_by": current_user["id"]},
+            "$unset": {"approved_by": "", "approved_at": "", "is_lop": "", "lop_remark": "", "rejection_reason": ""},
+        },
+    )
+    await _log_request_reset("late_request", request_id, snapshot, None, current_user, body.reason)
+    await log_audit(current_user["id"], "reset", "late_request", request_id)
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+
+@api_router.post("/early-out-requests/{request_id}/reset")
+async def reset_early_out_request(request_id: str, body: RequestResetBody = RequestResetBody(),
+                                   current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    if rec.get("status") == "pending" and rec.get("is_lop") is None and not rec.get("approved_by"):
+        return serialize_doc(rec)
+
+    snapshot = dict(rec)
+    await db.early_out_requests.update_one(
+        {"id": request_id},
+        {
+            "$set": {"status": "pending", "reset_at": get_ist_now().isoformat(), "reset_by": current_user["id"]},
+            "$unset": {"approved_by": "", "approved_at": "", "is_lop": "", "lop_remark": "", "rejection_reason": ""},
+        },
+    )
+    await _log_request_reset("early_out_request", request_id, snapshot, None, current_user, body.reason)
+    await log_audit(current_user["id"], "reset", "early_out_request", request_id)
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+
+@api_router.post("/missed-punches/{request_id}/reset")
+async def reset_missed_punch(request_id: str, body: RequestResetBody = RequestResetBody(),
+                              current_user: dict = Depends(get_current_user)):
+    """Reset a Missed Punch request back to `pending` AND restore the
+    pre-correction attendance state.
+
+    Uses the most recent `attendance_corrections` row (keyed by request_id)
+    as the source of truth for old check_in / check_out / status. Recomputes
+    total_hours via `calculate_attendance_status` from the restored values
+    so the attendance row is in a fully consistent post-rollback state.
+    """
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+
+    snapshot = dict(rec)
+    rollback_info: Optional[dict] = None
+
+    # Find the most recent applied audit row for this request
+    audit = await db.attendance_corrections.find_one(
+        {"request_id": request_id}, {"_id": 0}, sort=[("created_at", -1)]
+    )
+
+    if audit:
+        emp_id = audit.get("employee_id") or rec.get("employee_id")
+        date = audit.get("date") or rec.get("date")
+        existing_att = await db.attendance.find_one({"employee_id": emp_id, "date": date}, {"_id": 0})
+
+        old_in_24h = audit.get("old_check_in_24h")
+        old_out_24h = audit.get("old_check_out_24h")
+        old_in = audit.get("old_check_in")
+        old_out = audit.get("old_check_out")
+        old_status = audit.get("old_status")
+        source_before = audit.get("source_before") or "biometric"
+
+        employee = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+        shift_timings = await get_effective_shift_timings(employee, date) if employee else None
+
+        # Recompute status / total_hours from the restored times so dashboards / payroll are consistent
+        if old_in_24h:
+            recomputed = calculate_attendance_status(
+                old_in_24h, old_out_24h, shift_timings or {}, attendance_date=date
+            )
+            new_status_after_rollback = recomputed.get("status") or old_status or AttendanceStatus.PRESENT
+            total_hours_decimal = float(recomputed.get("total_hours_decimal") or 0.0)
+            total_hours_str = calculate_total_hours_str(total_hours_decimal) if total_hours_decimal else None
+            is_lop = bool(recomputed.get("is_lop"))
+            lop_reason = recomputed.get("lop_reason")
+        else:
+            new_status_after_rollback = AttendanceStatus.NOT_LOGGED
+            total_hours_decimal = 0.0
+            total_hours_str = None
+            is_lop = False
+            lop_reason = None
+
+        if existing_att and source_before == "none":
+            # Attendance row only existed BECAUSE of this correction — delete it
+            await db.attendance.delete_one({"employee_id": emp_id, "date": date})
+            rollback_info = {"action": "deleted", "employee_id": emp_id, "date": date}
+        elif existing_att:
+            payload = {
+                "check_in": old_in,
+                "check_in_24h": old_in_24h,
+                "check_out": old_out,
+                "check_out_24h": old_out_24h,
+                "status": new_status_after_rollback,
+                "total_hours": total_hours_str,
+                "total_hours_decimal": round(total_hours_decimal, 2),
+                "is_lop": is_lop,
+                "lop_reason": lop_reason,
+                "source": source_before,
+                "missed_punch_corrected": False,
+                "missed_punch_reverted_at": get_ist_now().isoformat(),
+                "missed_punch_reverted_by": current_user["id"],
+            }
+            await db.attendance.update_one(
+                {"employee_id": emp_id, "date": date},
+                {
+                    "$set": payload,
+                    "$unset": {
+                        "missed_punch_request_id": "",
+                        "missed_punch_corrected_at": "",
+                        "missed_punch_corrected_by": "",
+                    },
+                },
+            )
+            rollback_info = {"action": "restored", "employee_id": emp_id, "date": date,
+                             "from_state": {"check_in_24h": existing_att.get("check_in_24h"),
+                                            "check_out_24h": existing_att.get("check_out_24h"),
+                                            "status": existing_att.get("status")},
+                             "to_state": {"check_in_24h": old_in_24h,
+                                          "check_out_24h": old_out_24h,
+                                          "status": new_status_after_rollback}}
+
+        # Mark all audit rows for this request as reverted (don't delete — keep history)
+        await db.attendance_corrections.update_many(
+            {"request_id": request_id, "reverted_at": {"$exists": False}},
+            {"$set": {"reverted_at": get_ist_now().isoformat(), "reverted_by": current_user["id"]}},
+        )
+
+    # Reset the request itself — clear approval + correction-applied flags
+    await db.missed_punches.update_one(
+        {"id": request_id},
+        {
+            "$set": {"status": "pending", "reset_at": get_ist_now().isoformat(), "reset_by": current_user["id"]},
+            "$unset": {
+                "approved_by": "",
+                "approved_at": "",
+                "rejection_reason": "",
+                "correction_applied_at": "",
+                "correction_applied_by": "",
+                "is_applied": "",
+            },
+        },
+    )
+
+    await _log_request_reset("missed_punch", request_id, snapshot, rollback_info, current_user, body.reason)
+    await log_audit(current_user["id"], "reset", "missed_punch", request_id)
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+
+
+
+# ============== STAR REWARDS ROUTES ==============
+
+@api_router.get("/star-rewards")
+async def get_star_rewards(
+    team: Optional[str] = None,
+    department: Optional[str] = None,
+    month: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
+    if team and team != "All":
+        query["team"] = team
+    if department and department != "All":
+        query["department"] = department
+    if search:
+        query["$or"] = [
+            {"full_name": {"$regex": search, "$options": "i"}},
+            {"official_email": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}}
+        ]
+    
+    employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
+    emp_ids = [e["id"] for e in employees]
+
+    # When a specific month is chosen, override `stars` and `unsafe_count` on
+    # each employee with the count EARNED IN THAT MONTH (from star_rewards
+    # aggregate). Without this, the "Stars" column shows the cumulative total
+    # regardless of Month filter — which is exactly what HR just flagged.
+    if month and emp_ids:
+        month_agg = await db.star_rewards.aggregate([
+            {"$match": {
+                "employee_id": {"$in": emp_ids},
+                "month": month,
+                "is_deleted": {"$ne": True},
+            }},
+            {"$group": {
+                "_id": "$employee_id",
+                "stars": {"$sum": "$stars"},
+                "unsafe": {"$sum": {"$cond": [{"$eq": ["$type", "unsafe"]}, 1, 0]}},
+            }},
+        ]).to_list(2000)
+        month_map = {r["_id"]: r for r in month_agg}
+        for emp in employees:
+            m = month_map.get(emp["id"])
+            emp["stars"] = m["stars"] if m else 0
+            emp["unsafe_count"] = m["unsafe"] if m else 0
+        # Also expose the filter month on each row for the frontend to label the col.
+        for emp in employees:
+            emp["stars_filter_month"] = month
+
+    # Map full_name to name for backward compatibility
+    for emp in employees:
+        emp["name"] = emp.get("full_name", "")
+        emp["email"] = emp.get("official_email", "")
+
+    return [serialize_doc(e) for e in employees]
+
+@api_router.post("/star-rewards")
+async def add_star_reward(data: StarRewardCreate, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": data.employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Restrict to Research Unit employees only
+    if employee.get("department") != "Research Unit":
+        raise HTTPException(status_code=400, detail="Star rewards can only be given to Research Unit employees")
+    
+    current_month = get_ist_now().strftime("%Y-%m")
+    
+    reward = StarReward(
+        employee_id=data.employee_id,
+        stars=data.stars,
+        reason=data.reason,
+        type=data.type,
+        awarded_by=current_user["id"],
+        month=current_month
+    )
+    doc = reward.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.star_rewards.insert_one(doc.copy())
+    
+    # Update employee stars and unsafe count
+    new_stars = employee.get("stars", 0) + data.stars
+    update_data = {"stars": new_stars}
+    
+    # If type is unsafe, increment unsafe count
+    if data.type == "unsafe":
+        new_unsafe = employee.get("unsafe_count", 0) + 1
+        update_data["unsafe_count"] = new_unsafe
+    
+    await db.employees.update_one({"id": data.employee_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "award_stars", "star_reward", reward.id)
+    
+    # Send email notification
+    if employee.get("official_email"):
+        awarder = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+        awarder_name = awarder.get("name", "Admin") if awarder else "Admin"
+        email_html = get_star_reward_email(
+            employee["full_name"],
+            data.stars,
+            data.reason,
+            awarder_name
+        )
+        asyncio.create_task(send_email_notification(
+            employee["official_email"],
+            "Star Reward Notification - BluBridge HRMS",
+            email_html
+        ))
+    
+    return {"message": "Stars awarded", "new_total": new_stars}
+
+@api_router.get("/star-rewards/history/{employee_id}")
+async def get_star_history(employee_id: str, current_user: dict = Depends(get_current_user)):
+    rewards = await db.star_rewards.find({"employee_id": employee_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [serialize_doc(r) for r in rewards]
+
+
+@api_router.get("/star-rewards/leaves/{employee_id}")
+async def list_star_leaves(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """List an employee's leaves for HR to flag valid / invalid and adjust
+    stars per instance. Only leaves that could impact the star framework are
+    returned (approved OR rejected OR pending — since HR may need to reclassify).
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    leaves = await db.leaves.find({"employee_id": employee_id}, {"_id": 0}) \
+        .sort("start_date", -1).to_list(500)
+    # Attach any existing star adjustments already applied for each leave
+    adj_rows = await db.star_rewards.find({
+        "employee_id": employee_id,
+        "source": "manual_adjustment",
+        "related_leave_id": {"$exists": True, "$ne": None},
+    }, {"_id": 0}).to_list(2000)
+    by_leave = {}
+    for a in adj_rows:
+        by_leave.setdefault(a["related_leave_id"], []).append({
+            "id": a.get("id"), "stars": a.get("stars", 0),
+            "validity": a.get("leave_validity"),
+            "note": a.get("note"),
+            "created_at": a.get("created_at"),
+            "flag_delta": a.get("flag_delta", 0),
+        })
+    for lv in leaves:
+        lv["prior_adjustments"] = by_leave.get(lv.get("id"), [])
+        lv["net_adjusted_stars"] = sum(x["stars"] for x in lv["prior_adjustments"])
+        lv["current_validity"] = (lv["prior_adjustments"][0]["validity"]
+                                   if lv["prior_adjustments"] else None)
+    return {"employee": {"id": emp["id"], "full_name": emp.get("full_name"),
+                          "stars": emp.get("stars", 0), "unsafe_count": emp.get("unsafe_count", 0)},
+            "leaves": [serialize_doc(l) for l in leaves]}
+
+
+@api_router.post("/star-rewards/leaves/adjust")
+async def adjust_star_for_leave(body: dict, current_user: dict = Depends(get_current_user)):
+    """HR marks a specific leave as valid/invalid and adjusts the employee's
+    stars (and optionally flag count) accordingly. Persists ONE audit row
+    linked to `related_leave_id` and reflects new totals from source-of-truth.
+
+    Body:
+      employee_id: str
+      leave_id: str
+      validity: "valid" | "invalid"
+      star_mode: "increase" | "decrease" | "set_zero" | "none"
+      star_value: int   (ignored for set_zero/none)
+      flag_mode: "increase" | "decrease" | "none"  (optional; no set_zero here)
+      flag_value: int
+      note: str  (required)
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    b = body or {}
+    emp_id = b.get("employee_id"); leave_id = b.get("leave_id")
+    validity = b.get("validity"); note = (b.get("note") or "").strip()
+    if not emp_id or not leave_id: raise HTTPException(status_code=400, detail="employee_id and leave_id required")
+    if validity not in ("valid", "invalid"): raise HTTPException(status_code=400, detail="validity must be 'valid' or 'invalid'")
+    if not note: raise HTTPException(status_code=400, detail="Note is required")
+
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp: raise HTTPException(status_code=404, detail="Employee not found")
+    lv = await db.leaves.find_one({"id": leave_id, "employee_id": emp_id}, {"_id": 0})
+    if not lv: raise HTTPException(status_code=404, detail="Leave not found for this employee")
+
+    # ---- Compute star delta ------------------------------------------------
+    star_mode = b.get("star_mode", "none")
+    try: star_val = int(b.get("star_value") or 0)
+    except (ValueError, TypeError): star_val = 0
+    star_delta = 0
+    if star_mode == "increase":
+        if star_val <= 0: raise HTTPException(status_code=400, detail="Star increase value must be > 0")
+        star_delta = star_val
+    elif star_mode == "decrease":
+        if star_val <= 0: raise HTTPException(status_code=400, detail="Star decrease value must be > 0")
+        star_delta = -star_val
+    elif star_mode == "set_zero":
+        # Neutralize the net stars ALREADY applied to this specific leave.
+        prior = await db.star_rewards.aggregate([
+            {"$match": {"employee_id": emp_id, "related_leave_id": leave_id,
+                        "is_deleted": {"$ne": True}}},
+            {"$group": {"_id": None, "s": {"$sum": "$stars"}}},
+        ]).to_list(1)
+        prior_sum = prior[0]["s"] if prior else 0
+        star_delta = -prior_sum
+    elif star_mode != "none":
+        raise HTTPException(status_code=400, detail="Invalid star_mode")
+
+    # ---- Compute flag delta (optional) -------------------------------------
+    flag_mode = b.get("flag_mode", "none")
+    try: flag_val = int(b.get("flag_value") or 0)
+    except (ValueError, TypeError): flag_val = 0
+    flag_delta = 0
+    if flag_mode == "increase":
+        if flag_val <= 0: raise HTTPException(status_code=400, detail="Flag increase value must be > 0")
+        flag_delta = flag_val
+    elif flag_mode == "decrease":
+        if flag_val <= 0: raise HTTPException(status_code=400, detail="Flag decrease value must be > 0")
+        flag_delta = -flag_val
+    elif flag_mode != "none":
+        raise HTTPException(status_code=400, detail="Invalid flag_mode")
+
+    # ---- Persist adjustment row -------------------------------------------
+    current_month = get_ist_now().strftime("%Y-%m")
+    ref_date = lv.get("start_date") or get_ist_now().strftime("%Y-%m-%d")
+    row = {
+        "id": str(uuid.uuid4()),
+        "employee_id": emp_id,
+        "stars": int(star_delta),
+        "flag_delta": int(flag_delta),
+        "reason": (f"[Leave adjustment · {current_user.get('name') or current_user.get('username')}] "
+                   f"Leave {lv.get('leave_type')} {lv.get('start_date')} marked {validity.upper()}. "
+                   f"Star {star_mode}({star_delta:+d})"
+                   + (f" · Flag {flag_mode}({flag_delta:+d})" if flag_mode != 'none' else "")
+                   + f" — {note}"),
+        "type": "adjustment",
+        "awarded_by": current_user["id"],
+        "month": current_month,
+        "ref_date": ref_date,
+        "source": "manual_adjustment",
+        "related_leave_id": leave_id,
+        "leave_validity": validity,
+        "note": note,
+        "created_at": datetime.now().isoformat(),
+    }
+    await db.star_rewards.insert_one(row.copy())
+
+    # Also stamp the validity on the leave record for quick lookup.
+    await db.leaves.update_one({"id": leave_id}, {"$set": {
+        "star_validity": validity,
+        "star_validity_note": note,
+        "star_validity_updated_at": datetime.now().isoformat(),
+        "star_validity_updated_by": current_user["id"],
+    }})
+
+    # ---- Recompute totals -------------------------------------------------
+    agg = await db.star_rewards.aggregate([
+        {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}}},
+        {"$group": {"_id": None, "stars": {"$sum": "$stars"},
+                    "flag_adj": {"$sum": "$flag_delta"},
+                    "unsafe_rows": {"$sum": {"$cond": [{"$eq": ["$type", "unsafe"]}, 1, 0]}}}}
+    ]).to_list(1)
+    stars_total = agg[0]["stars"] if agg else 0
+    unsafe_from_rows = agg[0]["unsafe_rows"] if agg else 0
+    flag_adj = agg[0].get("flag_adj", 0) if agg else 0
+    unsafe_total = max(0, unsafe_from_rows + flag_adj)
+    await db.employees.update_one({"id": emp_id}, {"$set": {
+        "stars": stars_total, "unsafe_count": unsafe_total,
+    }})
+
+    await log_audit(current_user["id"], "adjust_star_for_leave", "star_reward", emp_id,
+                    f"leave={leave_id} validity={validity} star_delta={star_delta:+d} note={note[:80]}")
+    return {
+        "message": "Leave-based adjustment recorded",
+        "star_delta": star_delta, "flag_delta": flag_delta,
+        "new_stars": stars_total, "new_unsafe": unsafe_total,
+        "leave_validity": validity,
+        "audit_row_id": row["id"],
+    }
+
+
+@api_router.post("/star-rewards/entry-override")
+async def override_star_entry(body: dict, current_user: dict = Depends(get_current_user)):
+    """Override a single auto-generated star entry (or any prior entry) with
+    a new star value. Persists a compensating `manual_adjustment` row so that
+    (target_stars + compensation) = new_stars. Anchored by (employee_id,
+    ref_date, rule) so the override survives daily re-runs of the auto engine.
+
+    Body:
+      employee_id: str
+      ref_date: str (YYYY-MM-DD)
+      rule: str (optional — e.g. 'late_sick_notification')
+      target_stars: int (current stars of the entry being overridden)
+      new_stars: int (desired final stars for this specific entry)
+      target_entry_id: str (optional — for audit only)
+      note: str (required)
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    b = body or {}
+    emp_id = b.get("employee_id")
+    ref_date = b.get("ref_date")
+    rule = b.get("rule") or None
+    target = b.get("target_stars")
+    new_val = b.get("new_stars")
+    note = (b.get("note") or "").strip()
+    leave_validity = (b.get("leave_validity") or "").strip().lower() or None
+    if leave_validity and leave_validity not in ("valid", "invalid"):
+        raise HTTPException(status_code=400, detail="leave_validity must be 'valid' or 'invalid'")
+    if not emp_id or not ref_date: raise HTTPException(status_code=400, detail="employee_id and ref_date required")
+    if not note: raise HTTPException(status_code=400, detail="Note is required")
+    try:
+        target = int(target); new_val = int(new_val)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="target_stars and new_stars must be integers")
+
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp: raise HTTPException(status_code=404, detail="Employee not found")
+
+    compensation = new_val - target  # add this to reach new_val net
+    current_month = ref_date[:7]
+
+    # Msg 677 §12: run within an "all-or-nothing" style flow. Soft-delete any
+    # prior override for the same (employee, ref_date, overrides_rule) so
+    # repeated edits don't stack. The anchor `target_stars` is the ORIGINAL
+    # auto entry value; the compensation persisted equals (new_val - original).
+    prior_query = {
+        "employee_id": emp_id,
+        "ref_date": ref_date,
+        "source": "manual_adjustment",
+        "overrides_rule": rule,
+        "is_deleted": {"$ne": True},
+    }
+    prior_docs = await db.star_rewards.find(prior_query, {"_id": 0}).to_list(50)
+    if prior_docs:
+        await db.star_rewards.update_many(prior_query, {"$set": {
+            "is_deleted": True,
+            "superseded_at": datetime.now().isoformat(),
+            "superseded_by": current_user["id"],
+        }})
+    prior_snapshot = [
+        {"id": p.get("id"), "stars": p.get("stars"), "leave_validity": p.get("leave_validity"),
+         "note": p.get("note"), "created_at": p.get("created_at"),
+         "awarded_by": p.get("awarded_by"), "awarded_by_name": p.get("awarded_by_name")}
+        for p in prior_docs
+    ]
+
+    row = {
+        "id": str(uuid.uuid4()),
+        "employee_id": emp_id,
+        "stars": int(compensation),
+        "reason": (f"[Entry override · {current_user.get('name') or current_user.get('username')}] "
+                   f"{rule or 'entry'} on {ref_date}: {target:+d} → {new_val:+d} — {note}"),
+        "type": "adjustment",
+        "awarded_by": current_user["id"],
+        "awarded_by_name": current_user.get("name") or current_user.get("username"),
+        "month": current_month,
+        "ref_date": ref_date,
+        "rule": f"override:{rule or 'manual'}",
+        "source": "manual_adjustment",
+        "overrides_rule": rule,
+        "overrides_target_stars": target,
+        "overrides_new_stars": new_val,
+        "target_entry_id": b.get("target_entry_id"),
+        "leave_validity": leave_validity,
+        "note": note,
+        "prior_overrides": prior_snapshot,
+        "created_at": datetime.now().isoformat(),
+    }
+    await db.star_rewards.insert_one(row.copy())
+
+    # Recompute totals from source-of-truth.
+    agg = await db.star_rewards.aggregate([
+        {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}}},
+        {"$group": {"_id": None, "stars": {"$sum": "$stars"},
+                    "flag_adj": {"$sum": "$flag_delta"},
+                    "unsafe_rows": {"$sum": {"$cond": [{"$eq": ["$type", "unsafe"]}, 1, 0]}}}}
+    ]).to_list(1)
+    stars_total = agg[0]["stars"] if agg else 0
+    unsafe_total = max(0, (agg[0]["unsafe_rows"] if agg else 0) + (agg[0].get("flag_adj", 0) if agg else 0))
+    await db.employees.update_one({"id": emp_id}, {"$set": {
+        "stars": stars_total, "unsafe_count": unsafe_total,
+    }})
+
+    await log_audit(current_user["id"], "override_star_entry", "star_reward", emp_id,
+                    f"date={ref_date} rule={rule} {target:+d}→{new_val:+d} validity={leave_validity or '—'} note={note[:80]}")
+
+    # Build a fresh month summary for the affected month so the UI can update in-place
+    month_agg = await db.star_rewards.aggregate([
+        {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}, "month": current_month}},
+        {"$group": {
+            "_id": None,
+            "stars": {"$sum": "$stars"},
+            "positive": {"$sum": {"$cond": [{"$gt": ["$stars", 0]}, "$stars", 0]}},
+            "negative": {"$sum": {"$cond": [{"$lt": ["$stars", 0]}, "$stars", 0]}},
+            "entries": {"$sum": 1},
+        }}
+    ]).to_list(1)
+    ms = month_agg[0] if month_agg else {"stars": 0, "positive": 0, "negative": 0, "entries": 0}
+    month_summary = {
+        "month": current_month,
+        "stars": ms.get("stars", 0),
+        "positive": ms.get("positive", 0),
+        "negative": ms.get("negative", 0),
+        "entries": ms.get("entries", 0),
+    }
+    return {
+        "message": "Leave verification and star value updated successfully.",
+        "compensation": compensation,
+        "new_stars": stars_total,
+        "new_unsafe": unsafe_total,
+        "audit_row_id": row["id"],
+        "month_summary": month_summary,
+        "leave_validity": leave_validity,
+    }
+
+
+@api_router.post("/star-rewards/adjust")
+async def adjust_star_reward(body: dict, current_user: dict = Depends(get_current_user)):
+    """HR manual override — increase / decrease / set-to-zero an employee's
+    star and/or flag (unsafe) totals. Recorded in `star_rewards` as an audit
+    row with `source: 'manual_adjustment'` so re-runs of the automation never
+    touch it (auto only replaces `source: 'auto'` rows).
+
+    Body:
+      employee_id: str
+      star_mode: "increase" | "decrease" | "set_zero" | "none"
+      star_value: int (ignored when mode="set_zero" or "none")
+      flag_mode: "increase" | "decrease" | "set_zero" | "none"
+      flag_value: int (ignored when mode="set_zero" or "none")
+      note: str  (required — audit trail)
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    body = body or {}
+    emp_id = body.get("employee_id")
+    note = (body.get("note") or "").strip()
+    if not emp_id: raise HTTPException(status_code=400, detail="employee_id is required")
+    if not note:   raise HTTPException(status_code=400, detail="Note / reason is required")
+
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp: raise HTTPException(status_code=404, detail="Employee not found")
+
+    star_mode = body.get("star_mode", "none")
+    flag_mode = body.get("flag_mode", "none")
+    if star_mode not in ("increase","decrease","set_zero","none"):
+        raise HTTPException(status_code=400, detail="Invalid star_mode")
+    if flag_mode not in ("increase","decrease","set_zero","none"):
+        raise HTTPException(status_code=400, detail="Invalid flag_mode")
+    if star_mode == "none" and flag_mode == "none":
+        raise HTTPException(status_code=400, detail="Choose an action for star and/or flag")
+
+    # ---- Compute star delta -----------------------------------------------
+    star_delta = 0
+    try: star_val = int(body.get("star_value") or 0)
+    except (ValueError, TypeError): star_val = 0
+    if star_mode == "increase":
+        if star_val <= 0: raise HTTPException(status_code=400, detail="Star increase value must be > 0")
+        star_delta = star_val
+    elif star_mode == "decrease":
+        if star_val <= 0: raise HTTPException(status_code=400, detail="Star decrease value must be > 0")
+        star_delta = -star_val
+    elif star_mode == "set_zero":
+        # Neutralize existing total by inserting a negative adjustment of the
+        # same magnitude. Reads current cumulative from the source of truth.
+        agg = await db.star_rewards.aggregate([
+            {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}}},
+            {"$group": {"_id": None, "s": {"$sum": "$stars"}}},
+        ]).to_list(1)
+        current_stars = agg[0]["s"] if agg else 0
+        star_delta = -current_stars
+
+    # ---- Compute flag delta -----------------------------------------------
+    try: flag_val = int(body.get("flag_value") or 0)
+    except (ValueError, TypeError): flag_val = 0
+    flag_delta = 0
+    if flag_mode == "increase":
+        if flag_val <= 0: raise HTTPException(status_code=400, detail="Flag increase value must be > 0")
+        flag_delta = flag_val
+    elif flag_mode == "decrease":
+        if flag_val <= 0: raise HTTPException(status_code=400, detail="Flag decrease value must be > 0")
+        flag_delta = -flag_val
+    elif flag_mode == "set_zero":
+        agg = await db.star_rewards.aggregate([
+            {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True},
+                        "type": "unsafe"}},
+            {"$count": "c"},
+        ]).to_list(1)
+        current_flags = agg[0]["c"] if agg else 0
+        flag_delta = -current_flags
+
+    # ---- Persist a single audit row per adjustment ------------------------
+    current_month = get_ist_now().strftime("%Y-%m")
+    today_iso = datetime.now().isoformat()
+    audit_reason = f"[Adjustment · {current_user.get('name') or current_user.get('username')}] {note}"
+    if star_mode != "none":
+        audit_reason += f" · Stars: {star_mode}({star_delta:+d})"
+    if flag_mode != "none":
+        audit_reason += f" · Flags: {flag_mode}({flag_delta:+d})"
+
+    row = {
+        "id": str(uuid.uuid4()),
+        "employee_id": emp_id,
+        "stars": int(star_delta),           # actual delta persisted
+        "flag_delta": int(flag_delta),      # informational only
+        "reason": audit_reason,
+        "type": "adjustment",               # not 'unsafe' — we manage flag_delta separately
+        "awarded_by": current_user["id"],
+        "month": current_month,
+        "ref_date": get_ist_now().strftime("%Y-%m-%d"),
+        "source": "manual_adjustment",      # protected from auto-recompute
+        "note": note,
+        "created_at": today_iso,
+    }
+    await db.star_rewards.insert_one(row.copy())
+
+    # ---- Recompute totals from source-of-truth ----------------------------
+    star_agg = await db.star_rewards.aggregate([
+        {"$match": {"employee_id": emp_id, "is_deleted": {"$ne": True}}},
+        {"$group": {"_id": None, "stars": {"$sum": "$stars"},
+                    "flag_adj": {"$sum": "$flag_delta"},
+                    "unsafe_rows": {"$sum": {"$cond": [{"$eq": ["$type", "unsafe"]}, 1, 0]}}}}
+    ]).to_list(1)
+    stars_total = star_agg[0]["stars"] if star_agg else 0
+    unsafe_from_rows = star_agg[0]["unsafe_rows"] if star_agg else 0
+    flag_adj = star_agg[0].get("flag_adj", 0) if star_agg else 0
+    unsafe_total = max(0, unsafe_from_rows + flag_adj)  # flags never go negative
+    await db.employees.update_one({"id": emp_id}, {"$set": {
+        "stars": stars_total, "unsafe_count": unsafe_total,
+    }})
+
+    await log_audit(current_user["id"], "adjust_star_reward", "star_reward", emp_id,
+                    f"star_delta={star_delta:+d} flag_delta={flag_delta:+d} note={note[:80]}")
+    return {
+        "message": "Adjustment recorded",
+        "star_delta": star_delta, "flag_delta": flag_delta,
+        "new_stars": stars_total, "new_unsafe": unsafe_total,
+        "audit_row_id": row["id"],
+    }
+
+
+# ============================================================================
+# Star Reward AUTOMATION — per §4/§5/§6/§10 of the BluBridge Research Star
+# Policy. Manual awards remain untouched. Auto rows carry `source: 'auto'`.
+# ============================================================================
+from star_reward_automation import compute_auto_stars, apply_auto_stars, RULE_CATALOG
+
+
+@api_router.get("/star-rewards/auto/rules")
+async def star_auto_rules(current_user: dict = Depends(get_current_user)):
+    """Return the automation rule catalog (read-only reference for the UI)."""
+    return {"rules": RULE_CATALOG}
+
+
+@api_router.post("/star-rewards/auto/preview")
+async def star_auto_preview(body: dict, current_user: dict = Depends(get_current_user)):
+    """Compute what would be awarded for an employee between start_date and end_date.
+    Read-only — HR previews the breakdown before applying."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp_id = (body or {}).get("employee_id")
+    start_date = (body or {}).get("start_date")
+    end_date = (body or {}).get("end_date") or datetime.now().strftime("%Y-%m-%d")
+    if not emp_id or not start_date:
+        raise HTTPException(status_code=400, detail="employee_id and start_date are required")
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if emp.get("department") != "Research Unit":
+        raise HTTPException(status_code=400, detail="Automation is available for Research Unit employees only")
+    result = await compute_auto_stars(db, emp_id, start_date, end_date)
+    result["employee"] = {"id": emp["id"], "full_name": emp.get("full_name"),
+                          "department": emp.get("department"), "team": emp.get("team")}
+    return result
+
+
+@api_router.post("/star-rewards/auto/apply")
+async def star_auto_apply(body: dict, current_user: dict = Depends(get_current_user)):
+    """Persist the auto-computed rewards. Idempotent: re-running for the same
+    range replaces prior auto rows for that employee in that window."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    emp_id = (body or {}).get("employee_id")
+    start_date = (body or {}).get("start_date")
+    end_date = (body or {}).get("end_date") or datetime.now().strftime("%Y-%m-%d")
+    if not emp_id or not start_date:
+        raise HTTPException(status_code=400, detail="employee_id and start_date are required")
+    emp = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if emp.get("department") != "Research Unit":
+        raise HTTPException(status_code=400, detail="Automation is available for Research Unit employees only")
+    result = await apply_auto_stars(db, emp_id, start_date, end_date, current_user["id"])
+    await log_audit(current_user["id"], "auto_award_stars", "star_reward", emp_id,
+                    f"range={start_date}→{end_date} applied={result.get('applied',0)} total_stars={result.get('total_stars',0)}")
+    return result
+
+
+@api_router.post("/star-rewards/auto/bulk-apply")
+async def star_auto_bulk_apply(body: dict = None, current_user: dict = Depends(get_current_user)):
+    """Auto-compute and apply stars for EVERY active Research Unit employee.
+    Each employee is scanned from their own `date_of_joining` (fallback: 2026-01-01)
+    through `end_date` (default: today). Runs sequentially — light on DB pressure
+    and gives a per-employee audit line.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    end_date = ((body or {}).get("end_date")) or datetime.now().strftime("%Y-%m-%d")
+    fallback_start = (body or {}).get("fallback_start_date") or "2026-01-01"
+
+    employees = await db.employees.find({
+        "department": "Research Unit",
+        "is_deleted": {"$ne": True},
+        "employee_status": EmployeeStatus.ACTIVE,
+    }, {"_id": 0, "id": 1, "full_name": 1, "emp_id": 1, "date_of_joining": 1, "team": 1}).to_list(500)
+
+    # Pre-fetch attendance + leaves for the whole department in bulk to avoid
+    # N × network round-trips on this endpoint. Group by employee_id in-memory.
+    emp_ids = [e["id"] for e in employees]
+    from collections import defaultdict as _dd
+    att_by_emp = _dd(list)
+    leaves_by_emp = _dd(list)
+    if emp_ids:
+        att_cursor = db.attendance.find({"employee_id": {"$in": emp_ids}}, {"_id": 0})
+        async for a in att_cursor:
+            att_by_emp[a["employee_id"]].append(a)
+        lv_cursor = db.leaves.find({
+            "employee_id": {"$in": emp_ids},
+            "status": {"$in": ["approved", "Approved"]},
+        }, {"_id": 0})
+        async for lv in lv_cursor:
+            leaves_by_emp[lv["employee_id"]].append(lv)
+
+    per_employee = []
+    total_entries = 0
+    total_positive = 0
+    total_negative = 0
+    for emp in employees:
+        start = emp.get("date_of_joining") or fallback_start
+        # Guard: date_of_joining might be a datetime — coerce to YYYY-MM-DD.
+        if not isinstance(start, str):
+            try: start = start.strftime("%Y-%m-%d")
+            except Exception: start = fallback_start
+        try:
+            res = await apply_auto_stars(
+                db, emp["id"], start, end_date, current_user["id"],
+                att_docs_override=att_by_emp.get(emp["id"], []),
+                leaves_docs_override=leaves_by_emp.get(emp["id"], []),
+            )
+            applied = res.get("applied", 0) or 0
+            total_entries += applied
+            pos = sum(x["stars"] for x in res.get("breakdown", []) if x["stars"] > 0)
+            neg = sum(x["stars"] for x in res.get("breakdown", []) if x["stars"] < 0)
+            total_positive += pos
+            total_negative += neg
+            per_employee.append({
+                "employee_id": emp["id"],
+                "full_name": emp.get("full_name"),
+                "emp_id": emp.get("emp_id"),
+                "team": emp.get("team"),
+                "start_date": start,
+                "applied": applied,
+                "replaced": res.get("replaced", 0),
+                "total_stars": res.get("total_stars", 0),
+                "unsafe_count": res.get("unsafe_count", 0),
+                "positive": pos,
+                "negative": neg,
+                "error": None,
+            })
+        except Exception as e:
+            per_employee.append({
+                "employee_id": emp["id"], "full_name": emp.get("full_name"),
+                "start_date": start, "applied": 0, "total_stars": None, "error": str(e),
+            })
+    await log_audit(current_user["id"], "auto_award_stars_bulk", "star_reward", None,
+                    f"employees={len(employees)} total_entries={total_entries} end_date={end_date}")
+    return {
+        "processed": len(employees),
+        "total_entries_applied": total_entries,
+        "total_positive_stars": total_positive,
+        "total_negative_stars": total_negative,
+        "end_date": end_date,
+        "per_employee": per_employee,
+    }
+
+
+@api_router.get("/star-rewards/auto/monthly/{employee_id}")
+async def star_auto_monthly(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Return the month-wise star breakdown for an employee (auto + manual).
+    Used by admin drill-down and the employee dashboard timeline.
+    """
+    emp = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    # Access control: employees can only see their own monthly view.
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+    rewards = await db.star_rewards.find(
+        {"employee_id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0}
+    ).sort("ref_date", 1).to_list(2000)
+
+    # Group manual overrides with their target entries so the UI shows a
+    # single collapsed row per (ref_date, rule) with the "Admin edited"
+    # indicator instead of two separate rows.
+    override_by_key = {}
+    for r in rewards:
+        if r.get("source") == "manual_adjustment" and r.get("overrides_rule") is not None and r.get("ref_date"):
+            key = f"{r['ref_date']}|{r['overrides_rule']}"
+            override_by_key[key] = r
+
+    from collections import defaultdict as _dd
+    months = {}
+    for r in rewards:
+        # Skip standalone override rows — they'll be attached to their target.
+        if r.get("source") == "manual_adjustment" and r.get("overrides_rule") is not None:
+            continue
+        m = r.get("month") or (r.get("ref_date") or r.get("created_at", ""))[:7]
+        if not m: continue
+        bucket = months.setdefault(m, {
+            "month": m, "stars": 0, "positive": 0, "negative": 0,
+            "auto_stars": 0, "manual_stars": 0, "entries": 0,
+            "categories": _dd(int), "items": [],
+        })
+        s = r.get("stars", 0) or 0
+        # Check whether an override targets this row's (ref_date, rule)
+        ovr = override_by_key.get(f"{r.get('ref_date')}|{r.get('rule')}") if r.get("rule") else None
+        effective_stars = s + (ovr.get("stars", 0) if ovr else 0)
+        bucket["stars"] += effective_stars
+        bucket["entries"] += 1
+        if effective_stars > 0: bucket["positive"] += effective_stars
+        elif effective_stars < 0: bucket["negative"] += effective_stars
+        if r.get("source") == "auto":
+            bucket["auto_stars"] += effective_stars
+        else:
+            bucket["manual_stars"] += effective_stars
+        cat = r.get("category") or ("Manual" if r.get("source") != "auto" else "Auto")
+        bucket["categories"][cat] += effective_stars
+        bucket["items"].append({
+            "id": r.get("id"),
+            "date": r.get("ref_date") or (r.get("created_at", "")[:10]),
+            "original_stars": s,
+            "stars": effective_stars,
+            "reason": r.get("reason"),
+            "category": cat,
+            "rule": r.get("rule"),
+            "source": r.get("source") or "manual",
+            "edited": bool(ovr),
+            "admin_note": ovr.get("note") if ovr else None,
+            "admin_edited_by": ovr.get("awarded_by") if ovr else None,
+            "admin_edited_by_name": ovr.get("awarded_by_name") if ovr else None,
+            "admin_edited_at": ovr.get("created_at") if ovr else None,
+            "leave_validity": ovr.get("leave_validity") if ovr else None,
+            "override_id": ovr.get("id") if ovr else None,
+        })
+
+    # Also surface any orphan overrides (ones whose target auto row no longer
+    # exists after a scheduler re-run — the override still needs to be visible).
+    accounted = set()
+    for m, b in months.items():
+        for it in b["items"]:
+            if it.get("edited") and it.get("date") and it.get("rule"):
+                accounted.add(f"{it['date']}|{it['rule']}")
+    for key, ovr in override_by_key.items():
+        if key not in accounted:
+            m = ovr.get("month") or (ovr.get("ref_date") or "")[:7]
+            if not m: continue
+            bucket = months.setdefault(m, {
+                "month": m, "stars": 0, "positive": 0, "negative": 0,
+                "auto_stars": 0, "manual_stars": 0, "entries": 0,
+                "categories": _dd(int), "items": [],
+            })
+            s = ovr.get("stars", 0) or 0
+            bucket["stars"] += s
+            bucket["entries"] += 1
+            if s > 0: bucket["positive"] += s
+            elif s < 0: bucket["negative"] += s
+            bucket["manual_stars"] += s
+            bucket["items"].append({
+                "id": ovr.get("id"),
+                "date": ovr.get("ref_date"),
+                "original_stars": ovr.get("overrides_target_stars", 0) or 0,
+                "stars": ovr.get("overrides_new_stars", s),
+                "reason": ovr.get("reason"),
+                "category": (ovr.get("overrides_rule") or "manual").replace("_"," ").title(),
+                "rule": ovr.get("overrides_rule"),
+                "source": "auto",  # display as auto-with-override
+                "edited": True,
+                "admin_note": ovr.get("note"),
+                "admin_edited_by": ovr.get("awarded_by"),
+                "admin_edited_by_name": ovr.get("awarded_by_name"),
+                "admin_edited_at": ovr.get("created_at"),
+                "leave_validity": ovr.get("leave_validity"),
+                "override_id": ovr.get("id"),
+            })
+
+    # Convert defaultdicts and sort items in each month by date
+    ordered = []
+    for m in sorted(months.keys()):
+        b = months[m]
+        b["categories"] = dict(b["categories"])
+        b["items"].sort(key=lambda x: x.get("date") or "")
+        ordered.append(b)
+
+    total = sum(m["stars"] for m in ordered)
+    return {
+        "employee": {"id": emp["id"], "full_name": emp.get("full_name"),
+                     "date_of_joining": emp.get("date_of_joining"),
+                     "department": emp.get("department"), "team": emp.get("team")},
+        "months": ordered,
+        "cumulative_stars": total,
+        "current_month": datetime.now().strftime("%Y-%m"),
+    }
+
+
+@api_router.get("/star-rewards/auto/scheduler-status")
+async def star_auto_scheduler_status(current_user: dict = Depends(get_current_user)):
+    """Report the last automatic recompute — proves the daily job is healthy."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    doc = await db.cron_settings.find_one({"job_name": "daily_star_recompute"}, {"_id": 0})
+    return doc or {"job_name": "daily_star_recompute", "last_run_at": None,
+                   "note": "Not run yet — the daily job triggers at 02:00 IST."}
+
+
+@api_router.post("/star-rewards/auto/scheduler-run-now")
+async def star_auto_scheduler_run_now(current_user: dict = Depends(get_current_user)):
+    """Trigger the daily recompute immediately (useful for QA + first-time setup)."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    from star_reward_automation import _daily_bulk_recompute
+    res = await _daily_bulk_recompute(db, current_user["id"])
+    return {"message": "Recompute complete", **res}
+
+
+
+@api_router.get("/employee/star-rewards/me")
+async def employee_get_own_stars(current_user: dict = Depends(get_current_user)):
+    """Employee-facing view of their own star rewards.
+
+    Any authenticated user with a linked employee record can call this — the
+    query is anchored on the current user's linked employee only, so there's
+    no cross-employee data leak. Returns the totals shown on the employee's
+    dashboard tile plus the full award history for the timeline UI.
+    """
+    employee = await db.employees.find_one(
+        {"id": current_user.get("employee_id")}, {"_id": 0}
+    )
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee profile not found")
+
+    stars_total = employee.get("stars", 0) or 0
+    unsafe_total = employee.get("unsafe_count", 0) or 0
+
+    history = await db.star_rewards.find(
+        {"employee_id": employee["id"]}, {"_id": 0},
+    ).sort("created_at", -1).to_list(200)
+
+    # Resolve awarder names in a single batch (avoid N+1 for long histories).
+    awarder_ids = list({r["awarded_by"] for r in history if r.get("awarded_by")})
+    awarder_names = {}
+    if awarder_ids:
+        users = await db.users.find(
+            {"id": {"$in": awarder_ids}}, {"_id": 0, "id": 1, "name": 1, "full_name": 1, "username": 1}
+        ).to_list(len(awarder_ids))
+        awarder_names = {u["id"]: (u.get("name") or u.get("full_name") or u.get("username") or "HR") for u in users}
+    for r in history:
+        r["awarded_by_name"] = awarder_names.get(r.get("awarded_by"), "HR")
+
+    # Derive month-wise breakdown (last 6 months) for a small trend chart.
+    # BUGFIX 2026-07-16: previously used dict-insertion order (which depended on
+    # history sort order, arbitrary when many rows share the same created_at).
+    # Now sorted deterministically by month-key ASCENDING and unsafe entries
+    # correctly contribute their negative stars to the monthly total.
+    monthly_map = {}
+    for r in history:
+        m = r.get("month") or (r.get("ref_date") or r.get("created_at", ""))[:7]
+        if not m:
+            continue
+        cell = monthly_map.setdefault(m, {"month": m, "stars": 0, "unsafe": 0})
+        cell["stars"] += (r.get("stars", 0) or 0)  # always contribute (pos and neg)
+        if r.get("type") == "unsafe":
+            cell["unsafe"] += 1
+    monthly_sorted = [monthly_map[k] for k in sorted(monthly_map.keys())]
+
+    return {
+        "employee": {
+            "id": employee["id"],
+            "full_name": employee.get("full_name"),
+            "department": employee.get("department"),
+            "team": employee.get("team"),
+            "designation": employee.get("designation"),
+            "avatar": employee.get("avatar"),
+        },
+        "totals": {"stars": stars_total, "unsafe": unsafe_total},
+        "history": [serialize_doc(r) for r in history],
+        "monthly": monthly_sorted[-6:],  # last 6 months, in chronological order
+    }
+
+# ============== TEAM ROUTES ==============
+
+@api_router.get("/teams")
+async def get_teams(department: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    query = {"is_deleted": {"$ne": True}}
+    if department and department != "All":
+        query["department"] = department
+
+    # SECURITY: employees get the MINIMAL dropdown shape (id + name) only —
+    # no member counts, descriptions, leads or other internal team records.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        teams = await db.teams.find(query, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+        return [{"id": t.get("id"), "name": t.get("name")} for t in teams]
+
+    teams = await db.teams.find(query, {"_id": 0}).to_list(100)
+    
+    # Calculate member counts in a SINGLE aggregation pipeline instead of
+    # N parallel count_documents calls. Removes per-team round-trip latency.
+    if teams:
+        team_names = [t["name"] for t in teams]
+        counts_pipeline = [
+            {"$match": {
+                "team": {"$in": team_names},
+                "is_deleted": {"$ne": True},
+                "employee_status": EmployeeStatus.ACTIVE,
+            }},
+            {"$group": {"_id": "$team", "count": {"$sum": 1}}},
+        ]
+        agg = await db.employees.aggregate(counts_pipeline).to_list(1000)
+        count_map = {row["_id"]: row["count"] for row in agg}
+        for team in teams:
+            team["member_count"] = count_map.get(team["name"], 0)
+    
+    return [serialize_doc(t) for t in teams]
+
+@api_router.get("/teams/{team_id}")
+async def get_team(team_id: str, current_user: dict = Depends(get_current_user)):
+    require_any_admin(current_user)
+    team = await db.teams.find_one({"id": team_id}, {"_id": 0})
+    if not team:
+        raise HTTPException(status_code=404, detail="Team not found")
+    
+    members = await db.employees.find({
+        "team": team["name"],
+        "is_deleted": {"$ne": True},
+        "employee_status": EmployeeStatus.ACTIVE
+    }, {"_id": 0}).to_list(100)
+    
+    return {"team": serialize_doc(team), "members": [serialize_doc(m) for m in members]}
+
+@api_router.get("/departments")
+async def get_departments(current_user: dict = Depends(get_current_user)):
+    # SECURITY: employees get the MINIMAL dropdown shape (id + name) only —
+    # never employee counts, team counts or other internal department records.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        rows = await db.departments.find(
+            {"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(100)
+        return [{"id": d.get("id"), "name": d.get("name")} for d in rows]
+
+    departments = await db.departments.find({"is_deleted": {"$ne": True}}, {"_id": 0}).to_list(100)
+    
+    # Calculate actual counts via 2 single aggregation pipelines (was 2*N round-trips).
+    if departments:
+        dept_names = [d["name"] for d in departments]
+        emp_pipeline = [
+            {"$match": {
+                "department": {"$in": dept_names},
+                "is_deleted": {"$ne": True},
+                "employee_status": EmployeeStatus.ACTIVE,
+            }},
+            {"$group": {"_id": "$department", "count": {"$sum": 1}}},
+        ]
+        team_pipeline = [
+            {"$match": {"department": {"$in": dept_names}}},
+            {"$group": {"_id": "$department", "count": {"$sum": 1}}},
+        ]
+        emp_agg, team_agg = await asyncio.gather(
+            db.employees.aggregate(emp_pipeline).to_list(1000),
+            db.teams.aggregate(team_pipeline).to_list(1000),
+        )
+        emp_map = {r["_id"]: r["count"] for r in emp_agg}
+        team_map = {r["_id"]: r["count"] for r in team_agg}
+        for dept in departments:
+            dept["employee_count"] = emp_map.get(dept["name"], 0)
+            dept["team_count"] = team_map.get(dept["name"], 0)
+    
+    return [serialize_doc(d) for d in departments]
+
+# ============== DASHBOARD ROUTES ==============
+
+async def _personal_dashboard_stats(current_user: dict, query_from: str, query_to: str) -> dict:
+    """Employee-scoped dashboard statistics (OWN records only).
+
+    Mirrors the shape the admin dashboard consumes, but every number is
+    computed from the authenticated employee's OWN attendance/leave rows.
+    Company headcount and company-wide aggregates are never included.
+    """
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="No employee profile linked to this user")
+
+    try:
+        f_d = datetime.strptime(query_from, "%d-%m-%Y").date()
+        t_d = datetime.strptime(query_to, "%d-%m-%Y").date()
+    except (ValueError, TypeError):
+        f_d = t_d = get_ist_now().date()
+    if t_d < f_d:
+        f_d, t_d = t_d, f_d
+
+    date_list = []
+    cur = f_d
+    while cur <= t_d and len(date_list) <= 400:
+        date_list.append(cur.strftime("%d-%m-%Y"))
+        cur += timedelta(days=1)
+
+    records = await db.attendance.find(
+        {"employee_id": employee_id, "date": {"$in": date_list}},
+        {"_id": 0, "date": 1, "status": 1, "is_late": 1, "check_in": 1},
+    ).to_list(500)
+
+    present = late = leave = 0
+    for r in records:
+        st = (r.get("status") or "").strip().lower()
+        if "leave" in st:
+            leave += 1
+        elif st in ("absent", "not logged", ""):
+            pass
+        else:
+            present += 1
+        if r.get("is_late") or st == "late login":
+            late += 1
+
+    working_days = len([d for d in date_list
+                        if datetime.strptime(d, "%d-%m-%Y").weekday() != 6])
+    absent = max(0, working_days - present - leave)
+    pct = round((present / working_days) * 100, 1) if working_days else 0.0
+
+    return {
+        "scope": "self",
+        "attendance": {
+            "employee_id": employee_id,
+            "from_date": query_from,
+            "to_date": query_to,
+            "working_days": working_days,
+            "present_days": present,
+            "absent_days": absent,
+            "leave_days": leave,
+            "late_days": late,
+            "attendance_percentage": pct,
+        },
+    }
+
+
+@api_router.get("/dashboard/stats")
+async def get_dashboard_stats(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    today = get_ist_now().strftime("%d-%m-%Y")
+    
+    # Use provided dates or default to today
+    query_from = from_date if from_date else today
+    query_to = to_date if to_date else today
+
+    # SECURITY: a standard employee gets PERSONAL statistics only. No company
+    # headcount, no company-wide attendance, no company-wide leave counts.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        return await _personal_dashboard_stats(current_user, query_from, query_to)
+    
+    # Get counts from employee master - run all in parallel.
+    # NOTE: employee_stats() was removed from this endpoint — the Dashboard UI
+    # only consumes attendance/research/support/leaves fields. Skipping it cut
+    # 15+ extra count_documents calls per dashboard load.
+    base_query = {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE}
+    today_ymd = get_ist_now().strftime("%Y-%m-%d")
+
+    total_research, total_support, pending_approvals, upcoming_leaves, attendance_stats = await asyncio.gather(
+        db.employees.count_documents({**base_query, "department": "Research Unit"}),
+        db.employees.count_documents({**base_query, "department": "Support Staff"}),
+        db.leaves.count_documents({"status": "pending"}),
+        db.leaves.count_documents({"status": "approved", "start_date": {"$gte": today_ymd}}),
+        get_attendance_stats(date=None, from_date=query_from, to_date=query_to, current_user=current_user),
+    )
+    
+    return {
+        "total_research_unit": total_research,
+        "total_support_staff": total_support,
+        "pending_approvals": pending_approvals,
+        "upcoming_leaves": upcoming_leaves,
+        "attendance": attendance_stats,
+    }
+
+@api_router.get("/dashboard/birthdays")
+async def get_dashboard_birthdays(
+    window_days: int = 30,
+    current_user: dict = Depends(get_current_user),
+):
+    """Today's + upcoming birthdays for the dashboard widget.
+
+    - "today" = employees whose DOB month-day equals today's date in IST
+    - "upcoming" = next ``window_days`` days (exclusive of today), chronological
+    Excludes:
+      • soft-deleted employees (``is_deleted=True``)
+      • non-Active employees (``employee_status != 'Active'`` — i.e. Inactive
+        / Resigned / Disabled employees no longer appear in the widget).
+    Single source of truth for both admin + employee dashboards (same API,
+    same query, same window — see ``BirthdayWidget``).
+    """
+    today = get_ist_now().date()
+    today_md = (today.month, today.day)
+
+    todays: list = []
+    upcoming: list = []
+
+    cursor = db.employees.find(
+        {
+            "is_deleted": {"$ne": True},
+            "employee_status": EmployeeStatus.ACTIVE,
+            "date_of_birth": {"$exists": True, "$ne": None},
+        },
+        {"_id": 0, "id": 1, "full_name": 1, "department": 1, "team": 1,
+         "date_of_birth": 1, "designation": 1, "emp_id": 1, "employee_status": 1},
+    )
+    async for emp in cursor:
+        dob = _parse_date_flex(emp.get("date_of_birth"))
+        if not dob:
+            continue
+        if isinstance(dob, datetime):
+            dob = dob.date()
+        emp_md = (dob.month, dob.day)
+        item = {
+            "id": emp.get("id"),
+            "emp_id": emp.get("emp_id"),
+            "full_name": emp.get("full_name"),
+            "department": emp.get("department"),
+            "team": emp.get("team"),
+            "designation": emp.get("designation"),
+            "date_of_birth": emp.get("date_of_birth"),
+            "dob_display": f"{dob.day:02d}-{['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dob.month-1]}",
+        }
+        if emp_md == today_md:
+            todays.append(item)
+            continue
+        # Days until next occurrence
+        try:
+            next_occ = dob.replace(year=today.year)
+        except ValueError:
+            # Feb 29 in non-leap year — fall back to Feb 28
+            next_occ = dob.replace(year=today.year, day=28)
+        if next_occ <= today:
+            try:
+                next_occ = dob.replace(year=today.year + 1)
+            except ValueError:
+                next_occ = dob.replace(year=today.year + 1, day=28)
+        days_until = (next_occ - today).days
+        if 0 < days_until <= window_days:
+            item["days_until"] = days_until
+            item["next_date_display"] = next_occ.strftime("%d-") + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][next_occ.month-1] + next_occ.strftime("-%Y")
+            upcoming.append(item)
+
+    upcoming.sort(key=lambda x: x["days_until"])
+    # SECURITY / DATA MINIMISATION: the birthday widget is the ONE sanctioned
+    # exception where an employee may see colleagues' data. Employees receive
+    # ONLY the fields the widget renders — display name, day/month, department,
+    # team, designation and avatar. No DOB year, emp_id, contact details,
+    # salary, biometric id or any other personal record.
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        avatar_map = {}
+        ids = [i.get("id") for i in (todays + upcoming) if i.get("id")]
+        if ids:
+            async for e in db.employees.find(
+                {"id": {"$in": ids}}, {"_id": 0, "id": 1, "avatar": 1}
+            ):
+                if e.get("avatar"):
+                    avatar_map[e["id"]] = e["avatar"]
+
+        def _sanitize(item: dict) -> dict:
+            dob = _parse_date_flex(item.get("date_of_birth"))
+            if isinstance(dob, datetime):
+                dob = dob.date()
+            out = {
+                "name": item.get("full_name"),
+                "full_name": item.get("full_name"),
+                "birthday_day": dob.day if dob else None,
+                "birthday_month": dob.month if dob else None,
+                "dob_display": item.get("dob_display"),
+                "department": item.get("department"),
+                "team": item.get("team"),
+                "designation": item.get("designation"),
+                "avatar": avatar_map.get(item.get("id")),
+            }
+            if "days_until" in item:
+                out["days_until"] = item["days_until"]
+                out["next_date_display"] = item.get("next_date_display")
+            return out
+
+        return {
+            "today": [_sanitize(i) for i in todays],
+            "upcoming": [_sanitize(i) for i in upcoming],
+            "window_days": window_days,
+        }
+
+    return {"today": todays, "upcoming": upcoming, "window_days": window_days}
+
+
+@api_router.get("/employee/dashboard/weekly-hours")
+async def get_employee_weekly_hours(current_user: dict = Depends(get_current_user)):
+    """Real working-hours-per-day for the current ISO week (Mon–Sun) of the
+    logged-in employee. Reads `attendance.total_hours` ("Xh Ym" format) and
+    converts to decimal hours. Days without attendance return 0 (the UI shows
+    a flat segment, no crash). Avg is computed from days with > 0 hours only.
+    """
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+
+    employee_id = current_user["employee_id"]
+    today = get_ist_now().date()
+    monday = today - timedelta(days=today.weekday())  # 0=Mon
+    sunday = monday + timedelta(days=6)
+
+    # attendance.date is stored as DD-MM-YYYY string
+    iso_dates = [(monday + timedelta(days=i)) for i in range(7)]
+    dd_mm_dates = [d.strftime("%d-%m-%Y") for d in iso_dates]
+
+    records = await db.attendance.find(
+        {"employee_id": employee_id, "date": {"$in": dd_mm_dates}},
+        {"_id": 0, "date": 1, "total_hours": 1, "status": 1, "check_in": 1, "check_out": 1},
+    ).to_list(10)
+    by_date = {r["date"]: r for r in records}
+
+    def parse_hours(val) -> float:
+        if val is None:
+            return 0.0
+        if isinstance(val, (int, float)):
+            return max(0.0, float(val))
+        s = str(val).strip()
+        if not s:
+            return 0.0
+        # "11h 36m" / "11h" / "0h 45m" / "8.5"
+        try:
+            return max(0.0, float(s))
+        except ValueError:
+            pass
+        h = m = 0
+        import re
+        mh = re.search(r"(\d+)\s*h", s)
+        mm = re.search(r"(\d+)\s*m", s)
+        if mh:
+            h = int(mh.group(1))
+        if mm:
+            m = int(mm.group(1))
+        return h + m / 60.0
+
+    WEEKDAYS_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    days: list = []
+    for i, d in enumerate(iso_dates):
+        key = dd_mm_dates[i]
+        rec = by_date.get(key)
+        hours = parse_hours(rec.get("total_hours") if rec else None)
+        days.append({
+            "day": WEEKDAYS_SHORT[i],
+            "date": d.strftime("%Y-%m-%d"),
+            "hours": round(hours, 2),
+            "status": (rec or {}).get("status"),
+            "check_in": (rec or {}).get("check_in"),
+            "check_out": (rec or {}).get("check_out"),
+        })
+
+    worked = [x["hours"] for x in days if x["hours"] > 0]
+    avg = round(sum(worked) / len(worked), 2) if worked else 0.0
+    return {
+        "week_start": monday.strftime("%Y-%m-%d"),
+        "week_end": sunday.strftime("%Y-%m-%d"),
+        "days": days,
+        "avg_hours": avg,
+        "total_hours": round(sum(worked), 2),
+    }
+
+
+@api_router.get("/dashboard/leave-list")
+async def get_dashboard_leave_list(
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    require_any_admin(current_user)
+    today = get_ist_now().strftime("%d-%m-%Y")
+    query_date = from_date if from_date else today
+
+    # Prepare independent queries — all three (employees / attendance / leaves)
+    # are answered by different collections and don't depend on each other,
+    # so we can fire them in parallel and cut ~2×240ms of Atlas latency.
+    emp_task = db.employees.find({
+        "is_deleted": {"$ne": True},
+        "attendance_tracking_enabled": {"$ne": False},
+    }, {"_id": 0}).to_list(20000)
+
+    # Attendance dates are DD-MM-YYYY; enumerate to leverage the date index.
+    if from_date and to_date:
+        try:
+            _f = datetime.strptime(from_date, "%d-%m-%Y").date()
+            _t = datetime.strptime(to_date, "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            _f = _t = None
+        if _f and _t and _f <= _t and (_t - _f).days <= 366:
+            date_list = []
+            cur = _f
+            while cur <= _t:
+                date_list.append(cur.strftime("%d-%m-%Y"))
+                cur += timedelta(days=1)
+            att_task = db.attendance.find({"date": {"$in": date_list}}, {"_id": 0}).to_list(50000)
+        else:
+            async def _empty(): return []
+            att_task = _empty()
+    else:
+        att_task = db.attendance.find({"date": query_date}, {"_id": 0}).to_list(1000)
+
+    # --- Leave priority lookup -------------------------------------------------
+    # Leaves use YYYY-MM-DD for start_date / end_date. Convert DD-MM-YYYY query
+    # date(s) to that format so we can cross-reference reliably.
+    def _dmy_to_ymd(ds: Optional[str]) -> Optional[str]:
+        if not ds:
+            return None
+        try:
+            return datetime.strptime(ds, "%d-%m-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            return ds  # assume already YYYY-MM-DD
+
+    ymd_from = _dmy_to_ymd(from_date or query_date)
+    ymd_to = _dmy_to_ymd(to_date or query_date)
+
+    leave_task = db.leaves.find(
+        {
+            "status": {"$in": ["approved", "Approved", "APPROVED"]},
+            "start_date": {"$lte": ymd_to},
+            "end_date": {"$gte": ymd_from},
+        },
+        {"_id": 0},
+    ).to_list(5000)
+
+    all_employees, logged_records, leave_docs = await asyncio.gather(emp_task, att_task, leave_task)
+
+    # Per-date eligibility — every employee is checked against their DOJ /
+    # relieving date on the SPECIFIC calendar date. Employees not employed on
+    # any day of the window are removed before further processing.
+    win_lo_int = _normalize_date_to_int(from_date or query_date) or 0
+    win_hi_int = _normalize_date_to_int(to_date or query_date) or win_lo_int or 99999999
+    eligible_employees = []
+    for e in all_employees:
+        doj_int, last_int = _employment_window(e)
+        # Overlaps window?
+        if doj_int is not None and doj_int > win_hi_int:
+            continue
+        if last_int is not None and last_int < win_lo_int:
+            continue
+        e["_doj_int"] = doj_int
+        e["_last_int"] = last_int
+        eligible_employees.append(e)
+    all_employees = eligible_employees
+
+    logged_ids = {a["employee_id"] for a in logged_records
+                  if (a.get("check_in") or a.get("check_in_24h"))}
+
+    # Approved missed-punches also mean the employee HAS a valid login for
+    # that date — merge them into the logged_ids set so they don't get
+    # incorrectly classified as No Login.
+    mp_map_leave = await _load_approved_missed_punches(win_lo_int, win_hi_int)
+    for (emp_id, _date), mp in mp_map_leave.items():
+        if (mp.get("punch_type") in ("Check-in", "Both")) and mp.get("check_in_time"):
+            logged_ids.add(emp_id)
+
+    # Index best leave per employee (approved wins over pending)
+    leave_by_emp: dict = {}
+    status_rank = {"approved": 2, "pending": 1}
+    for lv in leave_docs:
+        emp_id = lv.get("employee_id")
+        if not emp_id:
+            continue
+        current = leave_by_emp.get(emp_id)
+        if not current or status_rank.get(lv.get("status"), 0) > status_rank.get(current.get("status"), 0):
+            leave_by_emp[emp_id] = lv
+
+    # --- Build response ---------------------------------------------------------
+    # RULE (user, 2026-07-23): an employee with a valid check-in belongs under
+    # Completed / Logged-In ONLY — never in Leaves/No Login, even when an
+    # approved leave overlaps the window. Kept in lock-step with
+    # get_attendance_stats so the tile count == this list length.
+    result = []
+
+    # 1) Employees on leave for the window (who did NOT actually work)
+    for emp in all_employees:
+        lv = leave_by_emp.get(emp["id"])
+        if not lv:
+            continue
+        if emp["id"] in logged_ids:
+            continue
+        # Display leave date in DD-MM-YYYY for UI consistency
+        try:
+            lv_start_display = datetime.strptime(lv.get("start_date", ""), "%Y-%m-%d").strftime("%d-%m-%Y")
+        except (ValueError, TypeError):
+            lv_start_display = lv.get("start_date") or query_date
+        result.append({
+            "emp_name": emp["full_name"],
+            "team": emp.get("team"),
+            "department": emp.get("department"),
+            "leave_type": lv.get("leave_type") or "Leave",
+            "leave_split": lv.get("leave_split"),
+            "date": lv_start_display,
+            "status": "Leave" if lv.get("status") == "approved" else "Pending Leave",
+            "reason": lv.get("reason"),
+        })
+
+    # 2) No attendance AND no leave
+    for emp in all_employees:
+        if emp["id"] in logged_ids:
+            continue
+        if emp["id"] in leave_by_emp:
+            continue
+        result.append({
+            "emp_name": emp["full_name"],
+            "team": emp.get("team"),
+            "department": emp.get("department"),
+            "leave_type": "-",
+            "date": query_date,
+            "status": "Not Login",
+        })
+
+    return result[:50]
+
+# ============== REPORTS ROUTES ==============
+
+def _normalize_date_to_int(ds: Optional[str]) -> Optional[int]:
+    """Convert any common date string to YYYYMMDD int for sortable comparison.
+    Accepts DD-MM-YYYY, YYYY-MM-DD, DD/MM/YYYY, YYYY/MM/DD, ISO strings."""
+    if not ds:
+        return None
+    # Defensive: some legacy/imported employee records persist non-string
+    # values (e.g. last_day_payable=True) — those would crash .strip() and
+    # 500 the report export. Treat any non-string as "no date".
+    if not isinstance(ds, str):
+        return None
+    s = ds.strip().split("T")[0].replace("/", "-")
+    parts = s.split("-")
+    if len(parts) != 3:
+        return None
+    try:
+        a, b, c = int(parts[0]), int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+    if len(parts[0]) == 4:        # YYYY-MM-DD
+        return a * 10000 + b * 100 + c
+    if len(parts[2]) == 4:        # DD-MM-YYYY
+        return c * 10000 + b * 100 + a
+    return None
+
+
+def _employment_window(emp) -> tuple:
+    """(doj_int, last_int) for an employee. last_int is None when the employee
+    is Active or has no recorded exit date (treated as still employed)."""
+    doj_int = _normalize_date_to_int(emp.get("date_of_joining"))
+    last_int = None
+    if emp.get("employee_status") != EmployeeStatus.ACTIVE:
+        last_int = (_normalize_date_to_int(emp.get("last_day_payable"))
+                    or _normalize_date_to_int(emp.get("inactive_date")))
+    return doj_int, last_int
+
+
+def _employed_on_date(emp, d_int: int) -> bool:
+    """True if the employee was employed on the given YYYYMMDD int date."""
+    doj_int, last_int = _employment_window(emp)
+    if doj_int is not None and d_int < doj_int:
+        return False
+    if last_int is not None and d_int > last_int:
+        return False
+    return True
+
+
+# ============================================================================
+# UNIFIED ATTENDANCE SERVICE (single source of truth for Dashboard, Attendance,
+# Reports). Enforces:
+#   1. Employee eligibility per selected date (Joining Date ≤ date ≤ Relieving)
+#   2. Approved missed-punch / punch-correction merge (belt-and-braces overlay
+#      for approved requests whose async apply hasn't yet propagated).
+#   3. Department full-day threshold for the "Completed" bucket.
+#      (Research 11h, Business&Product 10h, Support 9h — from
+#      DEPARTMENT_WORK_HOURS.)
+#   4. Same normalized records feed Dashboard tiles, Attendance grid, Reports.
+# ============================================================================
+
+
+def _employed_on_date_int(doj_int: Optional[int], last_int: Optional[int], d_int: int) -> bool:
+    """Cheap version of ``_employed_on_date`` that avoids re-parsing the
+    employee's dates for every row. Used by the hot-path filters below."""
+    if doj_int is not None and d_int < doj_int:
+        return False
+    if last_int is not None and d_int > last_int:
+        return False
+    return True
+
+
+def _dept_full_hours_threshold(department: Optional[str]) -> Optional[float]:
+    """Full-day working-hours threshold for the department (payroll SSOT).
+    Returns None for unknown departments (Completed then depends only on the
+    stored status, preserving legacy behaviour for exotic departments)."""
+    if not department:
+        return None
+    cfg = DEPARTMENT_WORK_HOURS.get(department)
+    if not cfg:
+        return None
+    try:
+        return float(cfg.get("full", 0)) or None
+    except (TypeError, ValueError):
+        return None
+
+
+async def _load_employees_map(only_tracking: bool = True) -> dict:
+    """Return {employee_id: employee_doc} for eligibility checks. Includes
+    resigned/inactive employees so historical counts (before their relieving
+    date) still include them. Excludes soft-deleted employees."""
+    q: dict = {"is_deleted": {"$ne": True}}
+    if only_tracking:
+        q["attendance_tracking_enabled"] = {"$ne": False}
+    projection = {
+        "_id": 0, "id": 1, "full_name": 1, "emp_id": 1, "team": 1,
+        "department": 1, "designation": 1, "office_location": 1,
+        "shift_type": 1, "employee_status": 1, "date_of_joining": 1,
+        "inactive_date": 1, "last_day_payable": 1,
+        "attendance_tracking_enabled": 1,
+    }
+    docs = await db.employees.find(q, projection).to_list(20000)
+    out = {}
+    for e in docs:
+        doj_int, last_int = _employment_window(e)
+        e["_doj_int"] = doj_int
+        e["_last_int"] = last_int
+        out[e["id"]] = e
+    return out
+
+
+def _is_row_eligible(rec: dict, emp_map: dict) -> bool:
+    """True iff the employee referenced by an attendance row was employed on
+    that row's calendar date (single source of truth for Dashboard / Attendance
+    / Reports). Rows whose employee has been hard-deleted or whose date fails
+    to parse are dropped (they cannot be legitimately displayed)."""
+    emp = emp_map.get(rec.get("employee_id"))
+    if not emp:
+        return False
+    d_int = _normalize_date_to_int(rec.get("date"))
+    if d_int is None:
+        return False
+    return _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int)
+
+
+def _apply_eligibility_filter(records: list, emp_map: dict) -> list:
+    """Drop attendance rows for employees who were NOT employed on the row's
+    calendar date (Joining Date ≤ date AND (Relieving Date empty OR ≥ date))."""
+    return [r for r in records if _is_row_eligible(r, emp_map)]
+
+
+def _enforce_completed_hours_threshold(rec: dict, emp_map: dict) -> None:
+    """Adjust the stored status of an attendance row so the Dashboard tile
+    definition of "Completed" matches the department full-day threshold. Rows
+    that fall short of the threshold get flagged as short-hours (LOP) so
+    ``classify_attendance_bucket`` re-buckets them from 'completed' → 'early_out'.
+
+    Mutates the record in place. Only fires when BOTH punches are present and
+    the total hours are known to be below the threshold. Never touches a row
+    whose stored status is already LOP/LATE_LOGIN or a valid Sunday state."""
+    if not rec:
+        return
+    has_in = bool(rec.get("check_in") or rec.get("check_in_24h"))
+    has_out = bool(rec.get("check_out") or rec.get("check_out_24h"))
+    if not (has_in and has_out):
+        return
+    status = (rec.get("status") or "").strip()
+    if status in (AttendanceStatus.LOSS_OF_PAY, AttendanceStatus.LATE_LOGIN,
+                  AttendanceStatus.SUNDAY, AttendanceStatus.WORKED_ON_SUNDAY):
+        return
+    emp = emp_map.get(rec.get("employee_id"))
+    threshold = _dept_full_hours_threshold((emp or {}).get("department") or rec.get("department"))
+    if threshold is None:
+        return
+    hrs = rec.get("total_hours_decimal")
+    if hrs is None:
+        # Derive from HH:MM string if numeric field is missing.
+        c_in = rec.get("check_in_24h")
+        c_out = rec.get("check_out_24h")
+        try:
+            in_m = parse_time_24h_to_minutes(c_in) if c_in else None
+            out_m = parse_time_24h_to_minutes(c_out) if c_out else None
+            if in_m is not None and out_m is not None:
+                total_m = out_m - in_m if out_m >= in_m else (24 * 60 - in_m + out_m)
+                hrs = total_m / 60.0
+        except Exception:
+            hrs = None
+    if hrs is None:
+        return
+    if float(hrs) + 1e-6 < threshold:
+        # Downgrade to short-day so the strict "Completed" bucket excludes it.
+        rec["status"] = AttendanceStatus.LOSS_OF_PAY
+        rec["is_lop"] = True
+        rec["lop_reason"] = (rec.get("lop_reason")
+                             or f"Short of dept full-day threshold "
+                                f"({hrs:.2f}h < {threshold}h)")
+
+
+async def _load_approved_missed_punches(f_int: Optional[int],
+                                        t_int: Optional[int]) -> dict:
+    """Return {(employee_id, date_ddmmyyyy): missed_punch_doc} for approved
+    missed-punch / punch-correction requests overlapping the date window. This
+    is the belt-and-braces overlay for approved requests whose async apply may
+    not yet have propagated into ``db.attendance``.
+    Pending / rejected / cancelled requests are excluded."""
+    q: dict = {"status": {"$in": ["approved", "Approved", "APPROVED"]}}
+    # Push date filter to Mongo where possible — requests store the date as
+    # either DD-MM-YYYY or YYYY-MM-DD; enumerate both forms for the window
+    # so the query hits the indexed field.
+    if f_int is not None and t_int is not None and (t_int - f_int) < 3660000:  # ~1 year sanity
+        try:
+            f_d = datetime.strptime(str(f_int), "%Y%m%d").date()
+            t_d = datetime.strptime(str(t_int), "%Y%m%d").date()
+            date_forms = []
+            cur = f_d
+            while cur <= t_d and len(date_forms) < 500:
+                date_forms.append(cur.strftime("%d-%m-%Y"))
+                date_forms.append(cur.strftime("%Y-%m-%d"))
+                cur += timedelta(days=1)
+            q["date"] = {"$in": date_forms}
+        except (ValueError, TypeError):
+            pass
+    docs = await db.missed_punches.find(q, {"_id": 0}).to_list(20000)
+    out = {}
+    for d in docs:
+        raw = d.get("date") or ""
+        # Normalize date to DD-MM-YYYY (attendance canonical) — requests may
+        # be stored as YYYY-MM-DD from the HTML date input.
+        try:
+            if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+                ddmmyyyy = datetime.strptime(raw, "%Y-%m-%d").strftime("%d-%m-%Y")
+            else:
+                ddmmyyyy = raw
+        except Exception:
+            ddmmyyyy = raw
+        d_int = _normalize_date_to_int(ddmmyyyy)
+        if d_int is None:
+            continue
+        if (f_int is not None and d_int < f_int) or (t_int is not None and d_int > t_int):
+            continue
+        key = (d.get("employee_id"), ddmmyyyy)
+        out[key] = d
+    return out
+
+
+def _extract_24h(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if "T" in s:
+        s = s.split("T")[-1]
+    try:
+        return datetime.strptime(s[:5], "%H:%M").strftime("%H:%M")
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(s, "%I:%M %p").strftime("%H:%M")
+    except ValueError:
+        return None
+
+
+def _to_12h(t24: Optional[str]) -> Optional[str]:
+    if not t24:
+        return None
+    try:
+        return datetime.strptime(t24, "%H:%M").strftime("%I:%M %p")
+    except ValueError:
+        return None
+
+
+def _overlay_missed_punch(rec: dict, mp: dict) -> None:
+    """Merge an approved missed-punch onto an attendance row (in place) — hard
+    replace on the punch-type-targeted field(s), then recompute status/hours
+    via the existing shift engine. Belt-and-braces: safe to call even when
+    ``_update_attendance_from_missed_punch`` already ran (idempotent)."""
+    punch_type = (mp.get("punch_type") or "").strip()
+    new_in = _extract_24h(mp.get("check_in_time")) if punch_type in ("Check-in", "Both") else None
+    new_out = _extract_24h(mp.get("check_out_time")) if punch_type in ("Check-out", "Both") else None
+    if new_in:
+        rec["check_in_24h"] = new_in
+        rec["check_in"] = _to_12h(new_in)
+    if new_out:
+        rec["check_out_24h"] = new_out
+        rec["check_out"] = _to_12h(new_out)
+    rec["source"] = "corrected"
+    rec["missed_punch_corrected"] = True
+    # Recompute total_hours + status if both punches are now present.
+    c_in = rec.get("check_in_24h")
+    c_out = rec.get("check_out_24h")
+    if c_in and c_out:
+        try:
+            in_m = parse_time_24h_to_minutes(c_in)
+            out_m = parse_time_24h_to_minutes(c_out)
+            total_m = out_m - in_m if out_m >= in_m else (24 * 60 - in_m + out_m)
+            rec["total_hours_decimal"] = round(total_m / 60.0, 2)
+            rec["total_hours"] = calculate_total_hours_str(rec["total_hours_decimal"])
+        except Exception:
+            pass
+        # Best-effort status flip: has both punches → treat as Present unless
+        # existing status is already a stricter classification. The dept-hours
+        # enforcement (called AFTER overlay) will downgrade to LOP if needed.
+        if rec.get("status") in (AttendanceStatus.NOT_LOGGED,
+                                 AttendanceStatus.ABSENT,
+                                 AttendanceStatus.LOGIN, None, ""):
+            rec["status"] = AttendanceStatus.PRESENT
+            rec["is_lop"] = False
+            rec["lop_reason"] = None
+    elif c_in and not c_out:
+        if rec.get("status") in (AttendanceStatus.NOT_LOGGED,
+                                 AttendanceStatus.ABSENT, None, ""):
+            rec["status"] = AttendanceStatus.LOGIN
+            rec["is_lop"] = False
+
+
+async def _apply_attendance_normalizations(records: list,
+                                           emp_map: dict,
+                                           mp_map: Optional[dict] = None,
+                                           enforce_dept_hours: bool = True) -> list:
+    """Central pipeline used by Dashboard / Attendance / Reports:
+
+      1. Eligibility filter (drop rows for employees not employed on that date).
+      2. Merge approved missed-punch overlays (idempotent belt-and-braces).
+      3. Live-enrich team/department from Employee Master.
+      4. Enforce Completed-hours threshold per department.
+
+    ``records`` are mutated / filtered in place; a NEW list is returned."""
+    keep: list = []
+    for r in records:
+        if not _is_row_eligible(r, emp_map):
+            continue
+        emp = emp_map.get(r.get("employee_id")) or {}
+        # Live-enrich (Attendance grid already does this — safe here too).
+        if emp.get("team"):
+            r["team"] = emp["team"]
+        if emp.get("department"):
+            r["department"] = emp["department"]
+        if mp_map:
+            key = (r.get("employee_id"), r.get("date"))
+            mp = mp_map.get(key)
+            if mp:
+                _overlay_missed_punch(r, mp)
+        if enforce_dept_hours:
+            _enforce_completed_hours_threshold(r, emp_map)
+        keep.append(r)
+    return keep
+
+
+def _build_missed_punch_stub(mp: dict, emp: dict) -> dict:
+    """Materialize an attendance-shaped record from an approved missed-punch
+    for a (employee, date) that has NO existing attendance row. Used so the
+    request-driven attendance surfaces on the Attendance grid and drives the
+    Dashboard buckets even when biometric data never arrived."""
+    date_ddmmyyyy = None
+    raw = mp.get("date") or ""
+    try:
+        if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+            date_ddmmyyyy = datetime.strptime(raw, "%Y-%m-%d").strftime("%d-%m-%Y")
+        else:
+            date_ddmmyyyy = raw
+    except Exception:
+        date_ddmmyyyy = raw
+    rec = {
+        "id": f"mp-stub-{mp.get('id', '')}",
+        "employee_id": emp.get("id"),
+        "emp_name": emp.get("full_name", ""),
+        "team": emp.get("team", ""),
+        "department": emp.get("department", ""),
+        "date": date_ddmmyyyy,
+        "check_in": None, "check_in_24h": None,
+        "check_out": None, "check_out_24h": None,
+        "total_hours": None, "total_hours_decimal": None,
+        "status": AttendanceStatus.NOT_LOGGED,
+        "is_lop": False, "lop_reason": None,
+        "shift_type": emp.get("shift_type", "General"),
+        "source": "corrected", "missed_punch_corrected": True,
+        "_synthetic": True,
+    }
+    _overlay_missed_punch(rec, mp)
+    return rec
+
+
+@api_router.get("/reports/attendance")
+async def get_attendance_report(
+    from_date: str,
+    to_date: str,
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    if team and team != "All":
+        query["team"] = team
+    if department and department != "All":
+        query["department"] = department
+    if employee_name and employee_name.strip():
+        # Anchor and case-insensitive — matches both partial typing and exact
+        # autocomplete selections of full name.
+        query["emp_name"] = {"$regex": re.escape(employee_name.strip()), "$options": "i"}
+    if status and status != "All":
+        query["status"] = status
+
+    # Date format mismatch fix: attendance.date is stored DD-MM-YYYY but the
+    # frontend's DatePicker emits YYYY-MM-DD. Compare normalized integer keys.
+    f_int = _normalize_date_to_int(from_date)
+    t_int = _normalize_date_to_int(to_date)
+
+    records = await db.attendance.find(query, {"_id": 0}).to_list(20000)
+    if f_int is not None or t_int is not None:
+        lo = f_int if f_int is not None else 0
+        hi = t_int if t_int is not None else 99999999
+        records = [r for r in records if (lambda v: v is not None and lo <= v <= hi)(_normalize_date_to_int(r.get("date")))]
+
+    # UNIFIED PIPELINE — same eligibility + missed-punch overlay as Dashboard
+    # & Attendance module. Ensures Reports counts / employee lists match.
+    emp_map = await _load_employees_map(only_tracking=True)
+    mp_map = await _load_approved_missed_punches(f_int, t_int)
+    records = await _apply_attendance_normalizations(
+        records, emp_map, mp_map, enforce_dept_hours=True
+    )
+
+    # Materialize approved missed-punch requests without an attendance row so
+    # the report matches the Attendance module / Dashboard.
+    if f_int is not None and t_int is not None:
+        existing_keys = {(r.get("employee_id"), r.get("date")) for r in records}
+        for (emp_id, date_ddmmyyyy), mp in mp_map.items():
+            if (emp_id, date_ddmmyyyy) in existing_keys:
+                continue
+            emp = emp_map.get(emp_id)
+            if not emp:
+                continue
+            d_int = _normalize_date_to_int(date_ddmmyyyy)
+            if d_int is None or not (f_int <= d_int <= t_int):
+                continue
+            if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+                continue
+            if team and team != "All" and emp.get("team") != team:
+                continue
+            if department and department != "All" and emp.get("department") != department:
+                continue
+            if employee_name and employee_name.strip() and \
+                    employee_name.strip().lower() not in (emp.get("full_name") or "").lower():
+                continue
+            stub = _build_missed_punch_stub(mp, emp)
+            _enforce_completed_hours_threshold(stub, emp_map)
+            if status and status != "All" and stub.get("status") != status:
+                continue
+            records.append(stub)
+
+    # Gap-fill "Absent" / "Sunday" rows for eligible employees who have no
+    # attendance record and no approved missed-punch on the given date. This
+    # ensures Reports counts match the Attendance grid & Dashboard No-Login
+    # bucket for the same date/filters.
+    if f_int is not None and t_int is not None and (not status or status in ("All", "", "Absent")):
+        try:
+            _f_d = datetime.strptime(from_date.split("T")[0].replace("/", "-"),
+                                     "%Y-%m-%d" if len(from_date.split("-")[0]) == 4 else "%d-%m-%Y").date()
+            _t_d = datetime.strptime(to_date.split("T")[0].replace("/", "-"),
+                                     "%Y-%m-%d" if len(to_date.split("-")[0]) == 4 else "%d-%m-%Y").date()
+        except (ValueError, TypeError):
+            _f_d = _t_d = None
+        if _f_d and _t_d and _f_d <= _t_d and (_t_d - _f_d).days <= 366:
+            existing_keys = {(r.get("employee_id"), r.get("date")) for r in records}
+            # Cache leaves for the window (approved only) so "No Login" excludes
+            # employees on approved leave (which is the "Leave" bucket).
+            approved_leaves = await db.leaves.find(
+                {"status": {"$in": ["approved", "Approved", "APPROVED"]}},
+                {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1},
+            ).to_list(20000)
+            leave_ranges: dict = {}
+            for lv in approved_leaves:
+                eid = lv.get("employee_id")
+                s_int = _normalize_date_to_int(lv.get("start_date"))
+                e_int = _normalize_date_to_int(lv.get("end_date")) or s_int
+                if not eid or s_int is None:
+                    continue
+                leave_ranges.setdefault(eid, []).append((s_int, e_int))
+            for emp_id, emp in emp_map.items():
+                # Apply Employee-level filters (team/department/name) — status
+                # already handled at the record level.
+                if team and team != "All" and emp.get("team") != team:
+                    continue
+                if department and department != "All" and emp.get("department") != department:
+                    continue
+                if employee_name and employee_name.strip() and \
+                        employee_name.strip().lower() not in (emp.get("full_name") or "").lower():
+                    continue
+                cur = _f_d
+                while cur <= _t_d:
+                    d_int = cur.year * 10000 + cur.month * 100 + cur.day
+                    if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+                        cur += timedelta(days=1)
+                        continue
+                    date_dd = cur.strftime("%d-%m-%Y")
+                    if (emp_id, date_dd) in existing_keys:
+                        cur += timedelta(days=1)
+                        continue
+                    # On approved leave for this day?
+                    on_leave = False
+                    for s_int, e_int in leave_ranges.get(emp_id, ()):
+                        if s_int <= d_int <= e_int:
+                            on_leave = True
+                            break
+                    stub_status = AttendanceStatus.SUNDAY if cur.weekday() == 6 else \
+                                  (AttendanceStatus.LEAVE if on_leave else AttendanceStatus.ABSENT)
+                    if status == "Absent" and stub_status != AttendanceStatus.ABSENT:
+                        cur += timedelta(days=1)
+                        continue
+                    records.append({
+                        "id": f"stub-{emp_id}-{date_dd}",
+                        "employee_id": emp_id,
+                        "emp_name": emp.get("full_name", ""),
+                        "team": emp.get("team", ""),
+                        "department": emp.get("department", ""),
+                        "date": date_dd,
+                        "check_in": None, "check_in_24h": None,
+                        "check_out": None, "check_out_24h": None,
+                        "total_hours": None, "total_hours_decimal": None,
+                        "status": stub_status,
+                        "is_lop": False, "lop_reason": None,
+                        "shift_type": emp.get("shift_type", "General"),
+                        "_synthetic": True,
+                    })
+                    cur += timedelta(days=1)
+
+    # Stable sort by date asc for predictable export order
+    records.sort(key=lambda r: _normalize_date_to_int(r.get("date")) or 0)
+    return [serialize_doc(r) for r in records]
+
+
+@api_router.get("/reports/attendance/export")
+async def export_attendance_report(
+    from_date: str,
+    to_date: str,
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Export Attendance report in the wide pivot format that matches the
+    reference template, with each attendance field in its OWN dedicated cell:
+
+      Row 1 (date header, merged across 6 cols per day):
+          S.No | Name | Team | Department | <date> | <date> | ...
+      Row 2 (sub-header per date, 6 columns):
+          (blank x4) | In Time | Out Time | Late-in | Early Out | Total Hours | Status | ...
+      Row 3+ (data rows, one per employee).
+
+    No multi-line cells. No combined values. Each atomic field is a discrete
+    column. Compatible with day-wise / month-wise / custom range exports.
+    """
+    f_int = _normalize_date_to_int(from_date)
+    t_int = _normalize_date_to_int(to_date)
+    if f_int is None or t_int is None or f_int > t_int:
+        raise HTTPException(status_code=400, detail="Invalid date range")
+
+    # Resolve target employees with status-aware filtering:
+    #   - Always include currently Active employees.
+    #   - Include employees who left during/after the report start date.
+    #   - Exclude employees whose last working day is BEFORE the report start.
+    emp_query = {"is_deleted": {"$ne": True}}
+    if team and team != "All":
+        emp_query["team"] = team
+    if department and department != "All":
+        emp_query["department"] = department
+    if employee_name and employee_name.strip():
+        emp_query["full_name"] = {"$regex": re.escape(employee_name.strip()), "$options": "i"}
+
+    employees = await db.employees.find(
+        emp_query,
+        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1,
+         "employee_status": 1, "inactive_date": 1, "last_day_payable": 1, "date_of_joining": 1}
+    ).to_list(5000)
+
+    def _is_employee_in_range(emp):
+        # Date-aware employment overlap: exclude only when the employee's
+        # employment window does not intersect the report window at all.
+        doj_int, last_int = _employment_window(emp)
+        if doj_int is not None and doj_int > t_int:
+            return False   # joined after the report window
+        if last_int is not None and last_int < f_int:
+            return False   # exited before the report window
+        return True
+
+    employees = [e for e in employees if _is_employee_in_range(e)]
+    employees.sort(key=lambda e: (e.get("full_name") or "").lower())
+
+    emp_ids = [e["id"] for e in employees]
+    att_query = {"employee_id": {"$in": emp_ids}}
+    if status and status != "All":
+        att_query["status"] = status
+    att_records = await db.attendance.find(att_query, {"_id": 0}).to_list(50000)
+
+    # UNIFIED pipeline — apply eligibility + missed-punch overlay + dept-hours
+    # enforcement so the exported report matches the on-screen counts.
+    emp_map_full = {e["id"]: {**e,
+                              "_doj_int": _employment_window(e)[0],
+                              "_last_int": _employment_window(e)[1]}
+                    for e in employees}
+    mp_map = await _load_approved_missed_punches(f_int, t_int)
+    att_records = await _apply_attendance_normalizations(
+        att_records, emp_map_full, mp_map, enforce_dept_hours=True
+    )
+
+    att_map = {}
+    for r in att_records:
+        v = _normalize_date_to_int(r.get("date"))
+        if v is None or not (f_int <= v <= t_int):
+            continue
+        att_map[(r["employee_id"], r["date"])] = r
+
+    # Materialize approved missed-punches without an attendance row.
+    for (emp_id, date_ddmmyyyy), mp in mp_map.items():
+        if (emp_id, date_ddmmyyyy) in att_map:
+            continue
+        emp = emp_map_full.get(emp_id)
+        if not emp:
+            continue
+        d_int = _normalize_date_to_int(date_ddmmyyyy)
+        if d_int is None or not (f_int <= d_int <= t_int):
+            continue
+        if not _employed_on_date_int(emp.get("_doj_int"), emp.get("_last_int"), d_int):
+            continue
+        stub = _build_missed_punch_stub(mp, emp)
+        _enforce_completed_hours_threshold(stub, emp_map_full)
+        if status and status != "All" and stub.get("status") != status:
+            continue
+        att_map[(emp_id, date_ddmmyyyy)] = stub
+
+    # Build the date list (inclusive)
+    def _parse(ds):
+        ds = ds.split("T")[0].replace("/", "-")
+        if len(ds.split("-")[0]) == 4:
+            return datetime.strptime(ds, "%Y-%m-%d").date()
+        return datetime.strptime(ds, "%d-%m-%Y").date()
+    f_d, t_d = _parse(from_date), _parse(to_date)
+    date_list = []
+    cur = f_d
+    while cur <= t_d:
+        date_list.append(cur)
+        cur += timedelta(days=1)
+
+    SUB_HEADERS = ["In Time", "Out Time", "Late-in", "Early Out", "Total Hours", "Status"]
+    PER_DATE_COLS = len(SUB_HEADERS)
+    FIXED_COLS = 4
+
+    def cells_for_day(emp: dict, d):
+        """Return a 6-tuple (in, out, late, early, hours, status) for one day."""
+        d_int = d.year * 10000 + d.month * 100 + d.day
+        if not _employed_on_date(emp, d_int):
+            # Before joining / after last working day — not employed that day.
+            return ("", "", "", "", "", "-")
+        date_dd = d.strftime("%d-%m-%Y")
+        rec = att_map.get((emp["id"], date_dd))
+        is_sun = d.weekday() == 6
+        if not rec or not (rec.get("check_in") or rec.get("check_in_24h")):
+            status_text = "Sunday (Not Login)" if is_sun else "Not Login"
+            return ("", "", "", "", "", status_text)
+        in_t = rec.get("check_in") or ""
+        out_t = rec.get("check_out") or ""
+        hours = rec.get("total_hours") or ""
+        # Convert "11h 36m" → "11:36"
+        h_clean = hours
+        if hours and "h" in hours:
+            try:
+                hh = int(hours.split("h")[0].strip())
+                mm_part = hours.split("h")[1]
+                mm = int(mm_part.replace("m", "").strip()) if mm_part.strip() else 0
+                h_clean = f"{hh:02d}:{mm:02d}"
+            except Exception:
+                h_clean = hours
+        lop_reason = rec.get("lop_reason") or ""
+        is_late = bool(rec.get("is_lop")) and "Late login" in lop_reason
+        is_early = bool(rec.get("is_lop")) and ("Early out" in lop_reason or "short hours" in lop_reason)
+        if not out_t:
+            return (in_t, "", "Yes" if is_late else "", "", "", "Login")
+        return (in_t, out_t, "Yes" if is_late else "", "Yes" if is_early else "", h_clean, "Logout")
+
+    # Build XLSX
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+
+    bold = Font(bold=True)
+    fill = PatternFill("solid", fgColor="FFEFEFEF")
+    # Subtle, professional flag colors that read well in Excel.
+    LATE_FILL = PatternFill("solid", fgColor="FFFCE4D6")     # light orange
+    EARLY_FILL = PatternFill("solid", fgColor="FFFFF2CC")    # light yellow
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin = Side(border_style="thin", color="FFCCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Row 1 — fixed column headers + per-date merged date headers
+    fixed_headers = ["S.No", "Name", "Team", "Department"]
+    for i, h in enumerate(fixed_headers, 1):
+        c = ws.cell(row=1, column=i, value=h)
+        c.font = bold; c.fill = fill; c.alignment = center; c.border = border
+        ws.merge_cells(start_row=1, start_column=i, end_row=2, end_column=i)
+        ws.cell(row=2, column=i).border = border
+
+    for d_idx, d in enumerate(date_list):
+        start_col = FIXED_COLS + 1 + d_idx * PER_DATE_COLS
+        end_col = start_col + PER_DATE_COLS - 1
+        c = ws.cell(row=1, column=start_col, value=d.strftime("%Y-%m-%d"))
+        c.font = bold; c.fill = fill; c.alignment = center; c.border = border
+        ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+        # Sub-headers in row 2
+        for i, sh in enumerate(SUB_HEADERS):
+            sc = ws.cell(row=2, column=start_col + i, value=sh)
+            sc.font = bold; sc.fill = fill; sc.alignment = center; sc.border = border
+
+    # Data rows starting row 3
+    for idx, emp in enumerate(employees, 1):
+        row = 2 + idx  # row 3 onwards
+        ws.cell(row=row, column=1, value=idx).border = border
+        ws.cell(row=row, column=2, value=emp.get("full_name", "")).border = border
+        ws.cell(row=row, column=3, value=emp.get("team") or "Unassigned").border = border
+        ws.cell(row=row, column=4, value=emp.get("department") or "").border = border
+        for d_idx, d in enumerate(date_list):
+            start_col = FIXED_COLS + 1 + d_idx * PER_DATE_COLS
+            vals = cells_for_day(emp, d)
+            in_val, out_val, late_val, early_val, _hours_val, _status_val = vals
+            is_late = late_val == "Yes"
+            is_early = early_val == "Yes"
+            for i, v in enumerate(vals):
+                c = ws.cell(row=row, column=start_col + i, value=v if v != "" else None)
+                c.alignment = center
+                c.border = border
+                # Cell-level shading only on the relevant columns:
+                #   - Late entry  → light orange on In Time + Late-in marker
+                #   - Early exit  → light yellow on Out Time + Early Out marker
+                if is_late and i in (0, 2):
+                    c.fill = LATE_FILL
+                if is_early and i in (1, 3):
+                    c.fill = EARLY_FILL
+
+    # Column widths
+    ws.column_dimensions["A"].width = 6
+    ws.column_dimensions["B"].width = 24
+    ws.column_dimensions["C"].width = 24
+    ws.column_dimensions["D"].width = 16
+    for i in range(FIXED_COLS + 1, FIXED_COLS + len(date_list) * PER_DATE_COLS + 1):
+        ws.column_dimensions[get_column_letter(i)].width = 11
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 22
+    ws.freeze_panes = "E3"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"attendance_report_{from_date}_to_{to_date}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fname}"}
+    )
+
+
+@api_router.get("/reports/leaves")
+async def get_leave_report(
+    from_date: str,
+    to_date: str,
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    leave_type: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    if team and team != "All":
+        query["team"] = team
+    if department and department != "All":
+        query["department"] = department
+    if employee_name and employee_name.strip():
+        query["emp_name"] = {"$regex": re.escape(employee_name.strip()), "$options": "i"}
+    if leave_type and leave_type != "All":
+        query["leave_type"] = leave_type
+
+    f_int = _normalize_date_to_int(from_date)
+    t_int = _normalize_date_to_int(to_date)
+
+    records = await db.leaves.find(query, {"_id": 0}).to_list(20000)
+    if f_int is not None or t_int is not None:
+        lo = f_int if f_int is not None else 0
+        hi = t_int if t_int is not None else 99999999
+        # A leave overlaps the window if its [start_date, end_date] intersects [lo, hi]
+        def _in_window(rec):
+            s = _normalize_date_to_int(rec.get("start_date"))
+            e = _normalize_date_to_int(rec.get("end_date") or rec.get("start_date"))
+            if s is None and e is None:
+                return False
+            s = s if s is not None else e
+            e = e if e is not None else s
+            return s <= hi and e >= lo
+        records = [r for r in records if _in_window(r)]
+
+    records.sort(key=lambda r: _normalize_date_to_int(r.get("start_date")) or 0)
+    return [serialize_doc(r) for r in records]
+
+@api_router.get("/reports/employees")
+async def get_employee_report(
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {"is_deleted": {"$ne": True}}
+    if department and department != "All":
+        query["department"] = department
+    if team and team != "All":
+        query["team"] = team
+    if status and status != "All":
+        query["employee_status"] = status
+    
+    records = await db.employees.find(query, {"_id": 0}).to_list(10000)
+    return [serialize_doc(r) for r in records]
+
+
+# ----------------------------------------------------------------------------
+#  Office Attendance Report (per-day, per-office summary)
+# ----------------------------------------------------------------------------
+#
+#  GET  /api/reports/office-attendance          → JSON (preview)
+#  GET  /api/reports/office-attendance/export   → XLSX download
+#
+#  One row per (date, office_location) inside [from_date, to_date]. The
+#  Total Employees count is DATE-AWARE — an employee who became Inactive
+#  on 15-Mar-2026 is included in rows up to and including 15-Mar but NOT
+#  after. Office Locations come from the SSOT master so adding a new
+#  location in Settings makes the next export pick it up automatically.
+#
+#  Counting rules (aligned with the existing attendance engine):
+#    • Total Employees   – employees assigned to the office who are
+#                          "employed on this date" (DOJ ≤ date and
+#                          (employee_status == Active OR last_day ≥ date)).
+#    • Present           – employee has an attendance punch on that date.
+#    • On Leave          – an APPROVED leave covers the date.
+#    • Holiday           – the date is a company holiday (single, not per-emp).
+#    • Weekly Off        – Sunday (matches the rest of the platform's logic).
+#    • Absent            – Total − Present − On-Leave  (only on working days).
+#
+#  Holidays and Sundays are NOT counted as Absent (per spec).
+# ----------------------------------------------------------------------------
+
+
+async def _build_office_attendance_rows(from_date: str, to_date: str):
+    """Shared engine for the preview + export endpoints.
+
+    Returns a list of dicts with keys:
+        date_iso (YYYY-MM-DD), date_display (DD-MMM-YYYY), office_location,
+        total_employees, present, absent, on_leave, holiday, weekly_off,
+        attendance_pct (float, 0–100).
+    """
+    f_int = _normalize_date_to_int(from_date)
+    t_int = _normalize_date_to_int(to_date)
+    if f_int is None or t_int is None or f_int > t_int:
+        raise HTTPException(status_code=400, detail="Invalid date range")
+
+    # Parse to date objects for iteration
+    def _parse(ds):
+        ds = ds.split("T")[0].replace("/", "-")
+        if len(ds.split("-")[0]) == 4:
+            return datetime.strptime(ds, "%Y-%m-%d").date()
+        return datetime.strptime(ds, "%d-%m-%Y").date()
+    f_d, t_d = _parse(from_date), _parse(to_date)
+    date_list: list = []
+    cur = f_d
+    while cur <= t_d:
+        date_list.append(cur)
+        cur += timedelta(days=1)
+    date_int_list = [d.year * 10000 + d.month * 100 + d.day for d in date_list]
+
+    # 1) SSOT — pull every configured office location. Use a normalized key
+    #    (whitespace-collapsed, case-insensitive) for grouping so name-variant
+    #    typos like "Mandaveli  -  Chennai" vs "Mandaveli - Chennai" produce
+    #    a SINGLE row per date, not duplicates. The first master row seen for
+    #    a normalized key wins as the display label.
+    import re as _re
+    def _norm_office(name: str) -> str:
+        return _re.sub(r"\s+", " ", (name or "").strip()).casefold()
+    loc_docs = await db.office_locations.find(
+        {"is_deleted": {"$ne": True}}, {"_id": 0, "name": 1}
+    ).sort("name", 1).to_list(500)
+    canon_label: dict = {}                  # norm_key → canonical display name
+    for doc in loc_docs:
+        n = doc.get("name", "")
+        k = _norm_office(n)
+        if not k:
+            continue
+        canon_label.setdefault(k, n.strip())
+    office_keys = list(canon_label.keys())   # canonical, unique
+    # Capture an "Unassigned" bucket too — only emitted if employees actually
+    # land there. Keeps the report honest without forcing a master entry.
+    UNASSIGNED = "Unassigned"
+    UNASSIGNED_KEY = _norm_office(UNASSIGNED)
+    canon_label[UNASSIGNED_KEY] = UNASSIGNED
+
+    # 2) All employees with their office tag, DOJ, status and last working day.
+    emp_cursor = db.employees.find(
+        {"is_deleted": {"$ne": True}},
+        {"_id": 0, "id": 1, "office_location": 1, "employee_status": 1,
+         "date_of_joining": 1, "inactive_date": 1, "last_day_payable": 1}
+    )
+    employees = await emp_cursor.to_list(20000)
+    for emp in employees:
+        doj_int, last_int = _employment_window(emp)
+        emp["_doj_int"] = doj_int
+        emp["_last_int"] = last_int
+        raw_office = (emp.get("office_location") or "").strip()
+        emp["_office_key"] = _norm_office(raw_office) if raw_office else UNASSIGNED_KEY
+
+    emp_ids = [e["id"] for e in employees]
+
+    # 3) Attendance rows for the entire window (one query — no N+1).
+    att_cursor = db.attendance.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "date": 1, "check_in": 1, "check_in_24h": 1, "status": 1}
+    )
+    att_records = await att_cursor.to_list(200000)
+    # Index by (date_int, employee_id) → True if there's a valid check-in
+    present_set: set = set()
+    for r in att_records:
+        d_int = _normalize_date_to_int(r.get("date"))
+        if d_int is None or not (f_int <= d_int <= t_int):
+            continue
+        if r.get("check_in") or r.get("check_in_24h"):
+            present_set.add((d_int, r.get("employee_id")))
+
+    # 4) Approved leaves overlapping the window (one query, expand to per-day).
+    leaves = await db.leaves.find(
+        {"employee_id": {"$in": emp_ids},
+         "status": {"$in": ["approved", "Approved", "APPROVED"]}},
+        {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1}
+    ).to_list(20000)
+    on_leave_set: set = set()
+    for lv in leaves:
+        s_int = _normalize_date_to_int(lv.get("start_date"))
+        e_int = _normalize_date_to_int(lv.get("end_date")) or s_int
+        if s_int is None:
+            continue
+        # Window-clip + iterate days
+        for d_int in date_int_list:
+            if s_int <= d_int <= e_int:
+                on_leave_set.add((d_int, lv.get("employee_id")))
+
+    # 5) Holidays overlapping the window (one query).
+    holiday_ints: set = set()
+    holidays = await db.holidays.find(
+        {}, {"_id": 0, "date": 1}
+    ).to_list(2000)
+    for h in holidays:
+        hi = _normalize_date_to_int(h.get("date"))
+        if hi is not None and f_int <= hi <= t_int:
+            holiday_ints.add(hi)
+
+    # 6) Aggregate per (date, office) using the canonical office KEY so that
+    #    name-variant duplicates (e.g. extra spaces, casing) collapse into
+    #    exactly one logical row per date.
+    rows = []
+    for d, d_int in zip(date_list, date_int_list):
+        is_sunday = d.weekday() == 6
+        is_holiday = d_int in holiday_ints
+        # Per-office buckets for this date — keyed by canonical norm key.
+        bucket: dict = {}  # office_key → counts
+        for emp in employees:
+            # Date-aware employment check
+            doj_int = emp["_doj_int"]
+            if doj_int is not None and doj_int > d_int:
+                continue   # not yet joined on this date
+            last_int = emp["_last_int"]
+            if last_int is not None and last_int < d_int:
+                continue   # exited before this date (no exit date = still employed)
+            office_key = emp["_office_key"]
+            b = bucket.setdefault(office_key, {"total": 0, "present": 0, "on_leave": 0})
+            b["total"] += 1
+            if (d_int, emp["id"]) in present_set:
+                b["present"] += 1
+            elif (d_int, emp["id"]) in on_leave_set:
+                b["on_leave"] += 1
+
+        # Emit ONE row per canonical office key (every SSOT office for shape
+        # stability) PLUS the Unassigned bucket only if non-empty.
+        keys_today = list(office_keys)
+        if UNASSIGNED_KEY in bucket and UNASSIGNED_KEY not in keys_today:
+            keys_today.append(UNASSIGNED_KEY)
+        for k in keys_today:
+            display = canon_label.get(k, k)
+            b = bucket.get(k, {"total": 0, "present": 0, "on_leave": 0})
+            total = b["total"]
+            present = b["present"]
+            on_leave = b["on_leave"]
+            # Holidays / weekly offs: not counted as absent.
+            if is_holiday or is_sunday:
+                absent = 0
+            else:
+                absent = max(0, total - present - on_leave)
+            # Attendance % = Present / Total Employees × 100 (STRICT user rule
+            # 2026-07-23). On-leave employees are NEVER counted as present and
+            # NEVER removed from the denominator. 0.00 when total is 0.
+            pct = round((present / total) * 100, 2) if total else 0.0
+            rows.append({
+                "date_iso": d.isoformat(),
+                "date_display": d.strftime("%d-%b-%Y"),
+                "office_location": display,
+                "total_employees": total,
+                "present": present,
+                "absent": absent,
+                "on_leave": on_leave,
+                "holiday": 1 if is_holiday else 0,
+                "weekly_off": 1 if is_sunday else 0,
+                "attendance_pct": pct,
+            })
+    return rows
+
+
+@api_router.get("/reports/office-attendance")
+async def get_office_attendance_report(
+    from_date: str,
+    to_date: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """JSON preview of the Office Attendance report — one row per
+    (date, office) pair. See `_build_office_attendance_rows` for full
+    counting semantics."""
+    rows = await _build_office_attendance_rows(from_date, to_date)
+    return rows
+
+
+@api_router.get("/reports/office-attendance/export")
+async def export_office_attendance_report(
+    from_date: str,
+    to_date: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """XLSX download of the Office Attendance report. Layout:
+
+      Date | Office Location | Total Employees | Present | Absent |
+      On Leave | Holiday | Weekly Off | Attendance %
+
+    Date format is the HRMS universal DD-MMM-YYYY (e.g. 01-Mar-2026).
+    """
+    rows = await _build_office_attendance_rows(from_date, to_date)
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+    from io import BytesIO
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Office Attendance"
+
+    headers = [
+        "Date", "Office Location", "Total Employees",
+        "Present", "Absent", "On Leave",
+        "Holiday", "Weekly Off", "Attendance %",
+    ]
+    bold = Font(bold=True, color="FFFFFFFF")
+    fill = PatternFill("solid", fgColor="FF063C88")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left = Alignment(horizontal="left", vertical="center")
+    thin = Side(border_style="thin", color="FFCCCCCC")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Header row
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col_idx, value=h)
+        c.font = bold
+        c.fill = fill
+        c.alignment = center
+        c.border = border
+
+    # Data rows
+    for r_idx, r in enumerate(rows, start=2):
+        values = [
+            r["date_display"],
+            r["office_location"],
+            r["total_employees"],
+            r["present"],
+            r["absent"],
+            r["on_leave"],
+            "Yes" if r["holiday"] else "",
+            "Yes" if r["weekly_off"] else "",
+            f'{r["attendance_pct"]:.2f}%' if not (r["holiday"] or r["weekly_off"]) else "",
+        ]
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=r_idx, column=col_idx, value=val)
+            cell.border = border
+            cell.alignment = left if col_idx == 2 else center
+
+    # Auto-fit-ish column widths
+    widths = [14, 28, 17, 11, 11, 11, 10, 12, 14]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.row_dimensions[1].height = 28
+    ws.freeze_panes = "A2"
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"office_attendance_{from_date}_to_{to_date}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ============== PAYROLL ROUTES ==============
+
+@api_router.get("/payroll")
+async def get_payroll_data(
+    month: str,  # Format: "YYYY-MM"
+    department: Optional[str] = None,
+    team: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get payroll data for all employees for a given month"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    # Include Active + Inactive employees (relieved within period handled by engine)
+    query = {"is_deleted": {"$ne": True}, "employee_status": {"$in": [EmployeeStatus.ACTIVE, EmployeeStatus.INACTIVE]}}
+    if department and department != "All":
+        query["department"] = department
+    if team and team != "All":
+        query["team"] = team
+    
+    employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
+    
+    year, month_num = map(int, month.split('-'))
+    import calendar
+    days_in_month = calendar.monthrange(year, month_num)[1]
+    emp_ids = [emp["id"] for emp in employees]
+    prefetched = await _prefetch_payroll_data(emp_ids, year, month_num, days_in_month)
+
+    payroll_data = []
+    for emp in employees:
+        payroll = await calculate_payroll_for_employee(emp["id"], month, employee=emp, prefetched=prefetched)
+        if payroll:
+            payroll_data.append(payroll)
+    
+    return payroll_data
+
+@api_router.get("/payroll/{employee_id}")
+async def get_employee_payroll(
+    employee_id: str,
+    month: str,  # Format: "YYYY-MM"
+    current_user: dict = Depends(get_current_user)
+):
+    """Get detailed payroll for a specific employee"""
+    payroll = await calculate_payroll_for_employee(employee_id, month)
+    if not payroll:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    return payroll
+
+@api_router.get("/payroll/summary/{month}")
+async def get_payroll_summary(
+    month: str,  # Format: "YYYY-MM"
+    department: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get payroll summary for a month"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    query = {"is_deleted": {"$ne": True}, "employee_status": {"$in": [EmployeeStatus.ACTIVE, EmployeeStatus.INACTIVE]}}
+    if department and department != "All":
+        query["department"] = department
+    
+    employees = await db.employees.find(query, {"_id": 0}).to_list(1000)
+    
+    year, month_num = map(int, month.split('-'))
+    import calendar
+    days_in_month = calendar.monthrange(year, month_num)[1]
+    emp_ids = [emp["id"] for emp in employees]
+    prefetched = await _prefetch_payroll_data(emp_ids, year, month_num, days_in_month)
+
+    total_employees = 0
+    total_salary = 0.0
+    total_deductions = 0.0
+    total_net_salary = 0.0
+    total_lop_days = 0.0
+    total_present_days = 0
+    total_weekoff_pay = 0.0
+    total_extra_pay = 0.0
+    total_payable_days = 0.0
+    
+    for emp in employees:
+        payroll = await calculate_payroll_for_employee(emp["id"], month, employee=emp, prefetched=prefetched)
+        if payroll:
+            total_employees += 1
+            total_salary += payroll.get("monthly_salary", 0)
+            total_deductions += payroll.get("lop_deduction", 0)
+            total_net_salary += payroll.get("net_salary", 0)
+            total_lop_days += payroll.get("lop", 0)
+            total_present_days += payroll.get("present_days", 0)
+            total_weekoff_pay += payroll.get("weekoff_pay", 0)
+            total_extra_pay += payroll.get("extra_pay", 0)
+            total_payable_days += payroll.get("final_payable_days", 0)
+    
+    return {
+        "month": month,
+        "total_employees": total_employees,
+        "total_salary": round(total_salary, 2),
+        "total_deductions": round(total_deductions, 2),
+        "total_net_salary": round(total_net_salary, 2),
+        "total_lop_days": total_lop_days,
+        "total_present_days": total_present_days,
+        "total_weekoff_pay": total_weekoff_pay,
+        "total_extra_pay": total_extra_pay,
+        "total_payable_days": round(total_payable_days, 2),
+    }
+
+# ============== SHIFT CONFIGURATION ROUTES ==============
+
+@api_router.get("/config/shifts")
+async def get_shift_configurations(current_user: dict = Depends(get_current_user)):
+    """Get all available shift configurations"""
+    shifts = []
+    for shift_type, config in SHIFT_DEFINITIONS.items():
+        shifts.append({
+            "type": shift_type,
+            "login_time": config.get("login_time"),
+            "logout_time": config.get("logout_time"),
+            "total_hours": config.get("total_hours"),
+            "description": config.get("description")
+        })
+    return shifts
+
+@api_router.get("/config/shift/{shift_type}")
+async def get_shift_details(shift_type: str, current_user: dict = Depends(get_current_user)):
+    """Get details for a specific shift type"""
+    if shift_type not in SHIFT_DEFINITIONS:
+        raise HTTPException(status_code=404, detail="Shift type not found")
+    
+    config = SHIFT_DEFINITIONS[shift_type]
+    return {
+        "type": shift_type,
+        "login_time": config.get("login_time"),
+        "logout_time": config.get("logout_time"),
+        "total_hours": config.get("total_hours"),
+        "description": config.get("description")
+    }
+
+@api_router.put("/employees/{employee_id}/shift")
+async def update_employee_shift(
+    employee_id: str,
+    shift_data: ShiftConfigCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update employee's shift configuration"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    update_data = {"shift_type": shift_data.shift_type}
+    
+    if shift_data.shift_type == "Custom":
+        if not shift_data.login_time or not shift_data.logout_time:
+            raise HTTPException(status_code=400, detail="Custom shift requires login_time and logout_time")
+        
+        update_data["custom_login_time"] = shift_data.login_time
+        update_data["custom_logout_time"] = shift_data.logout_time
+        
+        # Calculate total hours
+        login_mins = parse_time_24h_to_minutes(shift_data.login_time)
+        logout_mins = parse_time_24h_to_minutes(shift_data.logout_time)
+        
+        if logout_mins < login_mins:
+            total_hours = (24 * 60 - login_mins + logout_mins) / 60
+        else:
+            total_hours = (logout_mins - login_mins) / 60
+        
+        update_data["custom_total_hours"] = total_hours
+    else:
+        # Clear custom fields for predefined shifts
+        update_data["custom_login_time"] = None
+        update_data["custom_logout_time"] = None
+        update_data["custom_total_hours"] = None
+    
+    update_data["updated_at"] = get_ist_now().isoformat()
+    
+    await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "update_shift", "employee", employee_id, f"Updated shift to: {shift_data.shift_type}")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    return serialize_doc(employee)
+
+@api_router.put("/employees/{employee_id}/monthly-salary")
+async def update_employee_monthly_salary_legacy(
+    employee_id: str,
+    monthly_salary: float = Query(..., ge=0),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update employee's monthly salary (Legacy route)"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    update_data = {
+        "monthly_salary": monthly_salary,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "update_salary", "employee", employee_id, f"Updated salary to: {monthly_salary}")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    return serialize_doc(employee)
+
+# ============== AUDIT LOGS ==============
+
+@api_router.get("/audit-logs")
+async def get_audit_logs(
+    user_id: Optional[str] = None,
+    action: Optional[str] = None,
+    resource: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=500),
+    current_user: dict = Depends(get_current_user)
+):
+    if current_user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    query = {}
+    if user_id:
+        query["user_id"] = user_id
+    if action:
+        query["action"] = action
+    if resource:
+        query["resource"] = resource
+
+    logs = await db.audit_logs.find(query, {"_id": 0}).sort("timestamp", -1).limit(limit).to_list(limit)
+
+    # Attach user_name in a single batch query instead of N find_ones (previous
+    # implementation lived in a duplicate handler that has since been removed).
+    user_ids = list({log["user_id"] for log in logs if log.get("user_id")})
+    if user_ids:
+        users = await db.users.find(
+            {"id": {"$in": user_ids}}, {"_id": 0, "id": 1, "name": 1, "full_name": 1, "username": 1}
+        ).to_list(len(user_ids))
+        name_map = {u["id"]: (u.get("name") or u.get("full_name") or u.get("username") or "Unknown") for u in users}
+        for log in logs:
+            log["user_name"] = name_map.get(log.get("user_id"), "Unknown")
+
+    return [serialize_doc(l) for l in logs]
+
+# ============== CONFIG/LOOKUP ROUTES ==============
+
+@api_router.get("/config/employment-types")
+async def get_employment_types():
+    return [EmploymentType.FULL_TIME, EmploymentType.PART_TIME, EmploymentType.CONTRACT, EmploymentType.INTERN]
+
+@api_router.get("/config/employee-statuses")
+async def get_employee_statuses():
+    return [EmployeeStatus.ACTIVE, EmployeeStatus.INACTIVE, EmployeeStatus.RESIGNED]
+
+@api_router.get("/config/tier-levels")
+async def get_tier_levels():
+    return [TierLevel.JUNIOR, TierLevel.MID, TierLevel.SENIOR, TierLevel.LEAD]
+
+@api_router.get("/config/work-locations")
+async def get_work_locations():
+    return [WorkLocation.REMOTE, WorkLocation.OFFICE, WorkLocation.HYBRID]
+
+@api_router.get("/config/user-roles")
+async def get_user_roles():
+    return [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN, UserRole.EMPLOYEE]
+
+# ============== EMPLOYEE PORTAL MODELS ==============
+
+class EmployeeLeaveCreate(BaseModel):
+    leave_type: str  # Sick, Emergency, Preplanned, Casual, Annual
+    leave_split: str = "Full Day"  # Full Day, First Half, Second Half
+    start_date: str  # YYYY-MM-DD
+    end_date: str  # YYYY-MM-DD
+    reason: str
+    supporting_document_url: Optional[str] = None
+    supporting_document_name: Optional[str] = None
+    consider_as_paid_leave: Optional[bool] = False
+
+class EmployeeAttendanceRecord(BaseModel):
+    date: str
+    login: Optional[str] = None
+    logout: Optional[str] = None
+    total_hours: Optional[str] = None
+    status: str  # Present, Late, Early Out, Absent, Leave, NA, Sunday
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+# ============== EMPLOYEE PORTAL ROUTES ==============
+
+@api_router.post("/employee/change-password")
+async def change_employee_password(data: PasswordChangeRequest, current_user: dict = Depends(get_current_user)):
+    """Change employee's own password"""
+    # Validate new password matches confirmation
+    if data.new_password != data.confirm_password:
+        raise HTTPException(status_code=400, detail="New passwords do not match")
+    
+    # Validate new password length
+    if len(data.new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
+    
+    # Verify current password
+    current_hash = hash_password(data.current_password)
+    if current_user.get("password_hash") != current_hash:
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    
+    # Update password in database — write full audit trail.
+    new_hash = hash_password(data.new_password)
+    now_iso = get_ist_now().isoformat()
+    await db.users.update_one(
+        {"id": current_user["id"]},
+        {"$set": {
+            "password_hash": new_hash,
+            "password_updated_at": now_iso,
+            "password_updated_by": current_user["id"],
+            "password_updated_method": "self_change",
+        }}
+    )
+    
+    # Log the action
+    await log_audit(current_user["id"], "change_password", "user", current_user["id"])
+    
+    return {"message": "Password changed successfully"}
+
+@api_router.get("/employee/profile")
+async def get_employee_profile(current_user: dict = Depends(get_current_user)):
+    """Get logged-in employee's profile"""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    
+    employee = await db.employees.find_one({"id": current_user["employee_id"], "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee profile not found")
+    
+    return serialize_doc(employee)
+
+@api_router.get("/employee/dashboard")
+async def get_employee_dashboard(current_user: dict = Depends(get_current_user)):
+    """Get employee dashboard data with summary cards and clock info"""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    
+    employee_id = current_user["employee_id"]
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get current month attendance stats (in IST)
+    now = get_ist_now()
+    current_month = now.strftime("%m-%Y")
+    today_str = now.strftime("%d-%m-%Y")
+    
+    # Calculate month boundaries
+    first_day = now.replace(day=1)
+    if now.month == 12:
+        next_month = now.replace(year=now.year + 1, month=1, day=1)
+    else:
+        next_month = now.replace(month=now.month + 1, day=1)
+    last_day = next_month - timedelta(days=1)
+    
+    # Get all attendance records for this month
+    attendance_records = await db.attendance.find({
+        "employee_id": employee_id,
+        "date": {"$regex": f"-{now.strftime('%m-%Y')}$"}
+    }, {"_id": 0}).to_list(31)
+    
+    # Calculate summary stats
+    # According to requirements: if "Early Out" has late login time, count in both Late AND Early Out
+    active_days = 0
+    inactive_days = 0
+    late_arrivals = 0
+    early_outs = 0
+
+    for record in attendance_records:
+        status = record.get("status", "")
+
+        # Late-In is derived from the STORED, effective-dated attendance status
+        # (already computed against the shift applicable on that date) — NOT a
+        # hardcoded clock time. A record is Late only when the engine recorded it
+        # as a Late Login, or an LOP whose root cause is a late login.
+        reason = (record.get("lop_reason") or "").lower()
+        is_late_login = (
+            status == AttendanceStatus.LATE_LOGIN
+            or status == "Late"
+            or (bool(record.get("is_lop")) and "late login" in reason)
+        )
+
+        # Count based on status
+        if status in ["Login", "Completed", "Present"]:
+            active_days += 1
+            if is_late_login:
+                late_arrivals += 1
+        elif status in ["Absent", "NA", "Not Logged"]:
+            inactive_days += 1
+        elif status == "Late Login" or status == "Late":
+            late_arrivals += 1
+            active_days += 1
+        elif status == "Early Out":
+            early_outs += 1
+            active_days += 1
+            # If early out AND also late login, count in late as well
+            if is_late_login:
+                late_arrivals += 1
+    
+    # Get today's attendance
+    today_attendance = await db.attendance.find_one({
+        "employee_id": employee_id,
+        "date": today_str
+    }, {"_id": 0})
+    
+    login_time = None
+    logout_time = None
+    hours_today = None
+    
+    if today_attendance:
+        login_time = today_attendance.get("check_in")
+        logout_time = today_attendance.get("check_out")
+        hours_today = today_attendance.get("total_hours")
+
+    # ---- Leave Taken: approved leave days within the current month (half-day aware) ----
+    # ROOT-CAUSE FIX: the employee dashboard cards read `attendance_summary`
+    # ({present, leaves, absent, percent}), which this endpoint never produced —
+    # hence all four cards showed 0. We now compute it from real attendance +
+    # approved-leave data (no hard-coded values), and reconcile absents against
+    # approved leave so an excused day is never double-counted as absent.
+    month_first_iso = first_day.strftime("%Y-%m-%d")
+    month_last_iso = last_day.strftime("%Y-%m-%d")
+    leave_days = 0.0
+    leave_date_set = set()                       # DD-MM-YYYY keys (attendance date format)
+    approved_leaves = await db.leaves.find({
+        "employee_id": employee_id,
+        "status": "approved",
+        "start_date": {"$lte": month_last_iso},
+        "end_date": {"$gte": month_first_iso},
+    }, {"_id": 0, "start_date": 1, "end_date": 1, "leave_split": 1}).to_list(500)
+    for lv in approved_leaves:
+        try:
+            sd = datetime.strptime(lv["start_date"], "%Y-%m-%d").date()
+            ed = datetime.strptime(lv["end_date"], "%Y-%m-%d").date()
+        except (ValueError, TypeError, KeyError):
+            continue
+        is_half = (lv.get("leave_split") or "Full Day").strip() in ("First Half", "Second Half", "Half Day", "Half")
+        cur = max(sd, first_day.date())
+        end_clamp = min(ed, last_day.date())
+        while cur <= end_clamp:
+            leave_date_set.add(cur.strftime("%d-%m-%Y"))
+            leave_days += 0.5 if is_half else 1.0
+            cur = cur + timedelta(days=1)
+
+    # Absent = explicit non-attendance records, excluding days covered by approved leave.
+    absent_days = sum(
+        1 for r in attendance_records
+        if r.get("status", "") in ["Absent", "NA", "Not Logged"] and r.get("date") not in leave_date_set
+    )
+    present_days = active_days                   # worked days (excludes absent / leave / invalid)
+    denom = present_days + absent_days           # required attendance days (leave is excused)
+    this_month_percent = round(present_days / denom * 100) if denom > 0 else 0
+    leaves_taken = int(leave_days) if leave_days == int(leave_days) else leave_days
+
+    return {
+        "employee_name": employee.get("full_name"),
+        "employee_id": employee.get("emp_id"),
+        "department": employee.get("department"),
+        "team": employee.get("team"),
+        "summary": {
+            "active_days": active_days,
+            "inactive_days": inactive_days,
+            "late_arrivals": late_arrivals,
+            "early_outs": early_outs
+        },
+        "attendance_summary": {
+            "present": present_days,
+            "leaves": leaves_taken,
+            "absent": absent_days,
+            "percent": this_month_percent,
+        },
+        "this_month_percent": this_month_percent,
+        "today": {
+            "date": today_str,
+            "login_time": login_time,
+            "logout_time": logout_time,
+            "hours_today": hours_today,
+            "is_logged_in": login_time is not None,
+            "is_logged_out": logout_time is not None
+        },
+        "current_month": now.strftime("%B %Y")
+    }
+
+@api_router.post("/employee/clock-in")
+async def employee_clock_in(current_user: dict = Depends(get_current_user)):
+    """Employee self clock-in"""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    
+    employee_id = current_user["employee_id"]
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    if not employee.get("attendance_tracking_enabled", True):
+        raise HTTPException(status_code=400, detail="Attendance tracking disabled")
+    
+    now = get_ist_now()
+    today_str = now.strftime("%d-%m-%Y")
+    check_in_time = now.strftime("%I:%M %p")
+    
+    existing = await db.attendance.find_one({"employee_id": employee_id, "date": today_str})
+    if existing and existing.get("check_in"):
+        raise HTTPException(status_code=400, detail="Already clocked in today")
+    
+    # Determine status (Late if after 9:30 AM)
+    status = "Login"
+    if now.hour > 9 or (now.hour == 9 and now.minute > 30):
+        status = "Late Login"
+    
+    attendance = Attendance(
+        employee_id=employee_id,
+        emp_name=employee["full_name"],
+        team=employee["team"],
+        department=employee["department"],
+        date=today_str,
+        check_in=check_in_time,
+        status=status
+    )
+    doc = attendance.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.attendance.insert_one(doc.copy())
+    
+    return {"message": "Clocked in successfully", "time": check_in_time, "status": status}
+
+@api_router.post("/employee/clock-out")
+async def employee_clock_out(current_user: dict = Depends(get_current_user)):
+    """Employee self clock-out"""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    
+    employee_id = current_user["employee_id"]
+    now = get_ist_now()
+    today_str = now.strftime("%d-%m-%Y")
+    check_out_time = now.strftime("%I:%M %p")
+    
+    attendance = await db.attendance.find_one({"employee_id": employee_id, "date": today_str}, {"_id": 0})
+    if not attendance:
+        raise HTTPException(status_code=404, detail="No clock-in found for today")
+    if attendance.get("check_out"):
+        raise HTTPException(status_code=400, detail="Already clocked out")
+    
+    # Calculate total hours
+    try:
+        check_in_str = attendance.get("check_in", "")
+        check_in_dt = datetime.strptime(f"{today_str} {check_in_str}", "%d-%m-%Y %I:%M %p")
+        check_out_dt = datetime.strptime(f"{today_str} {check_out_time}", "%d-%m-%Y %I:%M %p")
+        diff = check_out_dt - check_in_dt
+        hours = diff.seconds // 3600
+        minutes = (diff.seconds % 3600) // 60
+        total_hours = f"{hours}h {minutes}m"
+    except Exception:
+        total_hours = None
+    
+    # Determine status (Early Out if before 6:00 PM)
+    status = "Completed"
+    if now.hour < 18:
+        status = "Early Out"
+    
+    await db.attendance.update_one(
+        {"employee_id": employee_id, "date": today_str},
+        {"$set": {"check_out": check_out_time, "total_hours": total_hours, "status": status}}
+    )
+    
+    return {"message": "Clocked out successfully", "time": check_out_time, "total_hours": total_hours, "status": status}
+
+@api_router.get("/employee/attendance")
+async def get_employee_attendance(
+    duration: Optional[str] = "this_week",  # this_week, last_week, this_month, last_month, custom
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    status_filter: Optional[str] = "All",
+    current_user: dict = Depends(get_current_user)
+):
+    """Get employee's own attendance records with filters"""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    
+    employee_id = current_user["employee_id"]
+    now = get_ist_now()
+    
+    # If from_date/to_date are provided, treat as custom date range
+    custom_from = from_date or start_date
+    custom_to = to_date or end_date
+    if custom_from and custom_to:
+        duration = "custom"
+    
+    # Calculate date range based on duration
+    if duration == "custom" and custom_from and custom_to:
+        # Accept both DD-MM-YYYY (canonical API format) AND ISO YYYY-MM-DD
+        # so filters from older clients or external integrations don't
+        # silently fall back to "this_week".
+        def _parse_any(s):
+            if not isinstance(s, str):
+                return None
+            s = s.strip()
+            for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%b-%Y", "%d %b %Y"):
+                try:
+                    # Attach IST tzinfo so the parsed datetime is comparable
+                    # with `now = get_ist_now()` (which is tz-aware). Without
+                    # this, `current_date > now` raises TypeError.
+                    return datetime.strptime(s, fmt).replace(tzinfo=IST)
+                except ValueError:
+                    continue
+            return None
+        start = _parse_any(custom_from)
+        end = _parse_any(custom_to)
+        if not (start and end):
+            start = now - timedelta(days=now.weekday())
+            end = start + timedelta(days=6)
+        elif end < start:
+            start, end = end, start  # swap if user inverted them
+    elif duration == "this_week":
+        # Monday to Sunday of current week
+        start = now - timedelta(days=now.weekday())
+        end = start + timedelta(days=6)
+    elif duration == "last_week":
+        start = now - timedelta(days=now.weekday() + 7)
+        end = start + timedelta(days=6)
+    elif duration == "this_month":
+        start = now.replace(day=1)
+        if now.month == 12:
+            end = now.replace(year=now.year + 1, month=1, day=1) - timedelta(days=1)
+        else:
+            end = now.replace(month=now.month + 1, day=1) - timedelta(days=1)
+    elif duration == "last_month":
+        first_this_month = now.replace(day=1)
+        end = first_this_month - timedelta(days=1)
+        start = end.replace(day=1)
+    else:
+        # Default to this week
+        start = now - timedelta(days=now.weekday())
+        end = start + timedelta(days=6)
+    
+    # Generate all dates in range
+    records = []
+    current_date = start
+    while current_date <= end:
+        date_str = current_date.strftime("%d-%m-%Y")
+        day_name = current_date.strftime("%A")
+        
+        # Check if Sunday
+        if day_name == "Sunday":
+            record = {
+                "date": date_str,
+                "day": day_name,
+                "login": "-",
+                "logout": "-",
+                "total_hours": "-",
+                "status": "Sunday"
+            }
+        elif current_date > now:
+            # Future date
+            record = {
+                "date": date_str,
+                "day": day_name,
+                "login": "-",
+                "logout": "-",
+                "total_hours": "-",
+                "status": "NA"
+            }
+        else:
+            date_str_iso = current_date.strftime("%Y-%m-%d")
+
+            # Evaluation order (matches admin attendance engine):
+            # 1) Approved Leave  2) Holiday  3) Attendance record  4) Absent
+            # — Sunday/future already handled above.
+
+            # 1) Approved Leave
+            leave = await db.leaves.find_one({
+                "employee_id": employee_id,
+                "status": "approved",
+                "start_date": {"$lte": date_str_iso},
+                "end_date": {"$gte": date_str_iso}
+            }, {"_id": 0})
+
+            # 2) Company Holiday (takes precedence over "Absent" — fixes the
+            #    May-1-shows-Absent bug)
+            holiday = None
+            if not leave:
+                holiday = await db.holidays.find_one(
+                    {"date": date_str_iso},
+                    {"_id": 0, "name": 1, "is_optional": 1}
+                )
+
+            # 3) Attendance record (query both DD-MM-YYYY and YYYY-MM-DD)
+            att = await db.attendance.find_one({
+                "employee_id": employee_id,
+                "date": {"$in": [date_str, date_str_iso]}
+            }, {"_id": 0})
+
+            if leave:
+                leave_type = leave.get("leave_type", "Leave")
+                record = {
+                    "date": date_str,
+                    "day": day_name,
+                    "login": att.get("check_in", "-") if att else "-",
+                    "logout": att.get("check_out", "-") if att else "-",
+                    "total_hours": att.get("total_hours", "-") if att else "-",
+                    "status": f"{leave_type} Leave",
+                }
+            elif holiday and not att:
+                # Holiday with no punch → Holiday status. If the employee did
+                # punch in on a holiday (rare), keep the attendance record's
+                # own status so HR can see it.
+                record = {
+                    "date": date_str,
+                    "day": day_name,
+                    "login": "-",
+                    "logout": "-",
+                    "total_hours": "-",
+                    "status": "Holiday",
+                    "holiday_name": holiday.get("name"),
+                }
+            elif att:
+                # Preserve the admin engine's status verbatim — no renaming.
+                # This fixes the "Admin shows Late Login, Employee shows
+                # Present" inconsistency.
+                raw_status = att.get("status") or "Present"
+                if att.get("is_lop"):
+                    display_status = "Loss of Pay"
+                else:
+                    display_status = raw_status
+                record = {
+                    "date": date_str,
+                    "day": day_name,
+                    "login": att.get("check_in", "-"),
+                    "logout": att.get("check_out", "-"),
+                    "total_hours": att.get("total_hours", "-"),
+                    "status": display_status,
+                    "is_lop": bool(att.get("is_lop")),
+                    "lop_reason": att.get("lop_reason"),
+                }
+            else:
+                # No leave / no holiday / no punch → Absent
+                record = {
+                    "date": date_str,
+                    "day": day_name,
+                    "login": "-",
+                    "logout": "-",
+                    "total_hours": "-",
+                    "status": "Absent",
+                }
+        
+        # Apply status filter
+        if status_filter == "All" or record["status"] == status_filter:
+            records.append(record)
+        
+        current_date += timedelta(days=1)
+    
+    return records
+
+@api_router.get("/employee/leaves")
+async def get_employee_leaves(current_user: dict = Depends(get_current_user)):
+    """Get employee's leave requests and history"""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    
+    employee_id = current_user["employee_id"]
+    now = get_ist_now()
+    today_str = now.strftime("%Y-%m-%d")
+    
+    # Get all leaves for this employee
+    all_leaves = await db.leaves.find({"employee_id": employee_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
+
+    # Enrich `approved_by_name` so leave history shows a human name in the UI
+    approver_ids = {l.get("approved_by") for l in all_leaves if l.get("approved_by")}
+    approver_name_map = {}
+    if approver_ids:
+        async for u in db.users.find(
+            {"id": {"$in": list(approver_ids)}},
+            {"_id": 0, "id": 1, "full_name": 1, "username": 1, "name": 1, "email": 1},
+        ):
+            approver_name_map[u["id"]] = (
+                u.get("full_name") or u.get("name") or u.get("username") or u.get("email")
+            )
+    for l in all_leaves:
+        aid = l.get("approved_by")
+        l["approved_by_name"] = approver_name_map.get(aid) if aid else None
+    
+    # Separate into requests (future/current) and history (past)
+    requests = []
+    history = []
+    
+    for leave in all_leaves:
+        leave_data = serialize_doc(leave)
+        # Convert date format for display
+        if leave.get("start_date"):
+            try:
+                dt = datetime.strptime(leave["start_date"], "%Y-%m-%d")
+                leave_data["display_date"] = dt.strftime("%d-%m-%Y")
+            except Exception:
+                leave_data["display_date"] = leave["start_date"]
+        
+        if leave.get("start_date", "") >= today_str:
+            requests.append(leave_data)
+        else:
+            history.append(leave_data)
+    
+    return {
+        "requests": requests,
+        "history": history,
+        "requests_count": len(requests),
+        "history_count": len(history)
+    }
+
+@api_router.get("/employee/paid-leave-eligibility")
+async def get_paid_leave_eligibility(current_user: dict = Depends(get_current_user)):
+    """Whether the CURRENT employee may use Paid Leave (live employee master data,
+    never cached). Used by the Apply-Leave form to decide whether to render the
+    Paid Leave option — flips automatically when employment type / confirmation
+    date changes, with no logout/login required."""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    emp = await db.employees.find_one(
+        {"id": current_user["employee_id"], "is_deleted": {"$ne": True}},
+        {"_id": 0, "employment_type": 1, "confirmation_date": 1, "available_paid_leave": 1},
+    )
+    eligible, reason = _is_confirmed_fulltime(emp or {})
+    balance = round(float((emp or {}).get("available_paid_leave") or 0.0), 1)
+    return {"eligible": eligible, "reason": reason, "balance": balance}
+
+
+@api_router.get("/employee/paid-leave-balance")
+async def get_paid_leave_balance(
+    reference_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return the employee's current STORED Paid Leave balance (2026-06 model).
+    ``reference_date`` is accepted for backward-compat but the stored balance is
+    a single running number, so it is returned as-is."""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    balance = await _get_paid_balance(current_user["employee_id"])
+    return {"balance": balance, "earned": balance, "used": 0.0}
+
+
+@api_router.get("/admin/employees/{employee_id}/paid-leave-balance")
+async def admin_get_paid_leave_balance(
+    employee_id: str,
+    reference_date: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Admin-side stored Paid Leave balance lookup for the apply-on-behalf dialog."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    balance = await _get_paid_balance(employee_id)
+    return {"balance": balance, "earned": balance, "used": 0.0}
+
+
+# ============== PAID LEAVE MANAGEMENT (Admin, 2026-06) ==============
+
+PAID_LEAVE_EXPORT_HEADERS = [
+    "Employee ID", "Employee Name", "Department", "Team",
+    "Confirmed Date", "Existing Available Paid Leave",
+]
+
+
+class PaidLeaveMonthBody(BaseModel):
+    year: int
+    month: int
+
+
+def _emp_display_id(e: dict) -> str:
+    return str(e.get("custom_employee_id") or e.get("emp_id") or e.get("id") or "")
+
+
+async def _eligible_paid_employees(ref_date=None) -> list:
+    """All confirmed Full-Time employees eligible for Paid Leave as of ref_date."""
+    emps = await db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0}).to_list(5000)
+    out = []
+    for e in emps:
+        ok, _ = _is_confirmed_fulltime(e, ref_date)
+        if ok:
+            out.append(e)
+    return out
+
+
+@api_router.get("/admin/paid-leave/status")
+async def paid_leave_status(year: int, month: int, current_user: dict = Depends(get_current_user)):
+    require_any_admin(current_user)
+    rec = await db.paid_leave_generation.find_one({"year": int(year), "month": int(month)}, {"_id": 0})
+    eligible = await _eligible_paid_employees()
+    return {
+        "year": int(year), "month": int(month),
+        "finalized": bool(rec), "method": (rec or {}).get("method"),
+        "record": rec, "eligible_count": len(eligible),
+        "can_generate": not rec, "can_import": not rec, "can_export": True,
+    }
+
+
+@api_router.post("/admin/paid-leave/generate")
+async def paid_leave_generate(body: PaidLeaveMonthBody, current_user: dict = Depends(get_current_user)):
+    import calendar
+    require_admin(current_user)  # HR only
+    y, m = int(body.year), int(body.month)
+    if not (1 <= m <= 12):
+        raise HTTPException(status_code=400, detail="Invalid month")
+    existing = await db.paid_leave_generation.find_one({"year": y, "month": m})
+    if existing:
+        mn = calendar.month_name[m]
+        if existing.get("method") == "generate":
+            raise HTTPException(status_code=400, detail=f"Paid Leave has already been generated for {mn} {y}.")
+        raise HTTPException(status_code=400, detail=f"Paid Leave generation is not available for {mn} {y} because the month has already been finalized through Import/Export.")
+    eligible = await _eligible_paid_employees()
+    count = 0
+    for e in eligible:
+        prev = round(float(e.get("available_paid_leave") or 0.0), 1)
+        new = round(prev + 1, 1)
+        await db.employees.update_one({"id": e["id"]}, {"$inc": {"available_paid_leave": 1}})
+        await _write_paid_history(e["id"], e.get("full_name"), prev, new, "MONTHLY_GENERATION",
+                                  current_user, month=m, year=y, note="Monthly +1 paid leave")
+        count += 1
+    await db.paid_leave_generation.insert_one({
+        "id": str(uuid.uuid4()), "year": y, "month": m, "method": "generate",
+        "status": "completed", "count": count,
+        "performed_by": current_user["id"],
+        "performed_by_name": current_user.get("full_name") or current_user.get("username"),
+        "created_at": get_ist_now().isoformat(), "updated_at": get_ist_now().isoformat(),
+    })
+    return {"message": f"Generated 1 paid leave for {count} confirmed Full-Time employee(s) for {calendar.month_name[m]} {y}.", "count": count}
+
+
+@api_router.get("/admin/paid-leave/export")
+async def paid_leave_export(year: int, month: int, format: str = "xlsx",
+                            current_user: dict = Depends(get_current_user)):
+    require_any_admin(current_user)
+    eligible = await _eligible_paid_employees()
+    rows = [[
+        _emp_display_id(e), e.get("full_name"), e.get("department"), e.get("team"),
+        (e.get("confirmation_date") or ""), round(float(e.get("available_paid_leave") or 0.0), 1),
+    ] for e in eligible]
+    if (format or "").lower() == "csv":
+        buff = io.StringIO()
+        w = csv.writer(buff)
+        w.writerow(PAID_LEAVE_EXPORT_HEADERS)
+        w.writerows(rows)
+        data = buff.getvalue().encode("utf-8-sig")
+        return StreamingResponse(io.BytesIO(data), media_type="text/csv",
+                                 headers={"Content-Disposition": f"attachment; filename=paid_leave_{year}_{month:02d}.csv"})
+    from openpyxl.styles import Protection, Font
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "PaidLeave"
+    ws.append(PAID_LEAVE_EXPORT_HEADERS)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for r in rows:
+        ws.append(r)
+    # Lock everything except the editable balance column (F, index 6). This
+    # protects Employee ID from casual edits; the backend ALSO re-validates.
+    ws.protection.sheet = True
+    ws.protection.password = "paidleave"
+    for row in ws.iter_rows(min_row=2, max_row=max(1, ws.max_row)):
+        for cell in row:
+            cell.protection = Protection(locked=(cell.column != 6))
+    out = io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return StreamingResponse(out,
+                             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f"attachment; filename=paid_leave_{year}_{month:02d}.xlsx"})
+
+
+def _parse_paid_leave_sheet(filename: str, content: bytes) -> list:
+    """Return list of {employee_id, name, balance_raw} dicts from an uploaded
+    xlsx/csv. Raises HTTPException(400) on unreadable files."""
+    name = (filename or "").lower()
+    header_map = {}
+    records = []
+
+    def norm(h):
+        return re.sub(r"[^a-z]", "", str(h or "").lower())
+
+    id_keys = {"employeeid", "empid", "id"}
+    name_keys = {"employeename", "name", "fullname"}
+    bal_keys = {"existingavailablepaidleave", "availablepaidleave", "paidleave", "balance"}
+
+    if name.endswith(".csv"):
+        text = content.decode("utf-8-sig", errors="replace")
+        reader = list(csv.reader(io.StringIO(text)))
+        if not reader:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+        headers = reader[0]
+        data_rows = reader[1:]
+    else:
+        try:
+            wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Unable to read the uploaded Excel file.")
+        ws = wb.active
+        all_rows = list(ws.iter_rows(values_only=True))
+        if not all_rows:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+        headers = list(all_rows[0])
+        data_rows = all_rows[1:]
+
+    for idx, h in enumerate(headers):
+        nh = norm(h)
+        if nh in id_keys and "id" not in header_map:
+            header_map["id"] = idx
+        elif nh in name_keys and "name" not in header_map:
+            header_map["name"] = idx
+        elif nh in bal_keys and "balance" not in header_map:
+            header_map["balance"] = idx
+    if "id" not in header_map or "balance" not in header_map:
+        raise HTTPException(status_code=400, detail="The file must contain 'Employee ID' and 'Existing Available Paid Leave' columns.")
+
+    for r_i, row in enumerate(data_rows, start=2):
+        row = list(row)
+        def cell(k):
+            i = header_map.get(k)
+            return row[i] if (i is not None and i < len(row)) else None
+        rid = cell("id")
+        if rid is None and cell("balance") is None:
+            continue  # skip fully blank row
+        records.append({
+            "row": r_i,
+            "employee_id": ("" if rid is None else str(rid).strip()),
+            "name": ("" if cell("name") is None else str(cell("name")).strip()),
+            "balance_raw": cell("balance"),
+        })
+    return records
+
+
+@api_router.post("/admin/paid-leave/import")
+async def paid_leave_import(year: int, month: int, file: UploadFile = FastAPIFile(...),
+                            current_user: dict = Depends(get_current_user)):
+    import calendar
+    require_admin(current_user)  # HR only
+    y, m = int(year), int(month)
+    if not (1 <= m <= 12):
+        raise HTTPException(status_code=400, detail="Invalid month")
+    existing = await db.paid_leave_generation.find_one({"year": y, "month": m})
+    if existing:
+        mn = calendar.month_name[m]
+        if existing.get("method") == "import":
+            raise HTTPException(status_code=400, detail=f"Paid Leave has already been imported for {mn} {y}.")
+        raise HTTPException(status_code=400, detail=f"Paid Leave Import is not available for {mn} {y} because the month has already been finalized through Generate Paid Leave.")
+
+    content = await file.read()
+    records = _parse_paid_leave_sheet(file.filename, content)
+    if not records:
+        raise HTTPException(status_code=400, detail="The uploaded file contains no data rows.")
+
+    # ---- VALIDATE EVERYTHING FIRST (transaction-style: all-or-nothing) ----
+    errors = []
+    seen_ids = set()
+    valid = []  # (employee_doc, new_balance)
+    for rec in records:
+        rid = rec["employee_id"]
+        if not rid:
+            errors.append({"row": rec["row"], "employee_id": rid, "reason": "Missing Employee ID"})
+            continue
+        if rid in seen_ids:
+            errors.append({"row": rec["row"], "employee_id": rid, "reason": "Duplicate Employee ID in file"})
+            continue
+        seen_ids.add(rid)
+        emp = await db.employees.find_one(
+            {"is_deleted": {"$ne": True}, "$or": [
+                {"custom_employee_id": rid}, {"emp_id": rid}, {"id": rid}]},
+            {"_id": 0})
+        if not emp:
+            errors.append({"row": rec["row"], "employee_id": rid, "reason": "Employee ID not found"})
+            continue
+        ok, reason = _is_confirmed_fulltime(emp)
+        if not ok:
+            errors.append({"row": rec["row"], "employee_id": rid, "reason": reason})
+            continue
+        # Cross-check name against the ID to catch a swapped Employee ID.
+        if rec["name"] and emp.get("full_name") and \
+           rec["name"].strip().lower() != str(emp["full_name"]).strip().lower():
+            errors.append({"row": rec["row"], "employee_id": rid,
+                           "reason": f"Employee ID/Name mismatch (file: '{rec['name']}', system: '{emp['full_name']}')"})
+            continue
+        raw = rec["balance_raw"]
+        try:
+            bal = round(float(str(raw).strip()), 1)
+        except (ValueError, TypeError):
+            errors.append({"row": rec["row"], "employee_id": rid, "reason": f"Invalid balance value: '{raw}'"})
+            continue
+        if bal < 0:
+            errors.append({"row": rec["row"], "employee_id": rid, "reason": "Balance cannot be negative"})
+            continue
+        if round(bal * 2, 1) != round(bal * 2):
+            errors.append({"row": rec["row"], "employee_id": rid, "reason": "Balance must be in steps of 0.5"})
+            continue
+        valid.append((emp, bal))
+
+    if errors:
+        return {"success": False, "applied": 0, "total": len(records),
+                "errors": errors,
+                "message": "The uploaded file contains validation errors. No changes were applied."}
+
+    # ---- APPLY (only after full validation passes) ----
+    for emp, bal in valid:
+        prev = round(float(emp.get("available_paid_leave") or 0.0), 1)
+        await db.employees.update_one({"id": emp["id"]}, {"$set": {"available_paid_leave": bal}})
+        await _write_paid_history(emp["id"], emp.get("full_name"), prev, bal, "IMPORT",
+                                  current_user, month=m, year=y, note="Import set balance")
+    await db.paid_leave_generation.insert_one({
+        "id": str(uuid.uuid4()), "year": y, "month": m, "method": "import",
+        "status": "completed", "count": len(valid),
+        "performed_by": current_user["id"],
+        "performed_by_name": current_user.get("full_name") or current_user.get("username"),
+        "created_at": get_ist_now().isoformat(), "updated_at": get_ist_now().isoformat(),
+    })
+    return {"success": True, "applied": len(valid), "total": len(records), "errors": [],
+            "message": f"Imported paid leave balances for {len(valid)} employee(s)."}
+
+
+@api_router.get("/admin/paid-leave/history")
+async def paid_leave_history_list(year: Optional[int] = None, month: Optional[int] = None,
+                                  employee_id: Optional[str] = None, limit: int = 300,
+                                  current_user: dict = Depends(get_current_user)):
+    require_any_admin(current_user)
+    q = {}
+    if year:
+        q["year"] = int(year)
+    if month:
+        q["month"] = int(month)
+    if employee_id:
+        q["employee_id"] = employee_id
+    rows = await db.paid_leave_history.find(q, {"_id": 0}).sort("changed_at", -1).to_list(limit)
+    return rows
+
+
+@api_router.post("/employee/leaves/apply")
+async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = Depends(get_current_user)):
+    """Apply for leave with optional document upload"""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    
+    employee_id = current_user["employee_id"]
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Business rule (FINAL): Paid Leave only for non-Intern employees with a valid
+    # Confirmation Date — enforced here on the LIVE record so a manipulated payload
+    # (DevTools / direct API) cannot submit Paid Leave for an ineligible employee.
+    if _is_paid_leave_type(data.leave_type):
+        eligible, reason = _paid_leave_eligibility(employee)
+        if not eligible:
+            raise HTTPException(status_code=403, detail=reason)
+    
+    # Validate reason length
+    if not data.reason or len(data.reason.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Reason must be at least 10 characters")
+    
+    # Parse and validate leave dates
+    try:
+        start_dt = datetime.strptime(data.start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(data.end_date, "%Y-%m-%d")
+        start_date = data.start_date
+        end_date = data.end_date
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    
+    if end_dt < start_dt:
+        raise HTTPException(status_code=400, detail="End date cannot be before start date")
+    
+    today = get_ist_now().date()
+    
+    # JOB 6: Leave type-specific rules
+    if data.leave_type == "Sick":
+        # Sick leave: past, today, and the immediate next calendar day only.
+        # Rule updated 2026-07-15 — sick-leave window extended by one calendar
+        # day so employees can inform HR the evening before an already-known
+        # medical appointment (previous rule was past+today only).
+        if start_dt.date() > (today + timedelta(days=1)):
+            raise HTTPException(
+                status_code=400,
+                detail="Sick Leave can only be applied for past dates, today, or the immediate next calendar day.",
+            )
+    elif data.leave_type == "Casual":
+        # Casual leave: minimum 4 working days before (exclude Sundays)
+        if start_dt.date() <= today:
+            raise HTTPException(status_code=400, detail="Casual leave cannot be applied for past or current dates")
+        # Count working days between today and start date (excluding Sundays)
+        working_days = 0
+        check_date = today + timedelta(days=1)
+        while check_date < start_dt.date():
+            if check_date.weekday() != 6:  # 6 = Sunday
+                working_days += 1
+            check_date += timedelta(days=1)
+        if working_days < 4:
+            raise HTTPException(status_code=400, detail="Casual leave must be applied at least 4 working days in advance (excluding Sundays)")
+    # Emergency leave: no restrictions
+    # Paid leave: no date restrictions, but balance must cover the range.
+    await _validate_paid_leave_balance(
+        employee_id, data.leave_type, start_date, end_date, data.leave_split,
+    )
+
+    # JOB 7: Single leave per day - check all dates in range
+    current_date = start_dt
+    while current_date <= end_dt:
+        date_str = current_date.strftime("%Y-%m-%d")
+        existing = await db.leaves.find_one({
+            "employee_id": employee_id,
+            "status": {"$ne": "rejected"},
+            "$or": [
+                {"start_date": {"$lte": date_str}, "end_date": {"$gte": date_str}},
+            ]
+        })
+        if existing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Leave request already exists for {date_str}. Please edit existing request instead."
+            )
+        current_date += timedelta(days=1)
+    
+    # Calculate duration based on leave_split
+    if data.leave_split in ["First Half", "Second Half"]:
+        duration = "0.5 day(s)"
+    else:
+        duration_days = (end_dt - start_dt).days + 1
+        duration = f"{duration_days} day{'s' if duration_days > 1 else ''}"
+    
+    # Create leave request
+    # Paid Leave (checkbox): confirm eligibility on the LIVE record and RESERVE
+    # the balance immediately so concurrent pending requests can't over-draw.
+    paid_amount = None
+    if data.consider_as_paid_leave:
+        ok, reason = _is_confirmed_fulltime(employee)
+        if not ok:
+            raise HTTPException(status_code=403, detail=reason)
+        paid_amount = _leave_days_count(start_date, end_date, data.leave_split)
+        await _reserve_paid_leave(employee_id, employee["full_name"], paid_amount,
+                                  current_user, note=f"Applied {start_date} ({data.leave_split})")
+
+    leave = LeaveRequest(
+        employee_id=employee_id,
+        emp_name=employee["full_name"],
+        team=employee["team"],
+        department=employee["department"],
+        leave_type=data.leave_type,
+        leave_split=data.leave_split,
+        start_date=start_date,
+        end_date=end_date,
+        duration=duration,
+        reason=data.reason,
+        supporting_document_url=data.supporting_document_url,
+        supporting_document_name=data.supporting_document_name,
+        consider_as_paid_leave=bool(data.consider_as_paid_leave),
+        paid_leave_amount=paid_amount,
+        paid_leave_reservation_status="reserved" if data.consider_as_paid_leave else None,
+        is_lop=False if data.consider_as_paid_leave else None,
+        status="pending"
+    )
+    
+    doc = leave.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    
+    try:
+        await db.leaves.insert_one(doc.copy())
+    except Exception:
+        # Roll back the reservation if the insert fails so no days are lost.
+        if paid_amount:
+            await _release_paid_leave(employee_id, employee["full_name"], paid_amount,
+                                      current_user, action_type="PAID_LEAVE_REJECTED", note="apply rollback")
+        raise
+    
+    await log_audit(current_user["id"], "apply_leave", "leave", leave.id)
+    
+    # Notify HR about leave request
+    asyncio.create_task(notify_role(
+        UserRole.HR,
+        "New Leave Request",
+        f"{employee.get('full_name', 'Employee')} has submitted a {data.leave_type} leave request ({data.start_date} to {data.end_date}).",
+        "action",
+        "/leave"
+    ))
+    
+    return {"message": "Leave request submitted successfully", "leave_id": leave.id}
+
+@api_router.put("/employee/leaves/{leave_id}")
+async def update_employee_leave(leave_id: str, data: EmployeeLeaveCreate, current_user: dict = Depends(get_current_user)):
+    """Update a pending leave request"""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    
+    employee_id = current_user["employee_id"]
+    
+    leave = await db.leaves.find_one({"id": leave_id, "employee_id": employee_id}, {"_id": 0})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+    
+    if leave.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Can only edit pending leave requests")
+    
+    if not data.reason or len(data.reason.strip()) < 10:
+        raise HTTPException(status_code=400, detail="Reason must be at least 10 characters")
+    
+    start_dt = datetime.strptime(data.start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(data.end_date, "%Y-%m-%d")
+
+    # Paid Leave: revalidate balance for the (possibly new) range.
+    await _validate_paid_leave_balance(
+        employee_id, data.leave_type, data.start_date, data.end_date,
+        data.leave_split, ignore_leave_id=leave_id,
+    )
+
+    if data.leave_split in ["First Half", "Second Half"]:
+        duration_str = "0.5 day(s)"
+    else:
+        duration_str = f"{(end_dt - start_dt).days + 1} day(s)"
+    
+    update_data = {
+        "leave_type": data.leave_type,
+        "leave_split": data.leave_split,
+        "start_date": data.start_date,
+        "end_date": data.end_date,
+        "duration": duration_str,
+        "reason": data.reason,
+        "supporting_document_url": data.supporting_document_url,
+        "supporting_document_name": data.supporting_document_name
+    }
+
+    # Paid-Leave reservation adjustment (pending leave only). Re-reserve the
+    # delta when the amount/flag changes so the stored balance always matches
+    # what is actually held against this request.
+    old_flag = bool(leave.get("consider_as_paid_leave")) and leave.get("paid_leave_reservation_status") == "reserved"
+    old_amt = float(leave.get("paid_leave_amount") or 0) if old_flag else 0.0
+    new_flag = bool(data.consider_as_paid_leave)
+    new_amt = _leave_days_count(data.start_date, data.end_date, data.leave_split) if new_flag else 0.0
+    emp_name = leave.get("emp_name")
+    if new_flag:
+        emp_rec = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}},
+                                              {"_id": 0, "employment_type": 1, "confirmation_date": 1, "full_name": 1})
+        ok, reason = _is_confirmed_fulltime(emp_rec or {})
+        if not ok:
+            raise HTTPException(status_code=403, detail=reason)
+        emp_name = (emp_rec or {}).get("full_name") or emp_name
+    delta = round(new_amt - old_amt, 1)
+    if delta > 0:
+        await _reserve_paid_leave(employee_id, emp_name, delta, current_user, note=f"Edit {data.start_date}")
+    elif delta < 0:
+        await _release_paid_leave(employee_id, emp_name, -delta, current_user,
+                                  action_type="MANUAL_ADJUSTMENT", note=f"Edit {data.start_date}")
+    update_data["consider_as_paid_leave"] = new_flag
+    update_data["paid_leave_amount"] = new_amt if new_flag else None
+    update_data["paid_leave_reservation_status"] = "reserved" if new_flag else None
+    if new_flag:
+        update_data["is_lop"] = False
+
+    await db.leaves.update_one({"id": leave_id}, {"$set": update_data})
+    await log_audit(current_user["id"], "update_leave", "leave", leave_id)
+    
+    return {"message": "Leave request updated successfully"}
+
+# ============== ONBOARDING ROUTES ==============
+
+@api_router.get("/onboarding/stats")
+async def get_onboarding_stats(
+    employee_status: Optional[str] = None,
+    department: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get onboarding statistics for dashboard.
+
+    TRUE REFLECTION of the Employee Module: stats are computed over live (non
+    -deleted) employees only, joined with their onboarding record. Orphan
+    onboarding rows (employee deleted) can never inflate these counts.
+
+    NEW (2026-07-15) — accepts the same filter params as /onboarding/list
+    (`employee_status`, `department`, `search`) so the 4 dashboard cards stay
+    in lock-step with the Onboarding Queue table below them. Previously the
+    cards counted the global population while the list was filtered to
+    Active-only, producing a card-vs-list mismatch (e.g. card said "3
+    Pending" while the table showed 2).
+
+    Perf: the two upload/rejected doc counts and the onboarding-per-employee
+    lookup run concurrently with the employee fetch via asyncio.gather.
+    """
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    emp_query = {"is_deleted": {"$ne": True}}
+    if department and department != "All":
+        emp_query["department"] = department
+    if employee_status and employee_status != "All":
+        emp_query["employee_status"] = employee_status
+    if search:
+        emp_query["$or"] = [
+            {"full_name": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}},
+        ]
+
+    employees = await db.employees.find(emp_query, {"_id": 0, "id": 1}).to_list(5000)
+    emp_ids = [e["id"] for e in employees]
+    total = len(emp_ids)
+
+    if not emp_ids:
+        return {
+            "total_employees": 0, "not_started": 0, "pending": 0, "in_progress": 0,
+            "under_review": 0, "approved": 0, "rejected": 0,
+            "pending_verifications": 0, "rejected_documents": 0, "completion_rate": 0,
+        }
+
+    # Fire the three dependent lookups in parallel — each is a separate Atlas
+    # round-trip and none depends on the others.
+    onb_docs, pending_verifications, rejected_documents = await asyncio.gather(
+        db.onboarding.find({"employee_id": {"$in": emp_ids}}, {"_id": 0, "employee_id": 1, "status": 1}).to_list(len(emp_ids)),
+        db.onboarding_documents.count_documents({"employee_id": {"$in": emp_ids}, "status": DocumentStatus.UPLOADED}),
+        db.onboarding_documents.count_documents({"employee_id": {"$in": emp_ids}, "status": DocumentStatus.REJECTED}),
+    )
+    onb_map = {o["employee_id"]: o.get("status", OnboardingStatus.NOT_STARTED) for o in onb_docs}
+
+    counts = {
+        OnboardingStatus.NOT_STARTED: 0, OnboardingStatus.PENDING: 0,
+        OnboardingStatus.IN_PROGRESS: 0, OnboardingStatus.UNDER_REVIEW: 0,
+        OnboardingStatus.APPROVED: 0, OnboardingStatus.REJECTED: 0,
+    }
+    for eid in emp_ids:
+        st = onb_map.get(eid, OnboardingStatus.NOT_STARTED)
+        counts[st] = counts.get(st, 0) + 1
+
+    approved = counts[OnboardingStatus.APPROVED]
+    return {
+        "total_employees": total,
+        "not_started": counts[OnboardingStatus.NOT_STARTED],
+        "pending": counts[OnboardingStatus.PENDING],
+        "in_progress": counts[OnboardingStatus.IN_PROGRESS],
+        "under_review": counts[OnboardingStatus.UNDER_REVIEW],
+        "approved": approved,
+        "rejected": counts[OnboardingStatus.REJECTED],
+        "pending_verifications": pending_verifications,
+        "rejected_documents": rejected_documents,
+        "completion_rate": round((approved / total * 100) if total > 0 else 0, 1)
+    }
+
+@api_router.get("/verification/pending-count")
+async def get_verification_pending_count(current_user: dict = Depends(get_current_user)):
+    """Sidebar badge — count of pending verifications.
+
+    MUST mirror the Verification page's default view (LIVE + ACTIVE employees
+    with pending onboarding). Previously counted orphan onboarding rows too,
+    which caused the badge to show "3" while the Verification page's Pending
+    card + Onboarding Queue table both showed 1.
+
+    One aggregation with $lookup + $match keeps the endpoint fast (single
+    Atlas round-trip).
+    """
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    pending_states = [OnboardingStatus.UNDER_REVIEW, OnboardingStatus.PENDING, OnboardingStatus.IN_PROGRESS]
+    agg = await db.onboarding.aggregate([
+        {"$match": {"status": {"$in": pending_states}}},
+        {"$lookup": {
+            "from": "employees",
+            "localField": "employee_id",
+            "foreignField": "id",
+            "as": "_emp",
+        }},
+        {"$match": {
+            "_emp.0": {"$exists": True},                    # employee must still exist
+            "_emp.0.is_deleted": {"$ne": True},             # not soft-deleted
+            "_emp.0.employee_status": EmployeeStatus.ACTIVE,  # Active employees only
+        }},
+        {"$count": "n"},
+    ]).to_list(1)
+    return {"count": agg[0]["n"] if agg else 0}
+@api_router.get("/onboarding/list")
+async def get_onboarding_list(
+    status: Optional[str] = None,            # verification status filter (existing)
+    department: Optional[str] = None,
+    search: Optional[str] = None,
+    employee_status: Optional[str] = None,   # NEW: Employee Module status (Active/Inactive/Resigned)
+    rejected_docs: Optional[bool] = None,    # only employees with ≥1 rejected onboarding document
+    current_user: dict = Depends(get_current_user)
+):
+    """Verification queue — a TRUE REFLECTION of the Employee Module.
+
+    Driven by the `employees` collection (the single source of truth) and
+    left-joined with each employee's onboarding record. This guarantees:
+      • deleted employees never linger (no orphan/ghost rows),
+      • newly created employees always appear,
+      • status / department / designation / employment_type always reflect the
+        latest Employee Module values (no stale snapshot).
+    """
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    emp_query = {"is_deleted": {"$ne": True}}
+    if department and department != "All":
+        emp_query["department"] = department
+    if employee_status and employee_status != "All":
+        emp_query["employee_status"] = employee_status
+    if search:
+        emp_query["$or"] = [
+            {"full_name": {"$regex": search, "$options": "i"}},
+            {"emp_id": {"$regex": search, "$options": "i"}},
+        ]
+    if rejected_docs:
+        # "Rejected Documents" card drill-down: only employees who currently
+        # have at least one rejected onboarding document.
+        rej_ids = await db.onboarding_documents.distinct(
+            "employee_id", {"status": DocumentStatus.REJECTED}
+        )
+        emp_query["id"] = {"$in": rej_ids or []}
+
+    employees = await db.employees.find(emp_query, {
+        "_id": 0, "id": 1, "emp_id": 1, "full_name": 1, "department": 1,
+        "team": 1, "designation": 1, "employment_type": 1, "employee_status": 1, "created_at": 1,
+    }).sort("created_at", -1).to_list(2000)
+
+    emp_ids = [e["id"] for e in employees]
+    onb_map = {}
+    if emp_ids:
+        async for o in db.onboarding.find({"employee_id": {"$in": emp_ids}}, {"_id": 0}):
+            onb_map[o["employee_id"]] = o
+
+    # Derived date fallbacks — most records never went through the employee's
+    # explicit "Submit onboarding" step (HR uploads/verifies directly), so
+    # `submitted_at` is null. Fall back to document timestamps:
+    #   Submitted → latest document uploaded_at
+    #   Approved  → onboarding.approved_at → reviewed_at → latest verified_at
+    doc_dates = {}
+    if emp_ids:
+        async for d in db.onboarding_documents.find(
+            {"employee_id": {"$in": emp_ids}},
+            {"_id": 0, "employee_id": 1, "uploaded_at": 1, "verified_at": 1},
+        ):
+            entry = doc_dates.setdefault(d["employee_id"], {"uploaded": None, "verified": None})
+            up = d.get("uploaded_at")
+            if up and (entry["uploaded"] is None or up > entry["uploaded"]):
+                entry["uploaded"] = up
+            vr = d.get("verified_at")
+            if vr and (entry["verified"] is None or vr > entry["verified"]):
+                entry["verified"] = vr
+
+    results = []
+    for e in employees:
+        onb = onb_map.get(e["id"]) or {}
+        verification_status = onb.get("status", OnboardingStatus.NOT_STARTED)
+        if status and status != "All" and verification_status != status:
+            continue
+        dd = doc_dates.get(e["id"], {})
+        approved_at = None
+        if verification_status == OnboardingStatus.APPROVED:
+            approved_at = onb.get("approved_at") or onb.get("reviewed_at") or dd.get("verified")
+        results.append({
+            "id": onb.get("id", e["id"]),
+            "employee_id": e["id"],
+            "emp_id": e.get("emp_id"),
+            "emp_name": e.get("full_name"),
+            "department": e.get("department"),
+            "team": e.get("team"),
+            "designation": e.get("designation"),
+            "employment_type": e.get("employment_type"),
+            "employee_status": e.get("employee_status"),   # LIVE from Employee Module
+            "status": verification_status,                 # verification status
+            "submitted_at": onb.get("submitted_at") or dd.get("uploaded"),
+            "approved_at": approved_at,
+            "created_at": onb.get("created_at") or e.get("created_at"),
+        })
+    return results
+
+@api_router.get("/onboarding/employee/{employee_id}")
+async def get_employee_onboarding(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get onboarding status and documents for an employee"""
+    # Employees can only view their own, HR can view all
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Permission denied")
+    
+    onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not onboarding:
+        # Lazily create the onboarding record so any live employee (even those
+        # who never had one) is reviewable — keeps the queue a true reflection.
+        employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        onboarding = OnboardingRecord(
+            employee_id=employee_id,
+            emp_id=employee.get("emp_id"),
+            emp_name=employee.get("full_name"),
+            department=employee.get("department"),
+            team=employee.get("team"),
+            designation=employee.get("designation")
+        )
+        doc = onboarding.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        doc['updated_at'] = doc['updated_at'].isoformat()
+        await db.onboarding.insert_one(doc.copy())
+        for req_doc in REQUIRED_DOCUMENTS:
+            doc_record = OnboardingDocument(
+                employee_id=employee_id,
+                document_type=req_doc["type"],
+                document_label=req_doc["label"]
+            )
+            doc_data = doc_record.model_dump()
+            doc_data['created_at'] = doc_data['created_at'].isoformat()
+            await db.onboarding_documents.insert_one(doc_data.copy())
+        onboarding = doc
+    
+    # Get all documents
+    documents = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(20)
+    
+    return {
+        "onboarding": serialize_doc(onboarding),
+        "documents": [serialize_doc(d) for d in documents],
+        "required_documents": REQUIRED_DOCUMENTS
+    }
+
+@api_router.delete("/onboarding/employee/{employee_id}")
+async def remove_employee_from_verification(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """ADMIN ONLY: remove an employee from the verification/onboarding queue.
+    Deletes their onboarding record + ALL uploaded onboarding documents so they
+    no longer appear in the queue. The employee account itself is preserved.
+    Irreversible."""
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not onboarding:
+        raise HTTPException(status_code=404, detail="Onboarding record not found")
+
+    docs_res = await db.onboarding_documents.delete_many({"employee_id": employee_id})
+    await db.onboarding.delete_one({"employee_id": employee_id})
+
+    # Reset derived onboarding status on the employee + user so no stale state lingers.
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {"onboarding_status": OnboardingStatus.NOT_STARTED, "updated_at": get_ist_now().isoformat()},
+         "$unset": {"onboarding_completed_at": ""}}
+    )
+    await db.users.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"onboarding_status": OnboardingStatus.NOT_STARTED}}
+    )
+
+    await log_audit(current_user["id"], "remove_from_verification", "onboarding", employee_id,
+                    f"deleted onboarding + {docs_res.deleted_count} documents")
+    return {"message": "Employee removed from verification queue", "documents_deleted": docs_res.deleted_count}
+
+@api_router.get("/onboarding/my-status")
+async def get_my_onboarding_status(current_user: dict = Depends(get_current_user)):
+    """Get current user's onboarding status"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not onboarding:
+        # Create onboarding record if doesn't exist
+        employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        onboarding = OnboardingRecord(
+            employee_id=employee_id,
+            emp_id=employee.get("emp_id"),
+            emp_name=employee.get("full_name"),
+            department=employee.get("department"),
+            team=employee.get("team"),
+            designation=employee.get("designation")
+        )
+        doc = onboarding.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        doc['updated_at'] = doc['updated_at'].isoformat()
+        await db.onboarding.insert_one(doc.copy())
+        
+        # Create document placeholders
+        for req_doc in REQUIRED_DOCUMENTS:
+            doc_record = OnboardingDocument(
+                employee_id=employee_id,
+                document_type=req_doc["type"],
+                document_label=req_doc["label"]
+            )
+            doc_data = doc_record.model_dump()
+            doc_data['created_at'] = doc_data['created_at'].isoformat()
+            await db.onboarding_documents.insert_one(doc_data.copy())
+        
+        onboarding = doc
+    
+    # Get documents
+    documents = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(20)
+    
+    # Check if user is in onboarding flow
+    user = await db.users.find_one({"id": current_user["id"]}, {"_id": 0})
+    
+    return {
+        "onboarding": serialize_doc(onboarding) if isinstance(onboarding, dict) else onboarding,
+        "documents": [serialize_doc(d) for d in documents],
+        "required_documents": REQUIRED_DOCUMENTS,
+        "is_first_login": user.get("is_first_login", True),
+        "onboarding_completed": user.get("onboarding_status") == OnboardingStatus.APPROVED
+    }
+
+@api_router.post("/onboarding/upload-document")
+async def upload_onboarding_document(data: DocumentUpload, current_user: dict = Depends(get_current_user)):
+    """Upload a document for onboarding.
+
+    Re-upload policy (per product spec):
+      - Allowed when current status is `not_uploaded`, `uploaded`, or `rejected`.
+      - BLOCKED once the document is `verified` (approved) — to update, the
+        employee must raise a support ticket. This protects the integrity of
+        an HR-verified record.
+      - Employees can re-upload at ANY time after onboarding approval as long
+        as the specific doc isn't already verified (e.g., refresh a rejected
+        Aadhaar from My Documents post-onboarding).
+    """
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    # Find existing document record
+    doc_record = await db.onboarding_documents.find_one({
+        "employee_id": employee_id,
+        "document_type": data.document_type
+    }, {"_id": 0})
+    
+    if not doc_record:
+        raise HTTPException(status_code=404, detail="Document type not found")
+
+    # Lock verified docs — only HR can override via the verification flow.
+    if doc_record.get("status") == DocumentStatus.VERIFIED:
+        raise HTTPException(
+            status_code=400,
+            detail="This document is already approved by HR and cannot be re-uploaded. Please raise a support ticket if you need to update it.",
+        )
+
+    was_rejected = doc_record.get("status") == DocumentStatus.REJECTED
+
+    # Update document — clear any prior rejection reason so the queue is clean.
+    update_data = {
+        "file_url": data.file_url,
+        "file_public_id": data.file_public_id,
+        "file_name": data.file_name,
+        "status": DocumentStatus.UPLOADED,
+        "uploaded_at": get_ist_now().isoformat(),
+        "rejection_reason": None,
+    }
+    
+    await db.onboarding_documents.update_one(
+        {"employee_id": employee_id, "document_type": data.document_type},
+        {"$set": update_data}
+    )
+    
+    # Bump onboarding to IN_PROGRESS only if not already APPROVED — never
+    # demote a fully-approved onboarding because of a post-approval re-upload.
+    onboarding_doc = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0, "status": 1})
+    if onboarding_doc and onboarding_doc.get("status") != OnboardingStatus.APPROVED:
+        await db.onboarding.update_one(
+            {"employee_id": employee_id},
+            {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": get_ist_now().isoformat()}}
+        )
+    # Re-derive the canonical onboarding status from live documents.
+    await recompute_onboarding_status(employee_id)
+    
+    await log_audit(current_user["id"], "upload_document", "onboarding", employee_id, f"Uploaded {data.document_type}")
+
+    # Notify HR (in-app + email) so the verification queue stays fresh.
+    try:
+        emp_doc = await db.employees.find_one({"id": employee_id}, {"_id": 0, "full_name": 1, "emp_id": 1})
+        emp_name = (emp_doc or {}).get("full_name") or current_user.get("name") or "An employee"
+        doc_label = next(
+            (r["label"] for r in REQUIRED_DOCUMENTS if r["type"] == data.document_type),
+            data.document_type.replace("_", " ").title(),
+        )
+        verb = "re-uploaded" if was_rejected else "uploaded"
+        notif_title = f"Document {verb}: {doc_label}"
+        notif_msg = f"{emp_name} has {verb} {doc_label}. Open the Verification queue to review."
+        await notify_roles(
+            list(ALL_ADMIN_ROLES),
+            notif_title,
+            notif_msg,
+            notif_type="info",
+            link="/verification",
+        )
+
+        # Email HR — single recipient (hr@blubridge.com per the cron policy).
+        try:
+            html = f"""
+            <div style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">
+                <div style=\"background: #0b1f3b; padding: 20px; border-radius: 8px 8px 0 0;\">
+                    <h1 style=\"color: white; margin: 0; font-size: 22px;\">BluBridge HRMS</h1>
+                </div>
+                <div style=\"background: #fffdf7; padding: 28px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 8px 8px;\">
+                    <h2 style=\"color: #0b1f3b; margin: 0 0 12px;\">Onboarding Document {verb.title()}</h2>
+                    <p style=\"color: #444; margin: 0 0 16px;\"><strong>{emp_name}</strong> has {verb} the following document and it is now pending HR verification.</p>
+                    <div style=\"background: #f5f5f5; padding: 14px 16px; border-radius: 8px; margin: 12px 0 20px;\">
+                        <p style=\"margin: 4px 0;\"><strong>Employee:</strong> {emp_name}</p>
+                        <p style=\"margin: 4px 0;\"><strong>Document:</strong> {doc_label}</p>
+                        <p style=\"margin: 4px 0;\"><strong>Status:</strong> Pending Review</p>
+                    </div>
+                    <p style=\"color: #555;\">Please review it in the Verification queue at your earliest convenience.</p>
+                    <p style=\"color: #999; font-size: 12px; margin-top: 28px;\">Automated notification from BluBridge HRMS.</p>
+                </div>
+            </div>
+            """
+            await send_email_notification(
+                to_email="hr@blubridge.com",
+                subject=f"[HRMS] {emp_name} {verb} {doc_label}",
+                html_content=html,
+            )
+        except Exception as _e:
+            logger.warning(f"HR email notification failed (non-fatal): {_e}")
+    except Exception as _e:
+        # Notification is best-effort — never fail the upload because of it.
+        logger.warning(f"HR notification fan-out failed (non-fatal): {_e}")
+
+    return {"message": "Document uploaded successfully"}
+
+
+@api_router.post("/admin/employees/{employee_id}/onboarding-documents/upload")
+async def admin_upload_onboarding_document_on_behalf(
+    employee_id: str,
+    data: DocumentUpload,
+    current_user: dict = Depends(get_current_user),
+):
+    """HR / Admin uploads an onboarding document ON BEHALF OF an employee.
+
+    Same target collection (`onboarding_documents`) and same `status=UPLOADED`
+    as the self-service path so the existing HR verification queue picks it up
+    without any extra wiring. We record `uploaded_by_admin=True` and the admin
+    user id/name so the audit trail makes the on-behalf action explicit. No
+    auto-verification, no auto-onboarding-approval — explicit per user spec.
+    """
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    employee = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    doc_record = await db.onboarding_documents.find_one(
+        {"employee_id": employee_id, "document_type": data.document_type},
+        {"_id": 0},
+    )
+    now_iso = get_ist_now().isoformat()
+    update_data = {
+        "file_url": data.file_url,
+        "file_public_id": data.file_public_id,
+        "file_name": data.file_name,
+        "status": DocumentStatus.UPLOADED,
+        "uploaded_at": now_iso,
+        "uploaded_by_admin": True,
+        "uploaded_by_user_id": current_user.get("id"),
+        "uploaded_by_user_name": current_user.get("name"),
+        # Clear any prior rejection so the doc re-enters the queue cleanly
+        "rejection_reason": None,
+    }
+
+    if doc_record:
+        await db.onboarding_documents.update_one(
+            {"employee_id": employee_id, "document_type": data.document_type},
+            {"$set": update_data},
+        )
+    else:
+        # The first-login seed normally creates required-doc placeholders. If
+        # an admin uploads a type that was never seeded (e.g. legacy employees
+        # who never went through onboarding), create the row on the fly.
+        await db.onboarding_documents.insert_one({
+            "id": str(uuid.uuid4()),
+            "employee_id": employee_id,
+            "document_type": data.document_type,
+            "is_required": True,
+            **update_data,
+        })
+
+    # Bump onboarding to IN_PROGRESS so the dashboard reflects activity
+    # (only if it was previously NOT_STARTED — never override an APPROVED state).
+    onboarding_doc = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0, "status": 1})
+    if onboarding_doc and onboarding_doc.get("status") not in [OnboardingStatus.APPROVED, OnboardingStatus.IN_REVIEW]:
+        await db.onboarding.update_one(
+            {"employee_id": employee_id},
+            {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": now_iso}},
+        )
+    elif not onboarding_doc:
+        await db.onboarding.insert_one({
+            "id": str(uuid.uuid4()),
+            "employee_id": employee_id,
+            "status": OnboardingStatus.IN_PROGRESS,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+
+    # Re-derive the canonical onboarding status from live documents.
+    await recompute_onboarding_status(employee_id)
+
+    await log_audit(
+        current_user.get("id"),
+        action="admin_upload_onboarding_document",
+        resource="onboarding_document",
+        resource_id=employee_id,
+        details=f"Uploaded {data.document_type} on behalf of {employee.get('full_name')}",
+    )
+    return {
+        "message": "Document uploaded successfully (queued for HR verification)",
+        "document_type": data.document_type,
+        "status": DocumentStatus.UPLOADED,
+    }
+
+@api_router.post("/onboarding/submit")
+async def submit_onboarding(current_user: dict = Depends(get_current_user)):
+    """Submit onboarding for HR review"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    # Check all required documents are uploaded
+    documents = await db.onboarding_documents.find({"employee_id": employee_id}, {"_id": 0}).to_list(20)
+    
+    required_types = [d["type"] for d in REQUIRED_DOCUMENTS if d["required"]]
+    uploaded_types = [d["document_type"] for d in documents if d.get("status") in [DocumentStatus.UPLOADED, DocumentStatus.VERIFIED]]
+    
+    missing = [t for t in required_types if t not in uploaded_types]
+    if missing:
+        missing_labels = [d["label"] for d in REQUIRED_DOCUMENTS if d["type"] in missing]
+        raise HTTPException(status_code=400, detail=f"Missing required documents: {', '.join(missing_labels)}")
+    
+    # Update onboarding status — but preserve HR's explicit APPROVED decision.
+    # Without this guard, re-submissions from the employee (or an auto-submit
+    # from the employee dashboard) would silently demote an already-approved
+    # onboarding back to UNDER_REVIEW, causing Adari-style flip-flops between
+    # Approved and Pending every ~5-10 minutes.
+    current = await db.onboarding.find_one(
+        {"employee_id": employee_id}, {"_id": 0, "status": 1}
+    )
+    if current and current.get("status") == OnboardingStatus.APPROVED:
+        # Already approved by HR — refuse to re-open. Log the attempt for
+        # traceability but keep the record intact.
+        await log_audit(
+            current_user["id"], "submit_onboarding_ignored_already_approved",
+            "onboarding", employee_id,
+        )
+        return {"message": "Onboarding already approved", "status": OnboardingStatus.APPROVED}
+
+    await db.onboarding.update_one(
+        {"employee_id": employee_id},
+        {"$set": {
+            "status": OnboardingStatus.UNDER_REVIEW,
+            "submitted_at": get_ist_now().isoformat(),
+            "updated_at": get_ist_now().isoformat()
+        }}
+    )
+    # Reconcile with live document states (keeps "Pending"/"Approved" honest).
+    await recompute_onboarding_status(employee_id)
+    
+    await log_audit(current_user["id"], "submit_onboarding", "onboarding", employee_id)
+    
+    return {"message": "Onboarding submitted for review"}
+
+@api_router.post("/onboarding/verify-document")
+async def verify_onboarding_document(data: DocumentVerification, current_user: dict = Depends(get_current_user)):
+    """HR verifies/rejects a document"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    doc = await db.onboarding_documents.find_one({"id": data.document_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    if data.status not in [DocumentStatus.VERIFIED, DocumentStatus.REJECTED]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    update_data = {
+        "status": data.status,
+        "previous_status": doc.get("status"),   # state history → enables admin Rollback
+        "verified_at": get_ist_now().isoformat(),
+        "verified_by": current_user["id"]
+    }
+    
+    if data.status == DocumentStatus.REJECTED:
+        update_data["rejection_reason"] = data.rejection_reason
+    
+    await db.onboarding_documents.update_one(
+        {"id": data.document_id},
+        {"$set": update_data}
+    )
+
+    # Re-derive the onboarding status from live documents (single source of truth).
+    await recompute_onboarding_status(doc["employee_id"])
+
+    await log_audit(current_user["id"], f"verify_document_{data.status}", "onboarding", doc["employee_id"], data.document_type if hasattr(data, 'document_type') else None)
+    
+    return {"message": f"Document {data.status}"}
+
+@api_router.post("/onboarding/rollback-document/{document_id}")
+async def rollback_document_verification(document_id: str, current_user: dict = Depends(get_current_user)):
+    """ADMIN ONLY: revert a document's verification decision to its PREVIOUS state
+    (Approved/Rejected → the prior status, typically Pending). The swap is itself
+    reversible, so a subsequent rollback toggles back to the earlier decision."""
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    doc = await db.onboarding_documents.find_one({"id": document_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.get("status") not in [DocumentStatus.VERIFIED, DocumentStatus.REJECTED]:
+        raise HTTPException(status_code=400, detail="Only approved or rejected documents can be rolled back.")
+
+    # Restore the exact previous status (fallback to pending/'uploaded' when no history).
+    target = doc.get("previous_status") or DocumentStatus.UPLOADED
+    update_data = {
+        "status": target,
+        "previous_status": doc.get("status"),    # keep rollback reversible
+        "verified_at": None,
+        "verified_by": None,
+    }
+    # Clear the rejection reason unless we're rolling back INTO a rejected state.
+    if target != DocumentStatus.REJECTED:
+        update_data["rejection_reason"] = None
+
+    await db.onboarding_documents.update_one({"id": document_id}, {"$set": update_data})
+
+    # Re-derive onboarding status from live documents (single source of truth).
+    await recompute_onboarding_status(doc["employee_id"])
+
+    await log_audit(current_user["id"], "rollback_document", "onboarding", doc["employee_id"], f"{doc.get('status')} -> {target}")
+    return {"message": f"Verification rolled back to {target}", "status": target}
+
+@api_router.delete("/onboarding/documents/{document_id}")
+async def remove_onboarding_document(document_id: str, current_user: dict = Depends(get_current_user)):
+    """ADMIN ONLY: remove an uploaded onboarding document.
+
+    Behaviour:
+      • Resets the document row to `not_uploaded` (clears file_url,
+        file_public_id, file_name, rejection_reason, verification fields).
+      • Purges the underlying Cloudinary asset (best-effort, `image` and
+        `raw` resource types both tried — same pattern used by the
+        offer-letter delete flow).
+      • Recomputes the parent onboarding status from the live document set.
+      • Reflects instantly in the employee's My Documents view because
+        that view queries this same `onboarding_documents` row.
+    Response shape: `{ message, status }`.
+    """
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    doc = await db.onboarding_documents.find_one({"id": document_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    old_public_id = doc.get("file_public_id")
+    name_hint = doc.get("file_name") or doc.get("file_url")
+
+    await db.onboarding_documents.update_one(
+        {"id": document_id},
+        {"$set": {
+            "status": DocumentStatus.NOT_UPLOADED,
+            "previous_status": doc.get("status"),
+            "file_url": None,
+            "file_public_id": None,
+            "file_name": None,
+            "uploaded_at": None,
+            "verified_at": None,
+            "verified_by": None,
+            "rejection_reason": None,
+        }},
+    )
+
+    # Recompute the parent onboarding status now that this doc is gone.
+    await recompute_onboarding_status(doc["employee_id"])
+
+    # Best-effort Cloudinary purge — never blocks the API response.
+    if old_public_id:
+        try:
+            rtype = _guess_cloudinary_resource_type(name_hint)
+            result = await asyncio.to_thread(
+                cloudinary.uploader.destroy, old_public_id, invalidate=True, resource_type=rtype
+            )
+            if isinstance(result, dict) and result.get("result") == "not found":
+                other = "raw" if rtype == "image" else "image"
+                await asyncio.to_thread(
+                    cloudinary.uploader.destroy, old_public_id, invalidate=True, resource_type=other
+                )
+        except Exception as _e:
+            logger.warning(
+                f"Onboarding document {document_id} asset {old_public_id} "
+                f"could not be purged from Cloudinary: {_e}"
+            )
+
+    await log_audit(
+        current_user["id"], "remove_onboarding_document", "onboarding",
+        doc["employee_id"], doc.get("document_type"),
+    )
+    return {"message": "Document removed", "status": DocumentStatus.NOT_UPLOADED}
+
+@api_router.post("/onboarding/approve/{employee_id}")
+async def approve_onboarding(employee_id: str, data: OnboardingApproval, current_user: dict = Depends(get_current_user)):
+    """HR approves/rejects entire onboarding"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    onboarding = await db.onboarding.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not onboarding:
+        raise HTTPException(status_code=404, detail="Onboarding record not found")
+    
+    if data.status not in [OnboardingStatus.APPROVED, OnboardingStatus.REJECTED]:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    # Update onboarding record
+    update_data = {
+        "status": data.status,
+        "reviewed_at": get_ist_now().isoformat(),
+        "reviewed_by": current_user["id"],
+        "review_notes": data.review_notes,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.onboarding.update_one({"employee_id": employee_id}, {"$set": update_data})
+    
+    # Update employee's onboarding status
+    employee_update = {"onboarding_status": data.status, "updated_at": get_ist_now().isoformat()}
+    if data.status == OnboardingStatus.APPROVED:
+        employee_update["onboarding_completed_at"] = get_ist_now().isoformat()
+    
+    await db.employees.update_one({"id": employee_id}, {"$set": employee_update})
+    
+    # Update user's onboarding status
+    await db.users.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"onboarding_status": data.status, "is_first_login": False}}
+    )
+    
+    # Send notification email
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if employee:
+        status_text = "approved" if data.status == OnboardingStatus.APPROVED else "requires attention"
+        subject = f"Onboarding {status_text.title()} - {employee.get('full_name')}"
+        html = get_onboarding_status_email(
+            employee.get("full_name"),
+            data.status,
+            data.review_notes
+        )
+        asyncio.create_task(send_email_notification(employee.get("official_email"), subject, html))
+    
+    await log_audit(current_user["id"], f"approve_onboarding_{data.status}", "onboarding", employee_id, data.review_notes)
+    
+    return {"message": f"Onboarding {data.status}"}
+
+@api_router.post("/onboarding/request-reupload/{employee_id}")
+async def request_document_reupload(employee_id: str, document_type: str, reason: str, current_user: dict = Depends(get_current_user)):
+    """HR requests re-upload of a specific document"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    doc = await db.onboarding_documents.find_one({
+        "employee_id": employee_id,
+        "document_type": document_type
+    }, {"_id": 0})
+    
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    await db.onboarding_documents.update_one(
+        {"employee_id": employee_id, "document_type": document_type},
+        {"$set": {
+            "status": DocumentStatus.REJECTED,
+            "rejection_reason": reason,
+            "verified_at": get_ist_now().isoformat(),
+            "verified_by": current_user["id"]
+        }}
+    )
+    
+    # Update onboarding status back to in_progress
+    await db.onboarding.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"status": OnboardingStatus.IN_PROGRESS, "updated_at": get_ist_now().isoformat()}}
+    )
+    # Re-derive (a rejected required doc surfaces as REJECTED).
+    await recompute_onboarding_status(employee_id)
+    
+    return {"message": "Re-upload requested"}
+
+# ============== ISSUE TICKET ROUTES ==============
+
+@api_router.get("/issue-tickets/categories")
+async def get_ticket_categories(current_user: dict = Depends(get_current_user)):
+    """Get all ticket categories and subcategories"""
+    categories = []
+    for category, subcategories in TICKET_SUBCATEGORIES.items():
+        categories.append({
+            "category": category,
+            "subcategories": subcategories,
+            "assigned_role": TICKET_DEPARTMENT_ROLES.get(category)
+        })
+    return categories
+
+@api_router.get("/issue-tickets")
+async def get_issue_tickets(
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    category: Optional[str] = None,
+    assigned_department: Optional[str] = None,
+    search: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=200),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get issue tickets based on user role"""
+    query = {}
+    
+    # Role-based filtering
+    user_role = current_user.get("role")
+    
+    # Employees can only see their own tickets
+    if user_role == UserRole.EMPLOYEE:
+        query["employee_id"] = current_user.get("employee_id")
+    # Department admins see tickets assigned to their department
+    elif user_role in ["it_admin", "hr_admin", "finance_admin", "admin_dept", "compliance_officer", "operations_manager"]:
+        query["assigned_department"] = user_role
+    # HR, system_admin, office_admin can see all tickets
+    
+    # Apply filters
+    if status and status != "All":
+        query["status"] = status
+    if priority and priority != "All":
+        query["priority"] = priority
+    if category and category != "All":
+        query["category"] = category
+    if assigned_department and assigned_department != "All":
+        query["assigned_department"] = assigned_department
+    if search:
+        query["$or"] = [
+            {"ticket_number": {"$regex": search, "$options": "i"}},
+            {"subject": {"$regex": search, "$options": "i"}},
+            {"emp_name": {"$regex": search, "$options": "i"}},
+            {"description": {"$regex": search, "$options": "i"}}
+        ]
+    
+    skip = (page - 1) * limit
+    total = await db.issue_tickets.count_documents(query)
+    tickets = await db.issue_tickets.find(query, {"_id": 0}).skip(skip).limit(limit).sort("created_at", -1).to_list(limit)
+    
+    return {
+        "tickets": [serialize_doc(t) for t in tickets],
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": (total + limit - 1) // limit
+    }
+
+@api_router.get("/issue-tickets/stats")
+async def get_issue_ticket_stats(current_user: dict = Depends(get_current_user)):
+    """Get comprehensive ticket statistics"""
+    user_role = current_user.get("role")
+    query = {}
+    
+    # Role-based filtering for stats
+    if user_role == UserRole.EMPLOYEE:
+        query["employee_id"] = current_user.get("employee_id")
+    elif user_role in ["it_admin", "hr_admin", "finance_admin", "admin_dept", "compliance_officer", "operations_manager"]:
+        query["assigned_department"] = user_role
+    
+    # Get counts by status
+    total = await db.issue_tickets.count_documents(query)
+    by_status = {}
+    for status in [TicketStatus.OPEN, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_APPROVAL, 
+                   TicketStatus.ON_HOLD, TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.REJECTED]:
+        count = await db.issue_tickets.count_documents({**query, "status": status})
+        by_status[status] = count
+    
+    # Get counts by priority
+    by_priority = {}
+    for priority in [TicketPriority.HIGH, TicketPriority.MEDIUM, TicketPriority.LOW]:
+        count = await db.issue_tickets.count_documents({**query, "priority": priority})
+        by_priority[priority] = count
+    
+    # Get counts by category (admin only)
+    by_category = {}
+    if user_role not in [UserRole.EMPLOYEE]:
+        for category in TICKET_SUBCATEGORIES.keys():
+            count = await db.issue_tickets.count_documents({**query, "category": category})
+            by_category[category] = count
+    
+    # Get average resolution time (only for resolved/closed tickets)
+    avg_resolution_hours = None
+    resolved_tickets = await db.issue_tickets.find({
+        **query, 
+        "status": {"$in": [TicketStatus.RESOLVED, TicketStatus.CLOSED]},
+        "resolved_at": {"$ne": None}
+    }, {"_id": 0, "created_at": 1, "resolved_at": 1}).to_list(500)
+    
+    if resolved_tickets:
+        total_hours = 0
+        for ticket in resolved_tickets:
+            try:
+                created = datetime.fromisoformat(ticket["created_at"].replace("Z", "+00:00")) if isinstance(ticket["created_at"], str) else ticket["created_at"]
+                resolved = datetime.fromisoformat(ticket["resolved_at"].replace("Z", "+00:00")) if isinstance(ticket["resolved_at"], str) else ticket["resolved_at"]
+                total_hours += (resolved - created).total_seconds() / 3600
+            except Exception:
+                pass
+        avg_resolution_hours = round(total_hours / len(resolved_tickets), 1) if resolved_tickets else None
+    
+    return {
+        "total": total,
+        "by_status": by_status,
+        "by_priority": by_priority,
+        "by_category": by_category,
+        "avg_resolution_hours": avg_resolution_hours
+    }
+
+@api_router.get("/issue-tickets/{ticket_id}")
+async def get_issue_ticket(ticket_id: str, current_user: dict = Depends(get_current_user)):
+    """Get single ticket details"""
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Check access
+    user_role = current_user.get("role")
+    if user_role == UserRole.EMPLOYEE:
+        if ticket.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    return serialize_doc(ticket)
+
+@api_router.post("/issue-tickets")
+async def create_issue_ticket(data: TicketCreate, current_user: dict = Depends(get_current_user)):
+    """Create a new issue ticket"""
+    # Validate category and subcategory
+    if data.category not in TICKET_SUBCATEGORIES:
+        raise HTTPException(status_code=400, detail="Invalid category")
+    if data.subcategory not in TICKET_SUBCATEGORIES[data.category]:
+        raise HTTPException(status_code=400, detail="Invalid subcategory for this category")
+    
+    # Determine employee info
+    employee_id = data.employee_id if data.employee_id else current_user.get("employee_id")
+    employee = None
+    created_by = None
+    created_by_name = None
+    
+    if employee_id:
+        employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    
+    # If admin creating on behalf of employee
+    if data.employee_id and current_user.get("role") in [UserRole.HR]:
+        created_by = current_user["id"]
+        created_by_name = current_user.get("name")
+    
+    # Generate ticket number
+    ticket_number = await generate_ticket_number()
+    
+    # Determine assigned department
+    assigned_department = TICKET_DEPARTMENT_ROLES.get(data.category, "hr_admin")
+    
+    # Process attachments
+    attachments = []
+    if data.attachments:
+        for att in data.attachments:
+            attachments.append({
+                "id": str(uuid.uuid4()),
+                "file_url": att.get("file_url"),
+                "file_name": att.get("file_name"),
+                "file_type": att.get("file_type"),
+                "file_public_id": att.get("file_public_id"),
+                "uploaded_at": get_ist_now().isoformat()
+            })
+    
+    # Create initial status history
+    status_history = [{
+        "id": str(uuid.uuid4()),
+        "status": TicketStatus.OPEN,
+        "updated_by": current_user["id"],
+        "updated_by_name": current_user.get("name"),
+        "notes": "Ticket created",
+        "updated_at": get_ist_now().isoformat()
+    }]
+    
+    ticket = Ticket(
+        ticket_number=ticket_number,
+        employee_id=employee_id or current_user["id"],
+        emp_name=employee.get("full_name") if employee else current_user.get("name"),
+        emp_email=employee.get("official_email") if employee else current_user.get("email"),
+        department=employee.get("department") if employee else current_user.get("department", "N/A"),
+        team=employee.get("team") if employee else current_user.get("team"),
+        category=data.category,
+        subcategory=data.subcategory,
+        subject=data.subject,
+        description=data.description,
+        priority=data.priority,
+        assigned_department=assigned_department,
+        attachments=attachments,
+        status_history=status_history,
+        created_by=created_by,
+        created_by_name=created_by_name
+    )
+    
+    doc = ticket.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    doc['updated_at'] = doc['updated_at'].isoformat()
+    await db.issue_tickets.insert_one(doc.copy())
+    
+    await log_audit(current_user["id"], "create_issue_ticket", "issue_ticket", ticket.id, f"Ticket {ticket_number} created")
+    
+    return serialize_doc(doc)
+
+@api_router.put("/issue-tickets/{ticket_id}/status")
+async def update_issue_ticket_status(
+    ticket_id: str, 
+    data: TicketStatusUpdateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update ticket status"""
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Validate status
+    valid_statuses = [TicketStatus.OPEN, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_APPROVAL,
+                     TicketStatus.ON_HOLD, TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.REJECTED]
+    if data.status not in valid_statuses:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    
+    # Check permissions
+    user_role = current_user.get("role")
+    # Employees can only close their own resolved tickets
+    if user_role == UserRole.EMPLOYEE:
+        if ticket.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+        if data.status != TicketStatus.CLOSED or ticket.get("status") != TicketStatus.RESOLVED:
+            raise HTTPException(status_code=403, detail="Employees can only close resolved tickets")
+    
+    # Create status update entry
+    status_update = {
+        "id": str(uuid.uuid4()),
+        "status": data.status,
+        "updated_by": current_user["id"],
+        "updated_by_name": current_user.get("name"),
+        "notes": data.notes,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    update_data = {
+        "status": data.status,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    # Add resolution info for resolved/closed statuses
+    if data.status in [TicketStatus.RESOLVED, TicketStatus.CLOSED]:
+        if data.resolution:
+            update_data["resolution"] = data.resolution
+        update_data["resolved_at"] = get_ist_now().isoformat()
+        update_data["resolved_by"] = current_user["id"]
+        update_data["resolved_by_name"] = current_user.get("name")
+    
+    await db.issue_tickets.update_one(
+        {"id": ticket_id},
+        {
+            "$set": update_data,
+            "$push": {"status_history": status_update}
+        }
+    )
+    
+    await log_audit(current_user["id"], "update_ticket_status", "issue_ticket", ticket_id, f"Status: {data.status}")
+    
+    return {"message": f"Ticket status updated to {data.status}"}
+
+@api_router.put("/issue-tickets/{ticket_id}/assign")
+async def assign_issue_ticket(
+    ticket_id: str,
+    data: TicketAssignRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Assign ticket to a specific user"""
+    if current_user["role"] not in [UserRole.HR, 
+                                    "it_admin", "hr_admin", "finance_admin", "admin_dept", 
+                                    "compliance_officer", "operations_manager"]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Get assignee info
+    assignee = await db.users.find_one({"id": data.assigned_to}, {"_id": 0})
+    if not assignee:
+        raise HTTPException(status_code=404, detail="Assignee not found")
+    
+    # Create status update entry
+    status_update = {
+        "id": str(uuid.uuid4()),
+        "status": ticket.get("status"),
+        "updated_by": current_user["id"],
+        "updated_by_name": current_user.get("name"),
+        "notes": f"Ticket assigned to {assignee.get('name')}",
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.issue_tickets.update_one(
+        {"id": ticket_id},
+        {
+            "$set": {
+                "assigned_to": data.assigned_to,
+                "assigned_to_name": assignee.get("name"),
+                "updated_at": get_ist_now().isoformat()
+            },
+            "$push": {"status_history": status_update}
+        }
+    )
+    
+    return {"message": f"Ticket assigned to {assignee.get('name')}"}
+
+@api_router.post("/issue-tickets/{ticket_id}/feedback")
+async def submit_ticket_feedback(
+    ticket_id: str,
+    data: TicketFeedbackRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Submit feedback for a resolved/closed ticket"""
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Only ticket owner can submit feedback
+    if ticket.get("employee_id") != current_user.get("employee_id"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Only for resolved/closed tickets
+    if ticket.get("status") not in [TicketStatus.RESOLVED, TicketStatus.CLOSED]:
+        raise HTTPException(status_code=400, detail="Can only submit feedback for resolved/closed tickets")
+    
+    # Validate rating
+    if data.rating < 1 or data.rating > 5:
+        raise HTTPException(status_code=400, detail="Rating must be between 1 and 5")
+    
+    feedback = {
+        "rating": data.rating,
+        "comment": data.comment,
+        "submitted_at": get_ist_now().isoformat()
+    }
+    
+    await db.issue_tickets.update_one(
+        {"id": ticket_id},
+        {"$set": {"feedback": feedback, "updated_at": get_ist_now().isoformat()}}
+    )
+    
+    return {"message": "Feedback submitted successfully"}
+
+@api_router.post("/issue-tickets/{ticket_id}/attachment")
+async def add_ticket_attachment(
+    ticket_id: str,
+    file_url: str,
+    file_name: str,
+    file_type: str,
+    file_public_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Add attachment to an existing ticket"""
+    ticket = await db.issue_tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    # Check access
+    if current_user.get("role") == UserRole.EMPLOYEE:
+        if ticket.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    attachment = {
+        "id": str(uuid.uuid4()),
+        "file_url": file_url,
+        "file_name": file_name,
+        "file_type": file_type,
+        "file_public_id": file_public_id,
+        "uploaded_at": get_ist_now().isoformat()
+    }
+    
+    await db.issue_tickets.update_one(
+        {"id": ticket_id},
+        {
+            "$push": {"attachments": attachment},
+            "$set": {"updated_at": get_ist_now().isoformat()}
+        }
+    )
+    
+    return {"message": "Attachment added", "attachment": attachment}
+
+# Keep legacy ticket routes for backward compatibility
+@api_router.get("/tickets")
+async def get_tickets(
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all tickets (HR) or own tickets (employee) - Legacy endpoint"""
+    query = {}
+    
+    if current_user["role"] == UserRole.EMPLOYEE:
+        query["employee_id"] = current_user.get("employee_id")
+    
+    if status and status != "All":
+        query["status"] = status
+    if priority and priority != "All":
+        query["priority"] = priority
+    
+    tickets = await db.tickets.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [serialize_doc(t) for t in tickets]
+
+@api_router.post("/tickets")
+async def create_ticket_legacy(data: dict, current_user: dict = Depends(get_current_user)):
+    """Create a new support ticket - Legacy endpoint"""
+    employee_id = current_user.get("employee_id")
+    employee = None
+    
+    if employee_id:
+        employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    
+    ticket_doc = {
+        "id": str(uuid.uuid4()),
+        "employee_id": employee_id or current_user["id"],
+        "emp_name": employee.get("full_name") if employee else current_user.get("name"),
+        "department": employee.get("department") if employee else current_user.get("department", "N/A"),
+        "subject": data.get("subject", ""),
+        "description": data.get("description", ""),
+        "priority": data.get("priority", "medium"),
+        "status": "open",
+        "assigned_to": None,
+        "resolution": None,
+        "created_at": get_ist_now().isoformat(),
+        "updated_at": get_ist_now().isoformat(),
+        "resolved_at": None
+    }
+    
+    await db.tickets.insert_one(ticket_doc.copy())
+    await log_audit(current_user["id"], "create_ticket", "ticket", ticket_doc["id"])
+    
+    return serialize_doc(ticket_doc)
+
+@api_router.put("/tickets/{ticket_id}/status")
+async def update_ticket_status(ticket_id: str, status: str, resolution: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Update ticket status (HR only) - Legacy endpoint"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    ticket = await db.tickets.find_one({"id": ticket_id}, {"_id": 0})
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    
+    update_data = {
+        "status": status,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    if status in ["resolved", "closed"]:
+        update_data["resolved_at"] = get_ist_now().isoformat()
+        update_data["resolution"] = resolution
+    
+    await db.tickets.update_one({"id": ticket_id}, {"$set": update_data})
+    
+    return {"message": f"Ticket status updated to {status}"}
+
+@api_router.get("/tickets/stats")
+async def get_ticket_stats(current_user: dict = Depends(get_current_user)):
+    """Get ticket statistics - Legacy endpoint"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    total = await db.tickets.count_documents({})
+    open_tickets = await db.tickets.count_documents({"status": "open"})
+    in_progress = await db.tickets.count_documents({"status": "in_progress"})
+    resolved = await db.tickets.count_documents({"status": "resolved"})
+    
+    return {
+        "total": total,
+        "open": open_tickets,
+        "in_progress": in_progress,
+        "resolved": resolved
+    }
+
+# ============== AUDIT LOG ROUTES ==============
+
+@api_router.get("/audit-logs/duplicate-removed-2026-07-15", include_in_schema=False, deprecated=True)
+async def _removed_audit_logs_duplicate():
+    """Placeholder to preserve line offsets after removing the duplicate
+    /audit-logs handler (which caused an N+1 user name lookup and was
+    shadowed by the earlier registration anyway)."""
+    raise HTTPException(status_code=410, detail="Removed")
+
+# ============== SALARY MANAGEMENT ROUTES ==============
+
+def calculate_salary_structure(annual_ctc: float) -> dict:
+    """Calculate salary breakdown from annual CTC based on professional structure"""
+    monthly_ctc = annual_ctc / 12
+    
+    # Base Components (A)
+    basic = round(monthly_ctc * 0.30, 2)  # 30% of Monthly CTC
+    hra = round(basic * 0.50, 2)  # 50% of Basic
+    base_components = basic + hra
+    
+    # Variable Compensation (20% of CTC)
+    variable_compensation = round(monthly_ctc * 0.20, 2)
+    
+    # Retirement Benefits (C)
+    pf_basic = min(basic, 15000)
+    pf_employee = round(pf_basic * 0.12, 2)
+    pf_employer = round(pf_basic * 0.12, 2)
+    gratuity = round(basic * 15 / 26 / 12, 2)  # Gratuity Act formula
+    retirement_benefits = pf_employer + gratuity
+    
+    # Fixed known allowances in Basket (B)
+    lta = round(basic * 0.0567, 2)
+    phone_internet = 1100
+    bonus = round(basic * 0.10, 2)
+    stay_travel = round(basic * 0.30, 2)
+    food_reimbursement = 1210
+    medical_allowance = 1250
+    conveyance = 1600
+    
+    known_allowances = lta + phone_internet + bonus + stay_travel + food_reimbursement + medical_allowance + conveyance
+    
+    # Special Allowance = balancing figure so total equals CTC exactly
+    fixed_target = monthly_ctc - variable_compensation
+    special_allowance = round(fixed_target - base_components - known_allowances - retirement_benefits, 2)
+    if special_allowance < 0:
+        special_allowance = 0
+    
+    basket_allowances = known_allowances + special_allowance
+    fixed_compensation = base_components + basket_allowances + retirement_benefits
+    
+    gross_salary = base_components + basket_allowances
+    
+    # ESI
+    if gross_salary < 21000:
+        esi_employee = round(gross_salary * 0.0075, 2)
+        esi_employer = round(gross_salary * 0.0325, 2)
+    else:
+        esi_employee = 0
+        esi_employer = 0
+    
+    # Professional Tax (standard 200, varies by state)
+    professional_tax = 200
+    
+    # Total Deductions (Employee side)
+    total_deductions = round(pf_employee + esi_employee + professional_tax, 2)
+    
+    # Net Salary (Take Home)
+    net_salary = round(gross_salary - total_deductions, 2)
+    
+    return {
+        "annual_ctc": annual_ctc,
+        "monthly_ctc": round(monthly_ctc, 2),
+        
+        # Base Components (A)
+        "basic": basic,
+        "hra": hra,
+        "base_components_total": round(base_components, 2),
+        
+        # Basket of Allowances (B)
+        "lta": lta,
+        "phone_internet": phone_internet,
+        "bonus": bonus,
+        "stay_travel": stay_travel,
+        "special_allowance": special_allowance,
+        "food_reimbursement": food_reimbursement,
+        "medical_allowance": medical_allowance,
+        "conveyance": conveyance,
+        "basket_allowances_total": round(basket_allowances, 2),
+        "da": 0,  # Keep for backward compatibility
+        "other_allowances": 0,
+        
+        # Retirement Benefits (C)
+        "pf_employer": pf_employer,
+        "gratuity": gratuity,
+        "retirement_benefits_total": round(retirement_benefits, 2),
+        
+        # Totals
+        "fixed_compensation": round(fixed_compensation, 2),
+        "variable_compensation": round(variable_compensation, 2),
+        "gross_salary": round(gross_salary, 2),
+        
+        # Deductions
+        "pf_employee": pf_employee,
+        "esi_employee": esi_employee,
+        "esi_employer": esi_employer,
+        "professional_tax": professional_tax,
+        "tds": 0,
+        "other_deductions": 0,
+        "total_deductions": total_deductions,
+        
+        # Net
+        "net_salary": net_salary
+    }
+
+def calculate_salary_structure_research(annual_ctc: float) -> dict:
+    """CTC-based salary breakdown for Research designation employees.
+    Uses B-percentage allocation: LTA=5.6%B, Bonus=9.9%B, Stay=30%B, Special=remainder.
+    No Medical Allowance or Conveyance. PF Employer & Employee fixed at 1800."""
+    monthly_ctc = annual_ctc / 12
+
+    # Variable = 20% of CTC, Fixed = 80% of CTC
+    variable_compensation = round(monthly_ctc * 0.20, 2)
+    fixed = round(monthly_ctc * 0.80, 2)
+
+    # A: Base Components (Basic = 30% CTC, HRA = 50% Basic → A = 45% CTC)
+    basic = round(monthly_ctc * 0.30, 2)
+    hra = round(basic * 0.50, 2)
+    base_components = round(basic + hra, 2)
+
+    # C: Retirement Benefits (PF fixed 1800, Gratuity via Gratuity Act)
+    pf_employer = 1800
+    pf_employee = 1800
+    gratuity = round(basic * 15 / 26 / 12, 2)
+    retirement_benefits = round(pf_employer + gratuity, 2)
+
+    # B: Basket of Allowances = Fixed - A - C
+    basket_total = round(fixed - base_components - retirement_benefits, 2)
+    if basket_total < 0:
+        basket_total = 0
+
+    # B components: percentages of B + fixed items
+    lta = round(basket_total * 0.056, 2)
+    phone_internet = 1100
+    bonus = round(basket_total * 0.099, 2)
+    stay_travel = round(basket_total * 0.30, 2)
+    food_reimbursement = 1210
+    # Special Allowance = balancing figure within B
+    special_allowance = round(basket_total - lta - phone_internet - bonus - stay_travel - food_reimbursement, 2)
+    if special_allowance < 0:
+        special_allowance = 0
+
+    fixed_compensation = round(base_components + basket_total + retirement_benefits, 2)
+    gross_salary = round(base_components + basket_total, 2)
+
+    # ESI (only if gross < 21000)
+    esi_employee = round(gross_salary * 0.0075, 2) if gross_salary < 21000 else 0
+    esi_employer = round(gross_salary * 0.0325, 2) if gross_salary < 21000 else 0
+
+    professional_tax = 200
+    total_deductions = round(pf_employee + esi_employee + professional_tax, 2)
+    net_salary = round(gross_salary - total_deductions, 2)
+
+    return {
+        "annual_ctc": annual_ctc,
+        "monthly_ctc": round(monthly_ctc, 2),
+        "basic": basic,
+        "hra": hra,
+        "base_components_total": base_components,
+        "lta": lta,
+        "phone_internet": phone_internet,
+        "bonus": bonus,
+        "stay_travel": stay_travel,
+        "special_allowance": special_allowance,
+        "food_reimbursement": food_reimbursement,
+        "medical_allowance": 0,
+        "conveyance": 0,
+        "basket_allowances_total": basket_total,
+        "da": 0,
+        "other_allowances": 0,
+        "pf_employer": pf_employer,
+        "gratuity": gratuity,
+        "retirement_benefits_total": retirement_benefits,
+        "fixed_compensation": fixed_compensation,
+        "variable_compensation": variable_compensation,
+        "gross_salary": gross_salary,
+        "pf_employee": pf_employee,
+        "esi_employee": esi_employee,
+        "esi_employer": esi_employer,
+        "professional_tax": professional_tax,
+        "tds": 0,
+        "other_deductions": 0,
+        "total_deductions": total_deductions,
+        "net_salary": net_salary
+    }
+
+def get_salary_calculator(designation: str):
+    """Return the appropriate salary calculator based on employee designation."""
+    if designation and "research" in designation.lower():
+        return calculate_salary_structure_research
+    return calculate_salary_structure
+
+@api_router.get("/employees/{employee_id}/salary")
+async def get_employee_salary(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get employee salary structure"""
+    # Check permissions
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get salary structure
+    salary = await db.salary_structures.find_one({"employee_id": employee_id}, {"_id": 0})
+    
+    if not salary:
+        # Create default salary structure from monthly_salary
+        monthly_salary = employee.get("monthly_salary", 0)
+        if monthly_salary > 0:
+            annual_ctc = monthly_salary * 12
+            calc_fn = get_salary_calculator(employee.get("designation", ""))
+            salary_data = calc_fn(annual_ctc)
+            salary_data["id"] = str(uuid.uuid4())
+            salary_data["employee_id"] = employee_id
+            salary_data["effective_from"] = employee.get("date_of_joining", get_ist_today())
+            salary_data["created_at"] = get_ist_now().isoformat()
+            salary_data["updated_at"] = get_ist_now().isoformat()
+            await db.salary_structures.insert_one(salary_data.copy())
+            salary = salary_data
+        else:
+            return {"employee_id": employee_id, "salary": None, "message": "No salary configured"}
+    
+    return {
+        "employee_id": employee_id,
+        "employee_name": employee.get("full_name"),
+        "salary": serialize_doc(salary)
+    }
+
+@api_router.put("/employees/{employee_id}/salary")
+async def update_employee_salary(
+    employee_id: str, 
+    data: SalaryStructureUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update employee salary structure (Admin only)"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # If annual_ctc is provided, recalculate entire structure
+    if data.annual_ctc is not None:
+        calc_fn = get_salary_calculator(employee.get("designation", ""))
+        salary_data = calc_fn(data.annual_ctc)
+        salary_data["updated_at"] = get_ist_now().isoformat()
+        
+        existing = await db.salary_structures.find_one({"employee_id": employee_id})
+        if existing:
+            await db.salary_structures.update_one(
+                {"employee_id": employee_id},
+                {"$set": salary_data}
+            )
+        else:
+            salary_data["id"] = str(uuid.uuid4())
+            salary_data["employee_id"] = employee_id
+            salary_data["effective_from"] = get_ist_today()
+            salary_data["created_at"] = get_ist_now().isoformat()
+            await db.salary_structures.insert_one(salary_data.copy())
+        
+        # Update employee's monthly_salary field
+        await db.employees.update_one(
+            {"id": employee_id},
+            {"$set": {"monthly_salary": salary_data["gross_salary"]}}
+        )
+        
+        await log_audit(current_user["id"], "update_salary", "salary", employee_id, f"Updated CTC to {data.annual_ctc}")
+        
+        return {"message": "Salary structure updated", "salary": salary_data}
+    
+    # Otherwise update individual components
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    if update_data:
+        update_data["updated_at"] = get_ist_now().isoformat()
+        
+        # Recalculate totals
+        existing = await db.salary_structures.find_one({"employee_id": employee_id}, {"_id": 0})
+        if existing:
+            merged = {**existing, **update_data}
+            
+            # Recalculate gross
+            gross = (merged.get("basic", 0) + merged.get("hra", 0) + merged.get("da", 0) + 
+                    merged.get("conveyance", 0) + merged.get("medical_allowance", 0) + 
+                    merged.get("special_allowance", 0) + merged.get("other_allowances", 0))
+            
+            # Recalculate deductions
+            total_deductions = (merged.get("pf_employee", 0) + merged.get("esi_employee", 0) + 
+                              merged.get("professional_tax", 0) + merged.get("tds", 0) + 
+                              merged.get("other_deductions", 0))
+            
+            update_data["gross_salary"] = round(gross, 2)
+            update_data["total_deductions"] = round(total_deductions, 2)
+            update_data["net_salary"] = round(gross - total_deductions, 2)
+            
+            await db.salary_structures.update_one(
+                {"employee_id": employee_id},
+                {"$set": update_data}
+            )
+            
+            await log_audit(current_user["id"], "update_salary_components", "salary", employee_id)
+            
+            return {"message": "Salary components updated"}
+    
+    return {"message": "No changes made"}
+
+@api_router.get("/employees/{employee_id}/salary/adjustments")
+async def get_salary_adjustments(
+    employee_id: str,
+    month: Optional[str] = None,  # Format: YYYY-MM
+    current_user: dict = Depends(get_current_user)
+):
+    """Get salary adjustments for an employee"""
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    query = {"employee_id": employee_id}
+    
+    if month:
+        # Get adjustments applicable for this month
+        query["$or"] = [
+            {"frequency": "one_time", "applicable_month": month},
+            {
+                "frequency": "recurring",
+                "is_active": True,
+                "$or": [
+                    {"start_month": {"$lte": month}, "end_month": {"$gte": month}},
+                    {"start_month": {"$lte": month}, "end_month": None}
+                ]
+            }
+        ]
+    
+    adjustments = await db.salary_adjustments.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+    
+    return {"employee_id": employee_id, "adjustments": [serialize_doc(a) for a in adjustments]}
+
+@api_router.post("/employees/{employee_id}/salary/adjustments")
+async def create_salary_adjustment(
+    employee_id: str,
+    data: SalaryAdjustmentCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Create a salary adjustment (Admin only)"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Determine category based on type
+    earning_types = ["bonus", "incentive", "reimbursement"]
+    category = SalaryComponentType.EARNING if data.adjustment_type in earning_types else SalaryComponentType.DEDUCTION
+    
+    adjustment = SalaryAdjustment(
+        employee_id=employee_id,
+        adjustment_type=data.adjustment_type,
+        category=category,
+        description=data.description,
+        amount=data.amount,
+        frequency=data.frequency,
+        applicable_month=data.applicable_month if data.frequency == "one_time" else None,
+        start_month=data.start_month if data.frequency == "recurring" else None,
+        end_month=data.end_month if data.frequency == "recurring" else None,
+        created_by=current_user["id"],
+        created_by_name=current_user.get("name")
+    )
+    
+    doc = adjustment.model_dump()
+    doc["created_at"] = doc["created_at"].isoformat()
+    doc["updated_at"] = doc["updated_at"].isoformat()
+    await db.salary_adjustments.insert_one(doc.copy())
+    
+    await log_audit(current_user["id"], "create_salary_adjustment", "salary_adjustment", adjustment.id, 
+                   f"{data.adjustment_type}: {data.amount} for {employee.get('full_name')}")
+    
+    return {"message": "Adjustment created", "adjustment": serialize_doc(doc)}
+
+@api_router.delete("/employees/{employee_id}/salary/adjustments/{adjustment_id}")
+async def delete_salary_adjustment(
+    employee_id: str,
+    adjustment_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a salary adjustment (Admin only)"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    result = await db.salary_adjustments.delete_one({"id": adjustment_id, "employee_id": employee_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Adjustment not found")
+    
+    await log_audit(current_user["id"], "delete_salary_adjustment", "salary_adjustment", adjustment_id)
+    
+    return {"message": "Adjustment deleted"}
+
+@api_router.put("/employees/{employee_id}/salary/adjustments/{adjustment_id}")
+async def update_salary_adjustment(
+    employee_id: str,
+    adjustment_id: str,
+    data: SalaryAdjustmentCreate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a salary adjustment (Admin only)"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    existing = await db.salary_adjustments.find_one({"id": adjustment_id, "employee_id": employee_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Adjustment not found")
+    
+    earning_types = ["bonus", "incentive", "reimbursement"]
+    category = SalaryComponentType.EARNING if data.adjustment_type in earning_types else SalaryComponentType.DEDUCTION
+    
+    update_data = {
+        "adjustment_type": data.adjustment_type,
+        "category": category,
+        "description": data.description,
+        "amount": data.amount,
+        "frequency": data.frequency,
+        "applicable_month": data.applicable_month if data.frequency == "one_time" else None,
+        "start_month": data.start_month if data.frequency == "recurring" else None,
+        "end_month": data.end_month if data.frequency == "recurring" else None,
+        "updated_at": get_ist_now().isoformat()
+    }
+    
+    await db.salary_adjustments.update_one({"id": adjustment_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "update_salary_adjustment", "salary_adjustment", adjustment_id)
+    
+    return {"message": "Adjustment updated"}
+
+@api_router.get("/employees/{employee_id}/payslip/{month}")
+async def get_payslip(
+    employee_id: str,
+    month: str,  # Format: YYYY-MM
+    current_user: dict = Depends(get_current_user)
+):
+    """Get payslip for a specific month - Compensation & Benefits Structure format"""
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get base salary structure
+    salary = await db.salary_structures.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not salary:
+        raise HTTPException(status_code=404, detail="Salary structure not found")
+    
+    # Get adjustments for this month
+    adjustments = await db.salary_adjustments.find({
+        "employee_id": employee_id,
+        "$or": [
+            {"frequency": "one_time", "applicable_month": month},
+            {
+                "frequency": "recurring",
+                "is_active": True,
+                "$or": [
+                    {"start_month": {"$lte": month}, "end_month": {"$gte": month}},
+                    {"start_month": {"$lte": month}, "end_month": None}
+                ]
+            }
+        ]
+    }, {"_id": 0}).to_list(50)
+    
+    # Calculate adjusted salary
+    total_earnings_adjustment = sum(a["amount"] for a in adjustments if a["category"] == "earning")
+    total_deductions_adjustment = sum(a["amount"] for a in adjustments if a["category"] == "deduction")
+    
+    adjusted_gross = salary.get("gross_salary", 0) + total_earnings_adjustment
+    adjusted_deductions = salary.get("total_deductions", 0) + total_deductions_adjustment
+    
+    # Get LOP days from attendance if available
+    lop_days = 0
+    attendance_records = await db.attendances.find({
+        "emp_id": employee.get("emp_id"),
+        "status": "LOP"
+    }, {"_id": 0}).to_list(31)
+    for record in attendance_records:
+        if record.get("date", "").startswith(month.replace("-", "")[:6]) or month in record.get("date", ""):
+            lop_days += 1
+    
+    # Calculate LOP deduction
+    per_day_salary = salary.get("gross_salary", 0) / 30
+    lop_deduction = round(per_day_salary * lop_days, 2)
+    
+    # Net Pay
+    net_pay = round(adjusted_gross - adjusted_deductions - lop_deduction, 2)
+    
+    payslip = {
+        "employee_id": employee_id,
+        "employee_name": employee.get("full_name"),
+        "emp_id": employee.get("emp_id"),
+        "designation": employee.get("designation"),
+        "department": employee.get("department"),
+        "tier_level": employee.get("tier_level", "Tier 1"),
+        "date_of_joining": employee.get("date_of_joining"),
+        "month": month,
+        "pay_period": month,
+        
+        # Base Components (A)
+        "basic": salary.get("basic", 0),
+        "hra": salary.get("hra", 0),
+        "base_components_total": salary.get("base_components_total", salary.get("basic", 0) + salary.get("hra", 0)),
+        
+        # Basket of Allowances (B)
+        "lta": salary.get("lta", 0),
+        "phone_internet": salary.get("phone_internet", 0),
+        "bonus": salary.get("bonus", 0),
+        "stay_travel": salary.get("stay_travel", 0),
+        "special_allowance": salary.get("special_allowance", 0),
+        "food_reimbursement": salary.get("food_reimbursement", 0),
+        "medical_allowance": salary.get("medical_allowance", 0),
+        "conveyance": salary.get("conveyance", 0),
+        "basket_allowances_total": salary.get("basket_allowances_total", 0),
+        
+        # Retirement Benefits (C)
+        "pf_employer": salary.get("pf_employer", 0),
+        "gratuity": salary.get("gratuity", 0),
+        "retirement_benefits_total": salary.get("retirement_benefits_total", 0),
+        
+        # Compensation Totals
+        "fixed_compensation": salary.get("fixed_compensation", 0),
+        "variable_compensation": salary.get("variable_compensation", 0),
+        "gross_salary": adjusted_gross,
+        "annual_ctc": salary.get("annual_ctc", 0),
+        "monthly_ctc": salary.get("monthly_ctc", 0),
+        
+        # Deductions
+        "pf_employee": salary.get("pf_employee", 0),
+        "esi_employee": salary.get("esi_employee", 0),
+        "professional_tax": salary.get("professional_tax", 0),
+        "tds": salary.get("tds", 0),
+        "other_deductions": salary.get("other_deductions", 0),
+        "total_deductions": adjusted_deductions + lop_deduction,
+        
+        # Adjustments
+        "earnings_adjustments": [a for a in adjustments if a["category"] == "earning"],
+        "deduction_adjustments": [a for a in adjustments if a["category"] == "deduction"],
+        "total_earnings_adjustment": total_earnings_adjustment,
+        "total_deductions_adjustment": total_deductions_adjustment,
+        
+        # LOP
+        "lop_days": lop_days,
+        "lop_deduction": lop_deduction,
+        
+        # Net Pay
+        "net_pay": net_pay,
+        
+        # Company info
+        "company_name": "BluBridge Technologies Pvt Ltd",
+        "company_address": "Chennai, Tamil Nadu, India",
+        
+        # Insurance Coverage
+        "medical_insurance": 300000,
+        "accident_insurance": "1x CTC (Min ₹5 Lakhs)",
+        "life_insurance": 500000
+    }
+    
+    return payslip
+
+@api_router.get("/employee-profile/salary")
+async def get_my_salary(current_user: dict = Depends(get_current_user)):
+    """Get current employee's salary structure"""
+    if current_user["role"] != UserRole.EMPLOYEE:
+        raise HTTPException(status_code=403, detail="This endpoint is for employees only")
+    
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="Employee profile not found")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    salary = await db.salary_structures.find_one({"employee_id": employee_id}, {"_id": 0})
+    
+    if not salary and employee:
+        monthly_salary = employee.get("monthly_salary", 0)
+        if monthly_salary > 0:
+            annual_ctc = monthly_salary * 12
+            calc_fn = get_salary_calculator(employee.get("designation", ""))
+            salary_data = calc_fn(annual_ctc)
+            salary_data["id"] = str(uuid.uuid4())
+            salary_data["employee_id"] = employee_id
+            salary_data["effective_from"] = employee.get("date_of_joining", get_ist_today())
+            salary_data["created_at"] = get_ist_now().isoformat()
+            salary_data["updated_at"] = get_ist_now().isoformat()
+            await db.salary_structures.insert_one(salary_data.copy())
+            salary = salary_data
+    
+    # Get current month adjustments
+    current_month = get_ist_now().strftime("%Y-%m")
+    adjustments = await db.salary_adjustments.find({
+        "employee_id": employee_id,
+        "$or": [
+            {"frequency": "one_time", "applicable_month": current_month},
+            {"frequency": "recurring", "is_active": True}
+        ]
+    }, {"_id": 0}).to_list(20)
+    
+    return {
+        "salary": serialize_doc(salary) if salary else None,
+        "adjustments": [serialize_doc(a) for a in adjustments]
+    }
+
+# ============== EMPLOYEE DOCUMENTS ROUTES ==============
+
+class EmployeeDocumentUpload(BaseModel):
+    file_url: str
+    file_name: str
+    file_type: str
+    file_public_id: Optional[str] = None
+    document_type: str = "offer_letter"  # offer_letter, appointment_letter, etc.
+
+
+def _guess_cloudinary_resource_type(name_or_url: Optional[str]) -> str:
+    """Return the Cloudinary `resource_type` used at upload time for the given
+    file. Cloudinary's `auto` upload treats PDFs and images as `image` and
+    Office / archive binaries as `raw` — we mirror that here so `destroy`
+    targets the correct bucket. Defaults to `image` (historical default)."""
+    if not name_or_url:
+        return "image"
+    lower = name_or_url.lower()
+    RAW_EXTS = (".doc", ".docx", ".zip", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv", ".rtf")
+    for ext in RAW_EXTS:
+        # Match either "…file.docx" or "…file.docx?…" / "…file.docx#…"
+        if lower.endswith(ext) or f"{ext}?" in lower or f"{ext}#" in lower:
+            return "raw"
+    return "image"
+
+@api_router.get("/employees/{employee_id}/documents")
+async def get_employee_documents(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get employee's official documents (Admin can view any, Employee can view own)"""
+    # Check permissions
+    if current_user["role"] == UserRole.EMPLOYEE:
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Get documents from employee_documents collection
+    documents = await db.employee_documents.find(
+        {"employee_id": employee_id}, 
+        {"_id": 0}
+    ).to_list(50)
+    
+    return {
+        "employee_id": employee_id,
+        "employee_name": employee.get("full_name"),
+        "documents": [serialize_doc(d) for d in documents]
+    }
+
+@api_router.post("/employees/{employee_id}/documents")
+async def upload_employee_document(
+    employee_id: str, 
+    data: EmployeeDocumentUpload,
+    current_user: dict = Depends(get_current_user)
+):
+    """Upload official document for an employee (Admin only).
+
+    Replacement contract (2026-07-13 — offer-letter bug fix):
+      * Exactly ONE row per (employee_id, document_type) is kept — any
+        pre-existing duplicates (created by an earlier race) are pruned
+        atomically as part of this call.
+      * The old Cloudinary asset is purged AFTER the DB write succeeds
+        (best-effort). Failure to purge never rolls back a successful
+        replacement — orphans are logged for later reaping instead.
+      * If the DB write fails, the caller's freshly-uploaded file is left
+        intact and the previous Offer Letter remains valid.
+    """
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Load every row of this document_type (race-safe — normally 0 or 1).
+    existing_docs = await db.employee_documents.find({
+        "employee_id": employee_id,
+        "document_type": data.document_type,
+    }, {"_id": 0}).to_list(50)
+    # Keep the most-recent row as the primary to update in place.
+    existing_docs.sort(
+        key=lambda d: (d.get("updated_at") or d.get("uploaded_at") or ""),
+        reverse=True,
+    )
+    primary = existing_docs[0] if existing_docs else None
+    dupes = existing_docs[1:] if len(existing_docs) > 1 else []
+
+    now_iso = get_ist_now().isoformat()
+    doc = {
+        "id": primary["id"] if primary else str(uuid.uuid4()),
+        "employee_id": employee_id,
+        "document_type": data.document_type,
+        "file_url": data.file_url,
+        "file_name": data.file_name,
+        "file_type": data.file_type,
+        "file_public_id": data.file_public_id,
+        "uploaded_by": current_user["id"],
+        "uploaded_by_name": current_user.get("name"),
+        "uploaded_at": (primary or {}).get("uploaded_at") or now_iso,
+        "updated_at": now_iso,
+    }
+
+    # Public IDs of Cloudinary assets that must be purged AFTER the DB write.
+    # Only queue an ID for deletion when its content differs from the new
+    # upload (guard against the caller re-submitting the same file).
+    old_public_ids: list = []
+    def _queue_old(pid, name_hint):
+        if pid and pid != data.file_public_id:
+            old_public_ids.append((pid, name_hint))
+
+    if primary:
+        result = await db.employee_documents.update_one(
+            {"id": primary["id"]},
+            {"$set": {
+                "file_url": data.file_url,
+                "file_name": data.file_name,
+                "file_type": data.file_type,
+                "file_public_id": data.file_public_id,
+                "uploaded_by": current_user["id"],
+                "uploaded_by_name": current_user.get("name"),
+                "updated_at": now_iso,
+            }}
+        )
+        # If the primary row disappeared between find + update (highly
+        # unlikely), fall through to insert to avoid leaving the employee
+        # without an Offer Letter.
+        if result.matched_count == 0:
+            await db.employee_documents.insert_one(doc.copy())
+            await log_audit(current_user["id"], "upload_employee_document", "employee_document", doc["id"], f"Uploaded {data.document_type} for {employee.get('full_name')}")
+        else:
+            _queue_old(primary.get("file_public_id"), primary.get("file_name") or primary.get("file_url"))
+            await log_audit(current_user["id"], "update_employee_document", "employee_document", primary["id"], f"Updated {data.document_type} for {employee.get('full_name')}")
+    else:
+        await db.employee_documents.insert_one(doc.copy())
+        await log_audit(current_user["id"], "upload_employee_document", "employee_document", doc["id"], f"Uploaded {data.document_type} for {employee.get('full_name')}")
+
+    # Prune any race-condition duplicate rows so the employee is left with
+    # exactly ONE Offer Letter record, and queue their Cloudinary assets for
+    # deletion too (they are orphans by definition).
+    if dupes:
+        dupe_ids = [d["id"] for d in dupes]
+        await db.employee_documents.delete_many({"id": {"$in": dupe_ids}})
+        for d in dupes:
+            _queue_old(d.get("file_public_id"), d.get("file_name") or d.get("file_url"))
+
+    # Best-effort Cloudinary purge — runs AFTER the DB is in its final state
+    # so a failure here can never leave the employee without an Offer Letter.
+    for pid, name_hint in old_public_ids:
+        try:
+            rtype = _guess_cloudinary_resource_type(name_hint)
+            result = await asyncio.to_thread(
+                cloudinary.uploader.destroy, pid, invalidate=True, resource_type=rtype
+            )
+            # Cloudinary returns {"result": "not found"} when the asset lives
+            # under a different resource_type than we guessed. Retry with the
+            # other bucket so orphans in either place get cleaned up.
+            if isinstance(result, dict) and result.get("result") == "not found":
+                other = "raw" if rtype == "image" else "image"
+                await asyncio.to_thread(
+                    cloudinary.uploader.destroy, pid, invalidate=True, resource_type=other
+                )
+        except Exception as _e:
+            logger.warning(
+                f"Old {data.document_type} asset {pid} could not be purged from Cloudinary: {_e}"
+            )
+    
+    return {"message": f"Document uploaded successfully", "document": serialize_doc(doc)}
+
+@api_router.delete("/employees/{employee_id}/documents/{document_id}")
+async def delete_employee_document(
+    employee_id: str,
+    document_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete an employee document (Admin only).
+
+    Also purges the underlying Cloudinary asset (best-effort) so no orphan
+    files remain in storage after HR removes an Offer Letter.
+    """
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    document = await db.employee_documents.find_one({"id": document_id, "employee_id": employee_id})
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    await db.employee_documents.delete_one({"id": document_id})
+    await log_audit(current_user["id"], "delete_employee_document", "employee_document", document_id)
+
+    # Best-effort Cloudinary purge — runs AFTER the DB delete has committed.
+    # Failure to purge never fails the API call; the orphan is logged instead.
+    pid = document.get("file_public_id")
+    if pid:
+        try:
+            name_hint = document.get("file_name") or document.get("file_url")
+            rtype = _guess_cloudinary_resource_type(name_hint)
+            result = await asyncio.to_thread(
+                cloudinary.uploader.destroy, pid, invalidate=True, resource_type=rtype
+            )
+            if isinstance(result, dict) and result.get("result") == "not found":
+                other = "raw" if rtype == "image" else "image"
+                await asyncio.to_thread(
+                    cloudinary.uploader.destroy, pid, invalidate=True, resource_type=other
+                )
+        except Exception as _e:
+            logger.warning(
+                f"Document {document_id} asset {pid} could not be purged from Cloudinary: {_e}"
+            )
+
+    return {"message": "Document deleted successfully"}
+
+@api_router.get("/employee-profile/documents")
+async def get_my_documents(current_user: dict = Depends(get_current_user)):
+    """Get current employee's official documents"""
+    if current_user["role"] != UserRole.EMPLOYEE:
+        raise HTTPException(status_code=403, detail="This endpoint is for employees only")
+    
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=404, detail="Employee profile not found")
+    
+    documents = await db.employee_documents.find(
+        {"employee_id": employee_id}, 
+        {"_id": 0}
+    ).to_list(50)
+    
+    return {
+        "documents": [serialize_doc(d) for d in documents]
+    }
+
+# ============== POLICIES ROUTES ==============
+
+# Policies whose visibility is restricted by department.
+# Map: policy_id -> set of department names allowed (admins always see them)
+DEPARTMENT_RESTRICTED_POLICIES = {
+    "policy_research": {"Research Unit"},
+    "policy_research_hr": {"Research Unit"},
+    "policy_research_star": {"Research Unit"},
+    "policy_support_hr": {"Support Staff"},
+}
+
+# Policies that are completely hidden from every user (including admins).
+# To re-enable a policy, simply remove its id from this set.
+# • policy_research_hr — superseded by the new policy_research (BluBridge HR
+#   Induction, Conduct & Leave Policy v2.0). Hidden 2026-05-22.
+HIDDEN_POLICIES: set = {"policy_research_hr"}
+
+# Policies that bypass ALL access checks (department / club / role) and must
+# always be visible to every authenticated user. Used for organisation-wide
+# documents like the IT and Communication Policy and the Admin Induction.
+GLOBAL_POLICIES = {"policy_it", "policy_admin_induction"}
+
+async def _resolve_dept_names(dept_ids: list) -> set:
+    """Resolve Settings→Department IDs to their current names (match target for
+    employee.department, which is stored as a name). Robust to renames."""
+    ids = [d for d in (dept_ids or []) if d]
+    if not ids:
+        return set()
+    rows = await db.departments.find(
+        {"id": {"$in": ids}, "is_deleted": {"$ne": True}},
+        {"_id": 0, "name": 1},
+    ).to_list(200)
+    return {r.get("name") for r in rows if r.get("name")}
+
+
+async def _is_policy_visible_to_user(policy_id: str, current_user: dict, policy: dict = None) -> bool:
+    """Decide if a policy is visible to the current user.
+
+    Precedence:
+      1. Hidden policies → invisible to everyone.
+      2. NEW department applicability (admin-configured on the policy doc) wins
+         when set: mode 'all' → everyone; mode 'selected' → admins always, and
+         employees only if their CURRENT department is in the policy's
+         applicable department set (resolved from Settings→Department IDs).
+      3. Fallback (unconfigured) → existing behavior: GLOBAL_POLICIES visible to
+         all; DEPARTMENT_RESTRICTED_POLICIES gated by department name; otherwise
+         visible to all. This keeps every existing policy exactly as-is until an
+         admin explicitly configures its applicability.
+    """
+    if policy_id in HIDDEN_POLICIES:
+        return False
+
+    if policy is None:
+        policy = await db.policies.find_one(
+            {"id": policy_id},
+            {"_id": 0, "applicability_mode": 1, "applicable_departments": 1},
+        ) or {}
+
+    async def _employee_dept() -> str:
+        dept = current_user.get("department")
+        if dept is not None:
+            return dept
+        emp_id = current_user.get("employee_id")
+        if not emp_id:
+            return None
+        emp = await db.employees.find_one(
+            {"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0, "department": 1}
+        )
+        return (emp or {}).get("department")
+
+    mode = policy.get("applicability_mode")
+    if mode in ("all", "selected"):
+        if mode == "all":
+            return True
+        # selected
+        if current_user.get("role") in ALL_ADMIN_ROLES:
+            return True
+        if not current_user.get("employee_id"):
+            return False
+        dept_names = await _resolve_dept_names(policy.get("applicable_departments") or [])
+        return (await _employee_dept()) in dept_names
+
+    # ---- Fallback: existing hardcoded behavior ----
+    if policy_id in GLOBAL_POLICIES:
+        return True
+    restricted_to = DEPARTMENT_RESTRICTED_POLICIES.get(policy_id)
+    if not restricted_to:
+        return True
+    if current_user.get("role") in ALL_ADMIN_ROLES:
+        return True
+    if not current_user.get("employee_id"):
+        return False
+    return (await _employee_dept()) in restricted_to
+
+
+@api_router.get("/policies")
+async def get_policies(current_user: dict = Depends(get_current_user)):
+    """Get all company policies"""
+    # Check if policies exist in database - dedup first
+    # Remove duplicates keeping only first per id
+    pipeline = [
+        {"$group": {"_id": "$id", "docs": {"$push": "$_id"}, "count": {"$sum": 1}}},
+        {"$match": {"count": {"$gt": 1}}}
+    ]
+    async for group in db.policies.aggregate(pipeline):
+        ids_to_delete = group["docs"][1:]
+        if ids_to_delete:
+            await db.policies.delete_many({"_id": {"$in": ids_to_delete}})
+    
+    policies = await db.policies.find({}, {"_id": 0}).to_list(20)
+    
+    if not policies:
+        # Seed default policies using upsert to prevent duplicates
+        for policy in COMPANY_POLICIES:
+            policy_doc = {
+                **policy,
+                "created_at": get_ist_now().isoformat(),
+                "updated_at": get_ist_now().isoformat()
+            }
+            await db.policies.update_one(
+                {"id": policy["id"]},
+                {"$setOnInsert": policy_doc},
+                upsert=True
+            )
+        policies = await db.policies.find({}, {"_id": 0}).to_list(20)
+    
+    # Apply department-based visibility filter
+    visible_policies = []
+    for policy in policies:
+        if await _is_policy_visible_to_user(policy.get("id"), current_user, policy=policy):
+            visible_policies.append(policy)
+
+    # Enrich with resolved applicable department names for the admin UI.
+    if current_user.get("role") in ALL_ADMIN_ROLES:
+        for p in visible_policies:
+            if p.get("applicability_mode") == "selected":
+                p["applicable_department_names"] = sorted(
+                    await _resolve_dept_names(p.get("applicable_departments") or [])
+                )
+
+    # Attach acknowledgement state for the requesting user (read-only enrichment).
+    # Only employees see this; admins still see the policies but ack tracking
+    # is shown in the dedicated admin tracking dashboard, not here.
+    employee_id = current_user.get("employee_id")
+    if employee_id and visible_policies:
+        ack_ids = [p["id"] for p in visible_policies]
+        ack_cursor = db.policy_acknowledgements.find(
+            {"policy_id": {"$in": ack_ids}, "employee_id": employee_id},
+            {"_id": 0, "policy_id": 1, "acknowledged_at": 1},
+        )
+        ack_map: dict = {}
+        async for ack in ack_cursor:
+            ack_map[ack["policy_id"]] = ack.get("acknowledged_at")
+        for p in visible_policies:
+            p["is_acknowledged"] = p["id"] in ack_map
+            p["acknowledged_at"] = ack_map.get(p["id"])
+    return [serialize_doc(p) for p in visible_policies]
+
+@api_router.get("/policies/{policy_id}")
+async def get_policy(policy_id: str, current_user: dict = Depends(get_current_user)):
+    """Get a specific policy by ID"""
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    if not await _is_policy_visible_to_user(policy_id, current_user):
+        raise HTTPException(status_code=403, detail="You do not have access to this policy")
+    return serialize_doc(policy)
+
+@api_router.put("/policies/{policy_id}")
+async def update_policy(policy_id: str, data: dict, current_user: dict = Depends(get_current_user)):
+    """Update a policy (admin only)"""
+    if current_user["role"] not in ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+
+    # Validate / normalize department applicability if provided.
+    if "applicability_mode" in data:
+        mode = data.get("applicability_mode")
+        if mode not in ("all", "selected", None):
+            raise HTTPException(status_code=400, detail="Invalid applicability_mode")
+        if mode == "selected":
+            data["applicable_departments"] = [d for d in (data.get("applicable_departments") or []) if d]
+        elif mode == "all":
+            data["applicable_departments"] = []
+
+    data["updated_at"] = get_ist_now().isoformat()
+    await db.policies.update_one({"id": policy_id}, {"$set": data})
+
+    await log_audit(current_user["id"], "update_policy", "policy", policy_id)
+    if "applicability_mode" in data:
+        prev_names = sorted(await _resolve_dept_names(policy.get("applicable_departments") or [])) if policy.get("applicability_mode") == "selected" else (policy.get("applicability_mode") or "unconfigured")
+        new_names = sorted(await _resolve_dept_names(data.get("applicable_departments") or [])) if data.get("applicability_mode") == "selected" else data.get("applicability_mode")
+        await log_audit(current_user["id"], "update_policy_applicability", "policy", policy_id, details=f"Applicability changed from {prev_names} to {new_names}")
+    return {"message": "Policy updated successfully"}
+
+
+# ============== POLICY ACKNOWLEDGEMENTS ==============
+# Each row in `policy_acknowledgements`:
+#   { id, policy_id, employee_id, employee_name, role, department,
+#     acknowledged_at (ISO), ip, user_agent }
+# Unique partial index on (policy_id, employee_id) prevents duplicate acks.
+
+async def _ensure_policy_ack_indexes() -> None:
+    try:
+        await db.policy_acknowledgements.create_index(
+            [("policy_id", 1), ("employee_id", 1)],
+            unique=True,
+            name="uniq_policy_employee",
+        )
+        await db.policy_acknowledgements.create_index([("policy_id", 1), ("acknowledged_at", -1)])
+        await db.policy_acknowledgements.create_index([("employee_id", 1)])
+    except Exception:  # noqa: BLE001
+        pass
+
+
+async def _eligible_employees_for_policy(policy_id: str) -> list:
+    """Return the active employees who SHOULD see / acknowledge this policy
+    given the existing visibility primitives. Hidden policies → empty list.
+    New DB applicability (mode 'all'/'selected') wins when configured.
+    """
+    if policy_id in HIDDEN_POLICIES:
+        return []
+    base_q: dict = {"is_deleted": {"$ne": True}, "employee_status": {"$ne": "Inactive"}}
+    policy = await db.policies.find_one(
+        {"id": policy_id}, {"_id": 0, "applicability_mode": 1, "applicable_departments": 1}
+    ) or {}
+    mode = policy.get("applicability_mode")
+    if mode in ("all", "selected"):
+        if mode == "selected":
+            dept_names = await _resolve_dept_names(policy.get("applicable_departments") or [])
+            base_q["department"] = {"$in": list(dept_names)}
+        # mode 'all' → no department filter
+    elif policy_id in GLOBAL_POLICIES:
+        pass  # global → all active employees
+    else:
+        depts = DEPARTMENT_RESTRICTED_POLICIES.get(policy_id)
+        if depts:
+            base_q["department"] = {"$in": list(depts)}
+    return await db.employees.find(
+        base_q,
+        {"_id": 0, "id": 1, "full_name": 1, "department": 1, "team": 1, "designation": 1, "official_email": 1, "custom_employee_id": 1},
+    ).sort("full_name", 1).to_list(5000)
+
+
+@api_router.post("/policies/{policy_id}/acknowledge")
+async def acknowledge_policy(policy_id: str, current_user: dict = Depends(get_current_user)):
+    """Employee endpoint — record acknowledgement of a policy. Idempotent:
+    if already acknowledged, returns the existing record without erroring."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="Only employees can acknowledge policies")
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0, "name": 1})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    if not await _is_policy_visible_to_user(policy_id, current_user):
+        raise HTTPException(status_code=403, detail="You do not have access to this policy")
+
+    existing = await db.policy_acknowledgements.find_one(
+        {"policy_id": policy_id, "employee_id": employee_id},
+        {"_id": 0},
+    )
+    if existing:
+        return {"ok": True, "already_acknowledged": True, "acknowledged_at": existing.get("acknowledged_at")}
+
+    employee = await db.employees.find_one(
+        {"id": employee_id},
+        {"_id": 0, "full_name": 1, "department": 1, "team": 1, "designation": 1, "custom_employee_id": 1},
+    )
+    now_iso = get_ist_now().isoformat()
+    doc = {
+        "id": str(uuid.uuid4()),
+        "policy_id": policy_id,
+        "policy_name": policy.get("name"),
+        "employee_id": employee_id,
+        "employee_name": (employee or {}).get("full_name") or current_user.get("name") or "",
+        "employee_code": (employee or {}).get("custom_employee_id"),
+        "department": (employee or {}).get("department"),
+        "team": (employee or {}).get("team"),
+        "designation": (employee or {}).get("designation"),
+        "role": current_user.get("role"),
+        "user_id": current_user.get("id"),
+        "acknowledged_at": now_iso,
+    }
+    try:
+        await db.policy_acknowledgements.insert_one(doc)
+    except Exception as e:
+        # Race on the unique index → treat as already acknowledged
+        existing = await db.policy_acknowledgements.find_one(
+            {"policy_id": policy_id, "employee_id": employee_id},
+            {"_id": 0, "acknowledged_at": 1},
+        )
+        if existing:
+            return {"ok": True, "already_acknowledged": True, "acknowledged_at": existing.get("acknowledged_at")}
+        raise HTTPException(status_code=500, detail=f"Could not record acknowledgement: {e}")
+
+    await log_audit(
+        current_user.get("id"),
+        action="acknowledge_policy",
+        resource="policy",
+        resource_id=policy_id,
+        details=f"{doc['employee_name']} acknowledged {policy.get('name')}",
+    )
+    return {"ok": True, "already_acknowledged": False, "acknowledged_at": now_iso}
+
+
+@api_router.get("/policies/{policy_id}/acknowledgement")
+async def get_my_policy_ack(policy_id: str, current_user: dict = Depends(get_current_user)):
+    """Read the current user's ack status for a single policy."""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        return {"is_acknowledged": False, "acknowledged_at": None}
+    ack = await db.policy_acknowledgements.find_one(
+        {"policy_id": policy_id, "employee_id": employee_id},
+        {"_id": 0, "acknowledged_at": 1},
+    )
+    return {
+        "is_acknowledged": bool(ack),
+        "acknowledged_at": ack.get("acknowledged_at") if ack else None,
+    }
+
+
+@api_router.get("/admin/policy-acknowledgements/summary")
+async def admin_policy_ack_summary(current_user: dict = Depends(get_current_user)):
+    """Per-policy counts: total eligible / acknowledged / pending."""
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rows: list = []
+    policies = await db.policies.find(
+        {"id": {"$nin": list(HIDDEN_POLICIES)}},
+        {"_id": 0, "id": 1, "name": 1, "category": 1, "applicable_to": 1, "version": 1},
+    ).to_list(50)
+    for p in policies:
+        eligible = await _eligible_employees_for_policy(p["id"])
+        eligible_ids = [e["id"] for e in eligible]
+        ack_count = 0
+        if eligible_ids:
+            ack_count = await db.policy_acknowledgements.count_documents(
+                {"policy_id": p["id"], "employee_id": {"$in": eligible_ids}}
+            )
+        total = len(eligible_ids)
+        rows.append({
+            "policy_id": p["id"],
+            "policy_name": p["name"],
+            "category": p.get("category"),
+            "applicable_to": p.get("applicable_to"),
+            "version": p.get("version"),
+            "total_eligible": total,
+            "acknowledged": ack_count,
+            "pending": max(0, total - ack_count),
+            "ack_rate": round((ack_count * 100.0 / total), 1) if total else 0.0,
+        })
+    return {"summary": rows}
+
+
+@api_router.get("/admin/policy-acknowledgements")
+async def admin_policy_ack_list(
+    policy_id: Optional[str] = None,
+    department: Optional[str] = None,
+    role: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    search: Optional[str] = None,
+    limit: int = 1000,
+    current_user: dict = Depends(get_current_user),
+):
+    """Detailed employee × policy ack list. Filters: policy_id, department,
+    role, status (acknowledged|pending), search by employee_name/code."""
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if not policy_id:
+        raise HTTPException(status_code=400, detail="policy_id is required")
+    policy = await db.policies.find_one({"id": policy_id}, {"_id": 0, "name": 1})
+    if not policy:
+        raise HTTPException(status_code=404, detail="Policy not found")
+
+    eligible = await _eligible_employees_for_policy(policy_id)
+    if department:
+        eligible = [e for e in eligible if (e.get("department") or "") == department]
+    if search:
+        s = search.strip().lower()
+        eligible = [
+            e for e in eligible
+            if s in (e.get("full_name") or "").lower()
+            or s in (str(e.get("custom_employee_id") or "").lower())
+            or s in (e.get("official_email") or "").lower()
+        ]
+    eligible_ids = [e["id"] for e in eligible]
+
+    ack_map: dict = {}
+    if eligible_ids:
+        cursor = db.policy_acknowledgements.find(
+            {"policy_id": policy_id, "employee_id": {"$in": eligible_ids}},
+            {"_id": 0, "employee_id": 1, "acknowledged_at": 1, "role": 1},
+        )
+        async for a in cursor:
+            ack_map[a["employee_id"]] = a
+
+    # Lookup roles via users collection (one shot)
+    role_map: dict = {}
+    if eligible_ids:
+        ucursor = db.users.find(
+            {"employee_id": {"$in": eligible_ids}},
+            {"_id": 0, "employee_id": 1, "role": 1, "username": 1},
+        )
+        async for u in ucursor:
+            role_map[u["employee_id"]] = u
+
+    rows: list = []
+    for e in eligible:
+        ack = ack_map.get(e["id"])
+        u = role_map.get(e["id"], {})
+        emp_role = (ack or {}).get("role") or u.get("role") or "employee"
+        rows.append({
+            "employee_id": e["id"],
+            "employee_code": e.get("custom_employee_id"),
+            "employee_name": e.get("full_name"),
+            "department": e.get("department"),
+            "team": e.get("team"),
+            "designation": e.get("designation"),
+            "official_email": e.get("official_email"),
+            "username": u.get("username"),
+            "role": emp_role,
+            "is_acknowledged": bool(ack),
+            "acknowledged_at": (ack or {}).get("acknowledged_at"),
+        })
+    if role:
+        rows = [r for r in rows if (r.get("role") or "").lower() == role.lower()]
+    if status_filter:
+        sf = status_filter.lower()
+        if sf == "acknowledged":
+            rows = [r for r in rows if r["is_acknowledged"]]
+        elif sf == "pending":
+            rows = [r for r in rows if not r["is_acknowledged"]]
+
+    rows = rows[: max(1, min(limit, 5000))]
+    total = len(rows)
+    ack_count = sum(1 for r in rows if r["is_acknowledged"])
+    return {
+        "policy_id": policy_id,
+        "policy_name": policy.get("name"),
+        "total": total,
+        "acknowledged": ack_count,
+        "pending": total - ack_count,
+        "rows": rows,
+    }
+
+
+# ============== POLICY ACKNOWLEDGEMENT — EMAIL REMINDER ==============
+# Phase-1 (TEST MODE) pilot: emails ONLY go to the configured pilot_email
+# (defaults to rishi.nayak@blubridge.com) until enable_bulk_policy_ack_mail
+# is flipped on by an admin. Same safety pattern as the onboarding-completion
+# campaign.
+POLICY_ACK_SETTINGS_DOC_ID = "policy_ack_mail"
+POLICY_ACK_PILOT_DEFAULT_EMAIL = "rishi.nayak@blubridge.com"
+
+
+async def _get_policy_ack_settings() -> dict:
+    doc = await db.settings.find_one({"_id": POLICY_ACK_SETTINGS_DOC_ID}) or {}
+    return {
+        "enable_bulk_policy_ack_mail": bool(doc.get("enable_bulk_policy_ack_mail", False)),
+        "pilot_email": doc.get("pilot_email") or POLICY_ACK_PILOT_DEFAULT_EMAIL,
+        "updated_at": doc.get("updated_at"),
+        "updated_by": doc.get("updated_by"),
+    }
+
+
+async def _list_pending_policies_for_employee(emp_id: str, emp_role: str, emp_dept: str) -> list:
+    """Return policies visible to this employee that they have NOT yet acknowledged."""
+    all_policies = await db.policies.find(
+        {"id": {"$nin": list(HIDDEN_POLICIES)}},
+        {"_id": 0, "id": 1, "name": 1, "category": 1, "version": 1, "effective_date": 1, "applicable_to": 1},
+    ).to_list(200)
+
+    visible: list = []
+    pseudo_user = {"role": emp_role, "department": emp_dept, "employee_id": emp_id}
+    for p in all_policies:
+        if await _is_policy_visible_to_user(p["id"], pseudo_user):
+            visible.append(p)
+
+    if not visible:
+        return []
+
+    acked_cursor = db.policy_acknowledgements.find(
+        {"employee_id": emp_id, "policy_id": {"$in": [p["id"] for p in visible]}},
+        {"_id": 0, "policy_id": 1},
+    )
+    acked_ids = {a["policy_id"] async for a in acked_cursor}
+    return [p for p in visible if p["id"] not in acked_ids]
+
+
+@api_router.get("/admin/policy-acknowledgement/settings")
+async def get_policy_ack_settings_endpoint(current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    return await _get_policy_ack_settings()
+
+
+@api_router.put("/admin/policy-acknowledgement/settings")
+async def update_policy_ack_settings_endpoint(body: dict, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    patch: dict = {"updated_at": get_ist_now().isoformat(), "updated_by": current_user["id"]}
+    if "enable_bulk_policy_ack_mail" in body:
+        patch["enable_bulk_policy_ack_mail"] = bool(body["enable_bulk_policy_ack_mail"])
+    if "pilot_email" in body and body["pilot_email"]:
+        patch["pilot_email"] = str(body["pilot_email"]).strip()
+    await db.settings.update_one(
+        {"_id": POLICY_ACK_SETTINGS_DOC_ID},
+        {"$set": patch, "$setOnInsert": {"_id": POLICY_ACK_SETTINGS_DOC_ID}},
+        upsert=True,
+    )
+    await log_audit(current_user["id"], "toggle_policy_ack_mail", "settings", POLICY_ACK_SETTINGS_DOC_ID, str(patch))
+    return await _get_policy_ack_settings()
+
+
+@api_router.get("/admin/policy-acknowledgement/preview")
+async def preview_pending_policies(
+    employee_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Show which policies WOULD be sent in the acknowledgement reminder email
+    for a target employee — used by the admin UI before clicking Send Test."""
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    emp = await db.employees.find_one(
+        {"id": employee_id},
+        {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "department": 1},
+    )
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    user = await db.users.find_one({"employee_id": employee_id}, {"_id": 0, "role": 1})
+    role = (user or {}).get("role", "employee")
+    pending = await _list_pending_policies_for_employee(
+        employee_id, role, emp.get("department") or "",
+    )
+    return {
+        "employee_id": employee_id,
+        "employee_name": emp.get("full_name"),
+        "official_email": emp.get("official_email"),
+        "department": emp.get("department"),
+        "role": role,
+        "pending_count": len(pending),
+        "pending_policies": pending,
+    }
+
+
+@api_router.post("/admin/policy-acknowledgement/send-test")
+async def send_policy_ack_test_email(
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Send the policy-acknowledgement reminder email to ONE employee.
+
+    Body: {"employee_id": "<uuid>"}.  Pilot mode (default): the recipient
+    address is OVERRIDDEN to settings.pilot_email so we never accidentally
+    spam a real employee during testing. Bulk mode: sends to the employee's
+    own official_email.
+    """
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+
+    employee_id = (body or {}).get("employee_id")
+    force_all_visible = bool((body or {}).get("force_all_visible", False))
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="employee_id is required")
+
+    emp = await db.employees.find_one(
+        {"id": employee_id},
+        {"_id": 0, "id": 1, "full_name": 1, "official_email": 1, "department": 1},
+    )
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    user = await db.users.find_one({"employee_id": employee_id}, {"_id": 0, "role": 1})
+    role = (user or {}).get("role", "employee")
+
+    if force_all_visible:
+        # Test-mode override: list ALL policies visible to this employee
+        # regardless of whether they have already acknowledged them.
+        all_policies = await db.policies.find(
+            {"id": {"$nin": list(HIDDEN_POLICIES)}},
+            {"_id": 0, "id": 1, "name": 1, "category": 1, "version": 1, "effective_date": 1},
+        ).to_list(200)
+        pseudo_user = {"role": role, "department": emp.get("department") or "", "employee_id": employee_id}
+        pending = [p for p in all_policies if await _is_policy_visible_to_user(p["id"], pseudo_user)]
+    else:
+        pending = await _list_pending_policies_for_employee(
+            employee_id, role, emp.get("department") or "",
+        )
+    if not pending:
+        return {
+            "success": True,
+            "sent": False,
+            "reason": "no_pending_policies",
+            "employee_name": emp.get("full_name"),
+        }
+
+    settings = await _get_policy_ack_settings()
+    pilot_only = not settings["enable_bulk_policy_ack_mail"]
+    pilot_email = settings["pilot_email"] or POLICY_ACK_PILOT_DEFAULT_EMAIL
+    to_email = pilot_email if pilot_only else (emp.get("official_email") or pilot_email)
+
+    if not to_email:
+        raise HTTPException(status_code=400, detail="No recipient email available")
+
+    # Deep link: route through /login with ?next=/policies so the user lands
+    # directly on the Policies page after sign-in (not the default /dashboard).
+    from email_service import absolute_url, send_hrms_email
+    from email_templates import policy_acknowledgement_email
+    cta_url = absolute_url("/login", query={"next": "/policies", "src": "ack_email"})
+
+    html = policy_acknowledgement_email(
+        employee_name=emp.get("full_name") or "there",
+        pending_policies=pending,
+        cta_url=cta_url,
+    )
+
+    sent = await send_hrms_email(
+        db,
+        email_type="policy_acknowledgement_reminder",
+        scope_key=f"{employee_id}:{get_ist_now().strftime('%Y%m%dT%H')}",
+        to_email=to_email,
+        subject=f"Action Required — {len(pending)} polic{'ies' if len(pending) != 1 else 'y'} awaiting your acknowledgement",
+        html=html,
+        employee_id=employee_id,
+        force=True,  # admin-triggered manual send always dispatches
+    )
+
+    await log_audit(
+        current_user["id"],
+        "send_policy_ack_email",
+        "policy",
+        employee_id,
+        f"Sent={sent} to={to_email} pilot={pilot_only} pending={len(pending)}",
+    )
+
+    return {
+        "success": True,
+        "sent": bool(sent),
+        "to": to_email,
+        "pilot_mode": pilot_only,
+        "employee_name": emp.get("full_name"),
+        "pending_count": len(pending),
+        "pending_policy_names": [p.get("name") for p in pending],
+    }
+
+
+# ---- Cron handler glue for the policy-ack 48h reminder cycle ----
+async def _policy_ack_list_pending(emp_id: str, role: str, dept: str) -> list:
+    """Resolver used by the cron — same logic as the manual endpoint but
+    inlined so policy_ack.py stays decoupled from server.py."""
+    return await _list_pending_policies_for_employee(emp_id, role, dept)
+
+
+async def _policy_ack_send_reminder(*, emp: dict, pending: list, to_email: str) -> bool:
+    """Builder + dispatcher used by the cron. Idempotent via the email_audit
+    scope_key (employee_id + hour-bucket)."""
+    from email_service import absolute_url, send_hrms_email
+    from email_templates import policy_acknowledgement_email
+    # Deep-link goes through /login with ?next=/policies so Login.js redirects
+    # the user straight to the Policies page after sign-in (instead of the
+    # default /dashboard landing).
+    cta_url = absolute_url("/login", query={"next": "/policies", "src": "ack_email"})
+    html = policy_acknowledgement_email(
+        employee_name=emp.get("full_name") or "there",
+        pending_policies=pending,
+        cta_url=cta_url,
+    )
+    return bool(await send_hrms_email(
+        db,
+        email_type="policy_acknowledgement_reminder",
+        scope_key=f"{emp.get('id')}:{get_ist_now().strftime('%Y%m%dT%H')}",
+        to_email=to_email,
+        subject=f"Action Required — {len(pending)} polic{'ies' if len(pending) != 1 else 'y'} awaiting your acknowledgement",
+        html=html,
+        employee_id=emp.get("id"),
+    ))
+
+
+def get_policy_ack_handlers() -> dict:
+    """Exposed for `email_jobs.policy_ack_job_inner` — keeps policy-visibility
+    rules + Resend wiring in one place (this file) while the scheduler stays
+    in email_jobs.py."""
+    return {
+        "list_pending": _policy_ack_list_pending,
+        "send_reminder": _policy_ack_send_reminder,
+    }
+
+
+@api_router.post("/admin/policy-acknowledgement/run-now")
+async def run_policy_ack_now(
+    body: Optional[dict] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Manual trigger of the policy-ack cycle. Bypasses the 48h cadence
+    so HR can verify the cron path end-to-end. Pilot/bulk gating IS still
+    respected — bulk only fires if `enable_bulk_policy_ack_mail` is true."""
+    if current_user.get("role") not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Admins only")
+    target_employee_id = (body or {}).get("employee_id") or None
+    from policy_ack import run_policy_ack_cycle
+    summary = await run_policy_ack_cycle(
+        db,
+        list_pending_for_employee=_policy_ack_list_pending,
+        send_reminder_email=_policy_ack_send_reminder,
+        force=True,
+        target_employee_id=target_employee_id,
+    )
+    await log_audit(
+        current_user["id"],
+        "run_policy_ack_now",
+        "email",
+        target_employee_id or "all",
+        f"Reminders sent: {summary.get('reminders_sent')}, pilot={summary.get('pilot_mode')}",
+    )
+    return {"success": True, **summary}
+
+
+# ============== EMPLOYEE EDUCATION & EXPERIENCE ROUTES ==============
+
+class EducationEntry(BaseModel):
+    level: str  # Class X, Class XII, Graduation, Post Graduation, Doctorate
+    institution: str
+    board_university: str
+    year_of_passing: str
+    percentage_cgpa: str
+
+class ExperienceEntry(BaseModel):
+    company_name: str
+    designation: str
+    start_date: str
+    end_date: Optional[str] = None
+    is_current: bool = False
+    responsibilities: Optional[str] = None
+
+class EducationExperienceUpdate(BaseModel):
+    education: Optional[List[dict]] = None
+    experience: Optional[List[dict]] = None
+
+@api_router.get("/employee-profile/education-experience")
+async def get_my_education_experience(current_user: dict = Depends(get_current_user)):
+    """Get current employee's education and experience"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    # Get employee record
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    return {
+        "education": employee.get("education", []),
+        "experience": employee.get("experience", []),
+        "education_verified": employee.get("education_verified", False),
+        "experience_verified": employee.get("experience_verified", False)
+    }
+
+@api_router.put("/employee-profile/education-experience")
+async def update_my_education_experience(
+    data: EducationExperienceUpdate,
+    current_user: dict = Depends(get_current_user)
+):
+    """Update current employee's education and experience"""
+    employee_id = current_user.get("employee_id")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this user")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    # Check if already verified - cannot edit verified data
+    if data.education and employee.get("education_verified"):
+        raise HTTPException(status_code=400, detail="Education details are verified and cannot be modified")
+    if data.experience and employee.get("experience_verified"):
+        raise HTTPException(status_code=400, detail="Experience details are verified and cannot be modified")
+    
+    update_data = {}
+    if data.education is not None:
+        update_data["education"] = data.education
+    if data.experience is not None:
+        update_data["experience"] = data.experience
+    
+    if update_data:
+        update_data["updated_at"] = get_ist_now().isoformat()
+        await db.employees.update_one({"id": employee_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "update_education_experience", "employee", employee_id)
+    return {"message": "Details updated successfully"}
+
+@api_router.get("/employees/{employee_id}/education-experience")
+async def get_employee_education_experience(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get employee's education and experience (admin view)"""
+    if current_user["role"] not in [UserRole.HR]:
+        # Employees can only view their own
+        if current_user.get("employee_id") != employee_id:
+            raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    return {
+        "employee_id": employee_id,
+        "emp_name": employee.get("full_name"),
+        "education": employee.get("education", []),
+        "experience": employee.get("experience", []),
+        "education_verified": employee.get("education_verified", False),
+        "experience_verified": employee.get("experience_verified", False)
+    }
+
+@api_router.post("/employees/{employee_id}/verify-education")
+async def verify_employee_education(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """HR verifies employee's education details"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {
+            "education_verified": True,
+            "education_verified_by": current_user["id"],
+            "education_verified_at": get_ist_now().isoformat()
+        }}
+    )
+    
+    await log_audit(current_user["id"], "verify_education", "employee", employee_id)
+    return {"message": "Education verified successfully"}
+
+@api_router.post("/employees/{employee_id}/verify-experience")
+async def verify_employee_experience(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """HR verifies employee's experience details"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    employee = await db.employees.find_one({"id": employee_id}, {"_id": 0})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    
+    await db.employees.update_one(
+        {"id": employee_id},
+        {"$set": {
+            "experience_verified": True,
+            "experience_verified_by": current_user["id"],
+            "experience_verified_at": get_ist_now().isoformat()
+        }}
+    )
+    
+    await log_audit(current_user["id"], "verify_experience", "employee", employee_id)
+    return {"message": "Experience verified successfully"}
+
+# ============== EMAIL HELPERS FOR ONBOARDING ==============
+
+def get_onboarding_status_email(emp_name: str, status: str, notes: Optional[str] = None):
+    """Generate HTML email for onboarding status notification"""
+    status_color = "#10b981" if status == "approved" else "#f59e0b"
+    status_text = "Approved" if status == "approved" else "Requires Attention"
+    
+    message = "Congratulations! Your onboarding has been approved. You now have full access to the HRMS portal." if status == "approved" else "Your onboarding requires some attention. Please log in to the portal to review the feedback and make necessary updates."
+    
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+        <div style="background: #0b1f3b; padding: 20px; border-radius: 8px 8px 0 0;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">BluBridge HRMS</h1>
+        </div>
+        <div style="background: #fffdf7; padding: 30px; border: 1px solid #e5e5e5; border-top: none; border-radius: 0 0 8px 8px;">
+            <h2 style="color: #0b1f3b; margin-top: 0;">Onboarding Status Update</h2>
+            <p style="color: #666;">Dear {emp_name},</p>
+            <p style="color: #666;">{message}</p>
+            <div style="background: #f5f5f5; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid {status_color};">
+                <p style="margin: 5px 0;"><strong>Status:</strong> <span style="color: {status_color};">{status_text}</span></p>
+                {f'<p style="margin: 5px 0;"><strong>Notes:</strong> {notes}</p>' if notes else ''}
+            </div>
+            <p style="color: #999; font-size: 12px; margin-top: 30px;">This is an automated notification from BluBridge HRMS.</p>
+        </div>
+    </div>
+    """
+
+# ============== HOLIDAY ROUTES ==============
+
+class HolidayCreate(BaseModel):
+    name: str
+    date: str  # YYYY-MM-DD format
+    day: str
+    type: str = "company"  # national, regional, religious, company
+    note: Optional[str] = None
+
+class HolidayUpdate(BaseModel):
+    name: Optional[str] = None
+    date: Optional[str] = None
+    day: Optional[str] = None
+    type: Optional[str] = None
+    note: Optional[str] = None
+
+@api_router.get("/holidays")
+async def get_holidays(
+    year: int = Query(2026),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all holidays for a given year"""
+    # First check if we have holidays in database
+    holidays = await db.holidays.find({"year": year}, {"_id": 0}).sort("date", 1).to_list(50)
+    
+    if not holidays:
+        # Seed default holidays for 2026 if not present
+        if year == 2026:
+            for h in COMPANY_HOLIDAYS_2026:
+                holiday_doc = {
+                    "id": h["id"],
+                    "name": h["name"],
+                    "date": h["date"],
+                    "day": h["day"],
+                    "type": h["type"],
+                    "note": h.get("note"),
+                    "year": 2026,
+                    "created_at": get_ist_now().isoformat()
+                }
+                await db.holidays.update_one(
+                    {"id": h["id"], "year": 2026},
+                    {"$setOnInsert": holiday_doc},
+                    upsert=True
+                )
+            holidays = await db.holidays.find({"year": year}, {"_id": 0}).sort("date", 1).to_list(50)
+    
+    # Calculate stats
+    total = len(holidays)
+    upcoming = sum(1 for h in holidays if h["date"] >= datetime.now().strftime("%Y-%m-%d"))
+    by_type = {}
+    for h in holidays:
+        t = h.get("type", "company")
+        by_type[t] = by_type.get(t, 0) + 1
+    
+    return {
+        "holidays": [serialize_doc(h) for h in holidays],
+        "stats": {
+            "total": total,
+            "upcoming": upcoming,
+            "by_type": by_type
+        }
+    }
+
+@api_router.get("/holidays/upcoming")
+async def get_upcoming_holidays(
+    limit: int = Query(5, ge=1, le=10),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get next upcoming holidays"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    holidays = await db.holidays.find(
+        {"date": {"$gte": today}}, 
+        {"_id": 0}
+    ).sort("date", 1).limit(limit).to_list(limit)
+    
+    return [serialize_doc(h) for h in holidays]
+
+@api_router.post("/holidays")
+async def create_holiday(data: HolidayCreate, current_user: dict = Depends(get_current_user)):
+    """Create a new holiday (admin only)"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    # Parse year from date
+    year = int(data.date.split("-")[0])
+    
+    holiday_doc = {
+        "id": str(uuid.uuid4()),
+        "name": data.name,
+        "date": data.date,
+        "day": data.day,
+        "type": data.type,
+        "note": data.note,
+        "year": year,
+        "created_at": get_ist_now().isoformat()
+    }
+    
+    await db.holidays.insert_one(holiday_doc.copy())
+    await log_audit(current_user["id"], "create_holiday", "holiday", holiday_doc["id"], data.name)
+    
+    return serialize_doc(holiday_doc)
+
+@api_router.put("/holidays/{holiday_id}")
+async def update_holiday(holiday_id: str, data: HolidayUpdate, current_user: dict = Depends(get_current_user)):
+    """Update a holiday (admin only)"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    holiday = await db.holidays.find_one({"id": holiday_id}, {"_id": 0})
+    if not holiday:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    if update_data:
+        if "date" in update_data:
+            update_data["year"] = int(update_data["date"].split("-")[0])
+        await db.holidays.update_one({"id": holiday_id}, {"$set": update_data})
+    
+    await log_audit(current_user["id"], "update_holiday", "holiday", holiday_id)
+    
+    return {"message": "Holiday updated successfully"}
+
+@api_router.delete("/holidays/{holiday_id}")
+async def delete_holiday(holiday_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a holiday (admin only)"""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    result = await db.holidays.delete_one({"id": holiday_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    
+    await log_audit(current_user["id"], "delete_holiday", "holiday", holiday_id)
+    
+    return {"message": "Holiday deleted successfully"}
+
+# ============== SEED DATA ==============
+
+@api_router.post("/seed")
+async def seed_database(current_user: dict = Depends(get_current_user)):
+    """One-shot seed of default admin + departments. SECURED — only an
+    authenticated HR user may invoke this. Re-runs are idempotent: if an
+    admin already exists the function short-circuits without ever overwriting
+    a user's password (defense against ever rolling back a self-changed
+    password through this endpoint).
+    """
+    if current_user.get("role") != UserRole.HR:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    # Check if already seeded
+    admin_exists = await db.users.find_one({"username": "admin"})
+    if admin_exists:
+        # Also ensure employee user exists
+        employee_user_exists = await db.users.find_one({"username": "user"})
+        if not employee_user_exists:
+            # Find first employee to link
+            first_emp = await db.employees.find_one({"is_deleted": {"$ne": True}}, {"_id": 0})
+            if first_emp:
+                emp_user = User(
+                    username="user",
+                    email="user@blubridge.com",
+                    password_hash=hash_password("user"),
+                    name=first_emp.get("full_name", "Employee User"),
+                    role=UserRole.EMPLOYEE,
+                    employee_id=first_emp["id"],
+                    department=first_emp.get("department"),
+                    team=first_emp.get("team")
+                )
+                doc = emp_user.model_dump()
+                doc['created_at'] = doc['created_at'].isoformat()
+                await db.users.insert_one(doc.copy())
+        return {"message": "Database already seeded"}
+    
+    # Create HR admin user
+    hr_admin = User(
+        username="admin",
+        email="admin@blubridge.com",
+        password_hash=hash_password("pass123"),
+        name="HR Admin",
+        role=UserRole.HR,
+        department="Human Resources",
+        is_first_login=False,
+        onboarding_status="completed"
+    )
+    doc = hr_admin.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.users.insert_one(doc.copy())
+    
+    # Create System Admin user
+    sys_admin = User(
+        username="sysadmin",
+        email="sysadmin@blubridge.com",
+        password_hash=hash_password("pass123"),
+        name="System Admin",
+        role=UserRole.SYSTEM_ADMIN,
+        department="IT",
+        is_first_login=False,
+        onboarding_status="completed"
+    )
+    doc = sys_admin.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.users.insert_one(doc.copy())
+    
+    # Create Office Admin user
+    off_admin = User(
+        username="offadmin",
+        email="offadmin@blubridge.com",
+        password_hash=hash_password("pass123"),
+        name="Office Admin",
+        role=UserRole.OFFICE_ADMIN,
+        department="Administration",
+        is_first_login=False,
+        onboarding_status="completed"
+    )
+    doc = off_admin.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.users.insert_one(doc.copy())
+    
+    # Create departments
+    departments = [
+        {"id": str(uuid.uuid4()), "name": "Research Unit", "team_count": 8},
+        {"id": str(uuid.uuid4()), "name": "Support Staff", "team_count": 1},
+        {"id": str(uuid.uuid4()), "name": "Business & Product", "team_count": 5}
+    ]
+    await db.departments.insert_many(departments)
+    
+    # Create teams
+    teams = [
+        {"id": str(uuid.uuid4()), "name": "Compiler - Auto Differentiation", "department": "Research Unit", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Compiler - Computation Graph", "department": "Research Unit", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Data", "department": "Research Unit", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Framework - Graph & Auto-differentiation", "department": "Research Unit", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Framework - parallelism", "department": "Research Unit", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Framework - Tensor & Ops", "department": "Research Unit", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Framework - Quantz", "department": "Research Unit", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Tokenizer", "department": "Research Unit", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Administration", "department": "Support Staff", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Product Management", "department": "Business & Product", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Sales", "department": "Business & Product", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Marketing", "department": "Business & Product", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Business Development", "department": "Business & Product", "member_count": 0},
+        {"id": str(uuid.uuid4()), "name": "Customer Success", "department": "Business & Product", "member_count": 0}
+    ]
+    await db.teams.insert_many(teams)
+    
+    # Create employees with full schema
+    employees_data = [
+        {"full_name": "Adhitya Charan", "official_email": "adhitya.blubridge@evoplus.in", "team": "Framework - parallelism", "stars": -11, "unsafe_count": 3, "gender": "Male", "tier_level": TierLevel.MID},
+        {"full_name": "Adwaid Suresh", "official_email": "suresh.blubridge@evoplus.in", "team": "Compiler - Auto Differentiation", "stars": -2, "unsafe_count": 0, "gender": "Male", "tier_level": TierLevel.SENIOR},
+        {"full_name": "Amarnath V S", "official_email": "amarnath.blubridge@evoplus.in", "team": "Framework - Quantz", "stars": -5, "unsafe_count": 2, "gender": "Male", "tier_level": TierLevel.MID},
+        {"full_name": "Anuj Kumar", "official_email": "anuj.blubridge@evoplus.in", "team": "Framework - parallelism", "stars": -11, "unsafe_count": 3, "gender": "Male", "tier_level": TierLevel.JUNIOR},
+        {"full_name": "Aravind P", "official_email": "aravind.blubridge@evoplus.in", "team": "Tokenizer", "stars": -5, "unsafe_count": 2, "gender": "Male", "tier_level": TierLevel.MID},
+        {"full_name": "Aravind S", "official_email": "aravinds.blubridge@evoplus.in", "team": "Compiler - Auto Differentiation", "stars": -5, "unsafe_count": 2, "gender": "Male", "tier_level": TierLevel.SENIOR},
+        {"full_name": "Chaithanya", "official_email": "chaithanya.blubridge@evoplus.in", "team": "Data", "stars": 0, "unsafe_count": 0, "gender": "Female", "tier_level": TierLevel.MID},
+        {"full_name": "Dinesh", "official_email": "dinesh.blubridge@evoplus.in", "team": "Framework - parallelism", "stars": 2, "unsafe_count": 0, "gender": "Male", "tier_level": TierLevel.LEAD},
+        {"full_name": "Gowtham", "official_email": "gowtham.blubridge@evoplus.in", "team": "Data", "stars": 5, "unsafe_count": 0, "gender": "Male", "tier_level": TierLevel.SENIOR},
+        {"full_name": "Gowthamkumar", "official_email": "gowthamkumar.blubridge@evoplus.in", "team": "Framework - Tensor & Ops", "stars": 3, "unsafe_count": 0, "gender": "Male", "tier_level": TierLevel.MID},
+        {"full_name": "Grishma", "official_email": "grishma.blubridge@evoplus.in", "team": "Framework - Graph & Auto-differentiation", "stars": 1, "unsafe_count": 0, "gender": "Female", "tier_level": TierLevel.JUNIOR},
+        {"full_name": "Hamza", "official_email": "hamza.blubridge@evoplus.in", "team": "Administration", "stars": 0, "unsafe_count": 0, "gender": "Male", "tier_level": TierLevel.MID},
+        {"full_name": "Harshini", "official_email": "harshini.blubridge@evoplus.in", "team": "Compiler - Auto Differentiation", "stars": 2, "unsafe_count": 0, "gender": "Female", "tier_level": TierLevel.JUNIOR},
+        {"full_name": "Jenifa", "official_email": "jenifa.blubridge@evoplus.in", "team": "Compiler - Auto Differentiation", "stars": 4, "unsafe_count": 0, "gender": "Female", "tier_level": TierLevel.MID},
+        {"full_name": "Jona", "official_email": "jona.blubridge@evoplus.in", "team": "Compiler - Auto Differentiation", "stars": 1, "unsafe_count": 0, "gender": "Male", "tier_level": TierLevel.SENIOR},
+        {"full_name": "Kota", "official_email": "kota.blubridge@evoplus.in", "team": "Framework - Tensor & Ops", "stars": -3, "unsafe_count": 1, "gender": "Male", "tier_level": TierLevel.MID},
+        {"full_name": "Pragathi V", "official_email": "pragathi.blubridge@evoplus.in", "team": "Administration", "stars": 0, "unsafe_count": 0, "gender": "Female", "tier_level": TierLevel.JUNIOR},
+        {"full_name": "Suresh K", "official_email": "sureshk.blubridge@evoplus.in", "team": "Compiler - Auto Differentiation", "stars": 2, "unsafe_count": 0, "gender": "Male", "tier_level": TierLevel.LEAD},
+    ]
+    
+    for i, emp_data in enumerate(employees_data):
+        dept = "Support Staff" if emp_data["team"] == "Administration" else "Research Unit"
+        emp = Employee(
+            emp_id=f"EMP{str(i + 1).zfill(4)}",
+            full_name=emp_data["full_name"],
+            official_email=emp_data["official_email"],
+            gender=emp_data.get("gender"),
+            department=dept,
+            team=emp_data["team"],
+            designation="Software Engineer",
+            tier_level=emp_data.get("tier_level", TierLevel.MID),
+            date_of_joining="2024-01-15",
+            employment_type=EmploymentType.FULL_TIME,
+            employee_status=EmployeeStatus.ACTIVE,
+            work_location=WorkLocation.OFFICE,
+            stars=emp_data["stars"],
+            unsafe_count=emp_data["unsafe_count"]
+        )
+        doc = emp.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        doc['updated_at'] = doc['updated_at'].isoformat()
+        await db.employees.insert_one(doc.copy())
+    
+    # Create sample attendance
+    today = get_ist_now().strftime("%d-%m-%Y")
+    employees = await db.employees.find({}, {"_id": 0}).to_list(1000)
+    
+    for emp in employees[:15]:
+        check_in_hour = 8 + (hash(emp["id"]) % 3)
+        check_in_min = hash(emp["id"]) % 60
+        check_in_time = f"{str(check_in_hour).zfill(2)}:{str(check_in_min).zfill(2)} AM"
+        
+        att = Attendance(
+            employee_id=emp["id"],
+            emp_name=emp["full_name"],
+            team=emp["team"],
+            department=emp["department"],
+            date=today,
+            check_in=check_in_time,
+            status="Login"
+        )
+        doc = att.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.attendance.insert_one(doc.copy())
+    
+    # Create employee user account (user/user)
+    first_emp = employees[0] if employees else None
+    if first_emp:
+        emp_user = User(
+            username="user",
+            email="user@blubridge.com",
+            password_hash=hash_password("user"),
+            name=first_emp.get("full_name", "Employee User"),
+            role=UserRole.EMPLOYEE,
+            employee_id=first_emp["id"],
+            department=first_emp.get("department"),
+            team=first_emp.get("team")
+        )
+        doc = emp_user.model_dump()
+        doc['created_at'] = doc['created_at'].isoformat()
+        await db.users.insert_one(doc.copy())
+    
+    return {"message": "Database seeded successfully"}
+
+# ============== NOTIFICATION ROUTES ==============
+
+@api_router.get("/notifications")
+async def get_notifications(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: dict = Depends(get_current_user)
+):
+    """Get notifications for current user"""
+    notifications = await db.notifications.find(
+        {"user_id": current_user["id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(limit)
+    return [serialize_doc(n) for n in notifications]
+
+@api_router.get("/notifications/unread-count")
+async def get_unread_notification_count(current_user: dict = Depends(get_current_user)):
+    """Get count of unread notifications"""
+    count = await db.notifications.count_documents({"user_id": current_user["id"], "read": False})
+    return {"count": count}
+
+@api_router.put("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, current_user: dict = Depends(get_current_user)):
+    """Mark a single notification as read"""
+    result = await db.notifications.update_one(
+        {"id": notification_id, "user_id": current_user["id"]},
+        {"$set": {"read": True}}
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "Notification marked as read"}
+
+@api_router.put("/notifications/mark-all-read")
+async def mark_all_notifications_read(current_user: dict = Depends(get_current_user)):
+    """Mark all notifications as read for current user"""
+    await db.notifications.update_many(
+        {"user_id": current_user["id"], "read": False},
+        {"$set": {"read": True}}
+    )
+    return {"message": "All notifications marked as read"}
+
+@api_router.delete("/notifications/{notification_id}")
+async def delete_notification(notification_id: str, current_user: dict = Depends(get_current_user)):
+    """Delete a notification"""
+    result = await db.notifications.delete_one({"id": notification_id, "user_id": current_user["id"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"message": "Notification deleted"}
+
+# ============== ROLE MANAGEMENT ROUTES ==============
+
+@api_router.get("/roles/users")
+async def get_all_users_with_roles(
+    role: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all users with their roles (system admin + HR)"""
+    if current_user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    query = {}
+    if role:
+        query["role"] = role
+    users = await db.users.find(query, {"_id": 0, "password_hash": 0}).sort("created_at", -1).to_list(1000)
+    return [serialize_doc(u) for u in users]
+
+@api_router.put("/roles/users/{user_id}/role")
+async def update_user_role(
+    user_id: str,
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update a user's role (system admin only)"""
+    if current_user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    new_role = data.get("role")
+    if new_role not in [UserRole.HR, UserRole.SYSTEM_ADMIN, UserRole.OFFICE_ADMIN, UserRole.EMPLOYEE]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    
+    target_user = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    old_role = target_user.get("role")
+    await db.users.update_one({"id": user_id}, {"$set": {"role": new_role}})
+    
+    await log_audit(current_user["id"], "update_role", "user", user_id, f"Role changed from {old_role} to {new_role}")
+    
+    # Notify user about role change
+    role_labels = {"hr": "HR Team", "system_admin": "System Admin", "office_admin": "Office Admin", "employee": "Employee"}
+    asyncio.create_task(create_notification(
+        [user_id],
+        "Role Updated",
+        f"Your role has been changed to {role_labels.get(new_role, new_role)}. Your access permissions have been updated.",
+        "info",
+        "/dashboard"
+    ))
+    
+    return {"message": f"User role updated to {new_role}"}
+
+@api_router.get("/roles/permissions")
+async def get_role_permissions(current_user: dict = Depends(get_current_user)):
+    """Get the permission matrix for all roles"""
+    if current_user["role"] not in SYSTEM_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    return {
+        "hr": {
+            "label": "HR Team",
+            "description": "Full control over all HR modules",
+            "permissions": [
+                "employees.full", "attendance.full", "leave.full", "payroll.full",
+                "holidays.full", "policies.full", "star_reward.full", "team.full",
+                "tickets.full", "reports.full", "audit_logs.view", "verification.full",
+                "late_requests.full", "early_out.full", "missed_punch.full", "onboarding.full"
+            ]
+        },
+        "system_admin": {
+            "label": "System Admin",
+            "description": "System control + limited HRMS view access",
+            "permissions": [
+                "employees.view", "attendance.view", "leave.view",
+                "roles.manage", "audit_logs.view", "notifications.view"
+            ]
+        },
+        "office_admin": {
+            "label": "Office Admin",
+            "description": "View employee data + limited operational access",
+            "permissions": [
+                "employees.view", "attendance.view", "leave.view",
+                "holidays.view", "notifications.view"
+            ]
+        },
+        "employee": {
+            "label": "Employee",
+            "description": "Self-service employee portal",
+            "permissions": [
+                "self.attendance", "self.leave", "self.documents",
+                "self.salary", "self.profile", "self.tickets"
+            ]
+        }
+    }
+
+# ============== OPERATIONAL CHECKLIST ROUTES ==============
+
+OFFICE_ADMIN_ROLES = ["hr", "office_admin"]
+
+@api_router.get("/operational-checklists")
+async def get_operational_checklists(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get all operational checklists (Office Admin + HR)"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    query = {}
+    if status and status != "all":
+        query["status"] = status
+    if search:
+        query["$or"] = [
+            {"emp_name": {"$regex": search, "$options": "i"}},
+            {"employee_id": {"$regex": search, "$options": "i"}}
+        ]
+    
+    checklists = await db.operational_checklists.find(query, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [serialize_doc(c) for c in checklists]
+
+@api_router.get("/operational-checklists/stats")
+async def get_operational_checklist_stats(current_user: dict = Depends(get_current_user)):
+    """Get stats for operational checklists"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    total = await db.operational_checklists.count_documents({})
+    pending = await db.operational_checklists.count_documents({"status": "pending"})
+    in_progress = await db.operational_checklists.count_documents({"status": "in_progress"})
+    completed = await db.operational_checklists.count_documents({"status": "completed"})
+    
+    return {
+        "total": total,
+        "pending": pending,
+        "in_progress": in_progress,
+        "completed": completed
+    }
+
+@api_router.get("/operational-checklists/pending-count")
+async def get_operational_checklist_pending_count(current_user: dict = Depends(get_current_user)):
+    """Lightweight count for sidebar badge"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    pending = await db.operational_checklists.count_documents({"status": {"$ne": "completed"}})
+    return {"count": pending}
+
+@api_router.get("/operational-checklists/{employee_id}")
+async def get_operational_checklist(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get checklist for a specific employee"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    checklist = await db.operational_checklists.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    return serialize_doc(checklist)
+
+@api_router.put("/operational-checklists/{employee_id}/item/{item_key}")
+async def update_checklist_item(
+    employee_id: str,
+    item_key: str,
+    data: dict = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Toggle a checklist item completed/uncompleted"""
+    if current_user["role"] not in OFFICE_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    
+    checklist = await db.operational_checklists.find_one({"employee_id": employee_id}, {"_id": 0})
+    if not checklist:
+        raise HTTPException(status_code=404, detail="Checklist not found")
+    
+    completed = data.get("completed", False)
+    notes = data.get("notes", "")
+    now = get_ist_now().isoformat()
+    
+    items = checklist.get("items", [])
+    found = False
+    for item in items:
+        if item["key"] == item_key:
+            item["completed"] = completed
+            item["completed_by"] = current_user.get("name", current_user.get("username")) if completed else None
+            item["completed_at"] = now if completed else None
+            item["notes"] = notes
+            found = True
+            break
+    
+    if not found:
+        raise HTTPException(status_code=404, detail="Checklist item not found")
+    
+    # Compute overall status
+    total_items = len(items)
+    completed_count = sum(1 for i in items if i.get("completed"))
+    if completed_count == 0:
+        new_status = "pending"
+    elif completed_count == total_items:
+        new_status = "completed"
+    else:
+        new_status = "in_progress"
+    
+    await db.operational_checklists.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"items": items, "status": new_status, "updated_at": now}}
+    )
+    
+    # If fully completed, notify HR
+    if new_status == "completed":
+        asyncio.create_task(notify_role(
+            UserRole.HR,
+            "Operational Setup Complete",
+            f"All operational items for {checklist.get('emp_name', 'employee')} have been completed by {current_user.get('name', 'Office Admin')}.",
+            "success",
+            "/verification"
+        ))
+    
+    await log_audit(current_user["id"], "update_checklist_item", "operational_checklist", employee_id, f"Item {item_key} {'completed' if completed else 'unchecked'}")
+    
+    updated = await db.operational_checklists.find_one({"employee_id": employee_id}, {"_id": 0})
+    return serialize_doc(updated)
+
+# ============== LATE REQUEST ROUTES ==============
+
+async def _resolve_employee(data_employee_id, current_user):
+    """Helper to resolve employee for admin-applied or self-applied requests"""
+    is_hr = current_user["role"] == UserRole.HR
+    if data_employee_id and is_hr:
+        emp = await db.employees.find_one({"id": data_employee_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        return emp, is_hr
+    elif current_user.get("employee_id"):
+        emp = await db.employees.find_one({"id": current_user["employee_id"], "is_deleted": {"$ne": True}}, {"_id": 0})
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee profile not found")
+        return emp, is_hr
+    raise HTTPException(status_code=400, detail="Employee ID required")
+
+@api_router.get("/late-requests")
+async def get_late_requests(
+    status: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    if not is_admin:
+        query["employee_id"] = current_user.get("employee_id", "")
+    if status and status != "All":
+        query["status"] = status
+    if employee_name:
+        query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+    records = await db.late_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [serialize_doc(r) for r in records]
+
+@api_router.post("/late-requests")
+async def create_late_request(data: LateRequestCreate, current_user: dict = Depends(get_current_user)):
+    emp, is_admin = await _resolve_employee(data.employee_id, current_user)
+    
+    # JOB 4: Prevent duplicate late request (same employee + date)
+    existing = await db.late_requests.find_one({
+        "employee_id": emp["id"],
+        "date": data.date,
+        "status": {"$ne": "rejected"}
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Late request already exists for this date")
+    
+    req = LateRequest(
+        employee_id=emp["id"],
+        emp_name=emp["full_name"],
+        team=emp["team"],
+        department=emp["department"],
+        date=data.date,
+        expected_time=data.expected_time,
+        actual_time=data.actual_time,
+        reason=data.reason,
+        applied_by_admin=is_admin,
+        status="approved" if (data.auto_approve and is_admin) else "pending",
+        is_lop=data.is_lop if (data.auto_approve and is_admin) else None,
+        approved_by=current_user["id"] if (data.auto_approve and is_admin) else None
+    )
+    doc = req.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.late_requests.insert_one(doc.copy())
+    return serialize_doc(doc)
+
+class BulkActionBody(BaseModel):
+    """Payload for bulk approve/reject. Only the exact selected IDs are processed."""
+    ids: List[str] = []
+    is_lop: Optional[bool] = None
+    lop_remark: Optional[str] = None
+    reason: Optional[str] = None
+    model_config = ConfigDict(extra="ignore")
+
+
+async def _bulk_run(collection, ids, action_coro_factory):
+    """Reuse the EXISTING single-record approve/reject logic across a set of IDs.
+
+    - Processes ONLY the exact IDs provided (de-duplicated).
+    - Skips records that are missing or not currently 'pending' — never
+      overwrites an already Approved/Rejected request.
+    - Delegates the real work to the same handler used by the individual flow,
+      so attendance/payroll/LOP/audit behaviour is identical.
+    Returns a per-record summary.
+    """
+    processed, skipped = [], []
+    seen = set()
+    for rid in ids:
+        if not rid or rid in seen:
+            continue
+        seen.add(rid)
+        rec = await collection.find_one({"id": rid}, {"_id": 0})
+        if not rec:
+            skipped.append({"id": rid, "emp_name": None, "reason": "Request not found"})
+            continue
+        if rec.get("status") != "pending":
+            skipped.append({"id": rid, "emp_name": rec.get("emp_name"), "status": rec.get("status"), "reason": "Already processed"})
+            continue
+        try:
+            await action_coro_factory(rid)
+            processed.append({"id": rid, "emp_name": rec.get("emp_name")})
+        except HTTPException as e:
+            skipped.append({"id": rid, "emp_name": rec.get("emp_name"), "reason": str(e.detail)})
+    return {"total": len(seen), "processed": len(processed), "skipped": len(skipped), "processed_items": processed, "skipped_items": skipped}
+
+
+# NOTE: bulk routes are declared BEFORE the /{request_id} param routes so the
+# literal "bulk-approve"/"bulk-reject" path segment is never captured as an id.
+@api_router.put("/late-requests/bulk-approve")
+async def bulk_approve_late_requests(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.late_requests, data.ids,
+        lambda rid: approve_late_request(rid, RequestApproveBody(is_lop=data.is_lop, lop_remark=data.lop_remark), current_user))
+
+
+@api_router.put("/late-requests/bulk-reject")
+async def bulk_reject_late_requests(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.late_requests, data.ids,
+        lambda rid: reject_late_request(rid, current_user))
+
+
+@api_router.put("/late-requests/{request_id}/approve")
+async def approve_late_request(request_id: str, data: Optional[RequestApproveBody] = None, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    update = {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
+    if data and data.is_lop is not None:
+        update["is_lop"] = data.is_lop
+    if data and data.lop_remark:
+        update["lop_remark"] = data.lop_remark
+    result = await db.late_requests.update_one({"id": request_id}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/late-requests/{request_id}/reject")
+async def reject_late_request(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    result = await db.late_requests.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/late-requests/{request_id}")
+async def edit_late_request(request_id: str, data: LateRequestCreate, current_user: dict = Depends(get_current_user)):
+    rec = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    # Employees may only edit their OWN pending requests (ownership check —
+    # prevents editing another employee's request by changing the id).
+    if not is_admin:
+        if rec.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="You can only edit your own requests")
+        if rec.get("status") != "pending":
+            raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    update = {
+        "date": data.date,
+        "reason": data.reason,
+        "expected_time": data.expected_time,
+        "actual_time": data.actual_time,
+        "edited_by": current_user["id"],
+        "edited_at": get_ist_now().isoformat(),
+    }
+    await db.late_requests.update_one({"id": request_id}, {"$set": update})
+    await log_audit(current_user["id"], "edit", "late_request", request_id)
+    updated = await db.late_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(updated)
+
+# ============== LATE REQUEST BULK IMPORT ==============
+
+LR_IMPORT_COLUMNS = [
+    "Email", "Request Date", "Actual Arrival", "Expected Arrival",
+    "Reason", "Status", "Action Type", "Remark", "Applied On", "Approved By", "Approved On",
+]
+
+# Sheet-column aliases → canonical field names. Case-insensitive, whitespace-tolerant.
+LR_COLUMN_ALIASES: dict[str, str] = {
+    # email
+    "Email": "email",
+    "Emp Mail ID": "email",
+    "Employee Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # date
+    "Request Date": "date",
+    "Request_date": "date",
+    "Date": "date",
+    "Attendance Date": "date",
+    "Late Date": "date",
+    # actual time (when employee actually arrived)
+    "Actual Arrival": "actual_time",
+    "Actual Time": "actual_time",
+    "Arrival Time": "actual_time",
+    "Arrived At": "actual_time",
+    "Expected_Arrival": "actual_time",  # per user: this column = actual arrival time
+    "Expected Arrival": "actual_time",
+    # request submission time (informational only — stored in extra_data)
+    "Request_Time": "request_time",
+    "Request Time": "request_time",
+    # expected shift time (rarely present, but supported)
+    "Expected Time": "expected_time",
+    "Shift Start": "expected_time",
+    "Scheduled Time": "expected_time",
+    # reason
+    "Reason": "reason",
+    "Remarks": "reason",
+    "Notes": "reason",
+    # status
+    "Status": "status",
+    "Request Status": "status",
+    # is_lop via Action_Type
+    "Action_Type": "action_type",
+    "Action Type": "action_type",
+    "LOP Status": "action_type",
+    # remark / lop_remark
+    "Remark": "lop_remark",
+    "LOP Remark": "lop_remark",
+    "Approver Remark": "lop_remark",
+    # applied_at
+    "Applied On": "applied_at",
+    "Applied_on": "applied_at",
+    "Applied Date": "applied_at",
+    "Date Applied": "applied_at",
+    # approved_by
+    "Approved By": "approved_by",
+    "Approved_by": "approved_by",
+    "Approver": "approved_by",
+    # approved_at
+    "Approved On": "approved_at",
+    "Approved_on": "approved_at",
+    "Approval Date": "approved_at",
+    "Date Approved": "approved_at",
+}
+
+
+def _build_lr_alias_index() -> dict[str, str]:
+    return {_normalize_header(k): v for k, v in LR_COLUMN_ALIASES.items()}
+
+
+def _normalize_action_type(value) -> Optional[bool]:
+    """Map Action_Type to is_lop. NO_LOP → False; LOP → True; NULL/blank → None."""
+    if value in (None, ""):
+        return None
+    s = str(value).strip().upper().replace("-", "_").replace(" ", "_")
+    if s in ("NO_LOP", "NOLOP", "NL"):
+        return False
+    if s in ("LOP",):
+        return True
+    if s in ("NULL", "NONE", "NA", "N/A", "-"):
+        return None
+    return None
+
+
+@api_router.get("/late-requests/import-template")
+async def download_lr_import_template(current_user: dict = Depends(get_current_user)):
+    """Download styled .xlsx template for late-request bulk import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Late Request Import"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(LR_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["employee@blubridge.com", "2026-04-22", "10:15", "10:00", "Heavy traffic", "Approved", "NO_LOP", "Approved", "2026-04-22 10:18:00", "Admin", "2026-04-23 14:00:00"],
+        ["another@blubridge.com", "22/04/2026", "10:45", "10:00", "Medical emergency", "Approved", "LOP", "Approved with LOP", "2026-04-22 10:50:00", "Admin", "2026-04-23 14:05:00"],
+        ["third@blubridge.com", "23/04/2026", "11:00", "", "Late submission - vehicle breakdown", "Pending", "", "", "2026-04-23 11:05:00", "", ""],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [30, 14, 12, 12, 30, 12, 12, 24, 20, 18, 20]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Email", "Yes", "employee_id (via email)", "Aliases: Emp Mail ID, Employee Email, Email ID, Mail"])
+    ws2.append(["Request Date", "Yes", "date", "Aliases: Request_date, Date, Late Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, or Excel datetime"])
+    ws2.append(["Actual Arrival", "Yes", "actual_time", "Aliases: Expected_Arrival, Actual Time, Arrival Time. Time when employee actually arrived. HH:MM (24h) or HH:MM AM/PM"])
+    ws2.append(["Expected Arrival", "Optional", "expected_time", "Shift start time (e.g., 10:00). Leave blank if not tracked."])
+    ws2.append(["Reason", "Yes", "reason", "Aliases: Remarks, Notes. Free text"])
+    ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending)"])
+    ws2.append(["Action Type", "No", "is_lop", "Aliases: Action_Type, LOP Status. NO_LOP → false; LOP → true; NULL/blank → null"])
+    ws2.append(["Remark", "No", "lop_remark", "Free text approver note"])
+    ws2.append(["Applied On", "No", "applied_at", "Aliases: Applied_on, Applied Date. Stored as ISO datetime in extra_data"])
+    ws2.append(["Approved By", "No", "approved_by", "'Admin' or username/email/full name → resolved to user ID. Numeric IDs map to current admin."])
+    ws2.append(["Approved On", "No", "approved_at", "Aliases: Approved_on, Approval Date. Stored when status = approved"])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=late_requests_import_template.xlsx"}
+    )
+
+
+@api_router.post("/late-requests/import/preview")
+async def preview_lr_import(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + sample rows for late-request import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    alias_index = _build_lr_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
+
+    required_fields = ["email", "date", "actual_time", "reason"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
+
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else (str(v) if v is not None else None)) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "column_mapping": mapped,
+        "ignored_columns": ignored,
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
+        "sample_rows": sample,
+    }
+
+
+@api_router.post("/late-requests/bulk-import")
+async def bulk_import_late_requests(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-import late-arrival requests from .xlsx or .csv. Admin-only.
+
+    - Maps employee by email; skipped if not found.
+    - Required columns: Email, Request Date, Actual Arrival, Reason.
+    - Auto-handles combined Date+Time, in-batch dedupe, status mapping, LOP from Action_Type.
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    alias_index = _build_lr_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    missing = []
+    if "email" not in detected_canonical:
+        missing.append("Email")
+    if "date" not in detected_canonical:
+        missing.append("Request Date")
+    if "actual_time" not in detected_canonical:
+        missing.append("Actual Arrival")
+    if "reason" not in detected_canonical:
+        missing.append("Reason")
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing mandatory column(s): {', '.join(missing)}")
+
+    # Pre-fetch employees by email
+    email_to_emp: dict = {}
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1}):
+        email = (e.get("official_email") or "").strip().lower()
+        if email:
+            email_to_emp[email] = e
+
+    # Pre-fetch users + employees for Approved By resolution
+    approver_index: dict[str, str] = {}
+    async for u in db.users.find({}, {"_id": 0, "id": 1, "username": 1, "email": 1}):
+        if u.get("username"):
+            approver_index[_normalize_header(u["username"])] = u["id"]
+        if u.get("email"):
+            approver_index[_normalize_header(u["email"])] = u["id"]
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "official_email": 1}):
+        if e.get("full_name"):
+            approver_index.setdefault(_normalize_header(e["full_name"]), e["id"])
+        if e.get("official_email"):
+            approver_index.setdefault(_normalize_header(e["official_email"]), e["id"])
+
+    def _resolve_lr_approver(value) -> tuple[Optional[str], Optional[str]]:
+        if value in (None, ""):
+            return (None, None)
+        s = str(value).strip()
+        if not s:
+            return (None, None)
+        # Numeric IDs (e.g., 52) → map to current admin per user spec
+        if s.isdigit() or (s.replace(".", "", 1).isdigit()):
+            return (current_user["id"], s)
+        norm = _normalize_header(s)
+        if norm in ("admin", "administrator", "hr admin", "hr"):
+            return (current_user["id"], None)
+        if norm in approver_index:
+            return (approver_index[norm], None)
+        return (None, s)
+
+    total = len(rows)
+    success = 0
+    failed = 0
+    skipped_duplicates = 0
+    errors: List[dict] = []
+    inserts: List[dict] = []
+    inbatch_keys: set = set()
+
+    for idx, raw_row in enumerate(rows, start=2):
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
+        if not email:
+            failed += 1
+            errors.append({"row": idx, "email": "", "reason": "Email is blank"})
+            continue
+        emp = email_to_emp.get(email)
+        if not emp:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
+            continue
+
+        # Date — date column may be a combined datetime; we only need the date portion
+        date_iso, _ = _parse_import_datetime(row.get("date")) if row.get("date") not in (None, "") else (None, None)
+        if not date_iso:
+            date_iso = _parse_import_date(row.get("date"))
+        if not date_iso:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Request Date: '{row.get('date')}'"})
+            continue
+
+        # Actual arrival time
+        _, actual_time = _parse_import_datetime(row.get("actual_time")) if row.get("actual_time") not in (None, "") else (None, None)
+        if not actual_time:
+            actual_time = _parse_import_time(row.get("actual_time"))
+        if not actual_time:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Actual Arrival: '{row.get('actual_time')}' (use HH:MM)"})
+            continue
+
+        # Optional expected_time
+        expected_time = None
+        if row.get("expected_time") not in (None, ""):
+            _, expected_time = _parse_import_datetime(row.get("expected_time"))
+            if not expected_time:
+                expected_time = _parse_import_time(row.get("expected_time"))
+
+        reason = str(row.get("reason")).strip() if row.get("reason") not in (None, "") else None
+        if not reason:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Reason is required"})
+            continue
+
+        status_norm = _normalize_status(row.get("status")) or "pending"
+        is_lop = _normalize_action_type(row.get("action_type"))
+        lop_remark = str(row.get("lop_remark")).strip() if row.get("lop_remark") not in (None, "") else None
+        # Treat 'NULL'/'-' literal as blank
+        if lop_remark and lop_remark.upper() in ("NULL", "NONE", "N/A", "NA", "-"):
+            lop_remark = None
+
+        approver_id, approver_unresolved = _resolve_lr_approver(row.get("approved_by"))
+        applied_at_dt, applied_at_time = _parse_import_datetime(row.get("applied_at")) if row.get("applied_at") not in (None, "") else (None, None)
+        approved_at_dt, approved_at_time = _parse_import_datetime(row.get("approved_at")) if row.get("approved_at") not in (None, "") else (None, None)
+        applied_at_iso = f"{applied_at_dt}T{applied_at_time or '00:00'}" if applied_at_dt else None
+        approved_at_iso = f"{approved_at_dt}T{approved_at_time or '00:00'}" if approved_at_dt else None
+
+        # Request_Time — informational only
+        request_time = None
+        if row.get("request_time") not in (None, ""):
+            _, request_time = _parse_import_datetime(row.get("request_time"))
+            if not request_time:
+                request_time = _parse_import_time(row.get("request_time"))
+
+        # Duplicate guard: same employee + date, non-rejected
+        existing = await db.late_requests.find_one({
+            "employee_id": emp["id"],
+            "date": date_iso,
+            "status": {"$ne": "rejected"}
+        }, {"_id": 0, "id": 1})
+        if existing and status_norm != "rejected":
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Late request already exists for {date_iso}"})
+            continue
+
+        batch_key = (emp["id"], date_iso, status_norm)
+        if batch_key in inbatch_keys and status_norm != "rejected":
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Duplicate of an earlier row for {date_iso}"})
+            continue
+        inbatch_keys.add(batch_key)
+
+        final_approved_by = approver_id
+        if status_norm == "approved" and not final_approved_by:
+            final_approved_by = current_user["id"]
+
+        extra = {
+            k: v for k, v in {
+                "applied_at": applied_at_iso,
+                "approved_at": approved_at_iso,
+                "approver_unresolved": approver_unresolved,
+                "request_time": request_time,
+            }.items() if v is not None
+        } or None
+
+        doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp["id"],
+            "emp_name": emp.get("full_name", ""),
+            "team": emp.get("team", ""),
+            "department": emp.get("department", ""),
+            "date": date_iso,
+            "expected_time": expected_time,
+            "actual_time": actual_time,
+            "reason": reason,
+            "status": status_norm,
+            "is_lop": is_lop,
+            "lop_remark": lop_remark,
+            "approved_by": final_approved_by,
+            "applied_by_admin": True,
+            "extra_data": extra,
+            "created_at": get_ist_now().isoformat(),
+        }
+        inserts.append(doc)
+        success += 1
+
+    if inserts:
+        chunk = 500
+        for i in range(0, len(inserts), chunk):
+            await db.late_requests.insert_many([d.copy() for d in inserts[i:i + chunk]])
+
+    return {
+        "total": total,
+        "success": success,
+        "skipped_duplicates": skipped_duplicates,
+        "failed": failed,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
+        "errors": errors,
+    }
+
+# ============== EARLY OUT REQUEST ROUTES ==============
+
+@api_router.get("/early-out-requests")
+async def get_early_out_requests(
+    status: Optional[str] = None,
+    employee_name: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    query = {}
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    if not is_admin:
+        query["employee_id"] = current_user.get("employee_id", "")
+    if status and status != "All":
+        query["status"] = status
+    if employee_name:
+        query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+    records = await db.early_out_requests.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    return [serialize_doc(r) for r in records]
+
+@api_router.post("/early-out-requests")
+async def create_early_out_request(data: EarlyOutRequestCreate, current_user: dict = Depends(get_current_user)):
+    emp, is_admin = await _resolve_employee(data.employee_id, current_user)
+    
+    # JOB 4: Prevent duplicate early out request
+    existing = await db.early_out_requests.find_one({
+        "employee_id": emp["id"],
+        "date": data.date,
+        "status": {"$ne": "rejected"}
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Early out request already exists for this date")
+    
+    req = EarlyOutRequest(
+        employee_id=emp["id"],
+        emp_name=emp["full_name"],
+        team=emp["team"],
+        department=emp["department"],
+        date=data.date,
+        actual_time=data.actual_time,
+        reason=data.reason,
+        applied_by_admin=is_admin,
+        status="approved" if (data.auto_approve and is_admin) else "pending",
+        is_lop=data.is_lop if (data.auto_approve and is_admin) else None,
+        approved_by=current_user["id"] if (data.auto_approve and is_admin) else None
+    )
+    doc = req.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.early_out_requests.insert_one(doc.copy())
+    return serialize_doc(doc)
+
+@api_router.put("/early-out-requests/bulk-approve")
+async def bulk_approve_early_out_requests(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.early_out_requests, data.ids,
+        lambda rid: approve_early_out_request(rid, RequestApproveBody(is_lop=data.is_lop, lop_remark=data.lop_remark), current_user))
+
+
+@api_router.put("/early-out-requests/bulk-reject")
+async def bulk_reject_early_out_requests(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.early_out_requests, data.ids,
+        lambda rid: reject_early_out_request(rid, current_user))
+
+
+@api_router.put("/early-out-requests/{request_id}/approve")
+async def approve_early_out_request(request_id: str, data: Optional[RequestApproveBody] = None, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    update = {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
+    if data and data.is_lop is not None:
+        update["is_lop"] = data.is_lop
+    if data and data.lop_remark:
+        update["lop_remark"] = data.lop_remark
+    result = await db.early_out_requests.update_one({"id": request_id}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/early-out-requests/{request_id}/reject")
+async def reject_early_out_request(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    result = await db.early_out_requests.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+@api_router.put("/early-out-requests/{request_id}")
+async def edit_early_out_request(request_id: str, data: EarlyOutRequestCreate, current_user: dict = Depends(get_current_user)):
+    rec = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    if not is_admin:
+        if rec.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="You can only edit your own requests")
+        if rec.get("status") != "pending":
+            raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    update = {
+        "date": data.date,
+        "reason": data.reason,
+        "actual_time": data.actual_time,
+        "edited_by": current_user["id"],
+        "edited_at": get_ist_now().isoformat(),
+    }
+    await db.early_out_requests.update_one({"id": request_id}, {"$set": update})
+    await log_audit(current_user["id"], "edit", "early_out_request", request_id)
+    updated = await db.early_out_requests.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(updated)
+
+# ============== EARLY OUT BULK IMPORT ==============
+
+EO_IMPORT_COLUMNS = [
+    "Email", "Request Date", "Actual Leave Time", "Expected End Time",
+    "Reason", "Status", "Action Type", "Remark", "Applied On", "Approved By", "Approved On",
+]
+
+# Sheet-column aliases → canonical field names. Case-insensitive, whitespace-tolerant.
+EO_COLUMN_ALIASES: dict[str, str] = {
+    # email
+    "Email": "email",
+    "Emp Mail ID": "email",
+    "Employee Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # date
+    "Request Date": "date",
+    "Request_date": "date",
+    "Date": "date",
+    "Attendance Date": "date",
+    "Early Out Date": "date",
+    # actual leave time (when employee actually left early)
+    "Actual Leave Time": "actual_time",
+    "Actual Time": "actual_time",
+    "Left At": "actual_time",
+    "Leave Time": "actual_time",
+    # expected end time (shift end)
+    "Expected End Time": "expected_time",
+    "Expected Time": "expected_time",
+    "Shift End": "expected_time",
+    # reason
+    "Reason": "reason",
+    "Remarks": "reason",
+    "Notes": "reason",
+    # status
+    "Status": "status",
+    "Request Status": "status",
+    # is_lop via Action_Type
+    "Action_Type": "action_type",
+    "Action Type": "action_type",
+    "ACTION_Type": "action_type",
+    "LOP Status": "action_type",
+    # remark / lop_remark
+    "Remark": "lop_remark",
+    "LOP Remark": "lop_remark",
+    "Approver Remark": "lop_remark",
+    # applied_at
+    "Applied On": "applied_at",
+    "Applied_on": "applied_at",
+    "Applied Date": "applied_at",
+    "Date Applied": "applied_at",
+    # approved_by
+    "Approved By": "approved_by",
+    "Approved_BY": "approved_by",
+    "Approved_by": "approved_by",
+    "Approver": "approved_by",
+    # approved_at
+    "Approved On": "approved_at",
+    "Approved_on": "approved_at",
+    "Approval Date": "approved_at",
+    "Date Approved": "approved_at",
+    # update timestamp (informational)
+    "Update At": "updated_at",
+    "Update_At": "updated_at",
+    "Updated At": "updated_at",
+    "Updated_at": "updated_at",
+    "Last Updated": "updated_at",
+}
+
+
+def _build_eo_alias_index() -> dict[str, str]:
+    return {_normalize_header(k): v for k, v in EO_COLUMN_ALIASES.items()}
+
+
+@api_router.get("/early-out-requests/import-template")
+async def download_eo_import_template(current_user: dict = Depends(get_current_user)):
+    """Download styled .xlsx template for early-out bulk import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Early Out Import"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(EO_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["employee@blubridge.com", "2026-04-22", "16:30", "18:00", "Doctor appointment", "Approved", "NO_LOP", "Approved", "2026-04-22 15:00:00", "Admin", "2026-04-23 10:00:00"],
+        ["another@blubridge.com", "22/04/2026", "", "", "Family emergency", "Pending", "", "", "2026-04-22 16:00:00", "", ""],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [30, 14, 14, 14, 30, 12, 12, 24, 20, 18, 20]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Email", "Yes", "employee_id (via email)", "Aliases: Emp Mail ID, Employee Email, Email ID, Mail"])
+    ws2.append(["Request Date", "Yes", "date", "Aliases: Request_date, Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY, or Excel datetime"])
+    ws2.append(["Actual Leave Time", "Optional", "actual_time", "Aliases: Actual Time, Left At, Leave Time. Time when employee actually left. HH:MM (24h) or HH:MM AM/PM"])
+    ws2.append(["Expected End Time", "Optional", "expected_time", "Shift end time (e.g., 18:00). Leave blank if not tracked."])
+    ws2.append(["Reason", "Yes", "reason", "Aliases: Remarks, Notes. Free text"])
+    ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending)"])
+    ws2.append(["Action Type", "No", "is_lop", "Aliases: Action_Type, ACTION_Type, LOP Status. NO_LOP → false; LOP → true; NULL/blank → null"])
+    ws2.append(["Remark", "No", "lop_remark", "Free text approver note. 'NULL' is treated as blank."])
+    ws2.append(["Applied On", "No", "applied_at", "Aliases: Applied_on, Applied Date. Stored in extra_data"])
+    ws2.append(["Approved By", "No", "approved_by", "'Admin' or username/email/full name → resolved to user ID. Numeric IDs map to current admin."])
+    ws2.append(["Approved On", "No", "approved_at", "Aliases: Approved_on, Approval Date. Stored when status = approved"])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=early_out_import_template.xlsx"}
+    )
+
+
+@api_router.post("/early-out-requests/import/preview")
+async def preview_eo_import(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + sample rows for early-out import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    alias_index = _build_eo_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
+
+    required_fields = ["email", "date", "reason"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
+
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else (str(v) if v is not None else None)) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "column_mapping": mapped,
+        "ignored_columns": ignored,
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
+        "sample_rows": sample,
+    }
+
+
+@api_router.post("/early-out-requests/bulk-import")
+async def bulk_import_early_out(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-import early-out requests from .xlsx or .csv. Admin-only.
+
+    - Maps employee by email; skipped if not found.
+    - Required columns: Email, Request Date, Reason.
+    - Time columns optional (file may not contain them).
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    alias_index = _build_eo_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    missing = []
+    if "email" not in detected_canonical:
+        missing.append("Email")
+    if "date" not in detected_canonical:
+        missing.append("Request Date")
+    if "reason" not in detected_canonical:
+        missing.append("Reason")
+    if missing:
+        raise HTTPException(status_code=400, detail=f"Missing mandatory column(s): {', '.join(missing)}")
+
+    # Pre-fetch employees by email
+    email_to_emp: dict = {}
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1}):
+        email = (e.get("official_email") or "").strip().lower()
+        if email:
+            email_to_emp[email] = e
+
+    # Pre-fetch users + employees for Approved By resolution
+    approver_index: dict[str, str] = {}
+    async for u in db.users.find({}, {"_id": 0, "id": 1, "username": 1, "email": 1}):
+        if u.get("username"):
+            approver_index[_normalize_header(u["username"])] = u["id"]
+        if u.get("email"):
+            approver_index[_normalize_header(u["email"])] = u["id"]
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "official_email": 1}):
+        if e.get("full_name"):
+            approver_index.setdefault(_normalize_header(e["full_name"]), e["id"])
+        if e.get("official_email"):
+            approver_index.setdefault(_normalize_header(e["official_email"]), e["id"])
+
+    def _resolve_eo_approver(value) -> tuple[Optional[str], Optional[str]]:
+        if value in (None, ""):
+            return (None, None)
+        s = str(value).strip()
+        if not s or s.upper() in ("NULL", "NONE", "N/A", "NA", "-"):
+            return (None, None)
+        if s.isdigit() or (s.replace(".", "", 1).isdigit()):
+            return (current_user["id"], s)
+        norm = _normalize_header(s)
+        if norm in ("admin", "administrator", "hr admin", "hr"):
+            return (current_user["id"], None)
+        if norm in approver_index:
+            return (approver_index[norm], None)
+        return (None, s)
+
+    def _clean_null(value) -> Optional[str]:
+        if value in (None, ""):
+            return None
+        s = str(value).strip()
+        if not s or s.upper() in ("NULL", "NONE", "N/A", "NA", "-"):
+            return None
+        return s
+
+    total = len(rows)
+    success = 0
+    failed = 0
+    skipped_duplicates = 0
+    errors: List[dict] = []
+    inserts: List[dict] = []
+    inbatch_keys: set = set()
+
+    for idx, raw_row in enumerate(rows, start=2):
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
+        if not email:
+            failed += 1
+            errors.append({"row": idx, "email": "", "reason": "Email is blank"})
+            continue
+        emp = email_to_emp.get(email)
+        if not emp:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
+            continue
+
+        date_iso, _ = _parse_import_datetime(row.get("date")) if row.get("date") not in (None, "") else (None, None)
+        if not date_iso:
+            date_iso = _parse_import_date(row.get("date"))
+        if not date_iso:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Request Date: '{row.get('date')}'"})
+            continue
+
+        # Optional times
+        actual_time = None
+        if row.get("actual_time") not in (None, ""):
+            _, actual_time = _parse_import_datetime(row.get("actual_time"))
+            if not actual_time:
+                actual_time = _parse_import_time(row.get("actual_time"))
+
+        expected_time = None
+        if row.get("expected_time") not in (None, ""):
+            _, expected_time = _parse_import_datetime(row.get("expected_time"))
+            if not expected_time:
+                expected_time = _parse_import_time(row.get("expected_time"))
+
+        reason = _clean_null(row.get("reason"))
+        if not reason:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Reason is required"})
+            continue
+
+        status_norm = _normalize_status(row.get("status")) or "pending"
+        is_lop = _normalize_action_type(row.get("action_type"))
+        lop_remark = _clean_null(row.get("lop_remark"))
+
+        approver_id, approver_unresolved = _resolve_eo_approver(row.get("approved_by"))
+        applied_at_dt, applied_at_time = _parse_import_datetime(row.get("applied_at")) if row.get("applied_at") not in (None, "") else (None, None)
+        approved_at_dt, approved_at_time = _parse_import_datetime(row.get("approved_at")) if row.get("approved_at") not in (None, "") else (None, None)
+        applied_at_iso = f"{applied_at_dt}T{applied_at_time or '00:00'}" if applied_at_dt else None
+        approved_at_iso = f"{approved_at_dt}T{approved_at_time or '00:00'}" if approved_at_dt else None
+
+        updated_at_iso = None
+        if row.get("updated_at") not in (None, ""):
+            ud_d, ud_t = _parse_import_datetime(row.get("updated_at"))
+            if ud_d:
+                updated_at_iso = f"{ud_d}T{ud_t or '00:00'}"
+
+        # Duplicate guard: same employee + date, non-rejected
+        existing = await db.early_out_requests.find_one({
+            "employee_id": emp["id"],
+            "date": date_iso,
+            "status": {"$ne": "rejected"}
+        }, {"_id": 0, "id": 1})
+        if existing and status_norm != "rejected":
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Early-out request already exists for {date_iso}"})
+            continue
+
+        batch_key = (emp["id"], date_iso, status_norm)
+        if batch_key in inbatch_keys and status_norm != "rejected":
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Duplicate of an earlier row for {date_iso}"})
+            continue
+        inbatch_keys.add(batch_key)
+
+        final_approved_by = approver_id
+        if status_norm == "approved" and not final_approved_by:
+            final_approved_by = current_user["id"]
+
+        extra = {
+            k: v for k, v in {
+                "applied_at": applied_at_iso,
+                "approved_at": approved_at_iso,
+                "updated_at": updated_at_iso,
+                "approver_unresolved": approver_unresolved,
+            }.items() if v is not None
+        } or None
+
+        doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp["id"],
+            "emp_name": emp.get("full_name", ""),
+            "team": emp.get("team", ""),
+            "department": emp.get("department", ""),
+            "date": date_iso,
+            "expected_time": expected_time,
+            "actual_time": actual_time,
+            "reason": reason,
+            "status": status_norm,
+            "is_lop": is_lop,
+            "lop_remark": lop_remark,
+            "approved_by": final_approved_by,
+            "applied_by_admin": True,
+            "extra_data": extra,
+            "created_at": get_ist_now().isoformat(),
+        }
+        inserts.append(doc)
+        success += 1
+
+    if inserts:
+        chunk = 500
+        for i in range(0, len(inserts), chunk):
+            await db.early_out_requests.insert_many([d.copy() for d in inserts[i:i + chunk]])
+
+    return {
+        "total": total,
+        "success": success,
+        "skipped_duplicates": skipped_duplicates,
+        "failed": failed,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
+        "errors": errors,
+    }
+
+# ============== MISSED PUNCH REQUEST ROUTES ==============
+
+# ============== ATTENDANCE UPDATE HELPER ==============
+
+def _enforce_no_future_missed_punch(date_str: Optional[str], punch_type: Optional[str],
+                                    check_in_raw: Optional[str], check_out_raw: Optional[str]) -> None:
+    """Raise HTTP 400 if any submitted punch time on `date_str` is in the future
+    (IST). Used by missed-punch CREATE and APPROVE flows to prevent phantom
+    future OUT times from being applied to the attendance grid.
+
+    Accepts any of the formats supported by the engine's `_to_24h` helper:
+    `YYYY-MM-DDTHH:MM`, `HH:MM`, `HH:MM:SS`, `HH:MM AM/PM`.
+    """
+    if not date_str:
+        return
+
+    def _to_24h_local(raw: Optional[str]) -> Optional[str]:
+        if not raw:
+            return None
+        s = str(raw).strip()
+        if "T" in s:
+            s = s.split("T")[-1]
+        try:
+            return datetime.strptime(s[:5], "%H:%M").strftime("%H:%M")
+        except ValueError:
+            pass
+        try:
+            return datetime.strptime(s, "%I:%M %p").strftime("%H:%M")
+        except ValueError:
+            return None
+
+    # Normalize attendance date
+    ds = str(date_str).strip()
+    if len(ds) == 10 and ds[4] == "-" and ds[7] == "-":
+        try:
+            req_date = datetime.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            return
+    elif len(ds) == 10 and ds[2] == "-" and ds[5] == "-":
+        try:
+            req_date = datetime.strptime(ds, "%d-%m-%Y").date()
+        except ValueError:
+            return
+    else:
+        return
+
+    now_ist = get_ist_now()
+    today_ist = now_ist.date()
+    # Past dates never need future-time validation.
+    if req_date < today_ist:
+        return
+    # Future dates are wholly disallowed — a missed-punch is a correction for
+    # an event that already happened.
+    if req_date > today_ist:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot submit a missed-punch for a future date.",
+        )
+
+    # Same day → reject any time that is later than now (IST).
+    pt = (punch_type or "").strip().lower()
+    times_to_check: list[tuple[str, Optional[str]]] = []
+    if pt in ("check-in", "both"):
+        times_to_check.append(("check-in", _to_24h_local(check_in_raw)))
+    if pt in ("check-out", "both"):
+        times_to_check.append(("check-out", _to_24h_local(check_out_raw)))
+
+    now_minutes = now_ist.hour * 60 + now_ist.minute
+    for label, t24 in times_to_check:
+        if not t24:
+            continue
+        try:
+            hh, mm = t24.split(":")
+            req_minutes = int(hh) * 60 + int(mm)
+        except (ValueError, AttributeError):
+            continue
+        if req_minutes > now_minutes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"The {label} time ({t24}) is in the future. Please submit a missed-punch only for a time that has already passed.",
+            )
+
+
+async def _update_attendance_from_missed_punch(rec):
+    """Production Missed-Punch Approval Engine.
+
+    Applies an APPROVED missed-punch correction to the FINAL attendance row
+    for (employee_id, date) WITHOUT touching raw biometric logs.
+
+    Behaviour (per business spec):
+      • Type 'Check-in' → REPLACE check_in / check_in_24h only.
+      • Type 'Check-out' → REPLACE check_out / check_out_24h only.
+      • Type 'Both' → REPLACE both pairs (requires both times).
+      • Hard replace — corrected times always win over biometric values
+        (the request was approved by HR, that's the whole point).
+      • If no attendance row exists for the date → INSERT one.
+      • Recomputes total_hours (cross-midnight aware) and shift-based
+        status (Present / Loss of Pay / Login / Worked on Sunday) via the
+        existing `calculate_attendance_status` engine.
+      • Sets `source = 'corrected'` and `missed_punch_corrected = True`.
+      • Writes a full before/after audit row to `attendance_corrections`.
+      • Idempotent: if the record already contains the exact target values
+        attributed to the same request_id, no rewrite is performed.
+
+    Raw biometric logs (`biometric_punch_logs`) are NEVER touched.
+    """
+
+    emp_id = rec.get("employee_id")
+    date = rec.get("date")
+    punch_type = (rec.get("punch_type") or "").strip()
+    check_in_raw = rec.get("check_in_time")
+    check_out_raw = rec.get("check_out_time")
+    request_id = rec.get("id")
+
+    if not emp_id or not date or not punch_type:
+        return  # malformed request — abort safely
+
+    # Normalize attendance date to DD-MM-YYYY — the canonical format used by
+    # the rest of the attendance collection / API filters / frontend. Missed-
+    # punch requests come in from the HTML date input as YYYY-MM-DD; writing
+    # the raw value hides the corrected record from the attendance grid.
+    def _to_ddmmyyyy(ds: str) -> str:
+        if not ds:
+            return ds
+        s = str(ds).strip()
+        if len(s) == 10 and s[4] == "-" and s[7] == "-":
+            try:
+                return datetime.strptime(s, "%Y-%m-%d").strftime("%d-%m-%Y")
+            except ValueError:
+                return s
+        return s
+
+    date = _to_ddmmyyyy(date)
+
+    def _to_24h(raw: Optional[str]) -> Optional[str]:
+        """Accept 'YYYY-MM-DDTHH:MM' / 'HH:MM' / 'HH:MM:SS' / 'HH:MM AM/PM'."""
+        if not raw:
+            return None
+        s = str(raw).strip()
+        if "T" in s:
+            s = s.split("T")[-1]
+        try:
+            return datetime.strptime(s[:5], "%H:%M").strftime("%H:%M")
+        except ValueError:
+            pass
+        try:  # AM/PM
+            return datetime.strptime(s, "%I:%M %p").strftime("%H:%M")
+        except ValueError:
+            return None
+
+    def _to_12h(t24: Optional[str]) -> Optional[str]:
+        if not t24:
+            return None
+        try:
+            return datetime.strptime(t24, "%H:%M").strftime("%I:%M %p")
+        except ValueError:
+            return None
+
+    new_in_24h = _to_24h(check_in_raw) if punch_type in ("Check-in", "Both") else None
+    new_out_24h = _to_24h(check_out_raw) if punch_type in ("Check-out", "Both") else None
+
+    # Type-specific validation — refuse silently if the request is incoherent
+    # (validation already enforced at create-time; this is belt-and-braces).
+    if punch_type == "Check-in" and not new_in_24h:
+        return
+    if punch_type == "Check-out" and not new_out_24h:
+        return
+    if punch_type == "Both" and not (new_in_24h and new_out_24h):
+        return
+
+    existing = await db.attendance.find_one({"employee_id": emp_id, "date": date}, {"_id": 0})
+    employee = await db.employees.find_one({"id": emp_id, "is_deleted": {"$ne": True}}, {"_id": 0})
+    if not employee:
+        return
+
+    old_in = existing.get("check_in") if existing else None
+    old_in_24h = existing.get("check_in_24h") if existing else None
+    old_out = existing.get("check_out") if existing else None
+    old_out_24h = existing.get("check_out_24h") if existing else None
+    old_status = existing.get("status") if existing else None
+
+    # Compose the post-correction in/out (always REPLACE on type-targeted fields)
+    final_in_24h = new_in_24h if new_in_24h is not None else old_in_24h
+    final_out_24h = new_out_24h if new_out_24h is not None else old_out_24h
+
+    # Idempotency — skip when the same request has already produced the same
+    # state. We compare both raw strings AND the source-of-correction id.
+    if (
+        existing
+        and existing.get("source") == "corrected"
+        and existing.get("missed_punch_request_id") == request_id
+        and ((new_in_24h is None) or existing.get("check_in_24h") == new_in_24h)
+        and ((new_out_24h is None) or existing.get("check_out_24h") == new_out_24h)
+    ):
+        return
+
+    # Recompute shift-aware status (handles cross-midnight, Sundays, LOP rules)
+    shift_timings = await get_effective_shift_timings(employee, date) if employee else None
+    status_result = (
+        calculate_attendance_status(final_in_24h, final_out_24h, shift_timings or {}, attendance_date=date)
+        if final_in_24h
+        else {"status": AttendanceStatus.NOT_LOGGED, "is_lop": False, "lop_reason": None, "total_hours_decimal": 0.0, "expected_logout": None}
+    )
+
+    total_hours_decimal = float(status_result.get("total_hours_decimal") or 0.0)
+    total_hours_str = calculate_total_hours_str(total_hours_decimal) if total_hours_decimal else None
+
+    payload = {
+        "status": status_result.get("status", AttendanceStatus.PRESENT),
+        "is_lop": bool(status_result.get("is_lop")),
+        "lop_reason": status_result.get("lop_reason"),
+        "expected_logout": status_result.get("expected_logout"),
+        "total_hours_decimal": round(total_hours_decimal, 2),
+        "total_hours": total_hours_str,
+        "source": "corrected",
+        "missed_punch_corrected": True,
+        "is_approved_correction": True,
+        "missed_punch_request_id": request_id,
+        "missed_punch_corrected_at": get_ist_now().isoformat(),
+        "missed_punch_corrected_by": rec.get("approved_by"),
+    }
+    if new_in_24h:
+        payload["check_in_24h"] = new_in_24h
+        payload["check_in"] = _to_12h(new_in_24h)
+    if new_out_24h:
+        payload["check_out_24h"] = new_out_24h
+        payload["check_out"] = _to_12h(new_out_24h)
+
+    if existing:
+        await db.attendance.update_one(
+            {"employee_id": emp_id, "date": date},
+            {"$set": payload},
+        )
+    else:
+        new_doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp_id,
+            "emp_name": employee.get("full_name", ""),
+            "team": employee.get("team", ""),
+            "department": employee.get("department", ""),
+            "date": date,
+            "shift_type": employee.get("shift_type", "General"),
+            "expected_login": (shift_timings or {}).get("login_time"),
+            "created_at": get_ist_now().isoformat(),
+            **payload,
+        }
+        await db.attendance.insert_one(new_doc.copy())
+
+    # Audit trail — separate collection so it survives even if attendance is later edited
+    try:
+        audit_doc = {
+            "id": str(uuid.uuid4()),
+            "request_id": request_id,
+            "employee_id": emp_id,
+            "emp_name": employee.get("full_name", ""),
+            "date": date,
+            "punch_type": punch_type,
+            "old_check_in": old_in,
+            "old_check_in_24h": old_in_24h,
+            "old_check_out": old_out,
+            "old_check_out_24h": old_out_24h,
+            "old_status": old_status,
+            "new_check_in": payload.get("check_in", old_in),
+            "new_check_in_24h": payload.get("check_in_24h", old_in_24h),
+            "new_check_out": payload.get("check_out", old_out),
+            "new_check_out_24h": payload.get("check_out_24h", old_out_24h),
+            "new_status": payload["status"],
+            "new_total_hours": payload.get("total_hours"),
+            "approved_by": rec.get("approved_by"),
+            "approved_at": rec.get("approved_at"),
+            "source_before": (existing or {}).get("source", "biometric") if existing else "none",
+            "source_after": "corrected",
+            "created_at": get_ist_now().isoformat(),
+        }
+        await db.attendance_corrections.insert_one(audit_doc.copy())
+    except Exception as e:  # never let audit failure roll back the correction itself
+        logger.warning(f"Missed-punch audit insert failed for request {request_id}: {e}")
+
+    logger.info(
+        f"Missed punch applied: emp={emp_id} date={date} type={punch_type} "
+        f"in {old_in_24h}->{payload.get('check_in_24h', old_in_24h)} "
+        f"out {old_out_24h}->{payload.get('check_out_24h', old_out_24h)} "
+        f"status {old_status}->{payload['status']} request={request_id}"
+    )
+
+    # Mark the source request as APPLIED — explicit flag the historical
+    # backfill / payroll / dashboards can rely on without joining audit rows.
+    if request_id:
+        try:
+            await db.missed_punches.update_one(
+                {"id": request_id},
+                {"$set": {
+                    "correction_applied_at": get_ist_now().isoformat(),
+                    "correction_applied_by": rec.get("approved_by") or "system",
+                    "is_applied": True,
+                }},
+            )
+        except Exception as e:
+            logger.warning(f"Failed to stamp correction_applied_at on missed_punch {request_id}: {e}")
+
+@api_router.get("/missed-punches")
+async def get_missed_punches(
+    status: Optional[str] = None,
+    tab: Optional[str] = None,  # 'pending' | 'history' — filters and counts per-tab
+    employee_name: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=500),
+    current_user: dict = Depends(get_current_user)
+):
+    base_query: dict = {}
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    if not is_admin:
+        base_query["employee_id"] = current_user.get("employee_id", "")
+    if status and status != "All":
+        base_query["status"] = status
+    if employee_name:
+        base_query["emp_name"] = {"$regex": employee_name, "$options": "i"}
+    if from_date:
+        base_query.setdefault("date", {})["$gte"] = from_date
+    if to_date:
+        base_query.setdefault("date", {})["$lte"] = to_date
+
+    # Apply tab filter to the records & total returned
+    query = dict(base_query)
+    if tab == "pending":
+        query["status"] = "pending"
+    elif tab == "history":
+        query["status"] = {"$ne": "pending"}
+
+    # Fire all 4 independent MongoDB round-trips in parallel — they collapse
+    # from ~4×240ms serial into a single ~250ms wave against Atlas.
+    skip = (page - 1) * per_page
+    pending_count, history_count, total, records = await asyncio.gather(
+        db.missed_punches.count_documents({**base_query, "status": "pending"}),
+        db.missed_punches.count_documents({**base_query, "status": {"$ne": "pending"}}),
+        db.missed_punches.count_documents(query),
+        db.missed_punches.find(query, {"_id": 0}).sort("created_at", -1).skip(skip).limit(per_page).to_list(per_page),
+    )
+    return {
+        "data": [serialize_doc(r) for r in records],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pending_count": pending_count,
+        "history_count": history_count,
+    }
+
+@api_router.post("/missed-punches")
+async def create_missed_punch(data: MissedPunchCreate, current_user: dict = Depends(get_current_user)):
+    emp, is_hr = await _resolve_employee(data.employee_id, current_user)
+
+    # Reject future punch times — a missed-punch is a CORRECTION for a moment
+    # that has already passed. Allowing future times would let employees /
+    # admins set OUT-times that have not occurred yet (e.g. submitting at
+    # 09:00 AM with check_out 10:05 PM same day), which then surfaces as a
+    # phantom out-time on the attendance grid. The check uses the request's
+    # `date` + extracted HH:MM time, compared against IST now.
+    _enforce_no_future_missed_punch(data.date, data.punch_type, data.check_in_time, data.check_out_time)
+    
+    # JOB 4: Prevent duplicate missed punch (same employee + date + punch_type)
+    existing = await db.missed_punches.find_one({
+        "employee_id": emp["id"],
+        "date": data.date,
+        "punch_type": data.punch_type,
+        "status": {"$ne": "rejected"}
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="Request already exists for this date and punch type")
+    
+    req = MissedPunchRequest(
+        employee_id=emp["id"],
+        emp_name=emp["full_name"],
+        team=emp["team"],
+        department=emp["department"],
+        date=data.date,
+        punch_type=data.punch_type,
+        check_in_time=data.check_in_time,
+        check_out_time=data.check_out_time,
+        reason=data.reason,
+        applied_by_admin=is_hr,
+        status="approved" if (data.auto_approve and is_hr) else "pending",
+        approved_by=current_user["id"] if (data.auto_approve and is_hr) else None
+    )
+    doc = req.model_dump()
+    doc['created_at'] = doc['created_at'].isoformat()
+    await db.missed_punches.insert_one(doc.copy())
+    
+    # JOB 3: If auto-approved, update attendance
+    if data.auto_approve and is_hr:
+        await _update_attendance_from_missed_punch(doc)
+    
+    return serialize_doc(doc)
+
+@api_router.get("/missed-punches/{request_id}/approval-preview")
+async def missed_punch_approval_preview(request_id: str, current_user: dict = Depends(get_current_user)):
+    """Backend-validated data for the admin approval confirmation dialog.
+    Returns the request's employee/date/type/requested times PLUS the current
+    attendance in/out so the UI can show correction messages accurately."""
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    date_ddmmyyyy = str(rec.get("date") or "")
+    if len(date_ddmmyyyy) == 10 and date_ddmmyyyy[4] == "-" and date_ddmmyyyy[7] == "-":
+        try:
+            date_ddmmyyyy = datetime.strptime(date_ddmmyyyy, "%Y-%m-%d").strftime("%d-%m-%Y")
+        except ValueError:
+            pass
+    att, emp = await asyncio.gather(
+        db.attendance.find_one({"employee_id": rec.get("employee_id"), "date": date_ddmmyyyy},
+                               {"_id": 0, "check_in": 1, "check_out": 1}),
+        db.employees.find_one({"id": rec.get("employee_id")}, {"_id": 0, "full_name": 1}),
+    )
+    punch_type = (rec.get("punch_type") or "").strip()
+
+    def _fmt(raw):
+        t = _extract_24h(raw)
+        return _to_12h(t) if t else None
+
+    return {
+        "request_id": rec.get("id"),
+        "employee_name": (emp or {}).get("full_name") or rec.get("emp_name") or "",
+        "date": date_ddmmyyyy,
+        "punch_type": punch_type,
+        "request_status": rec.get("status"),
+        "requested_check_in": _fmt(rec.get("check_in_time")) if punch_type in ("Check-in", "Both") else None,
+        "requested_check_out": _fmt(rec.get("check_out_time")) if punch_type in ("Check-out", "Both") else None,
+        "existing_check_in": (att or {}).get("check_in"),
+        "existing_check_out": (att or {}).get("check_out"),
+    }
+
+
+@api_router.put("/missed-punches/bulk-approve")
+async def bulk_approve_missed_punches(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    # Missed Punch has NO LOP concept — approval just applies punch times to
+    # attendance via the same per-record handler used by the individual flow.
+    return await _bulk_run(db.missed_punches, data.ids,
+        lambda rid: approve_missed_punch(rid, current_user))
+
+
+@api_router.put("/missed-punches/bulk-reject")
+async def bulk_reject_missed_punches(data: BulkActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    return await _bulk_run(db.missed_punches, data.ids,
+        lambda rid: reject_missed_punch(rid, current_user))
+
+
+@api_router.put("/missed-punches/{request_id}/approve")
+async def approve_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if rec.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Request is not pending")
+
+    # Re-validate "no future punch" at approval time — a request submitted in
+    # the morning for a same-day OUT time may still be in the future when
+    # HR clicks approve. Defensive double-check (the create endpoint already
+    # blocks this; this guards manual DB inserts / legacy pending rows).
+    _enforce_no_future_missed_punch(
+        rec.get("date"), rec.get("punch_type"),
+        rec.get("check_in_time"), rec.get("check_out_time"),
+    )
+
+    result = await db.missed_punches.update_one({"id": request_id}, {"$set": {"status": "approved", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    
+    # JOB 3: Update attendance record on approval
+    updated_rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    await _update_attendance_from_missed_punch(updated_rec)
+    
+    return serialize_doc(updated_rec)
+
+@api_router.put("/missed-punches/{request_id}/reject")
+async def reject_missed_punch(request_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user["role"] not in [UserRole.HR]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    result = await db.missed_punches.update_one({"id": request_id}, {"$set": {"status": "rejected", "approved_by": current_user["id"]}})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Request not found")
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(rec)
+
+
+class BackfillBody(BaseModel):
+    """Optional knobs for the historical backfill endpoint."""
+    dry_run: bool = False             # if True, don't actually mutate anything — return counts only
+    batch_size: int = 500             # process up to N requests per call
+    from_date: Optional[str] = None   # YYYY-MM-DD inclusive (filter on missed_punches.date)
+    to_date: Optional[str] = None     # YYYY-MM-DD inclusive
+    employee_id: Optional[str] = None # restrict to a single employee
+    force: bool = False               # re-apply even if already marked applied (still idempotent in the engine)
+
+
+@api_router.post("/missed-punches/backfill")
+async def backfill_missed_punches(body: BackfillBody = BackfillBody(), current_user: dict = Depends(get_current_user)):
+    """Historical Backfill Engine.
+
+    Iterates over APPROVED missed-punch requests whose corrections were never
+    propagated to the final attendance table and applies them via the same
+    `_update_attendance_from_missed_punch` engine the live approval flow uses.
+
+    Idempotency is enforced on three layers:
+      1. Server-side filter: skip requests already stamped with
+         `correction_applied_at` (unless `force=True`).
+      2. Skip requests that already have an `attendance_corrections` row
+         keyed by request_id.
+      3. The engine itself is idempotent — re-applying the same target state
+         from the same request_id is a no-op (no extra audit row written).
+
+    Raw biometric logs are NEVER touched. Reports / payroll automatically
+    pick up the corrected values because they read the same final
+    `attendance` collection the engine writes to.
+    """
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    q = {"status": "approved"}
+    if not body.force:
+        q["$or"] = [
+            {"correction_applied_at": {"$exists": False}},
+            {"correction_applied_at": None},
+        ]
+    if body.employee_id:
+        q["employee_id"] = body.employee_id
+    if body.from_date or body.to_date:
+        date_q = {}
+        if body.from_date:
+            date_q["$gte"] = body.from_date
+        if body.to_date:
+            date_q["$lte"] = body.to_date
+        q["date"] = date_q
+
+    candidates = await db.missed_punches.find(q, {"_id": 0}).limit(max(1, min(body.batch_size, 5000))).to_list(5000)
+
+    stats = {
+        "candidates": len(candidates),
+        "applied": 0,
+        "skipped_already_applied": 0,
+        "skipped_invalid": 0,
+        "errors": [],
+        "dry_run": body.dry_run,
+    }
+
+    for rec in candidates:
+        rid = rec.get("id")
+        # Skip if audit row already exists for this request (defence-in-depth)
+        if not body.force and rid:
+            prior = await db.attendance_corrections.find_one({"request_id": rid}, {"_id": 0})
+            if prior:
+                # Heal the source flag if missing (legacy data)
+                if not rec.get("correction_applied_at") and not body.dry_run:
+                    await db.missed_punches.update_one(
+                        {"id": rid},
+                        {"$set": {
+                            "correction_applied_at": prior.get("created_at") or get_ist_now().isoformat(),
+                            "correction_applied_by": prior.get("approved_by") or "system_backfill",
+                            "is_applied": True,
+                        }},
+                    )
+                stats["skipped_already_applied"] += 1
+                continue
+
+        # Validate the request has the times required by its punch_type —
+        # malformed historical rows must be flagged, not silently swallowed.
+        ptype = (rec.get("punch_type") or "").strip()
+        if ptype == "Check-in" and not rec.get("check_in_time"):
+            stats["skipped_invalid"] += 1
+            stats["errors"].append({"id": rid, "reason": "Check-in request missing check_in_time"})
+            continue
+        if ptype == "Check-out" and not rec.get("check_out_time"):
+            stats["skipped_invalid"] += 1
+            stats["errors"].append({"id": rid, "reason": "Check-out request missing check_out_time"})
+            continue
+        if ptype == "Both" and not (rec.get("check_in_time") and rec.get("check_out_time")):
+            stats["skipped_invalid"] += 1
+            stats["errors"].append({"id": rid, "reason": "Both request missing one or both times"})
+            continue
+
+        if body.dry_run:
+            stats["applied"] += 1
+            continue
+
+        rec_for_engine = dict(rec)
+        # Backfill-attribution for the audit row
+        rec_for_engine["approved_by"] = rec.get("approved_by") or "system_backfill"
+        rec_for_engine["approved_at"] = rec.get("approved_at") or get_ist_now().isoformat()
+
+        try:
+            await _update_attendance_from_missed_punch(rec_for_engine)
+            stats["applied"] += 1
+        except Exception as e:
+            stats["errors"].append({"id": rid, "reason": str(e)})
+
+    await log_audit(
+        current_user["id"], "backfill", "missed_punches",
+        f"applied={stats['applied']}, skipped={stats['skipped_already_applied']}, "
+        f"invalid={stats['skipped_invalid']}, dry_run={body.dry_run}",
+    )
+    return stats
+
+
+@api_router.get("/missed-punches/backfill/status")
+async def backfill_status(current_user: dict = Depends(get_current_user)):
+    """Quick health snapshot for the backfill engine — used by an admin UI
+    so HR can see how much work is outstanding before kicking off a run."""
+    if current_user["role"] not in ALL_ADMIN_ROLES:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    total_approved = await db.missed_punches.count_documents({"status": "approved"})
+    pending_apply = await db.missed_punches.count_documents({
+        "status": "approved",
+        "$or": [
+            {"correction_applied_at": {"$exists": False}},
+            {"correction_applied_at": None},
+        ],
+    })
+    audit_rows = await db.attendance_corrections.count_documents({})
+    last_correction = await db.attendance_corrections.find_one(
+        {}, {"_id": 0, "request_id": 1, "created_at": 1, "employee_id": 1, "date": 1},
+        sort=[("created_at", -1)],
+    )
+    return {
+        "total_approved_requests": total_approved,
+        "pending_correction_apply": pending_apply,
+        "applied_correction_audit_rows": audit_rows,
+        "last_correction": last_correction,
+    }
+
+
+
+@api_router.put("/missed-punches/{request_id}")
+async def edit_missed_punch(request_id: str, data: MissedPunchCreate, current_user: dict = Depends(get_current_user)):
+    rec = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Request not found")
+    is_admin = current_user["role"] in ALL_ADMIN_ROLES
+    if not is_admin:
+        if rec.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="You can only edit your own requests")
+        if rec.get("status") != "pending":
+            raise HTTPException(status_code=400, detail="Can only edit pending requests")
+    update = {
+        "date": data.date,
+        "punch_type": data.punch_type,
+        "check_in_time": data.check_in_time,
+        "check_out_time": data.check_out_time,
+        "reason": data.reason,
+        "edited_by": current_user["id"],
+        "edited_at": get_ist_now().isoformat(),
+    }
+    await db.missed_punches.update_one({"id": request_id}, {"$set": update})
+    await log_audit(current_user["id"], "edit", "missed_punch", request_id)
+    updated = await db.missed_punches.find_one({"id": request_id}, {"_id": 0})
+    return serialize_doc(updated)
+
+# ============== MISSED PUNCH BULK IMPORT ==============
+
+MP_IMPORT_COLUMNS = [
+    "Emp Mail ID", "Punch Date", "Punch Type", "In Time", "Out Time",
+    "Reason", "Status", "Applied Date", "Approved By", "Approval Date", "Comments"
+]
+
+# Sheet-column aliases → canonical field names. Case-insensitive, whitespace-tolerant.
+MP_COLUMN_ALIASES: dict[str, str] = {
+    # email → employee
+    "Emp Mail ID": "email",
+    "Employee Email": "email",
+    "Email": "email",
+    "Email ID": "email",
+    "Mail": "email",
+    # date
+    "Punch Date": "date",
+    "Date": "date",
+    "Attendance Date": "date",
+    # punch type
+    "Punch Type": "punch_type",
+    "Type": "punch_type",
+    "Punch": "punch_type",
+    # in time
+    "In Time": "check_in",
+    "Punch In": "check_in",
+    "Check In": "check_in",
+    "Check-In": "check_in",
+    "Login Time": "check_in",
+    # out time
+    "Out Time": "check_out",
+    "Punch Out": "check_out",
+    "Check Out": "check_out",
+    "Check-Out": "check_out",
+    "Logout Time": "check_out",
+    # reason
+    "Reason": "reason",
+    "Remarks": "reason",
+    "Remark": "reason",
+    "Notes": "reason",
+    # status
+    "Status": "status",
+    "Request Status": "status",
+    # applied at
+    "Applied Date": "applied_at",
+    "Applied On": "applied_at",
+    "Date Applied": "applied_at",
+    # approved by
+    "Approved By": "approved_by",
+    "Approver": "approved_by",
+    "Approving Authority": "approved_by",
+    # approval date
+    "Approval Date": "approved_at",
+    "Approved On": "approved_at",
+    "Date Approved": "approved_at",
+    # comments
+    "Comments": "comments",
+    "Approver Notes": "comments",
+}
+
+
+def _normalize_punch_type(value) -> Optional[str]:
+    """Normalize Punch Type to canonical 'Check-in', 'Check-out', or 'Both'.
+    Returns None if blank, or 'INVALID' sentinel when unrecognized."""
+    if value in (None, ""):
+        return None
+    s = str(value).strip().lower().replace("_", "-").replace(" ", "")
+    if s in ("check-in", "checkin", "in", "punchin"):
+        return "Check-in"
+    if s in ("check-out", "checkout", "out", "punchout"):
+        return "Check-out"
+    if s in ("both", "checkin+checkout", "in+out", "in&out"):
+        return "Both"
+    return "INVALID"
+
+
+def _build_mp_alias_index() -> dict[str, str]:
+    return {_normalize_header(k): v for k, v in MP_COLUMN_ALIASES.items()}
+
+
+_COMBINED_DT_FORMATS = (
+    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+    "%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M",
+    "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M",
+    "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M",
+    "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M",
+    "%d-%m-%Y %I:%M %p", "%d-%m-%Y %I:%M:%S %p",
+    "%d/%m/%Y %I:%M %p", "%d/%m/%Y %I:%M:%S %p",
+    "%Y-%m-%d %I:%M %p", "%Y-%m-%d %I:%M:%S %p",
+    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+)
+
+
+def _parse_import_datetime(value) -> tuple[Optional[str], Optional[str]]:
+    """Parse a cell that may contain combined Date+Time, time-only, or date-only.
+    Returns (date_iso or None, time_hhmm or None)."""
+    if value is None:
+        return (None, None)
+    if isinstance(value, datetime):
+        # If openpyxl returned a datetime, treat midnight as 'date-only'
+        d = value.strftime("%Y-%m-%d")
+        if value.hour == 0 and value.minute == 0 and value.second == 0:
+            return (d, None)
+        return (d, value.strftime("%H:%M"))
+    # datetime.time
+    if hasattr(value, "hour") and hasattr(value, "minute") and not hasattr(value, "year"):
+        try:
+            return (None, f"{value.hour:02d}:{value.minute:02d}")
+        except Exception:
+            return (None, None)
+    s = str(value).strip()
+    if not s:
+        return (None, None)
+    # Try combined Date+Time formats first
+    for fmt in _COMBINED_DT_FORMATS:
+        try:
+            dt = datetime.strptime(s, fmt)
+            return (dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M"))
+        except ValueError:
+            continue
+    # Try date-only
+    d = _parse_import_date(s)
+    if d:
+        return (d, None)
+    # Try time-only
+    for fmt in ("%H:%M:%S", "%H:%M", "%I:%M %p", "%I:%M:%S %p", "%I:%M%p"):
+        try:
+            return (None, datetime.strptime(s, fmt).strftime("%H:%M"))
+        except ValueError:
+            continue
+    return (None, None)
+
+
+def _parse_import_time(value) -> Optional[str]:
+    """Parse a time cell to canonical 24h "HH:MM" string. Returns None if blank/invalid.
+    Also accepts combined Date+Time cells - returns only the time part."""
+    _, t = _parse_import_datetime(value)
+    return t
+
+
+@api_router.get("/missed-punches/import-template")
+async def download_mp_import_template(current_user: dict = Depends(get_current_user)):
+    """Download styled .xlsx template for missed-punch bulk import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Missed Punch Import"
+    header_fill = openpyxl.styles.PatternFill(start_color="063c88", end_color="063c88", fill_type="solid")
+    header_font = openpyxl.styles.Font(bold=True, color="FFFFFF")
+    for col_idx, header in enumerate(MP_IMPORT_COLUMNS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = openpyxl.styles.Alignment(horizontal="center")
+    ws.row_dimensions[1].height = 22
+
+    sample = [
+        ["employee@blubridge.com", "2026-04-22", "Check-in", "09:00", "", "Forgot to punch in", "Approved", "2026-04-23", "Admin", "2026-04-23", "Verified by HR"],
+        ["another@blubridge.com", "22/04/2026", "Check-out", "", "18:30", "Forgot to punch out", "Pending", "2026-04-23", "", "", ""],
+        ["third@blubridge.com", "23/04/2026", "Both", "09:15", "18:45", "Biometric down all day", "Approved", "2026-04-24", "Admin", "2026-04-24", ""],
+    ]
+    for r_idx, row_vals in enumerate(sample, start=2):
+        for c_idx, v in enumerate(row_vals, start=1):
+            ws.cell(row=r_idx, column=c_idx, value=v)
+    widths = [30, 14, 14, 12, 12, 30, 12, 14, 18, 14, 30]
+    for c_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(c_idx)].width = w
+
+    ws2 = wb.create_sheet("Instructions")
+    ws2.append(["Sheet Column", "Required", "Maps To", "Notes"])
+    ws2.append(["Emp Mail ID", "Yes", "employee_id (via email)", "Aliases: Employee Email, Email, Email ID, Mail"])
+    ws2.append(["Punch Date", "Optional", "date", "Aliases: Date, Attendance Date. Accepts YYYY-MM-DD, DD-MM-YYYY, DD/MM/YYYY. If omitted, date is auto-extracted from combined Date+Time in 'In Time'/'Out Time'."])
+    ws2.append(["Punch Type", "Optional", "punch_type", "Aliases: Type, Punch. Accepted: 'Check-in', 'Check-out', 'Both'. If omitted, auto-detected: both times → Both, only In → Check-in, only Out → Check-out."])
+    ws2.append(["In Time", "At least one of In/Out required", "check_in_time", "Aliases: Punch In, Check In, Login Time. Accepts HH:MM, HH:MM AM/PM, OR combined 'DD-MM-YYYY HH:MM' (date+time). For cross-midnight shifts, In Time's date is used as the anchor Punch Date."])
+    ws2.append(["Out Time", "At least one of In/Out required", "check_out_time", "Aliases: Punch Out, Check Out, Logout Time. Accepts HH:MM, HH:MM AM/PM, OR combined 'DD-MM-YYYY HH:MM'."])
+    ws2.append(["Reason", "Yes", "reason", "Aliases: Remarks, Notes. Free text"])
+    ws2.append(["Status", "No", "status", "Approved / Pending / Rejected (default: Pending). Approved status auto-updates the attendance record."])
+    ws2.append(["Applied Date", "No", "applied_at", "Stored as-is in extra_data"])
+    ws2.append(["Approved By", "No", "approved_by", "'Admin' or admin's username/email/full name → resolved to user ID"])
+    ws2.append(["Approval Date", "No", "approved_at", "Stored as-is when status = approved"])
+    ws2.append(["Comments", "No", "comments", "Aliases: Approver Notes. Stored in extra_data"])
+    for col_idx in range(1, 5):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(col_idx)].width = 36
+    for c in range(1, 5):
+        ws2.cell(1, c).font = openpyxl.styles.Font(bold=True)
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=missed_punches_import_template.xlsx"}
+    )
+
+
+@api_router.post("/missed-punches/import/preview")
+async def preview_mp_import(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Preview detected columns + sample rows for missed-punch import."""
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+    headers = [h for h in headers if h]
+
+    alias_index = _build_mp_alias_index()
+    column_mapping = {h: alias_index.get(_normalize_header(h)) for h in headers}
+    mapped = {h: c for h, c in column_mapping.items() if c}
+    ignored = [h for h, c in column_mapping.items() if not c]
+
+    required_fields = ["email"]
+    detected_canonical = set(mapped.values())
+    missing_required = [f for f in required_fields if f not in detected_canonical]
+    # Need at least one of (check_in, check_out) - date & punch_type can be auto-derived from these
+    has_time = "check_in" in detected_canonical or "check_out" in detected_canonical
+    if not has_time:
+        missing_required.append("In Time or Out Time")
+
+    sample = []
+    for r in rows[:5]:
+        sample.append({k: (v.isoformat() if isinstance(v, datetime) else (str(v) if v is not None else None)) for k, v in r.items()})
+
+    return {
+        "filename": file.filename,
+        "total_rows": len(rows),
+        "headers": headers,
+        "column_mapping": mapped,
+        "ignored_columns": ignored,
+        "missing_required": missing_required,
+        "ready_to_import": len(missing_required) == 0,
+        "sample_rows": sample,
+    }
+
+
+@api_router.post("/missed-punches/bulk-import")
+async def bulk_import_missed_punches(
+    file: UploadFile = FastAPIFile(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Bulk-import missed-punch requests from .xlsx or .csv. Admin-only.
+
+    - Maps employee by email; skipped if not found.
+    - Requires at least one of In Time / Out Time per row.
+    - Approved rows automatically update the attendance record (matching the
+      manual approval flow via _update_attendance_from_missed_punch).
+    """
+    if current_user["role"] not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    headers, rows = _read_leave_import_rows(file_bytes, file.filename or "")
+
+    alias_index = _build_mp_alias_index()
+    headers_clean = [h for h in headers if h]
+    sheet_to_canon = {h: alias_index.get(_normalize_header(h)) for h in headers_clean}
+    detected_canonical = {c for c in sheet_to_canon.values() if c}
+    ignored_columns = [h for h, c in sheet_to_canon.items() if not c]
+
+    if "email" not in detected_canonical:
+        raise HTTPException(status_code=400, detail="Missing mandatory column: Emp Mail ID")
+    if "check_in" not in detected_canonical and "check_out" not in detected_canonical:
+        raise HTTPException(status_code=400, detail="At least one of 'In Time' / 'Out Time' columns is required")
+
+    # Pre-fetch employees by email
+    email_to_emp: dict = {}
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "official_email": 1, "full_name": 1, "team": 1, "department": 1}):
+        email = (e.get("official_email") or "").strip().lower()
+        if email:
+            email_to_emp[email] = e
+
+    # Pre-fetch users + employees for Approved By resolution
+    approver_index: dict[str, str] = {}
+    async for u in db.users.find({}, {"_id": 0, "id": 1, "username": 1, "email": 1}):
+        if u.get("username"):
+            approver_index[_normalize_header(u["username"])] = u["id"]
+        if u.get("email"):
+            approver_index[_normalize_header(u["email"])] = u["id"]
+    async for e in db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "official_email": 1}):
+        if e.get("full_name"):
+            approver_index.setdefault(_normalize_header(e["full_name"]), e["id"])
+        if e.get("official_email"):
+            approver_index.setdefault(_normalize_header(e["official_email"]), e["id"])
+
+    def _resolve_mp_approver(value) -> tuple[Optional[str], Optional[str]]:
+        if value in (None, ""):
+            return (None, None)
+        s = str(value).strip()
+        if not s:
+            return (None, None)
+        norm = _normalize_header(s)
+        if norm in ("admin", "administrator", "hr admin", "hr"):
+            return (current_user["id"], None)
+        if norm in approver_index:
+            return (approver_index[norm], None)
+        return (None, s)
+
+    total = len(rows)
+    success = 0
+    failed = 0
+    skipped_duplicates = 0
+    errors: List[dict] = []
+    inserts: List[dict] = []
+    approved_inserts: List[dict] = []  # records to push through attendance update
+    inbatch_keys: set = set()  # (employee_id, date, punch_type) seen earlier in this upload
+
+    for idx, raw_row in enumerate(rows, start=2):
+        row = _remap_row(raw_row, alias_index)
+
+        email = (str(row.get("email") or "")).strip().lower()
+        if not email:
+            failed += 1
+            errors.append({"row": idx, "email": "", "reason": "Employee Email is blank"})
+            continue
+        emp = email_to_emp.get(email)
+        if not emp:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "No employee found with this email"})
+            continue
+
+        # Parse In Time / Out Time cells - they may contain combined Date+Time, time-only,
+        # or date-only values. Extract date+time parts independently.
+        in_raw = row.get("check_in")
+        out_raw = row.get("check_out")
+        in_date, in_time = _parse_import_datetime(in_raw) if in_raw not in (None, "") else (None, None)
+        out_date, out_time = _parse_import_datetime(out_raw) if out_raw not in (None, "") else (None, None)
+
+        # Validate: if a value was provided but couldn't be parsed at all → fail
+        if in_raw not in (None, "") and in_date is None and in_time is None:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid In Time format '{in_raw}' (use HH:MM, DD-MM-YYYY HH:MM, etc.)"})
+            continue
+        if out_raw not in (None, "") and out_date is None and out_time is None:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Out Time format '{out_raw}' (use HH:MM, DD-MM-YYYY HH:MM, etc.)"})
+            continue
+
+        # Derive Punch Date: prefer explicit Punch Date column → fallback to In Time's date → Out Time's date
+        date_iso = _parse_import_date(row.get("date")) if row.get("date") not in (None, "") else None
+        if not date_iso:
+            date_iso = in_date or out_date
+        if not date_iso:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Punch Date is required (provide either 'Punch Date' column or combined Date+Time in 'In Time'/'Out Time')"})
+            continue
+
+        check_in_time = in_time
+        check_out_time = out_time
+
+        # Derive Punch Type: explicit value wins, else auto-detect from time presence
+        raw_punch = row.get("punch_type")
+        punch_norm = _normalize_punch_type(raw_punch)
+        if punch_norm == "INVALID":
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": f"Invalid Punch Type '{raw_punch}' (use 'Check-in', 'Check-out', or 'Both')"})
+            continue
+        if punch_norm is None:
+            # Auto-detect
+            if check_in_time and check_out_time:
+                punch_norm = "Both"
+            elif check_in_time:
+                punch_norm = "Check-in"
+            elif check_out_time:
+                punch_norm = "Check-out"
+            else:
+                failed += 1
+                errors.append({"row": idx, "email": email, "reason": "Cannot determine Punch Type - In Time or Out Time is required"})
+                continue
+        punch_type = punch_norm
+
+        # Use only the time(s) matching Punch Type; ignore the other.
+        if punch_type == "Check-in":
+            if not check_in_time:
+                failed += 1
+                errors.append({"row": idx, "email": email, "reason": "In Time is required when Punch Type is 'Check-in'"})
+                continue
+            check_out_time = None  # explicitly ignored
+        elif punch_type == "Check-out":
+            if not check_out_time:
+                failed += 1
+                errors.append({"row": idx, "email": email, "reason": "Out Time is required when Punch Type is 'Check-out'"})
+                continue
+            check_in_time = None  # explicitly ignored
+        else:  # Both
+            if not check_in_time or not check_out_time:
+                failed += 1
+                errors.append({"row": idx, "email": email, "reason": "Both punch type requires both In Time and Out Time"})
+                continue
+
+        reason = (str(row.get("reason")).strip() if row.get("reason") not in (None, "") else None)
+        if not reason:
+            failed += 1
+            errors.append({"row": idx, "email": email, "reason": "Reason is required"})
+            continue
+
+        status_norm = _normalize_status(row.get("status")) or "pending"
+        approver_id, approver_unresolved = _resolve_mp_approver(row.get("approved_by"))
+        applied_at = _parse_import_date(row.get("applied_at"))
+        approved_at = _parse_import_date(row.get("approved_at"))
+        comments = (str(row.get("comments")).strip() if row.get("comments") not in (None, "") else None)
+
+        # Duplicate guard (matches manual create rule): same employee + date + punch_type, non-rejected
+        existing = await db.missed_punches.find_one({
+            "employee_id": emp["id"],
+            "date": date_iso,
+            "punch_type": punch_type,
+            "status": {"$ne": "rejected"}
+        }, {"_id": 0, "id": 1})
+        if existing:
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Missed punch already exists for {date_iso} ({punch_type})"})
+            continue
+
+        # Also reject if an earlier row in THIS upload covers the same key
+        batch_key = (emp["id"], date_iso, punch_type)
+        if batch_key in inbatch_keys:
+            skipped_duplicates += 1
+            errors.append({"row": idx, "email": email, "reason": f"Duplicate of an earlier row for {date_iso} ({punch_type})"})
+            continue
+        inbatch_keys.add(batch_key)
+
+        final_approved_by = approver_id
+        if status_norm == "approved" and not final_approved_by:
+            final_approved_by = current_user["id"]
+
+        doc = {
+            "id": str(uuid.uuid4()),
+            "employee_id": emp["id"],
+            "emp_name": emp.get("full_name", ""),
+            "team": emp.get("team", ""),
+            "department": emp.get("department", ""),
+            "date": date_iso,
+            "punch_type": punch_type,
+            "check_in_time": check_in_time,
+            "check_out_time": check_out_time,
+            "reason": reason,
+            "status": status_norm,
+            "approved_by": final_approved_by,
+            "applied_by_admin": True,
+            "extra_data": {
+                k: v for k, v in {
+                    "applied_at": applied_at,
+                    "approved_at": approved_at,
+                    "approver_unresolved": approver_unresolved,
+                    "comments": comments,
+                }.items() if v is not None
+            } or None,
+            "created_at": get_ist_now().isoformat(),
+        }
+        inserts.append(doc)
+        if status_norm == "approved":
+            approved_inserts.append(doc)
+        success += 1
+
+    if inserts:
+        chunk = 500
+        for i in range(0, len(inserts), chunk):
+            await db.missed_punches.insert_many([d.copy() for d in inserts[i:i + chunk]])
+
+    # Apply attendance updates for approved rows (matches the manual approve flow)
+    for doc in approved_inserts:
+        try:
+            await _update_attendance_from_missed_punch(doc)
+        except Exception as e:
+            errors.append({"row": "—", "email": doc.get("employee_id"), "reason": f"Attendance update warning: {str(e)[:120]}"})
+
+    await log_audit(
+        current_user["id"], "bulk_import", "missed_punches", None,
+        f"Missed punch bulk import: total={total} success={success} duplicates={skipped_duplicates} failed={failed}"
+    )
+
+    return {
+        "total": total,
+        "success": success,
+        "skipped_duplicates": skipped_duplicates,
+        "failed": failed,
+        "column_mapping": {h: c for h, c in sheet_to_canon.items() if c},
+        "ignored_columns": ignored_columns,
+        "errors": errors[:1000],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Help documentation — downloadable role-specific PDF
+# ---------------------------------------------------------------------------
+from help_docs import generate_help_pdf, generate_help_xlsx, ROLE_META  # noqa: E402
+
+
+@api_router.get("/help/download")
+async def download_help_guide(
+    format: str = "pdf",
+    current_user: dict = Depends(get_current_user),
+):
+    """Return a role-specific BluBridge HRMS User Guide (pdf or xlsx) for the logged-in user."""
+    role = (current_user.get("role") or "employee").lower()
+    user_name = current_user.get("name")
+    fmt = (format or "pdf").lower()
+    role_title = ROLE_META.get(role, ROLE_META["employee"])["title"]
+    safe_role = role_title.replace(" ", "_")
+
+    if fmt in ("xlsx", "excel", "xls"):
+        data = generate_help_xlsx(role=role, user_name=user_name)
+        filename = f"BluBridge_HRMS_{safe_role}_User_Guide.xlsx"
+        media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    else:
+        data = generate_help_pdf(role=role, user_name=user_name)
+        filename = f"BluBridge_HRMS_{safe_role}_User_Guide.pdf"
+        media = "application/pdf"
+
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# Include router
+# Register centralized Settings module routes
+async def recalculate_attendance_for_shift_change(employee_ids, from_date_iso):
+    """Same-day / backfilled effective-dated shift (re)assignment hook.
+
+    Recomputes ONLY shift-dependent fields (status / late / LOP / expected
+    login+logout / total hours) on ALREADY-STORED attendance rows for the given
+    employees, for every date from ``from_date_iso`` (inclusive, YYYY-MM-DD)
+    through today (inclusive), using the shift effective on each date. It never
+    touches punch times, and preserves leave rows, manual overrides, approved
+    corrections and missed-punch corrections. It reproduces exactly the status a
+    fresh biometric import / recompute would produce for the same stored punches
+    under the newly effective shift — so today's Late-In / LOP / Dashboard /
+    Payroll reflect an effective-today assignment immediately.
+    """
+    if not employee_ids or not from_date_iso:
+        return {"employees": 0, "recalculated": 0, "skipped": 0}
+    today_iso = _ddmmyyyy_to_iso(get_ist_today())
+    if not today_iso or from_date_iso > today_iso:
+        # Effective date is in the future — no stored rows to fix yet.
+        return {"employees": 0, "recalculated": 0, "skipped": 0}
+
+    # Only rows whose status is derived from shift timing are recomputed.
+    SHIFT_DERIVED = {
+        AttendanceStatus.PRESENT, AttendanceStatus.LATE_LOGIN, AttendanceStatus.EARLY_OUT,
+        AttendanceStatus.LOSS_OF_PAY, AttendanceStatus.LOGIN, AttendanceStatus.COMPLETED,
+        AttendanceStatus.WORKED_ON_SUNDAY,
+    }
+    recalculated = skipped = emp_count = 0
+    for emp_id in employee_ids:
+        employee = await db.employees.find_one({"id": emp_id}, {"_id": 0})
+        if not employee:
+            continue
+        emp_count += 1
+        assignments = await _load_employee_shift_assignments(emp_id)
+        rows = await db.attendance.find({"employee_id": emp_id}, {"_id": 0}).to_list(3000)
+        for row in rows:
+            date_str = row.get("date")
+            date_iso = _ddmmyyyy_to_iso(date_str)
+            if not date_iso or date_iso < from_date_iso or date_iso > today_iso:
+                continue
+            # Never auto-touch human-authoritative rows.
+            if (row.get("is_manual_override") or row.get("is_approved_correction")
+                    or row.get("missed_punch_corrected")):
+                skipped += 1
+                continue
+            status_cur = row.get("status")
+            if status_cur not in SHIFT_DERIVED:
+                skipped += 1
+                continue
+            # A Loss of Pay that is NOT shift-timing derived (e.g. leave-based) is preserved.
+            if status_cur == AttendanceStatus.LOSS_OF_PAY:
+                reason = (row.get("lop_reason") or "").lower()
+                if not any(k in reason for k in ("late", "short", "early", "insufficient", "hours", "required")):
+                    skipped += 1
+                    continue
+            ci = row.get("check_in_24h")
+            co = row.get("check_out_24h")
+            shift_timings = await get_effective_shift_timings(employee, date_str, assignments)
+
+            # Mirror the biometric import / recompute status computation exactly.
+            total_hours_decimal = 0.0
+            total_hours_str = None
+            status = AttendanceStatus.LOGIN
+            is_lop = False
+            lop_reason = None
+            dynamic_expected_logout = None
+            if is_sunday_ddmmyyyy(date_str):
+                if ci and co:
+                    im = parse_time_24h_to_minutes(ci); om = parse_time_24h_to_minutes(co)
+                    total_hours_decimal = round((om - im) / 60, 2) if om > im else round((24 * 60 - im + om) / 60, 2)
+                    total_hours_str = calculate_total_hours_str(total_hours_decimal)
+                status = AttendanceStatus.WORKED_ON_SUNDAY if ci else AttendanceStatus.SUNDAY
+            elif ci and co:
+                sr = calculate_attendance_status(ci, co, shift_timings or {}, attendance_date=date_str)
+                status = sr.get("status")
+                is_lop = sr.get("is_lop", False)
+                lop_reason = sr.get("lop_reason")
+                dynamic_expected_logout = sr.get("expected_logout")
+                total_hours_decimal = sr.get("total_hours_decimal") or 0.0
+                total_hours_str = calculate_total_hours_str(total_hours_decimal) if total_hours_decimal else None
+            elif ci and not co:
+                if shift_timings:
+                    req_h = shift_timings.get("total_hours", 8)
+                    dynamic_expected_logout = add_hours_to_24h(ci, req_h)
+                    expected_login = shift_timings.get("login_time")
+                    status = AttendanceStatus.LOGIN
+                    if expected_login:
+                        em = parse_time_24h_to_minutes(expected_login); am = parse_time_24h_to_minutes(ci)
+                        if am > em:
+                            is_lop = True
+                            lop_reason = f"Late login by {am - em} minute(s). Expected: {expected_login}, Actual: {ci}"
+                            status = AttendanceStatus.LOSS_OF_PAY
+            elif co and not ci:
+                status = AttendanceStatus.NOT_LOGGED
+
+            await db.attendance.update_one(
+                {"employee_id": emp_id, "date": date_str},
+                {"$set": {
+                    "status": status,
+                    "is_lop": is_lop,
+                    "lop_reason": lop_reason,
+                    "total_hours": total_hours_str,
+                    "total_hours_decimal": total_hours_decimal,
+                    "expected_login": (shift_timings or {}).get("login_time"),
+                    "expected_logout": dynamic_expected_logout if dynamic_expected_logout else ((shift_timings or {}).get("logout_time")),
+                    "shift_recalc_at": get_ist_now().isoformat(),
+                }},
+            )
+            recalculated += 1
+    return {"employees": emp_count, "recalculated": recalculated, "skipped": skipped}
+
+
+settings_services = settings_module.register(api_router, {
+    "db": db,
+    "get_current_user": get_current_user,
+    "log_audit": log_audit,
+    "get_ist_now": get_ist_now,
+    "serialize_doc": serialize_doc,
+    "parse_time_24h_to_minutes": parse_time_24h_to_minutes,
+    "UserRole": UserRole,
+    "ADMIN_ROLES": ADMIN_ROLES,
+    "SYSTEM_ROLES": SYSTEM_ROLES,
+    "EmployeeStatus": EmployeeStatus,
+    "calculate_attendance_status": calculate_attendance_status,
+    "get_shift_timings": get_shift_timings,
+    "recalc_attendance_for_shift_change": recalculate_attendance_for_shift_change,
+})
+
+import it_asset  # noqa: E402
+it_asset.register(api_router, {
+    "db": db,
+    "get_current_user": get_current_user,
+    "log_audit": log_audit,
+    "get_ist_now": get_ist_now,
+    "ADMIN_ROLES": ADMIN_ROLES,
+})
+it_asset.register_components(api_router, {
+    "db": db,
+    "get_current_user": get_current_user,
+    "log_audit": log_audit,
+    "get_ist_now": get_ist_now,
+    "ADMIN_ROLES": ADMIN_ROLES,
+})
+
+
+
+# ============== HRMS EMAIL MANUAL TRIGGER (HR-only, testing / on-demand) ==============
+@api_router.post("/email-jobs/{job_name}/run")
+async def run_email_job_now(job_name: str, current_user: dict = Depends(get_current_user)):
+    """Manually trigger one of the scheduled HRMS email jobs.
+
+    Run Now is admin-controlled and bypasses BOTH the enabled-toggle AND the
+    dedup audit (so HR can re-send the daily summary on demand). The audit log
+    still records each delivery — scoped uniquely with a timestamp suffix so
+    the unique partial index never conflicts with prior sends.
+    """
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    handlers = _get_email_job_handlers()
+    handler = handlers.get(job_name)
+    if not handler:
+        raise HTTPException(status_code=404, detail=f"Unknown job. Valid: {list(handlers)}")
+    asyncio.create_task(handler(db, force=True))
+    return {"status": "triggered", "job": job_name, "force": True}
+
+
+@api_router.get("/email-jobs/audit")
+async def email_jobs_audit(
+    email_type: Optional[str] = None,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user),
+):
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    q: dict = {}
+    if email_type:
+        q["email_type"] = email_type
+    rows = await db.email_audit_logs.find(q, {"_id": 0}).sort("sent_at", -1).limit(max(1, min(limit, 500))).to_list(500)
+    return {"count": len(rows), "rows": rows}
+
+
+# ============== ADMIN-CONTROLLED CRON MANAGEMENT ==============
+@api_router.get("/admin/cron-settings")
+async def admin_get_cron_settings(current_user: dict = Depends(get_current_user)):
+    """List all email cron jobs with metadata + admin toggle + last-run state.
+    Admin-only (HR + system_admin)."""
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    rows_by_name = {}
+    async for doc in db.cron_settings.find({}, {"_id": 0}):
+        rows_by_name[doc["job_name"]] = doc
+    out = []
+    for job_name, meta in _CRON_JOB_META.items():
+        row = rows_by_name.get(job_name) or {"job_name": job_name, "enabled": True}
+        out.append({
+            "job_name": job_name,
+            "label": meta["label"],
+            "schedule": meta["schedule"],
+            "scope": meta.get("scope"),
+            "enabled": bool(row.get("enabled", True)),
+            "cc_emails": list(row.get("cc_emails") or []),
+            "last_run_at": row.get("last_run_at"),
+            "last_result": row.get("last_result"),
+            "last_error": row.get("last_error"),
+        })
+    return {"jobs": out}
+
+
+@api_router.put("/admin/cron-settings/{job_name}")
+async def admin_set_cron_enabled(
+    job_name: str,
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Toggle a cron's enabled flag. Admin-only.
+    Body: { "enabled": true/false }
+    """
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if job_name not in _CRON_JOB_META:
+        raise HTTPException(status_code=404, detail=f"Unknown cron. Valid: {list(_CRON_JOB_META.keys())}")
+    enabled = bool(payload.get("enabled"))
+    await db.cron_settings.update_one(
+        {"job_name": job_name},
+        {
+            "$set": {
+                "enabled": enabled,
+                "updated_at": datetime.utcnow().isoformat(),
+                "updated_by": current_user.get("username") or current_user.get("id"),
+            },
+            "$setOnInsert": {"job_name": job_name},
+        },
+        upsert=True,
+    )
+    return {"job_name": job_name, "enabled": enabled, "status": "ok"}
+
+
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+
+
+@api_router.put("/admin/cron-settings/{job_name}/cc")
+async def admin_set_cron_cc(
+    job_name: str,
+    payload: dict = Body(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Set the CC recipient list for a cron job. Admin-only.
+    Body: { "cc_emails": ["a@x.com", "b@x.com"] }
+    Validates format, dedupes case-insensitively, accepts an empty list to clear.
+    """
+    if current_user.get("role") not in [UserRole.HR, UserRole.SYSTEM_ADMIN]:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if job_name not in _CRON_JOB_META:
+        raise HTTPException(status_code=404, detail=f"Unknown cron. Valid: {list(_CRON_JOB_META.keys())}")
+
+    raw = payload.get("cc_emails", [])
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="cc_emails must be a list")
+
+    seen_lower: set = set()
+    cleaned: list = []
+    invalid: list = []
+    for entry in raw:
+        if entry is None:
+            continue
+        e = str(entry).strip()
+        if not e:
+            continue
+        if not _EMAIL_RE.match(e):
+            invalid.append(e)
+            continue
+        key = e.lower()
+        if key in seen_lower:
+            continue
+        seen_lower.add(key)
+        cleaned.append(e)
+
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Invalid email format: {', '.join(invalid)}")
+    if len(cleaned) > 25:
+        raise HTTPException(status_code=400, detail="Maximum 25 CC recipients per cron")
+
+    await db.cron_settings.update_one(
+        {"job_name": job_name},
+        {
+            "$set": {
+                "cc_emails": cleaned,
+                "cc_updated_at": datetime.utcnow().isoformat(),
+                "cc_updated_by": current_user.get("username") or current_user.get("id"),
+            },
+            "$setOnInsert": {"job_name": job_name, "enabled": True},
+        },
+        upsert=True,
+    )
+    return {"job_name": job_name, "cc_emails": cleaned, "status": "ok"}
+
+
+# Warning module — Leave & Attendance Policy Non-Compliance Framework
+try:
+    import warning_module  # noqa: F401  (registers routes via api_router import)
+except Exception as _e:
+    print(f"Warning module load failed: {_e}")
+
+# Payslip module — templates, assignments, calculation engine
+try:
+    import payslip_module  # noqa: F401  (registers routes via api_router import)
+except Exception as _e:
+    print(f"Payslip module load failed: {_e}")
+
+# Payslip Manual Adjustments — post-generation additions/deductions
+try:
+    import payslip_adjustments  # noqa: F401
+except Exception as _e:
+    print(f"Payslip adjustments load failed: {_e}")
+
+# Payslip 6-digit authorization layer (admin side) — registers
+# /api/payslip-security/* routes. The request guard itself is installed further
+# down (middleware must be added before CORSMiddleware).
+try:
+    import payslip_security  # noqa: F401
+except Exception as _e:
+    print(f"Payslip security module load failed: {_e}")
+
+# BRSF — BluBridge Research Star Framework (14-criteria star engine)
+try:
+    import brsf_stars  # noqa: F401
+    import brsf_excel  # noqa: F401
+    import brsf_overall  # noqa: F401
+except Exception as _e:
+    print(f"BRSF star module load failed: {_e}")
+
+# Credential-Email delivery — retriable welcome-email system + resend endpoint
+try:
+    import credential_email  # noqa: F401
+except Exception as _e:
+    print(f"Credential email module load failed: {_e}")
+
+# Avatar white-background retro-fit (admin bulk endpoint)
+try:
+    import avatar_bg_whiten  # noqa: F401
+except Exception as _e:
+    print(f"Avatar bg-whiten load failed: {_e}")
+
+# Module Visibility Control — admin toggles employee sidebar modules ON/OFF
+try:
+    import module_visibility  # noqa: F401  (registers routes via api_router import)
+except Exception as _e:
+    print(f"Module visibility load failed: {_e}")
+
+app.include_router(api_router)
+
+# ---------------------------------------------------------------------------
+# Operational Vigilance Report — ADDITIVE module (mounted via factory to avoid
+# import cycles). Does not touch attendance/payroll/leave/employee engines.
+# ---------------------------------------------------------------------------
+from vigilance import get_vigilance_router, ensure_vigilance_indexes  # noqa: E402
+app.include_router(get_vigilance_router(db, get_current_user))
+
+
+# ---------------------------------------------------------------------------
+# CENTRALISED RBAC — deny-by-default gate for the `employee` role.
+# Registered BEFORE CORSMiddleware so CORS still wraps 403 responses.
+# Every /api route not on the employee allowlist in rbac.py is 403 for
+# employees, regardless of what the frontend does. Row-level scoping for the
+# shared endpoints lives in the handlers themselves.
+# ---------------------------------------------------------------------------
+from rbac import install_employee_rbac  # noqa: E402
+
+
+async def _security_deny_sink(entry: dict):
+    entry["timestamp"] = get_ist_now().isoformat()
+    await db.security_denials.insert_one(entry)
+
+
+install_employee_rbac(app, JWT_SECRET, JWT_ALGORITHM, deny_sink=_security_deny_sink)
+
+
+# ---------------------------------------------------------------------------
+# PAYSLIP 6-DIGIT AUTHORIZATION LAYER — one central guard for every admin-side
+# payslip route (APIs, AJAX, calculation views, adjustments, exports, PDFs).
+# Employee self-service payslip access is deliberately untouched.
+# ---------------------------------------------------------------------------
+try:
+    from payslip_auth_guard import install_payslip_auth_guard
+    async def _payslip_session_verified(session_id):
+        # Lazy import keeps the guard immune to module-init ordering.
+        from payslip_security import is_session_verified
+        return await is_session_verified(session_id)
+
+    install_payslip_auth_guard(app, JWT_SECRET, JWT_ALGORITHM, _payslip_session_verified)
+except Exception as _e:
+    print(f"Payslip auth guard install failed: {_e}")
+
+
+# ---------------------------------------------------------------------------
+# MODULE VISIBILITY — API/AJAX guard so a module hidden from the sidebar is
+# also unreachable through direct requests (same check_module_access decision).
+# ---------------------------------------------------------------------------
+try:
+    from module_visibility import install_module_visibility_guard
+
+    install_module_visibility_guard(app, JWT_SECRET, JWT_ALGORITHM)
+except Exception as _e:
+    print(f"Module visibility guard install failed: {_e}")
+
+
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+async def ensure_indexes():
+    try:
+        await db.attendance.create_index(
+            [("employee_id", 1), ("date", 1)],
+            unique=True,
+            name="unique_employee_date"
+        )
+    except Exception:
+        pass
+
+    # Auth sessions (refresh-token store) — session_id is looked up on EVERY
+    # protected request for revocation checks, so it must be indexed.
+    try:
+        await db.auth_sessions.create_index([("session_id", 1)], unique=True, name="auth_session_id")
+        await db.auth_sessions.create_index([("user_id", 1)], name="auth_session_user")
+    except Exception:
+        pass
+
+    # Performance indexes for dashboard / reports — these dramatically reduce
+    # full-collection scans that previously dominated dashboard load time.
+    try:
+        await db.attendance.create_index([("date", 1)], name="attendance_date")
+        await db.attendance.create_index([("status", 1)], name="attendance_status")
+    except Exception:
+        pass
+    try:
+        await db.employees.create_index(
+            [("employee_status", 1), ("is_deleted", 1), ("attendance_tracking_enabled", 1)],
+            name="emp_status_deleted_tracking",
+        )
+        await db.employees.create_index([("department", 1)], name="emp_department")
+        await db.employees.create_index([("team", 1)], name="emp_team")
+    except Exception:
+        pass
+    try:
+        await db.leaves.create_index([("status", 1)], name="leaves_status")
+        await db.leaves.create_index([("status", 1), ("start_date", 1), ("end_date", 1)], name="leaves_status_range")
+        await db.leaves.create_index([("employee_id", 1)], name="leaves_employee_id")
+    except Exception:
+        pass
+
+    # Users — unique username index. Prevents shadow-account injection that
+    # could be mistaken for admin during login lookup. Use try/except so a
+    # transient duplicate in legacy data doesn't crash startup; the duplicate
+    # is logged for follow-up cleanup.
+    try:
+        await db.users.create_index([("username", 1)], unique=True, name="unique_username")
+    except Exception as _e:
+        logger.warning("users.username unique index failed (likely duplicate legacy rows): %s", _e)
+    try:
+        await db.users.create_index([("id", 1)], unique=True, name="unique_id")
+    except Exception as _e:
+        logger.warning("users.id unique index failed: %s", _e)
+
+    # Missed-punch correction audit trail — keyed lookups by request_id and
+    # by employee+date for forensics. Non-unique (a single request can cause
+    # multiple audit rows if re-applied via bulk-import edge cases).
+    try:
+        await db.attendance_corrections.create_index([("request_id", 1)])
+        await db.attendance_corrections.create_index([("employee_id", 1), ("date", 1)])
+        await db.attendance_corrections.create_index([("created_at", -1)])
+    except Exception:
+        pass
+    
+    # Holiday dedup: remove duplicate holidays and create unique index
+    try:
+        # Remove duplicates by keeping only the first document per (id, year)
+        pipeline = [
+            {"$group": {"_id": {"id": "$id", "year": "$year"}, "docs": {"$push": "$_id"}, "count": {"$sum": 1}}},
+            {"$match": {"count": {"$gt": 1}}}
+        ]
+        async for group in db.holidays.aggregate(pipeline):
+            # Keep first, delete rest
+            ids_to_delete = group["docs"][1:]
+            if ids_to_delete:
+                await db.holidays.delete_many({"_id": {"$in": ids_to_delete}})
+        
+        await db.holidays.create_index(
+            [("id", 1), ("year", 1)],
+            unique=True,
+            name="unique_holiday_id_year"
+        )
+    except Exception:
+        pass
+    
+    # ==========================================================
+    # Seed default admin users (BULLETPROOF / DEFENSIVE)
+    # ==========================================================
+    # GUARANTEE: This block NEVER overwrites an existing user's password.
+    #   • Detection: check by ROLE (not just username) — renaming admin won't
+    #     trigger a duplicate seed.
+    #   • Migrate: only `role`/`name` (and `password_hash` IFF it is missing,
+    #     i.e. genuinely corrupt record).
+    #   • Honour the audit trail: if `password_updated_at` exists on the
+    #     record the password has been intentionally set by a user/admin —
+    #     this seed never touches it.
+    # ==========================================================
+    try:
+        # Migrate old roles to new role system
+        await db.users.update_many({"role": {"$in": ["super_admin", "admin", "hr_manager"]}}, {"$set": {"role": "hr"}})
+        await db.users.update_many({"role": "team_lead"}, {"$set": {"role": "hr"}})
+
+        async def _seed_role_user(role_value: str, default_username: str, default_email: str,
+                                  default_name: str, default_pwd: str = "pass123"):
+            """Ensure exactly ONE user exists for a given admin role. Password is
+            ONLY set on first creation (or if missing); never overwritten."""
+            existing = await db.users.find_one({
+                "$or": [{"username": default_username}, {"role": role_value}]
+            })
+            if not existing:
+                new_user = User(
+                    username=default_username,
+                    email=default_email,
+                    password_hash=hash_password(default_pwd),
+                    name=default_name,
+                    role=role_value,
+                    is_first_login=False,
+                    onboarding_status="completed",
+                )
+                doc = new_user.model_dump()
+                doc['created_at'] = doc['created_at'].isoformat()
+                await db.users.insert_one(doc.copy())
+                print(f"Default {role_value} user seeded (username={default_username})")
+                return
+            # User exists — migrate role/name (idempotent). Password is sacred.
+            migrate_set: dict = {}
+            # Only normalize role/name if they look "stale" — never if user
+            # customized them.
+            if existing.get("role") != role_value:
+                # Role drift can happen from legacy data; safe to normalize.
+                migrate_set["role"] = role_value
+            if not existing.get("name"):
+                migrate_set["name"] = default_name
+            # Bootstrap password ONLY when missing AND not previously updated
+            # — protects against ever wiping a self-changed password.
+            if not existing.get("password_hash") and not existing.get("password_updated_at"):
+                migrate_set["password_hash"] = hash_password(default_pwd)
+                migrate_set["password_updated_at"] = get_ist_now().isoformat()
+                migrate_set["password_updated_method"] = "seed_bootstrap"
+                logger.warning("Bootstrapping missing password_hash for role=%s username=%s", role_value, existing.get("username"))
+            if migrate_set:
+                await db.users.update_one({"id": existing["id"]}, {"$set": migrate_set})
+                print(f"{role_value} user migrated (role/name only; password preserved): {list(migrate_set.keys())}")
+            else:
+                print(f"{role_value} user already up-to-date — no changes")
+
+        await _seed_role_user(UserRole.HR, "admin", "admin@blubridge.com", "HR Admin")
+        await _seed_role_user(UserRole.SYSTEM_ADMIN, "sysadmin", "sysadmin@blubridge.com", "System Admin")
+        await _seed_role_user(UserRole.OFFICE_ADMIN, "offadmin", "offadmin@blubridge.com", "Office Admin")
+
+        # ==========================================================
+        # READ-ONLY INTEGRITY BEACON — Admin credential tamper alert
+        # ==========================================================
+        # If admin's password_hash silently matches the default seed
+        # AND audit fields claim the password was previously changed
+        # (i.e. method != seed_bootstrap), something OUTSIDE the
+        # legitimate change-password / reset-password flow has rewritten
+        # the hash. This block NEVER writes — it only logs a loud
+        # warning so the regression can be traced in real time.
+        # Common past culprit: pytest cleanup fixtures that reset admin
+        # back to "pass123" after every test run.
+        # ==========================================================
+        try:
+            _default_seed_hash = hashlib.sha256(b"pass123").hexdigest()
+            for _protected_username in ("admin", "sysadmin", "workforce", "offadmin"):
+                _u = await db.users.find_one(
+                    {"username": _protected_username},
+                    {"_id": 0, "username": 1, "role": 1, "password_hash": 1,
+                     "password_updated_at": 1, "password_updated_method": 1},
+                )
+                if not _u:
+                    continue
+                _hash_is_default = _u.get("password_hash") == _default_seed_hash
+                _was_changed = bool(_u.get("password_updated_at"))
+                _method = _u.get("password_updated_method") or ""
+                if _hash_is_default and _was_changed and _method != "seed_bootstrap":
+                    logger.error(
+                        "🚨 ADMIN CREDENTIAL TAMPER BEACON: protected user "
+                        "username=%s role=%s currently has password_hash=DEFAULT_SEED "
+                        "but audit trail (password_updated_at=%s method=%s) claims "
+                        "it was changed. This means an external process (likely a "
+                        "test fixture or seed-restore script) wrote the hash WITHOUT "
+                        "updating the audit trail. INVESTIGATE: search backend/tests "
+                        "and any scripts/ for raw db.users writes targeting username=%s.",
+                        _u.get("username"), _u.get("role"),
+                        _u.get("password_updated_at"), _method,
+                        _u.get("username"),
+                    )
+        except Exception as _beacon_err:
+            logger.warning("integrity beacon check failed (non-fatal): %s", _beacon_err)
+
+        # Create notifications index
+        await db.notifications.create_index([("user_id", 1), ("read", 1)])
+        await db.notifications.create_index([("created_at", -1)])
+        
+        # Create operational checklists index + backfill for existing employees
+        await db.operational_checklists.create_index([("employee_id", 1)], unique=True)
+        existing_emps = await db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0, "id": 1, "full_name": 1, "department": 1, "designation": 1}).to_list(1000)
+        for emp in existing_emps:
+            exists = await db.operational_checklists.find_one({"employee_id": emp["id"]})
+            if not exists:
+                cl = OperationalChecklist(
+                    employee_id=emp["id"],
+                    emp_name=emp.get("full_name", ""),
+                    department=emp.get("department"),
+                    designation=emp.get("designation"),
+                    items=[item.copy() for item in OPERATIONAL_CHECKLIST_ITEMS]
+                )
+                cl_doc = cl.model_dump()
+                cl_doc['created_at'] = cl_doc['created_at'].isoformat()
+                cl_doc['updated_at'] = cl_doc['updated_at'].isoformat()
+                try:
+                    await db.operational_checklists.insert_one(cl_doc.copy())
+                except Exception:
+                    pass
+        
+        print("Admin users seeded/migrated successfully")
+    except Exception as e:
+        print(f"Admin seeding check: {e}")
+
+    # HRMS automated email system — indexes + cron scheduler
+    try:
+        await _ensure_email_indexes(db)
+        await _ensure_cron_settings_seed(db, list(_CRON_JOB_META.keys()))
+        await _oc_ensure_indexes(db)
+        from policy_ack import ensure_state_indexes as _pa_ensure_indexes
+        await _pa_ensure_indexes(db)
+        _start_email_scheduler(db)
+        # Daily automatic star-reward recompute for Research Unit — runs at
+        # 02:00 IST so next-day totals are always fresh without manual action.
+        from star_reward_automation import start_star_scheduler as _start_star_scheduler
+        _start_star_scheduler(db)
+    except Exception as e:
+        print(f"Email scheduler startup failed: {e}")
+
+    # Module Visibility — seed default (ON + SHOW_ALL) settings for every
+    # employee-facing module registered in module_visibility.EMPLOYEE_MODULES.
+    # Idempotent: existing records are untouched.
+    try:
+        from module_visibility import ensure_module_visibility_seed
+        await ensure_module_visibility_seed()
+    except Exception as e:
+        print(f"Module visibility seed failed: {e}")
+
+    # Payslip 6-digit authorization layer — bootstrap the initial code (hash
+    # only, never plain text) on first deployment. Idempotent.
+    try:
+        from payslip_security import ensure_payslip_security_seed
+        await ensure_payslip_security_seed()
+    except Exception as e:
+        print(f"Payslip security seed failed: {e}")
+
+    try:
+        from brsf_stars import ensure_brsf_indexes
+        await ensure_brsf_indexes()
+    except Exception as e:
+        print(f"BRSF index setup failed: {e}")
+
+    # 2026-05-22 — Refresh any policy whose code-side `version` is newer than
+    # the DB record (so content updates pushed via deploy reach existing
+    # records without manual DB intervention). Idempotent.
+    try:
+        from datetime import datetime as _dt
+        _now = get_ist_now().isoformat()
+        for _p in COMPANY_POLICIES:
+            _existing = await db.policies.find_one({"id": _p["id"]}, {"_id": 0, "version": 1})
+            if not _existing:
+                await db.policies.insert_one({**_p, "created_at": _now, "updated_at": _now})
+                print(f"Seeded policy: {_p['id']}")
+            elif _existing.get("version") != _p.get("version"):
+                await db.policies.replace_one(
+                    {"id": _p["id"]},
+                    {**_p, "created_at": _existing.get("created_at", _now), "updated_at": _now},
+                )
+                print(f"Refreshed policy: {_p['id']} → v{_p.get('version')}")
+    except Exception as e:
+        print(f"Policy version refresh failed: {e}")
+
+    # 2026-05-20 — Prune legacy `photo` onboarding_documents (the
+    # "Passport-size Photograph" requirement was retired in favour of the
+    # Employee Profile avatar). Idempotent: safe to re-run on every boot.
+    try:
+        res = await db.onboarding_documents.delete_many({"document_type": "photo"})
+        if res.deleted_count:
+            print(f"Pruned {res.deleted_count} legacy onboarding `photo` document(s)")
+    except Exception as e:
+        print(f"Onboarding photo prune failed: {e}")
+
+    # Password reset tokens — unique on token + TTL on expires_at
+    try:
+        await _ensure_password_reset_token_indexes()
+    except Exception as e:
+        print(f"Password reset index setup failed: {e}")
+
+    # 2026-07-23 — EMP0125 permanent verification fix (user mandate).
+    # Adari Rama Sukanya was repeatedly demoted from "approved" back to
+    # "under_review" by the startup self-heal below (her Education doc is
+    # not_uploaded, so the strict derive rule failed on every restart).
+    # Mark ONLY this employee as permanently verified. Idempotent.
+    try:
+        _emp125 = await db.employees.find_one(
+            {"emp_id": "EMP0125", "is_deleted": {"$ne": True}},
+            {"_id": 0, "id": 1, "verification_completed": 1},
+        )
+        if _emp125 and not _emp125.get("verification_completed"):
+            _onb125 = await db.onboarding.find_one(
+                {"employee_id": _emp125["id"]}, {"_id": 0, "reviewed_by": 1}
+            )
+            _verified_by = (_onb125 or {}).get("reviewed_by")
+            if not _verified_by:
+                _admin_u = await db.users.find_one(
+                    {"username": "admin", "role": UserRole.HR}, {"_id": 0, "id": 1}
+                )
+                _verified_by = (_admin_u or {}).get("id")
+            _now125 = get_ist_now().isoformat()
+            await db.employees.update_one(
+                {"id": _emp125["id"]},
+                {"$set": {
+                    "verification_status": "verified",
+                    "verification_completed": True,
+                    "verified_at": _now125,
+                    "verified_by": _verified_by,
+                    "updated_at": _now125,
+                }},
+            )
+            await db.onboarding.update_one(
+                {"employee_id": _emp125["id"]},
+                {"$set": {"status": OnboardingStatus.APPROVED,
+                          "approved_at": _now125, "updated_at": _now125}},
+            )
+            print("EMP0125 permanent verification lock applied")
+    except Exception as e:
+        print(f"EMP0125 verification lock failed: {e}")
+
+    # 2026-06-06 — Auto-heal Verification status integrity. Historically some
+    # employees were stored as "approved" with ZERO uploaded documents (the
+    # now-expired skip-onboarding bypass window did this). Re-derive every
+    # onboarding record's status PURELY from its live documents so the
+    # Verification module + stats never show a false "Approved". Idempotent,
+    # lightweight (one pass), and it NEVER touches user/employee access flags.
+    try:
+        records = await db.onboarding.find({}, {"_id": 0, "employee_id": 1, "status": 1}).to_list(5000)
+        # Permanent verification lock: employees flagged
+        # `verification_completed=True` are NEVER re-derived (user mandate
+        # 2026-07-23 for EMP0125 — approved must survive restarts/syncs).
+        locked_ids = {
+            e["id"] async for e in db.employees.find(
+                {"verification_completed": True}, {"_id": 0, "id": 1}
+            )
+        }
+        healed = 0
+        for rec in records:
+            eid = rec.get("employee_id")
+            if not eid or eid in locked_ids:
+                continue
+            docs = await db.onboarding_documents.find({"employee_id": eid}, {"_id": 0, "document_type": 1, "status": 1}).to_list(50)
+            derived = derive_onboarding_status(docs)
+            if derived != rec.get("status"):
+                await db.onboarding.update_one(
+                    {"employee_id": eid},
+                    {"$set": {"status": derived, "updated_at": get_ist_now().isoformat()}},
+                )
+                healed += 1
+        if healed:
+            print(f"Verification self-heal: corrected {healed} onboarding status record(s)")
+    except Exception as e:
+        print(f"Verification status self-heal failed: {e}")
+
+    # Policy acknowledgements — unique (policy_id, employee_id)
+    try:
+        await _ensure_policy_ack_indexes()
+    except Exception as e:
+        print(f"Policy ack index setup failed: {e}")
+
+    # Vigilance module — unique (target_employee_id, date, uploaded_by) + id
+    try:
+        await ensure_vigilance_indexes(db)
+    except Exception as e:
+        print(f"Vigilance index setup failed: {e}")
+
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    client.close()
+
+# Warning module — Leave & Attendance policy non-compliance framework
+try:
+    import warning_module  # noqa: F401  (registers routes via api_router import)
+except Exception as _e:
+    print(f'Warning module load failed: {_e}')
+

@@ -1,0 +1,523 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Public+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    :root {
+        --background: 45 27% 92%;
+        --foreground: 222 47% 11%;
+        --card: 45 100% 98%;
+        --card-foreground: 222 47% 11%;
+        --popover: 45 100% 98%;
+        --popover-foreground: 222 47% 11%;
+        --primary: 220 100% 46%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 214 32% 91%;
+        --secondary-foreground: 222 47% 11%;
+        --muted: 214 32% 91%;
+        --muted-foreground: 215 16% 47%;
+        --accent: 38 92% 50%;
+        --accent-foreground: 222 47% 11%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 214 32% 91%;
+        --input: 214 32% 91%;
+        --ring: 220 100% 46%;
+        --radius: 0.75rem;
+        
+        /* BluBridge Premium Colors */
+        --bb-bg: #efede5;
+        --bb-container: #fffdf7;
+        --bb-primary: #063c88;
+        --bb-primary-hover: #052d66;
+        --bb-navy: #0b1f3b;
+        --bb-navy-light: #162d4d;
+        --bb-success: #10b981;
+        --bb-warning: #f59e0b;
+        --bb-error: #ef4444;
+        --bb-text: #0f172a;
+        --bb-text-muted: #64748b;
+        --bb-border: rgba(0,0,0,0.05);
+        
+        /* Chart Colors */
+        --chart-1: 220 100% 46%;
+        --chart-2: 160 84% 39%;
+        --chart-3: 38 92% 50%;
+        --chart-4: 280 65% 60%;
+        --chart-5: 340 75% 55%;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    
+    body {
+        @apply bg-[#efede5] text-foreground antialiased;
+        font-family: 'Public Sans', sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+    }
+    
+    h1, h2, h3, h4, h5, h6 {
+        font-family: 'Outfit', sans-serif;
+        letter-spacing: -0.025em;
+    }
+    
+    code, pre {
+        font-family: 'JetBrains Mono', monospace;
+    }
+}
+
+/* Premium Scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #d1d5db;
+    border-radius: 100px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #9ca3af;
+}
+
+/* Firefox scrollbar */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: #d1d5db transparent;
+}
+
+/* Premium Glassmorphism */
+.glass {
+    background: rgba(255, 253, 247, 0.75);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.glass-dark {
+    background: rgba(11, 31, 59, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+}
+
+/* Premium Card Styles */
+.card-premium {
+    @apply bg-[#fffdf7] rounded-2xl border border-black/5;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.02), 0 4px 12px rgba(0,0,0,0.03);
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-premium:hover {
+    box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+    transform: translateY(-2px);
+}
+
+.card-flat {
+    @apply bg-[#fffdf7] rounded-xl border border-black/5;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+}
+
+/* Stat Card Variants */
+.stat-card {
+    @apply relative overflow-hidden rounded-2xl p-6;
+    background: linear-gradient(135deg, #fffdf7 0%, #f7f5ef 100%);
+    border: 1px solid rgba(0,0,0,0.04);
+}
+
+.stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 120px;
+    height: 120px;
+    background: radial-gradient(circle, rgba(6,60,136,0.04) 0%, transparent 70%);
+    border-radius: 50%;
+    transform: translate(30%, -30%);
+}
+
+/* Bento Grid */
+.bento-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 1.5rem;
+}
+
+.bento-card {
+    @apply card-premium;
+}
+
+.bento-card.span-3 { grid-column: span 3; }
+.bento-card.span-4 { grid-column: span 4; }
+.bento-card.span-6 { grid-column: span 6; }
+.bento-card.span-8 { grid-column: span 8; }
+.bento-card.span-12 { grid-column: span 12; }
+.bento-card.row-span-2 { grid-row: span 2; }
+
+@media (max-width: 1024px) {
+    .bento-card.span-3,
+    .bento-card.span-4 { grid-column: span 6; }
+    .bento-card.span-6,
+    .bento-card.span-8 { grid-column: span 12; }
+}
+
+@media (max-width: 640px) {
+    .bento-card { grid-column: span 12 !important; }
+}
+
+/* Premium Table Styles */
+.table-premium {
+    @apply w-full;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.table-premium thead {
+    @apply bg-gradient-to-r from-slate-50/80 to-slate-100/50;
+}
+
+.table-premium thead th {
+    @apply px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider;
+    letter-spacing: 0.05em;
+    /* Sticky header — survives vertical scroll within ancestor scroll
+       containers (overflow-y: auto/scroll) AND viewport scroll. */
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background-color: rgb(248 250 252 / 0.98);
+    backdrop-filter: saturate(140%) blur(6px);
+    -webkit-backdrop-filter: saturate(140%) blur(6px);
+    box-shadow: inset 0 -1px 0 rgb(226 232 240 / 1);
+}
+
+/* Sortable header — clickable visual cue + active-state highlight */
+.table-premium thead th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 150ms ease, background-color 150ms ease;
+}
+
+.table-premium thead th.sortable:hover {
+    color: #063c88;
+    background-color: rgb(241 245 249 / 0.9);
+}
+
+.table-premium thead th.sortable.sort-active {
+    color: #063c88;
+    background-color: rgb(219 234 254 / 0.4);
+}
+
+.table-premium tbody tr {
+    @apply border-b border-slate-100/80 transition-colors duration-150;
+}
+
+.table-premium tbody tr:hover {
+    @apply bg-slate-50/50;
+}
+
+.table-premium tbody td {
+    @apply px-3 py-3 text-sm;
+}
+
+/* Force single-line rendering for every column in opted-in tables (e.g. the
+   admin Attendance table). Horizontal scroll handles overflow — readability
+   over compression. Scoped via the `.table-nowrap` modifier so other
+   `.table-premium` tables are unaffected. */
+.table-nowrap thead th,
+.table-nowrap tbody td {
+    white-space: nowrap;
+}
+
+
+/* Premium scrollbar — applies to all overflow containers globally.
+   Subtle, modern, theme-friendly. Webkit + Firefox supported. */
+.overflow-x-auto,
+.overflow-y-auto,
+.overflow-auto,
+.scroll-premium {
+    scroll-behavior: smooth;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+}
+
+/* TRUE body-only scroll for ALL .table-premium tables.
+   When a `.table-premium` lives inside `.overflow-x-auto` (the canonical wrapper
+   used across the HRMS), the wrapper becomes its own vertical scroll container
+   capped at a sensible viewport-relative height. Combined with sticky <thead>
+   above, this means the page does NOT scroll the table — only the table body
+   scrolls inside the wrapper while the header stays pinned.
+   Auto-scoped via :has() so we don't affect non-table overflow regions
+   (sidebars, dialogs, bento cards, etc.). */
+.overflow-x-auto:has(> table.table-premium),
+.overflow-x-auto:has(> table .table-premium),
+.overflow-x-auto:has(table.table-premium) {
+    overflow-y: auto;
+    max-height: calc(100vh - 280px);
+}
+
+/* Smaller safety floor so very short cards still get their own scroll */
+@media (max-height: 720px) {
+    .overflow-x-auto:has(table.table-premium) { max-height: 480px; }
+}
+
+.overflow-x-auto::-webkit-scrollbar,
+.overflow-y-auto::-webkit-scrollbar,
+.overflow-auto::-webkit-scrollbar,
+.scroll-premium::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.overflow-x-auto::-webkit-scrollbar-track,
+.overflow-y-auto::-webkit-scrollbar-track,
+.overflow-auto::-webkit-scrollbar-track,
+.scroll-premium::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb,
+.overflow-y-auto::-webkit-scrollbar-thumb,
+.overflow-auto::-webkit-scrollbar-thumb,
+.scroll-premium::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.35);
+    border-radius: 999px;
+    transition: background 150ms ease;
+}
+
+.overflow-x-auto::-webkit-scrollbar-thumb:hover,
+.overflow-y-auto::-webkit-scrollbar-thumb:hover,
+.overflow-auto::-webkit-scrollbar-thumb:hover,
+.scroll-premium::-webkit-scrollbar-thumb:hover {
+    background: rgba(6, 60, 136, 0.55);
+}
+
+.overflow-x-auto::-webkit-scrollbar-corner,
+.overflow-y-auto::-webkit-scrollbar-corner,
+.overflow-auto::-webkit-scrollbar-corner,
+.scroll-premium::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
+/* Vigilance Report — 2-row sticky header.
+   Row 1 pins to the top of the scroll container; Row 2 pins just below it using
+   the measured height of row 1 (set as the --vig-h1 CSS var on the container).
+   No DOM duplication, no JS scroll patches — pure position:sticky. */
+.vig-sticky-h1 { position: sticky; top: 0; }
+.vig-sticky-h2 { position: sticky; top: var(--vig-h1, 44px); }
+.vig-sticky-h3 { position: sticky; top: calc(var(--vig-h1, 44px) + var(--vig-h2, 36px)); }
+
+/* Vigilance upload progress bar — moving sheen while in progress (premium, jitter-free) */
+.vig-progress-sheen { position: relative; overflow: hidden; }
+.vig-progress-sheen::after {
+  content: ''; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  transform: translateX(-100%);
+  animation: vig-sheen 1.3s ease-in-out infinite;
+}
+@keyframes vig-sheen { to { transform: translateX(100%); } }
+
+
+/* Status Badges */
+.badge-success { @apply bg-emerald-50 text-emerald-700 border border-emerald-200/50; }
+.badge-warning { @apply bg-amber-50 text-amber-700 border border-amber-200/50; }
+.badge-error { @apply bg-red-50 text-red-700 border border-red-200/50; }
+.badge-info { @apply bg-blue-50 text-blue-700 border border-blue-200/50; }
+.badge-neutral { @apply bg-slate-100 text-slate-600 border border-slate-200/50; }
+
+/* Premium Sidebar Navigation */
+.nav-item {
+    @apply flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200;
+}
+
+.nav-item-active {
+    @apply bg-[#063c88] text-white shadow-lg;
+    box-shadow: 0 4px 14px rgba(6, 60, 136, 0.35);
+}
+
+.nav-item-inactive {
+    @apply text-slate-600 hover:bg-slate-100/80 hover:text-slate-900;
+}
+
+/* Animations */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes slideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInRight {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes scaleIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse-soft {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+@keyframes shimmer {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+
+.animate-fade-in { animation: fadeIn 0.4s ease-out; }
+.animate-slide-up { animation: slideUp 0.4s ease-out; }
+.animate-slide-in-right { animation: slideInRight 0.3s ease-out; }
+.animate-scale-in { animation: scaleIn 0.3s ease-out; }
+.animate-pulse-soft { animation: pulse-soft 2s ease-in-out infinite; }
+
+/* Staggered animations */
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.1s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.2s; }
+.stagger-5 { animation-delay: 0.25s; }
+
+/* Loading skeleton */
+.skeleton {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+}
+
+/* Chart Container */
+.chart-container {
+    @apply rounded-xl overflow-hidden;
+    background: linear-gradient(180deg, transparent 0%, rgba(0,78,235,0.02) 100%);
+}
+
+/* Premium Input Focus */
+input:focus, select:focus, textarea:focus {
+    @apply outline-none ring-2 ring-[#063c88]/20 border-[#063c88];
+}
+
+/* Button Active State */
+button:active:not(:disabled) {
+    transform: scale(0.98);
+}
+
+/* Premium Avatar */
+.avatar-ring {
+    @apply ring-2 ring-white ring-offset-2 ring-offset-[#efede5];
+}
+
+/* Hide Emergent badge */
+#emergent-badge,
+a[href*="emergent.sh"][style*="position: fixed"],
+a[href*="emergent.sh"][style*="bottom: 20px"] {
+    display: none !important;
+    visibility: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+}
+
+@layer base {
+    [data-debug-wrapper="true"] {
+        display: contents !important;
+    }
+}
+
+/* Custom focus visible */
+.focus-ring {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-[#063c88] focus-visible:ring-offset-2;
+}
+
+/* Gradient text */
+.gradient-text {
+    background: linear-gradient(135deg, #063c88 0%, #0a5cba 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* ===== LOGIN CARD WITH SINGLE ANIMATED BORDER ===== */
+.login-card-wrapper {
+    position: relative;
+    border-radius: 16px;
+    padding: 1px;
+    overflow: hidden;
+    background: rgba(6, 60, 136, 0.12);
+}
+
+/* Rotating highlight on single border */
+.login-card-wrapper::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 150%;
+    height: 150%;
+    background: conic-gradient(
+        from 0deg,
+        transparent 0deg,
+        transparent 270deg,
+        #063c88 300deg,
+        #063c88 330deg,
+        transparent 360deg
+    );
+    animation: spinHighlight 5s linear infinite;
+    transform-origin: center;
+}
+
+@keyframes spinHighlight {
+    0% {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+    100% {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
+}
+
+/* Card content - covers the rotating element */
+.login-card-content {
+    position: relative;
+    background: #fffdf7;
+    border-radius: 15px;
+    padding: 2rem 2.5rem;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.02), 0 4px 12px rgba(0,0,0,0.03);
+    z-index: 1;
+}
+
+/* Remove the inner element - not needed */
+.login-card-animated-border,
+.login-card-animated-border-inner {
+    display: none;
+}
+
+/* Number display */
+.number-display {
+    font-family: 'Outfit', sans-serif;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+}
+
+/* Responsive text */
+@media (max-width: 640px) {
+    .text-responsive-lg { @apply text-2xl; }
+    .text-responsive-xl { @apply text-3xl; }
+}
+
+@media (min-width: 641px) {
+    .text-responsive-lg { @apply text-3xl; }
+    .text-responsive-xl { @apply text-4xl; }
+}

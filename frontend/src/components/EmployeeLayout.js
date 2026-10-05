@@ -1,0 +1,419 @@
+import { useState, useEffect, useCallback } from 'react';
+import { NavLink, useNavigate, useLocation } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import NotificationBell from './NotificationBell';
+import axios from 'axios';
+import { toast } from 'sonner';
+import { 
+  LayoutDashboard, 
+  CalendarCheck, 
+  CalendarDays, 
+  User,
+  LogOut,
+  Menu,
+  X,
+  ChevronDown,
+  KeyRound,
+  PartyPopper,
+  GraduationCap,
+  BookOpen,
+  MessageSquarePlus,
+  FileText,
+  Wallet,
+  Clock,
+  LogOut as LogOutIcon,
+  Fingerprint,
+  HelpCircle,
+  FileSpreadsheet,
+  ShieldAlert,
+  AlertTriangle,
+  Star,
+  Receipt,
+  HardDrive,
+} from 'lucide-react';
+import { Button } from './ui/button';
+import EmployeeAvatar from './EmployeeAvatar';
+import { formatDate, formatDateWithDay } from '../lib/dateFormat';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from './ui/dropdown-menu';
+
+const navItems = [
+  { path: '/employee/dashboard', label: 'Dashboard', icon: LayoutDashboard, moduleKey: null }, // always visible
+  { path: '/employee/attendance', label: 'My Attendance', icon: CalendarCheck, moduleKey: 'attendance' },
+  { path: '/employee/leave', label: 'Leave', icon: CalendarDays, moduleKey: 'leave' },
+  { path: '/employee/late-request', label: 'Late Request', icon: Clock, moduleKey: 'late_request' },
+  { path: '/employee/early-out', label: 'Early Out', icon: LogOutIcon, moduleKey: 'early_out' },
+  { path: '/employee/missed-punch', label: 'Missed Punch', icon: Fingerprint, moduleKey: 'missed_punch' },
+  { path: '/employee/holidays', label: 'Holidays', icon: PartyPopper, moduleKey: 'holidays' },
+  { path: '/employee/payslips', label: 'My Payslips', icon: Receipt, moduleKey: 'payslips' },
+  { path: '/employee/policies', label: 'Policies', icon: BookOpen, moduleKey: 'policies' },
+  { path: '/employee/education-experience', label: 'Education & Experience', icon: GraduationCap, moduleKey: 'education_experience' },
+  { path: '/employee/documents', label: 'My Documents', icon: FileText, moduleKey: 'documents' },
+  { path: '/employee/tickets', label: 'Support Tickets', icon: MessageSquarePlus, moduleKey: 'tickets' },
+  { path: '/employee/it-assets', label: 'My IT Assets', icon: HardDrive, moduleKey: null },
+  { path: '/employee/profile', label: 'Profile', icon: User, moduleKey: null }, // always visible
+];
+
+// Every employee route that belongs to a controllable module (includes routes
+// that are not sidebar entries, e.g. Warnings / Vigilance). Prefix match so
+// nested paths are covered too.
+const MODULE_ROUTES = [
+  ['/employee/attendance', 'attendance'],
+  ['/employee/leave', 'leave'],
+  ['/employee/late-request', 'late_request'],
+  ['/employee/early-out', 'early_out'],
+  ['/employee/missed-punch', 'missed_punch'],
+  ['/employee/holidays', 'holidays'],
+  ['/employee/payslips', 'payslips'],
+  ['/employee/salary', 'payslips'],
+  ['/employee/policies', 'policies'],
+  ['/employee/education-experience', 'education_experience'],
+  ['/employee/documents', 'documents'],
+  ['/employee/tickets', 'tickets'],
+  ['/employee/warnings', 'warnings'],
+  ['/employee/vigilance', 'vigilance'],
+];
+
+const EmployeeLayout = ({ children }) => {
+  const { user, token, logout, isWithinDocumentBypass } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [hasVigilance, setHasVigilance] = useState(false);
+  const [hasStarRewards, setHasStarRewards] = useState(false);
+  const [warningsCount, setWarningsCount] = useState(0);
+  const [visibleModuleKeys, setVisibleModuleKeys] = useState(null); // null = not resolved yet
+
+  // Module Visibility for THIS employee. The backend resolves it with the same
+  // `check_module_access()` used by the routes/APIs, so the sidebar can never
+  // show a module the employee is not allowed to open. Re-fetched on every
+  // navigation (cache-busted, server sends no-store) so an admin's change
+  // takes effect without waiting for a re-login.
+  const fetchVisibility = useCallback(async () => {
+    try {
+      const res = await axios.get(
+        `${process.env.REACT_APP_BACKEND_URL}/api/employee/module-visibility?t=${Date.now()}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      setVisibleModuleKeys(res.data?.visible_modules || []);
+    } catch (e) {
+      // Fail CLOSED: never reveal a module we could not authorise.
+      setVisibleModuleKeys((prev) => (prev === null ? [] : prev));
+    }
+  }, [token]);
+
+  useEffect(() => { fetchVisibility(); }, [fetchVisibility, location.pathname]);
+
+  useEffect(() => {
+    const onFocus = () => fetchVisibility();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [fetchVisibility]);
+
+  // Dynamically reveal the Operational Vigilance Report link ONLY for employees
+  // whose designation == "Vigilance" (resolved server-side, no hardcoding).
+  useEffect(() => {
+    let active = true;
+    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/vigilance/access`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(res => { if (active) setHasVigilance(!!res.data?.is_vigilance); }).catch(() => {});
+    return () => { active = false; };
+  }, [token]);
+
+  // "My Rewards" is DISABLED for all employees (2026-07-16 user mandate).
+  // The Star Reward module is HR-only now — visible in the admin sidebar
+  // only. We keep the state variable so the render code below stays a
+  // no-op without a bigger refactor; it will always remain false.
+
+  // "My Warnings" nav shows only if the employee has ≥1 warning record
+  // (mirrors the graceful "My Rewards" reveal pattern — no dead nav entries).
+  useEffect(() => {
+    let active = true;
+    axios.get(`${process.env.REACT_APP_BACKEND_URL}/api/employee/warnings/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then(res => {
+      if (!active) return;
+      setWarningsCount((res.data?.warnings || []).length);
+    }).catch(() => {});
+    return () => { active = false; };
+  }, [token]);
+
+  // "My Documents" is ALWAYS visible — it's the permanent destination for
+  // onboarding document uploads + viewing official HR letters. (Earlier this
+  // was hidden during the 14-day onboarding bypass; users now need access to
+  // it from day one to upload onboarding documents at their pace.)
+  const visibleNavItems = (() => {
+    let items = [...navItems];
+    if (hasStarRewards) {
+      // Insert "My Rewards" right after Holidays (near the recognition/policies group)
+      const insertAt = items.findIndex((i) => i.path === '/employee/holidays');
+      const rewardItem = { path: '/employee/rewards', label: 'My Rewards', icon: Star, moduleKey: null };
+      items.splice(insertAt >= 0 ? insertAt + 1 : items.length, 0, rewardItem);
+    }
+    if (hasVigilance) items.push({ path: '/employee/vigilance', label: 'Vigilance Report', icon: ShieldAlert, moduleKey: 'vigilance' });
+    if (warningsCount > 0) items.push({ path: '/employee/warnings', label: 'My Warnings', icon: AlertTriangle, badge: warningsCount, moduleKey: 'warnings' });
+
+    // Apply Module Visibility filter — items with moduleKey=null (Dashboard,
+    // Profile, Rewards) are always kept. Until visibility resolves we render
+    // ONLY those, so an unauthorized module never flashes on screen.
+    const allowed = new Set(visibleModuleKeys || []);
+    items = items.filter((it) => !it.moduleKey || allowed.has(it.moduleKey));
+    return items;
+  })();
+
+  const handleLogout = async () => {
+    await logout(); // revoke session server-side + clear tokens BEFORE navigating
+    navigate('/login');
+  };
+
+  const handleDownloadHelp = async (format = 'pdf') => {
+    try {
+      toast.info(`Preparing ${format === 'xlsx' ? 'Excel' : 'PDF'} help guide...`);
+      const res = await axios.get(
+        `${process.env.REACT_APP_BACKEND_URL}/api/help/download?format=${format}`,
+        { headers: { Authorization: `Bearer ${token}` }, responseType: 'blob' }
+      );
+      const mime = format === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'application/pdf';
+      const blob = new Blob([res.data], { type: mime });
+      const url = window.URL.createObjectURL(blob);
+      const ext = format === 'xlsx' ? 'xlsx' : 'pdf';
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `BluBridge_HRMS_Employee_User_Guide.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Help guide downloaded');
+    } catch (err) {
+      toast.error('Failed to download help guide');
+    }
+  };
+
+  const getPageTitle = () => {
+    const current = visibleNavItems.find(item => location.pathname === item.path);
+    return current?.label || 'Dashboard';
+  };
+
+  // Deep-link to /employee/documents is now ALWAYS allowed (the page itself
+  // is the upload destination for onboarding documents during/after bypass).
+  useEffect(() => {
+    // intentionally no redirect — see above comment.
+  }, [location.pathname, navigate]);
+
+  // Route-level Module Visibility guard: if the employee lands on a path
+  // whose module is hidden from them, bounce them back to the Dashboard.
+  // Uses the SAME resolved visibility as the sidebar, and the page body is not
+  // rendered at all while access is unresolved or denied (see render below).
+  const currentModuleKey = (() => {
+    const hit = MODULE_ROUTES.find(([p]) => location.pathname.startsWith(p));
+    return hit ? hit[1] : null;
+  })();
+  const moduleResolving = !!currentModuleKey && visibleModuleKeys === null;
+  const moduleBlocked =
+    !!currentModuleKey && visibleModuleKeys !== null && !visibleModuleKeys.includes(currentModuleKey);
+
+  useEffect(() => {
+    if (!moduleBlocked) return;
+    toast.info('This module is not available for your account.');
+    navigate('/employee/dashboard', { replace: true });
+  }, [moduleBlocked, location.pathname, navigate]);
+
+  return (
+    <div className="min-h-screen bg-[#efede5]">
+      {/* Mobile sidebar overlay */}
+      {sidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/30 backdrop-blur-sm z-40 lg:hidden transition-opacity"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar */}
+      <aside className={`
+        fixed top-0 left-0 h-full w-72 z-50
+        bg-[#fffdf7]/90 backdrop-blur-2xl
+        border-r border-black/5
+        transform transition-transform duration-300 ease-out
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+        flex flex-col
+      `}>
+        {/* Logo Section */}
+        <div className="h-20 flex items-center px-6 border-b border-black/5">
+          <div className="flex items-center gap-3">
+            <img src="/logo-black.png" alt="BluBridge" className="w-auto" />
+            <div>
+              <p className="text-[10px] text-slate-500 uppercase tracking-widest font-medium">Employee Portal</p>
+            </div>
+          </div>
+          <button 
+            className="ml-auto lg:hidden p-2 hover:bg-black/5 rounded-lg transition-colors"
+            onClick={() => setSidebarOpen(false)}
+          >
+            <X className="w-5 h-5 text-slate-500" />
+          </button>
+        </div>
+
+        {/* Navigation */}
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+          <p className="px-4 py-2 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">Menu</p>
+          {visibleNavItems.map((item, index) => {
+            const isActive = location.pathname === item.path;
+            return (
+              <NavLink
+                key={item.path}
+                to={item.path}
+                onClick={() => setSidebarOpen(false)}
+                className={`
+                  nav-item animate-slide-up
+                  ${isActive ? 'nav-item-active' : 'nav-item-inactive'}
+                `}
+                style={{ animationDelay: `${index * 0.03}s` }}
+                data-testid={`nav-${item.path.replace('/employee/', '')}`}
+              >
+                <item.icon className="w-5 h-5" strokeWidth={isActive ? 2 : 1.5} />
+                <span className="flex-1">{item.label}</span>
+                {item.badge ? (
+                  <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white min-w-[18px] text-center">{item.badge}</span>
+                ) : null}
+              </NavLink>
+            );
+          })}
+        </nav>
+
+        {/* User Section */}
+        <div className="p-4 border-t border-black/5">
+          <div className="flex items-center gap-3 p-3 rounded-xl bg-slate-50/80 mb-3">
+            <EmployeeAvatar
+              src={user?.avatar}
+              name={user?.name}
+              size="md"
+              shape="circle"
+              testId="employee-sidebar-avatar"
+            />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-slate-900 truncate">{user?.name}</p>
+              <p className="text-xs text-slate-500">Employee</p>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            className="w-full justify-start gap-3 text-slate-600 hover:text-red-600 hover:bg-red-50 rounded-xl h-11"
+            onClick={handleLogout}
+            data-testid="employee-logout-btn"
+          >
+            <LogOut className="w-5 h-5" strokeWidth={1.5} />
+            <span>Sign Out</span>
+          </Button>
+        </div>
+      </aside>
+
+      {/* Main content */}
+      <div className="lg:pl-72">
+        {/* Header */}
+        <header className="h-20 bg-[#fffdf7]/70 backdrop-blur-xl border-b border-black/5 sticky top-0 z-30">
+          <div className="h-full px-4 lg:px-8 flex items-center justify-between max-w-[1600px] mx-auto">
+            {/* Left: Mobile menu + Page title */}
+            <div className="flex items-center gap-4">
+              <button 
+                className="lg:hidden p-2.5 hover:bg-black/5 rounded-xl transition-colors"
+                onClick={() => setSidebarOpen(true)}
+                data-testid="employee-mobile-menu-btn"
+              >
+                <Menu className="w-6 h-6 text-slate-700" />
+              </button>
+              <div>
+                <h2 className="text-xl lg:text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>
+                  {getPageTitle()}
+                </h2>
+                <p className="text-xs text-slate-500 hidden sm:block">
+                  {formatDateWithDay(new Date())}
+                </p>
+              </div>
+            </div>
+            
+            {/* Right: Actions */}
+            <div className="flex items-center gap-2">
+              {/* Notifications */}
+              <NotificationBell />
+
+              {/* Profile Dropdown */}
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="flex items-center gap-3 hover:bg-slate-100 rounded-xl px-3 py-2 transition-colors">
+                    <EmployeeAvatar
+                      src={user?.avatar}
+                      name={user?.name}
+                      size="sm"
+                      shape="circle"
+                      testId="employee-header-avatar"
+                    />
+                    <div className="hidden sm:block text-left">
+                      <p className="text-sm font-medium text-slate-900">{user?.name}</p>
+                      <p className="text-xs text-slate-500">Employee</p>
+                    </div>
+                    <ChevronDown className="w-4 h-4 text-slate-500" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-56 bg-white/95 backdrop-blur-xl border border-slate-200 shadow-xl rounded-xl p-1">
+                  <DropdownMenuItem 
+                    onClick={() => navigate('/employee/profile')}
+                    className="cursor-pointer rounded-lg"
+                  >
+                    <User className="w-4 h-4 mr-2" />
+                    My Profile
+                  </DropdownMenuItem>
+                  <DropdownMenuItem 
+                    onClick={() => handleDownloadHelp('pdf')}
+                    className="cursor-pointer rounded-lg"
+                    data-testid="download-help-guide-btn"
+                  >
+                    <HelpCircle className="w-4 h-4 mr-2" />
+                    Help Guide (PDF)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem 
+                    onClick={() => handleDownloadHelp('xlsx')}
+                    className="cursor-pointer rounded-lg"
+                    data-testid="download-help-guide-excel-btn"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 mr-2" />
+                    Help Guide (Excel)
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="my-1" />
+                  <DropdownMenuItem 
+                    onClick={handleLogout}
+                    className="cursor-pointer text-red-600 focus:text-red-600 focus:bg-red-50 rounded-lg"
+                  >
+                    <LogOut className="w-4 h-4 mr-2" />
+                    Sign Out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+        </header>
+
+        {/* Page content — never rendered while module access is unresolved or
+            denied, so an unauthorized page shell can't appear even briefly. */}
+        <main className="p-4 lg:p-8 max-w-[1600px] mx-auto">
+          {moduleBlocked || moduleResolving ? (
+            <div className="py-24 text-center text-sm text-slate-500" data-testid="module-access-check">
+              {moduleBlocked ? 'Redirecting…' : 'Checking access…'}
+            </div>
+          ) : (
+            children
+          )}
+        </main>
+      </div>
+    </div>
+  );
+};
+
+export default EmployeeLayout;

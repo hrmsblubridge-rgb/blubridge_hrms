@@ -1,0 +1,25 @@
+{
+  "summary": "Independently verified the HRMS RBAC / employee-data-isolation fix. Ran the existing regression suite /app/backend/tests/test_rbac_isolation.py (43/43 pass) and authored a new complementary suite /app/backend/tests/test_rbac_body_leaks.py (19/19 pass, 62 total green) that inspects JSON RESPONSE BODIES (not just status codes) on every reported endpoint, exercises the new IDOR ownership check on PUT /late-requests|/early-out-requests|/missed-punches for a request owned by another employee (all three now return 403), samples six additional deny-by-default admin routes, deep-scans the birthday widget for DOB-year leakage, and confirms 'RBAC DENY 403' backend log lines do NOT contain the JWT token or plaintext passwords. UI regression: madhan.s renders the employee dashboard with personal-only stats (23/1/0/100%) and the sanitised birthday widget with photos+names; admin renders company-wide dashboard (Research Unit 37, Support Staff 9, Attendance 38/46). No 403 popups in either portal. Only 4xx in the network log was /api/seed which is intentionally admin-only.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_rbac_isolation.py",
+    "/app/backend/tests/test_rbac_body_leaks.py"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "rbac.py deny middleware is a solid deny-by-default gate; however _ALLOW_RULES relies on 'role' claim from JWT — worth adding an integrity assertion that the role in the JWT still matches the DB user on privileged operations (defence in depth).",
+    "test_rbac_isolation currently only checks that ADMIN_ONLY_PATHS return 403 without also inspecting the response body for other-employee ids. The new test_rbac_body_leaks fills that gap and should be kept in CI.",
+    "server.py is 19,739 lines — should be broken into feature modules; large files make it easy to miss a leak overlay (as noted with the earlier /api/attendance missed-punch overlay bug)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_rbac_body_leaks.py (new)"
+  ],
+  "success_rate": {"backend": "100% (62/62 rbac tests pass)", "frontend": "100% (employee+admin dashboards clean, no 403 leaks)"},
+  "test_credentials": "admin/HrAdmin786$, madhan.s/Vigil@123, dinesh.t/Vigil@123 (both employees re-synced via SHA256 during this run — locked_until cleared)",
+  "seed_data_creation": "Created 1 late-request, 1 early-out request and 1 missed-punch as dinesh.t on 2026-08-28 with reason prefix TEST_rbac_* to validate the ownership check on PUT. They remain in mongo with status=pending and can be safely deleted by admin.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Extended RBAC suite lives at /app/backend/tests/test_rbac_body_leaks.py — it is safe to re-run; the IDOR PUT tests are idempotent (they reuse any existing pending record and never mutate it because the PUT is expected to be rejected with 403). If dinesh.t/madhan.s logins start returning 401, the accounts have drifted — re-sync via a SHA256('Vigil@123') update to users.password_hash and reset failed_login_attempts/locked_until per the pattern already used in test_credentials.md. Admin password HrAdmin786$ is user-pinned — DO NOT change.",
+  "rca of the issue": "N/A — original vulnerability was already fixed by main agent. Verified fix independently."
+}

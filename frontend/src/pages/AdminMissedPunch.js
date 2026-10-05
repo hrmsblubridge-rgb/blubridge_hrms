@@ -1,0 +1,917 @@
+import { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '../contexts/AuthContext';
+import axios from 'axios';
+import { toast } from 'sonner';
+import { Clock, Check, X, Plus, Search, Filter, ChevronLeft, ChevronRight, Eye, Upload, Download, Pencil, Undo2 } from 'lucide-react';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { DatePicker } from '../components/ui/date-picker';
+import { formatDate } from '../lib/dateFormat';
+import { Badge } from '../components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { Textarea } from '../components/ui/textarea';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../components/ui/sheet';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
+} from '../components/ui/dialog';
+import { useTableSort, SortableTh } from '../components/useTableSort';
+import { PageSizeSelector } from '../components/PageSizeSelector';
+
+const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+
+const AdminMissedPunch = () => {
+  const { getAuthHeaders, user } = useAuth();
+  const isHR = user?.role === 'hr';
+  const [data, setData] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [employees, setEmployees] = useState([]);
+  const [showApply, setShowApply] = useState(false);
+  const [showApprove, setShowApprove] = useState(false);
+  const [approvePreview, setApprovePreview] = useState(null);
+  const [approving, setApproving] = useState(false);
+  const [showReject, setShowReject] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [editForm, setEditForm] = useState({ date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '' });
+  const [editLoading, setEditLoading] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+  // Bulk selection (pending tab only, current page scope)
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [showBulkApprove, setShowBulkApprove] = useState(false);
+  const [showBulkReject, setShowBulkReject] = useState(false);
+  const [bulkReason, setBulkReason] = useState('');
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [formData, setFormData] = useState({ employee_id: '', date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '', auto_approve: false });
+  const [empSearch, setEmpSearch] = useState('');
+  const [empDropdownOpen, setEmpDropdownOpen] = useState(false);
+
+  // Bulk Import state
+  const [showImport, setShowImport] = useState(false);
+  const [importFile, setImportFile] = useState(null);
+  const [importLoading, setImportLoading] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [importPreview, setImportPreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Filters
+  const [filterFromDate, setFilterFromDate] = useState('');
+  const [filterToDate, setFilterToDate] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
+  const [filterEmpName, setFilterEmpName] = useState('');
+
+  // Pagination
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(25);
+  const [total, setTotal] = useState(0);
+
+  // Tab state — drives both record filter and pagination
+  const [activeTab, setActiveTab] = useState('requests'); // 'requests' (pending) | 'history'
+  const [pendingCount, setPendingCount] = useState(0);
+  const [historyCount, setHistoryCount] = useState(0);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const tabParam = activeTab === 'requests' ? 'pending' : 'history';
+      const params = { page, per_page: perPage, tab: tabParam };
+      if (filterFromDate) params.from_date = filterFromDate;
+      if (filterToDate) params.to_date = filterToDate;
+      if (filterStatus) params.status = filterStatus;
+      if (filterEmpName) params.employee_name = filterEmpName;
+
+      const [res, empRes] = await Promise.all([
+        axios.get(`${API}/missed-punches`, { headers: getAuthHeaders(), params }),
+        isHR ? axios.get(`${API}/employees/all`, { headers: getAuthHeaders() }) : Promise.resolve({ data: [] })
+      ]);
+
+      // Handle both old (array) and new (paginated) response
+      if (Array.isArray(res.data)) {
+        setData(res.data);
+        setTotal(res.data.length);
+      } else {
+        setData(res.data.data || []);
+        setTotal(res.data.total || 0);
+        setPendingCount(res.data.pending_count ?? 0);
+        setHistoryCount(res.data.history_count ?? 0);
+      }
+      setEmployees(empRes.data || []);
+    } catch {
+      toast.error('Failed to load missed punch data');
+    } finally {
+      setLoading(false);
+    }
+  }, [page, perPage, activeTab, filterFromDate, filterToDate, filterStatus, filterEmpName]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Reset to page 1 when filters or tab change
+  useEffect(() => { setPage(1); }, [filterFromDate, filterToDate, filterStatus, filterEmpName, perPage, activeTab]);
+
+  // Clear bulk selection whenever the visible result set changes.
+  useEffect(() => { setSelectedIds(new Set()); }, [page, perPage, activeTab, filterFromDate, filterToDate, filterStatus, filterEmpName]);
+
+  const handleBulkApprove = async () => {
+    setBulkLoading(true);
+    try {
+      const res = await axios.put(`${API}/missed-punches/bulk-approve`, { ids: Array.from(selectedIds) }, { headers: getAuthHeaders() });
+      const d = res.data;
+      if (d.processed > 0) toast.success(`${d.processed} request${d.processed > 1 ? 's' : ''} approved successfully and applied to attendance.`);
+      if (d.skipped > 0) toast.warning(`${d.skipped} selected request(s) skipped (already processed or ineligible).`);
+      setShowBulkApprove(false); setSelectedIds(new Set()); fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Bulk approve failed'); }
+    finally { setBulkLoading(false); }
+  };
+
+  const handleBulkReject = async () => {
+    setBulkLoading(true);
+    try {
+      const res = await axios.put(`${API}/missed-punches/bulk-reject`, { ids: Array.from(selectedIds), reason: bulkReason || null }, { headers: getAuthHeaders() });
+      const d = res.data;
+      if (d.processed > 0) toast.success(`${d.processed} request${d.processed > 1 ? 's' : ''} rejected successfully.`);
+      if (d.skipped > 0) toast.warning(`${d.skipped} selected request(s) skipped (already processed or ineligible).`);
+      setShowBulkReject(false); setBulkReason(''); setSelectedIds(new Set()); fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Bulk reject failed'); }
+    finally { setBulkLoading(false); }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post(`${API}/missed-punches`, formData, { headers: getAuthHeaders() });
+      toast.success(formData.auto_approve ? 'Applied & Approved' : 'Applied for employee');
+      setShowApply(false);
+      setFormData({ employee_id: '', date: '', punch_type: 'Check-in', check_in_time: '', check_out_time: '', reason: '', auto_approve: false });
+      setEmpSearch('');
+      fetchData();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to apply');
+    }
+  };
+
+  // ----------------- Bulk Import handlers -----------------
+  const handleDownloadMpTemplate = async () => {
+    try {
+      const resp = await axios.get(`${API}/missed-punches/import-template`, { headers: getAuthHeaders(), responseType: 'blob' });
+      const url = window.URL.createObjectURL(new Blob([resp.data]));
+      const a = document.createElement('a');
+      a.href = url; a.download = 'missed_punches_import_template.xlsx';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to download template');
+    }
+  };
+
+  const handlePreviewMpFile = async (file) => {
+    if (!file) { setImportPreview(null); return; }
+    setPreviewLoading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const resp = await axios.post(`${API}/missed-punches/import/preview`, fd, { headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' } });
+      setImportPreview(resp.data);
+    } catch (err) {
+      setImportPreview(null);
+      toast.error(err.response?.data?.detail || 'Failed to preview file');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handleMpImportSubmit = async () => {
+    if (!importFile) { toast.error('Please select a .xlsx or .csv file'); return; }
+    setImportLoading(true);
+    setImportResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', importFile);
+      const resp = await axios.post(`${API}/missed-punches/bulk-import`, fd, { headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' } });
+      setImportResult(resp.data);
+      if (resp.data.success > 0) toast.success(`Imported ${resp.data.success} missed punch(es)`);
+      if (resp.data.failed > 0 || resp.data.skipped_duplicates > 0) toast.warning(`${resp.data.failed} failed, ${resp.data.skipped_duplicates} duplicate(s) skipped`);
+      fetchData();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Import failed');
+    } finally {
+      setImportLoading(false);
+    }
+  };
+
+  const handleDownloadMpErrorLog = () => {
+    if (!importResult || !importResult.errors || importResult.errors.length === 0) return;
+    const headers = ['Row', 'Email', 'Reason'];
+    const rows = importResult.errors.map(e => [e.row, e.email || '', (e.reason || '').replace(/"/g, '""')]);
+    const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `mp-import-errors-${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  };
+
+  const openApprove = async () => {
+    setApprovePreview(null);
+    setShowApprove(true);
+    try {
+      const resp = await axios.get(`${API}/missed-punches/${selected.id}/approval-preview`, { headers: getAuthHeaders() });
+      setApprovePreview(resp.data);
+    } catch (err) {
+      // Fall back to the request row already loaded — dialog still works.
+      setApprovePreview({
+        employee_name: selected.emp_name,
+        date: selected.date,
+        punch_type: selected.punch_type,
+        requested_check_in: selected.punch_type !== 'Check-out' ? formatTime(selected.check_in_time) : null,
+        requested_check_out: selected.punch_type !== 'Check-in' ? formatTime(selected.check_out_time) : null,
+        existing_check_in: null,
+        existing_check_out: null,
+      });
+    }
+  };
+
+  const handleApprove = async () => {
+    if (approving) return;
+    setApproving(true);
+    try {
+      await axios.put(`${API}/missed-punches/${selected.id}/approve`, {}, { headers: getAuthHeaders() });
+      const p = approvePreview || {};
+      const d = formatDate(p.date || selected.date);
+      if (p.punch_type === 'Check-in') {
+        toast.success(`Missed Punch request approved successfully. ${p.requested_check_in} has been applied as the employee's In-Time for ${d}.`);
+      } else if (p.punch_type === 'Check-out') {
+        toast.success(`Missed Punch request approved successfully. ${p.requested_check_out} has been applied as the employee's Out-Time for ${d}.`);
+      } else {
+        toast.success(`Missed Punch request approved successfully. The approved In-Time and Out-Time have been applied to the employee's attendance for ${d}.`);
+      }
+      setShowApprove(false);
+      setSelected(null);
+      setApprovePreview(null);
+      fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
+    finally { setApproving(false); }
+  };
+
+  const handleReject = async () => {
+    try {
+      await axios.put(`${API}/missed-punches/${selected.id}/reject`, { reason: rejectReason }, { headers: getAuthHeaders() });
+      toast.success('Rejected');
+      setShowReject(false);
+      setSelected(null);
+      setRejectReason('');
+      fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed'); }
+  };
+
+  const openEdit = (r) => {
+    setSelected(r);
+    // Backend stores datetimes — strip timezone for <input type="datetime-local">
+    const trim = (v) => (v ? String(v).slice(0, 16) : '');
+    setEditForm({
+      date: r.date || '',
+      punch_type: r.punch_type || 'Check-in',
+      check_in_time: trim(r.check_in_time),
+      check_out_time: trim(r.check_out_time),
+      reason: r.reason || '',
+    });
+    setShowEdit(true);
+  };
+
+  const handleEdit = async () => {
+    if (!selected) return;
+    if (!editForm.date || !editForm.reason) { toast.error('Date and reason are required'); return; }
+    setEditLoading(true);
+    try {
+      await axios.put(`${API}/missed-punches/${selected.id}`, {
+        employee_id: selected.employee_id,
+        date: editForm.date,
+        punch_type: editForm.punch_type,
+        check_in_time: editForm.check_in_time || null,
+        check_out_time: editForm.check_out_time || null,
+        reason: editForm.reason,
+      }, { headers: getAuthHeaders() });
+      toast.success('Request updated');
+      setShowEdit(false);
+      setSelected(null);
+      fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed to update'); }
+    finally { setEditLoading(false); }
+  };
+
+  const handleReset = async (r) => {
+    if (!r) return;
+    const ok = window.confirm(
+      `Reset this ${r.status} missed-punch for ${r.emp_name} (${r.date}) back to Pending?\n\n` +
+      `This will:\n• Restore the original biometric attendance values for that day\n• Clear approval & "applied" flags on the request\n• Allow you to re-process from a clean slate`
+    );
+    if (!ok) return;
+    try {
+      await axios.post(`${API}/missed-punches/${r.id}/reset`, { reason: 'manual reset' }, { headers: getAuthHeaders() });
+      toast.success('Request reset & attendance rolled back');
+      setSelected(null);
+      fetchData();
+    } catch (err) { toast.error(err.response?.data?.detail || 'Failed to reset'); }
+  };
+
+  const filteredEmployees = employees.filter(e =>
+    empSearch && e.full_name?.toLowerCase().includes(empSearch.toLowerCase())
+  ).slice(0, 8);
+
+  const statusColor = { pending: 'bg-amber-100 text-amber-700 border-amber-200', approved: 'bg-emerald-100 text-emerald-700 border-emerald-200', rejected: 'bg-red-100 text-red-700 border-red-200' };
+
+  const formatTime = (val) => {
+    if (!val) return '-';
+    if (val.includes('T')) {
+      const dt = new Date(val);
+      return dt.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true });
+    }
+    return val;
+  };
+
+  const totalPages = Math.ceil(total / perPage) || 1;
+
+  // Server already filtered records by tab; `data` contains only the active tab's rows
+  const activeRows = data;
+  const { sortedRows: sortedRowsMP, sortField: mpSortField, sortDir: mpSortDir, toggleSort: mpToggleSort } = useTableSort(activeRows);
+
+  // Bulk selection derived state — eligible = pending rows on the current page.
+  const isPendingTab = activeTab === 'requests';
+  const eligibleRows = sortedRowsMP.filter(r => r.status === 'pending');
+  const eligibleIds = eligibleRows.map(r => r.id);
+  const allSelected = eligibleIds.length > 0 && eligibleIds.every(id => selectedIds.has(id));
+  const toggleOne = (id) => setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleAll = () => setSelectedIds(prev => allSelected ? new Set() : new Set(eligibleIds));
+  const selectedRecords = activeRows.filter(r => selectedIds.has(r.id));
+  const showBulkCol = isPendingTab && isHR;
+
+  const renderTable = (items, showActions) => (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm table-premium">
+        <thead>
+          <tr className="bg-slate-50">
+            {showBulkCol && <th className="w-10 px-4 py-3"><input type="checkbox" checked={allSelected} onChange={toggleAll} className="rounded w-4 h-4 accent-[#063c88] cursor-pointer" data-testid="mp-select-all" aria-label="Select all" /></th>}
+            <SortableTh field="emp_name" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Employee</SortableTh>
+            <SortableTh field="date" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Date</SortableTh>
+            <SortableTh field="punch_type" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Type</SortableTh>
+            <SortableTh field="check_in_time" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Check-in</SortableTh>
+            <SortableTh field="check_out_time" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Check-out</SortableTh>
+            <SortableTh field="status" sortField={mpSortField} sortDir={mpSortDir} onSort={mpToggleSort} className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Status</SortableTh>
+            <th className="text-left px-4 py-3 text-xs font-semibold text-slate-600 uppercase">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sortedRowsMP.length === 0 ? (
+            <tr><td colSpan={showBulkCol ? 8 : 7} className="text-center py-8 text-slate-400">No records found</td></tr>
+          ) : sortedRowsMP.map(r => (
+            <tr key={r.id} className={`border-t border-slate-50 hover:bg-slate-50/50 ${selectedIds.has(r.id) ? 'bg-blue-50/60' : ''}`}>
+              {showBulkCol && <td className="px-4 py-3">{r.status === 'pending' ? <input type="checkbox" checked={selectedIds.has(r.id)} onChange={() => toggleOne(r.id)} className="rounded w-4 h-4 accent-[#063c88] cursor-pointer" data-testid={`mp-select-${r.id}`} aria-label="Select request" /> : null}</td>}
+              <td className="px-4 py-3 font-medium text-slate-900">{r.emp_name}</td>
+              <td className="px-4 py-3 text-slate-600">{formatDate(r.date)}</td>
+              <td className="px-4 py-3"><Badge variant="outline" className="text-xs">{r.punch_type}</Badge></td>
+              <td className="px-4 py-3 text-slate-600">{formatTime(r.check_in_time)}</td>
+              <td className="px-4 py-3 text-slate-600">{formatTime(r.check_out_time)}</td>
+              <td className="px-4 py-3"><Badge className={`${statusColor[r.status]} border text-xs`}>{r.status}</Badge></td>
+              <td className="px-4 py-3">
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => setSelected(r)} className="text-xs h-7" data-testid={`view-${r.id}`}>
+                    <Eye className="w-3.5 h-3.5 mr-1" /> View
+                  </Button>
+                  {isHR && (
+                    <Button variant="outline" size="sm" onClick={() => openEdit(r)} className="text-xs h-7 px-2 border-blue-300 text-blue-700 hover:bg-blue-50" data-testid={`edit-mp-${r.id}`} title="Edit">
+                      <Pencil className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
+                  {isHR && r.status !== 'pending' && (
+                    <Button variant="outline" size="sm" onClick={() => handleReset(r)} className="text-xs h-7 px-2 border-amber-300 text-amber-700 hover:bg-amber-50" data-testid={`reset-mp-${r.id}`} title="Reset to Pending — rolls back attendance">
+                      <Undo2 className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div className="space-y-6 animate-fade-in" data-testid="admin-missed-punch-page">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[#063c88] flex items-center justify-center">
+            <Clock className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Outfit' }}>Missed Punch Management</h1>
+            <p className="text-sm text-slate-500">Manage missed punch requests</p>
+          </div>
+        </div>
+        {isHR && (
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => { setImportFile(null); setImportResult(null); setImportPreview(null); setShowImport(true); }} className="rounded-xl border-[#063c88] text-[#063c88] hover:bg-[#063c88] hover:text-white" data-testid="admin-import-mp-btn">
+              <Upload className="w-4 h-4 mr-2" /> Import Missed Punch
+            </Button>
+            <Button onClick={() => setShowApply(true)} className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-xl" data-testid="admin-apply-missed-punch-btn"><Plus className="w-4 h-4 mr-2" /> Apply for Employee</Button>
+          </div>
+        )}
+      </div>
+
+      {/* Filters */}
+      <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm" data-testid="missed-punch-filters">
+        <div className="flex items-center gap-2 mb-3">
+          <Filter className="w-4 h-4 text-slate-500" />
+          <span className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Filters</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">From Date</label>
+            <DatePicker value={filterFromDate} onChange={(val) => setFilterFromDate(val)} className="h-9 bg-slate-50 rounded-xl text-sm" data-testid="filter-from-date" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">To Date</label>
+            <DatePicker value={filterToDate} onChange={(val) => setFilterToDate(val)} className="h-9 bg-slate-50 rounded-xl text-sm" data-testid="filter-to-date" />
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">Status</label>
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger className="h-9 bg-slate-50 rounded-xl text-sm" data-testid="filter-status">
+                <SelectValue placeholder="All" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all_status">All</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="approved">Approved</SelectItem>
+                <SelectItem value="rejected">Rejected</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <label className="text-xs text-slate-500 mb-1 block">Employee</label>
+            <Input value={filterEmpName} onChange={e => setFilterEmpName(e.target.value)} placeholder="Search employee..." className="h-9 bg-slate-50 rounded-xl text-sm" data-testid="filter-employee" />
+          </div>
+        </div>
+        {(filterFromDate || filterToDate || filterStatus || filterEmpName) && (
+          <Button variant="ghost" size="sm" className="mt-2 text-xs h-7 text-slate-500" onClick={() => { setFilterFromDate(''); setFilterToDate(''); setFilterStatus(''); setFilterEmpName(''); }} data-testid="clear-filters">
+            Clear Filters
+          </Button>
+        )}
+      </div>
+
+      {showBulkCol && selectedIds.size > 0 && (
+        <div className="flex items-center justify-between gap-3 bg-[#063c88] text-white rounded-2xl px-5 py-3 shadow-md animate-fade-in" data-testid="mp-bulk-bar">
+          <span className="text-sm font-medium" data-testid="mp-bulk-count">{selectedIds.size} Request{selectedIds.size > 1 ? 's' : ''} Selected</span>
+          <div className="flex items-center gap-2">
+            <Button size="sm" onClick={() => setShowBulkApprove(true)} className="bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg h-8" data-testid="mp-bulk-approve-btn"><Check className="w-4 h-4 mr-1" /> Approve Selected</Button>
+            <Button size="sm" onClick={() => { setBulkReason(''); setShowBulkReject(true); }} className="bg-red-500 hover:bg-red-600 text-white rounded-lg h-8" data-testid="mp-bulk-reject-btn"><X className="w-4 h-4 mr-1" /> Reject Selected</Button>
+            <Button size="sm" variant="outline" onClick={() => setSelectedIds(new Set())} className="rounded-lg h-8 bg-transparent border-white/40 text-white hover:bg-white/10" data-testid="mp-bulk-clear-btn">Clear Selection</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Data Table with Tabs */}
+      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+          <div className="border-b border-slate-100 px-4">
+            <TabsList className="bg-transparent h-12">
+              <TabsTrigger value="requests" className="text-sm data-[state=active]:border-b-2 data-[state=active]:border-[#063c88]" data-testid="tab-requests">Pending ({pendingCount})</TabsTrigger>
+              <TabsTrigger value="history" className="text-sm data-[state=active]:border-b-2 data-[state=active]:border-[#063c88]" data-testid="tab-history">History ({historyCount})</TabsTrigger>
+            </TabsList>
+          </div>
+          <TabsContent value="requests" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(activeRows, isHR)}</TabsContent>
+          <TabsContent value="history" className="mt-0">{loading ? <div className="flex items-center justify-center h-48"><div className="w-10 h-10 border-2 border-[#063c88] border-t-transparent rounded-full animate-spin" /></div> : renderTable(activeRows, false)}</TabsContent>
+        </Tabs>
+      </div>
+
+      {/* Pagination */}
+      <div className="flex items-center justify-between px-1" data-testid="pagination-controls">
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-500">Total: {total} records</span>
+          <PageSizeSelector
+            value={perPage}
+            onChange={(v) => setPerPage(v)}
+            testId="missed-punch-rows-per-page"
+            className="h-8 w-[88px] text-xs bg-white border-slate-200 rounded-lg"
+            showLabel={false}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1} className="h-8 w-8 p-0" data-testid="prev-page">
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+          <span className="text-xs text-slate-600 px-2">Page {page} of {totalPages}</span>
+          <Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="h-8 w-8 p-0" data-testid="next-page">
+            <ChevronRight className="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Detail Sheet */}
+      <Sheet open={!!selected} onOpenChange={(open) => { if (!open) setSelected(null); }}>
+        <SheetContent className="sm:max-w-md overflow-y-auto" data-testid="missed-punch-detail">
+          {selected && (
+            <>
+              <SheetHeader>
+                <SheetTitle>Missed Punch Details</SheetTitle>
+              </SheetHeader>
+              <div className="mt-6 space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div><p className="text-xs text-slate-500">Employee</p><p className="text-sm font-medium">{selected.emp_name}</p></div>
+                  <div><p className="text-xs text-slate-500">Date</p><p className="text-sm font-medium">{formatDate(selected.date)}</p></div>
+                  <div><p className="text-xs text-slate-500">Punch Type</p><p className="text-sm font-medium">{selected.punch_type}</p></div>
+                  <div><p className="text-xs text-slate-500">Status</p><Badge className={`${statusColor[selected.status]} border text-xs`}>{selected.status}</Badge></div>
+                  {selected.check_in_time && <div><p className="text-xs text-slate-500">Check-in</p><p className="text-sm font-medium">{formatTime(selected.check_in_time)}</p></div>}
+                  {selected.check_out_time && <div><p className="text-xs text-slate-500">Check-out</p><p className="text-sm font-medium">{formatTime(selected.check_out_time)}</p></div>}
+                </div>
+                <div><p className="text-xs text-slate-500">Reason</p><p className="text-sm bg-slate-50 p-3 rounded-xl">{selected.reason}</p></div>
+              </div>
+            {selected.status === 'pending' && isHR && <div className="flex gap-3 pt-4">
+              <Button onClick={openApprove} className="flex-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg" data-testid="approve-btn"><Check className="w-4 h-4 mr-2" /> Approve</Button>
+              <Button onClick={() => setShowReject(true)} className="flex-1 bg-red-500 hover:bg-red-600 text-white rounded-lg" data-testid="reject-btn"><X className="w-4 h-4 mr-2" /> Reject</Button>
+            </div>}
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* Apply Dialog - JOB 1: Datetime pickers */}
+      <Dialog open={showApply} onOpenChange={setShowApply}>
+        <DialogContent className="sm:max-w-lg" data-testid="apply-missed-punch-dialog">
+          <DialogHeader><DialogTitle>Apply Missed Punch</DialogTitle></DialogHeader>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Employee autocomplete */}
+            <div className="relative">
+              <label className="text-xs font-medium text-slate-700 mb-1 block">Employee</label>
+              <Input
+                value={empSearch}
+                onChange={e => { setEmpSearch(e.target.value); setEmpDropdownOpen(true); }}
+                onFocus={() => empSearch && setEmpDropdownOpen(true)}
+                placeholder="Search employee..."
+                className="bg-slate-50 rounded-xl"
+                data-testid="emp-search-input"
+              />
+              {empDropdownOpen && filteredEmployees.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-48 overflow-y-auto">
+                  {filteredEmployees.map(emp => (
+                    <button key={emp.id} type="button" onClick={() => { setFormData(f => ({ ...f, employee_id: emp.id })); setEmpSearch(emp.full_name); setEmpDropdownOpen(false); }} className="w-full text-left px-3 py-2 text-sm hover:bg-slate-50 border-b border-slate-50 last:border-0" data-testid={`emp-option-${emp.id}`}>
+                      <span className="font-medium">{emp.full_name}</span>
+                      <span className="text-xs text-slate-400 ml-2">{emp.department}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-700 mb-1 block">Date</label>
+              <DatePicker value={formData.date} onChange={(val) => setFormData(f => ({ ...f, date: val }))} className="bg-slate-50 rounded-xl" data-testid="missed-date" />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-700 mb-1 block">Punch Type</label>
+              <Select value={formData.punch_type} onValueChange={v => setFormData(f => ({ ...f, punch_type: v }))}>
+                <SelectTrigger className="bg-slate-50 rounded-xl" data-testid="missed-punch-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Check-in">Check-in</SelectItem>
+                  <SelectItem value="Check-out">Check-out</SelectItem>
+                  <SelectItem value="Both">Both</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {(formData.punch_type === 'Check-in' || formData.punch_type === 'Both') && (
+              <div>
+                <label className="text-xs font-medium text-slate-700 mb-1 block">Check-in Date & Time</label>
+                <Input type="datetime-local" value={formData.check_in_time} onChange={e => setFormData(f => ({ ...f, check_in_time: e.target.value }))} required className="bg-slate-50 rounded-xl" data-testid="check-in-datetime" />
+              </div>
+            )}
+            {(formData.punch_type === 'Check-out' || formData.punch_type === 'Both') && (
+              <div>
+                <label className="text-xs font-medium text-slate-700 mb-1 block">Check-out Date & Time</label>
+                <Input type="datetime-local" value={formData.check_out_time} onChange={e => setFormData(f => ({ ...f, check_out_time: e.target.value }))} required className="bg-slate-50 rounded-xl" data-testid="check-out-datetime" />
+              </div>
+            )}
+            <div>
+              <label className="text-xs font-medium text-slate-700 mb-1 block">Reason</label>
+              <Textarea value={formData.reason} onChange={e => setFormData(f => ({ ...f, reason: e.target.value }))} required placeholder="Explain reason..." className="bg-slate-50 rounded-xl" data-testid="missed-reason" />
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="auto_approve" checked={formData.auto_approve} onChange={e => setFormData(f => ({ ...f, auto_approve: e.target.checked }))} className="rounded" />
+              <label htmlFor="auto_approve" className="text-xs text-slate-600">Auto-approve & update attendance</label>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setShowApply(false)}>Cancel</Button>
+              <Button type="submit" className="bg-[#063c88] hover:bg-[#052d66] text-white" data-testid="submit-missed-punch">Submit</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* Approve Confirmation — dynamic, backend-validated preview */}
+      <Dialog open={showApprove} onOpenChange={(o) => { if (!approving) { setShowApprove(o); if (!o) setApprovePreview(null); } }}>
+        <DialogContent className="sm:max-w-md" data-testid="approve-dialog">
+          <DialogHeader>
+            <DialogTitle>
+              {approvePreview && (
+                (approvePreview.punch_type === 'Check-in' && approvePreview.existing_check_in) ||
+                (approvePreview.punch_type === 'Check-out' && approvePreview.existing_check_out) ||
+                (approvePreview.punch_type === 'Both' && (approvePreview.existing_check_in || approvePreview.existing_check_out))
+              ) ? 'Confirm Punch-Time Correction' : 'Confirm Missed Punch Approval'}
+            </DialogTitle>
+          </DialogHeader>
+          {!approvePreview ? (
+            <p className="text-sm text-slate-500 py-4 text-center">Loading request details…</p>
+          ) : (
+            <div className="space-y-3 text-sm" data-testid="approve-preview">
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 rounded-xl p-3">
+                <div><p className="text-xs text-slate-500">Employee</p><p className="font-medium">{approvePreview.employee_name}</p></div>
+                <div><p className="text-xs text-slate-500">Attendance Date</p><p className="font-medium">{formatDate(approvePreview.date)}</p></div>
+                {approvePreview.requested_check_in && approvePreview.existing_check_in && (
+                  <div><p className="text-xs text-slate-500">Existing In-Time</p><p className="font-medium">{approvePreview.existing_check_in}</p></div>
+                )}
+                {approvePreview.requested_check_in && (
+                  <div><p className="text-xs text-slate-500">Approved In-Time</p><p className="font-medium text-emerald-700">{approvePreview.requested_check_in}</p></div>
+                )}
+                {approvePreview.requested_check_out && approvePreview.existing_check_out && (
+                  <div><p className="text-xs text-slate-500">Existing Out-Time</p><p className="font-medium">{approvePreview.existing_check_out}</p></div>
+                )}
+                {approvePreview.requested_check_out && (
+                  <div><p className="text-xs text-slate-500">Approved Out-Time</p><p className="font-medium text-emerald-700">{approvePreview.requested_check_out}</p></div>
+                )}
+              </div>
+              <p className="text-slate-600">
+                {approvePreview.punch_type === 'Check-in' && (
+                  approvePreview.existing_check_in
+                    ? <>By approving this request, the requested In-Time will replace the existing In-Time for {formatDate(approvePreview.date)}. Attendance will be recalculated using the approved value.</>
+                    : <>By approving this request, {approvePreview.requested_check_in} will be treated as the employee's final In-Time for {formatDate(approvePreview.date)}. The existing Out-Time, if available, will be retained, and attendance will be recalculated using the approved In-Time.</>
+                )}
+                {approvePreview.punch_type === 'Check-out' && (
+                  approvePreview.existing_check_out
+                    ? <>By approving this request, the requested Out-Time will replace the existing Out-Time for {formatDate(approvePreview.date)}. Attendance will be recalculated using the approved value.</>
+                    : <>By approving this request, {approvePreview.requested_check_out} will be treated as the employee's final Out-Time for {formatDate(approvePreview.date)}. The existing In-Time, if available, will be retained, and attendance will be recalculated using the approved Out-Time.</>
+                )}
+                {approvePreview.punch_type === 'Both' && (
+                  <>By approving this request, the above In-Time and Out-Time will become the final attendance timings for {formatDate(approvePreview.date)}. These approved values will be used for attendance calculation instead of the current calculated In-Time and Out-Time for that day.</>
+                )}
+              </p>
+              <p className="text-slate-800 font-medium">Do you want to continue?</p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setShowApprove(false); setApprovePreview(null); }} disabled={approving} data-testid="cancel-approve">Cancel</Button>
+            <Button onClick={handleApprove} className="bg-emerald-500 hover:bg-emerald-600 text-white" disabled={approving || !approvePreview} data-testid="confirm-approve">
+              {approving ? 'Approving…' : 'Confirm Approval'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reject Confirmation */}
+      <Dialog open={showReject} onOpenChange={setShowReject}>
+        <DialogContent className="sm:max-w-sm" data-testid="reject-dialog">
+          <DialogHeader><DialogTitle>Reject Missed Punch</DialogTitle></DialogHeader>
+          <Textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Reason for rejection..." className="bg-slate-50 rounded-xl" data-testid="reject-reason" />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowReject(false)}>Cancel</Button>
+            <Button onClick={handleReject} className="bg-red-500 hover:bg-red-600 text-white" data-testid="confirm-reject">Reject</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Import Missed Punch Dialog */}
+      <Dialog open={showImport} onOpenChange={(o) => { setShowImport(o); if (!o) { setImportFile(null); setImportResult(null); setImportPreview(null); } }}>
+        <DialogContent className="bg-[#fffdf7] rounded-2xl max-w-2xl" data-testid="mp-import-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2" style={{ fontFamily: 'Outfit' }}>
+              <Upload className="w-5 h-5 text-[#063c88]" /> Import Missed Punch
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <p className="text-sm text-slate-600">Upload an Excel/CSV file. Sheet column names can vary — they are auto-mapped to system fields. At least one of <span className="font-medium">In Time</span> / <span className="font-medium">Out Time</span> is required per row.</p>
+
+            <div className="flex items-center justify-between p-3 rounded-lg bg-blue-50 border border-blue-200">
+              <p className="text-sm text-slate-700">Need the format? Download the sample template.</p>
+              <Button size="sm" variant="outline" onClick={handleDownloadMpTemplate} className="rounded-lg border-[#063c88] text-[#063c88]" data-testid="mp-import-template-btn">
+                <Download className="w-4 h-4 mr-1" /> Template
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Upload File (.xlsx or .csv)</label>
+              <Input
+                type="file"
+                accept=".xlsx,.csv"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null;
+                  setImportFile(f);
+                  setImportResult(null);
+                  setImportPreview(null);
+                  if (f) handlePreviewMpFile(f);
+                }}
+                className="rounded-lg cursor-pointer"
+                data-testid="mp-import-file-input"
+              />
+              {importFile && <p className="text-xs text-slate-500">Selected: <span className="font-medium">{importFile.name}</span></p>}
+            </div>
+
+            {previewLoading && <p className="text-sm text-slate-500">Detecting columns…</p>}
+
+            {importPreview && !importResult && (
+              <div className="border border-slate-200 rounded-lg p-3 bg-white space-y-2" data-testid="mp-import-preview">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-slate-700">Detected columns ({importPreview.headers.length}) · {importPreview.total_rows} row(s)</p>
+                  {importPreview.ready_to_import
+                    ? <Badge className="bg-emerald-100 text-emerald-700 border-emerald-200">Ready to import</Badge>
+                    : <Badge className="bg-red-100 text-red-700 border-red-200">Missing required fields</Badge>}
+                </div>
+                {!importPreview.ready_to_import && (
+                  <p className="text-xs text-red-600">Missing required: {importPreview.missing_required.join(', ')}</p>
+                )}
+                <div className="space-y-1">
+                  <p className="text-xs text-slate-500 font-medium">Column mapping (sheet → system field)</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 text-xs">
+                    {Object.entries(importPreview.column_mapping || {}).map(([sheetCol, dbField]) => (
+                      <div key={sheetCol} className="flex items-center gap-2 px-2 py-1 rounded bg-emerald-50 border border-emerald-200">
+                        <span className="font-medium text-slate-700">{sheetCol}</span>
+                        <span className="text-emerald-600">→</span>
+                        <span className="text-emerald-700 font-mono">{dbField}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {importPreview.ignored_columns && importPreview.ignored_columns.length > 0 && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-amber-700 font-medium">Ignored columns (no matching field)</p>
+                    <div className="flex flex-wrap gap-1">
+                      {importPreview.ignored_columns.map(c => <span key={c} className="px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 text-xs">{c}</span>)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {importResult && (
+              <div className="space-y-3" data-testid="mp-import-result">
+                <div className="grid grid-cols-4 gap-2">
+                  <div className="p-3 rounded-lg bg-slate-100 text-center">
+                    <p className="text-xs text-slate-500">Total</p>
+                    <p className="text-lg font-bold text-slate-900" data-testid="mp-import-total">{importResult.total}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-emerald-50 text-center">
+                    <p className="text-xs text-emerald-700">Success</p>
+                    <p className="text-lg font-bold text-emerald-700" data-testid="mp-import-success">{importResult.success}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-amber-50 text-center">
+                    <p className="text-xs text-amber-700">Duplicates</p>
+                    <p className="text-lg font-bold text-amber-700" data-testid="mp-import-duplicates">{importResult.skipped_duplicates}</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-red-50 text-center">
+                    <p className="text-xs text-red-700">Failed</p>
+                    <p className="text-lg font-bold text-red-700" data-testid="mp-import-failed">{importResult.failed}</p>
+                  </div>
+                </div>
+                {importResult.ignored_columns && importResult.ignored_columns.length > 0 && (
+                  <div className="text-xs text-slate-600 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                    <span className="font-medium">Ignored sheet columns (unmapped):</span> {importResult.ignored_columns.join(', ')}
+                  </div>
+                )}
+                {importResult.errors && importResult.errors.length > 0 && (
+                  <div className="border border-slate-200 rounded-lg p-3 bg-white max-h-48 overflow-auto">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-medium text-slate-700">Errors / Skipped ({importResult.errors.length})</p>
+                      <Button size="sm" variant="outline" onClick={handleDownloadMpErrorLog} className="h-7 text-xs rounded-lg" data-testid="mp-import-download-errors-btn">
+                        <Download className="w-3 h-3 mr-1" /> Error log
+                      </Button>
+                    </div>
+                    <div className="space-y-1 text-xs">
+                      {importResult.errors.slice(0, 50).map((err, i) => (
+                        <div key={i} className="flex gap-2 text-slate-600">
+                          <span className="font-mono text-slate-400">Row {err.row}</span>
+                          <span className="font-mono text-slate-500">{err.email || '—'}</span>
+                          <span>{err.reason}</span>
+                        </div>
+                      ))}
+                      {importResult.errors.length > 50 && (
+                        <p className="text-slate-400 italic">…and {importResult.errors.length - 50} more (download log to see all)</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowImport(false)} className="rounded-lg" data-testid="mp-import-close-btn">Close</Button>
+            <Button
+              onClick={handleMpImportSubmit}
+              disabled={!importFile || importLoading || (importPreview && !importPreview.ready_to_import)}
+              className="bg-[#063c88] hover:bg-[#052d66] text-white rounded-lg"
+              data-testid="mp-import-submit-btn"
+            >
+              {importLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : (<><Upload className="w-4 h-4 mr-1" /> Upload &amp; Import</>)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Approve Dialog (no LOP — applies punch times to attendance) */}
+      <Dialog open={showBulkApprove} onOpenChange={(o) => { if (!bulkLoading) setShowBulkApprove(o); }}>
+        <DialogContent className="sm:max-w-lg" data-testid="mp-bulk-approve-dialog">
+          <DialogHeader><DialogTitle className="flex items-center gap-2"><Check className="w-5 h-5 text-emerald-500" /> Approve Selected Requests</DialogTitle></DialogHeader>
+          <div className="py-2 space-y-3">
+            <p className="text-sm text-slate-600">You are about to approve <span className="font-medium">{selectedRecords.length}</span> selected missed-punch request{selectedRecords.length > 1 ? 's' : ''}. The requested punch times will be applied to attendance for each eligible request.</p>
+            <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100" data-testid="mp-bulk-approve-list">
+              {selectedRecords.map((r, i) => (
+                <div key={r.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span className="text-slate-700">{i + 1}. <span className="font-medium">{r.emp_name}</span> — {r.punch_type}</span>
+                  <span className="text-slate-500">{formatDate(r.date)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBulkApprove(false)} disabled={bulkLoading}>Cancel</Button>
+            <Button onClick={handleBulkApprove} disabled={bulkLoading} className="bg-emerald-500 hover:bg-emerald-600 text-white" data-testid="mp-bulk-approve-confirm">{bulkLoading ? 'Approving…' : `Approve ${selectedRecords.length} Request${selectedRecords.length > 1 ? 's' : ''}`}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk Reject Dialog */}
+      <Dialog open={showBulkReject} onOpenChange={(o) => { if (!bulkLoading) setShowBulkReject(o); }}>
+        <DialogContent className="sm:max-w-lg" data-testid="mp-bulk-reject-dialog">
+          <DialogHeader><DialogTitle>Reject Selected Requests</DialogTitle></DialogHeader>
+          <div className="py-2 space-y-3">
+            <p className="text-sm text-slate-600">Are you sure you want to reject these <span className="font-medium">{selectedRecords.length}</span> selected request{selectedRecords.length > 1 ? 's' : ''}?</p>
+            <Textarea value={bulkReason} onChange={e => setBulkReason(e.target.value)} placeholder="Reason (optional)..." className="bg-slate-50 rounded-xl" data-testid="mp-bulk-reject-reason" />
+            <div className="max-h-52 overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100" data-testid="mp-bulk-reject-list">
+              {selectedRecords.map((r, i) => (
+                <div key={r.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span className="text-slate-700">{i + 1}. <span className="font-medium">{r.emp_name}</span> — {r.punch_type}</span>
+                  <span className="text-slate-500">{formatDate(r.date)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowBulkReject(false)} disabled={bulkLoading}>Cancel</Button>
+            <Button onClick={handleBulkReject} disabled={bulkLoading} className="bg-red-500 hover:bg-red-600 text-white" data-testid="mp-bulk-reject-confirm">{bulkLoading ? 'Rejecting…' : `Reject ${selectedRecords.length} Request${selectedRecords.length > 1 ? 's' : ''}`}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Dialog (HR) - any status */}
+      <Dialog open={showEdit} onOpenChange={setShowEdit}>
+        <DialogContent className="sm:max-w-lg" data-testid="edit-mp-dialog">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2"><Pencil className="w-5 h-5 text-[#063c88]" /> Edit Missed Punch</DialogTitle>
+          </DialogHeader>
+          {selected && (
+            <div className="space-y-4 py-2">
+              <p className="text-sm"><span className="text-slate-500">Employee:</span> <span className="font-medium">{selected.emp_name}</span> — <Badge className={`${statusColor[selected.status]} border text-xs`}>{selected.status}</Badge></p>
+              <div>
+                <label className="text-xs font-medium text-slate-700 mb-1 block">Date</label>
+                <DatePicker value={editForm.date} onChange={(val) => setEditForm(f => ({ ...f, date: val }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-date" />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-700 mb-1 block">Punch Type</label>
+                <Select value={editForm.punch_type} onValueChange={v => setEditForm(f => ({ ...f, punch_type: v }))}>
+                  <SelectTrigger className="bg-slate-50 rounded-xl" data-testid="edit-mp-type"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="Check-in">Check-in</SelectItem>
+                    <SelectItem value="Check-out">Check-out</SelectItem>
+                    <SelectItem value="Both">Both</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {(editForm.punch_type === 'Check-in' || editForm.punch_type === 'Both') && (
+                <div>
+                  <label className="text-xs font-medium text-slate-700 mb-1 block">Check-in Date &amp; Time</label>
+                  <Input type="datetime-local" value={editForm.check_in_time} onChange={e => setEditForm(f => ({ ...f, check_in_time: e.target.value }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-checkin" />
+                </div>
+              )}
+              {(editForm.punch_type === 'Check-out' || editForm.punch_type === 'Both') && (
+                <div>
+                  <label className="text-xs font-medium text-slate-700 mb-1 block">Check-out Date &amp; Time</label>
+                  <Input type="datetime-local" value={editForm.check_out_time} onChange={e => setEditForm(f => ({ ...f, check_out_time: e.target.value }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-checkout" />
+                </div>
+              )}
+              <div>
+                <label className="text-xs font-medium text-slate-700 mb-1 block">Reason</label>
+                <Textarea value={editForm.reason} onChange={e => setEditForm(f => ({ ...f, reason: e.target.value }))} className="bg-slate-50 rounded-xl" data-testid="edit-mp-reason" />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEdit(false)} disabled={editLoading}>Cancel</Button>
+            <Button onClick={handleEdit} disabled={editLoading} className="bg-[#063c88] hover:bg-[#052d66] text-white" data-testid="confirm-edit-mp">
+              {editLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};
+
+export default AdminMissedPunch;

@@ -1,0 +1,27 @@
+{
+  "summary": "Verified Employee 'My Documents' onboarding upload/re-upload flow end-to-end. Backend pytest 7/7 passed (my-status returns 9 docs with correct state; verified doc blocked with 400 'already approved'; rejected pan_card re-upload succeeds and clears rejection_reason; not_uploaded photo upload succeeds; HR fan-out creates in-app notifications with link=/verification using 'uploaded'/'re-uploaded' verbs; dashboard/stats warm < 2s). Frontend UI verified: kasper sees 'My Documents' in sidebar (visible during 14-day bypass), Onboarding Documents section renders all 9 doc rows with correct status badges (Approved/green/Locked for Aadhaar, Rejected/red + reason + Re-upload for PAN, Not Uploaded + Upload for fresh docs, Pending Review + Replace for already-uploaded). Admin /verification page is unaffected and lists Kasper (EMP0050) 'In Progress' at the top.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_employee_my_documents.py",
+    "/app/test_reports/pytest/my_documents_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Cold-start /api/auth/login is ~33s (warm ~0.4s) and cold /api/dashboard/stats is ~32s (warm 0.8-1.8s). Warm path meets the <2s SLO requested by this task, but the cold path is a concern for users hitting the app after idle. Consider a lightweight keep-warm ping or background warmup of the Mongo/aggregation pipelines.",
+    "server.py is 13,698 lines — the >700-line guideline is heavily violated; modular split (auth, onboarding, dashboard, payroll, attendance) would massively help maintainability.",
+    "Notification fan-out in upload_onboarding_document is fully wrapped in try/except (good — never fails the upload), but HR email send is hardcoded to a single address 'hr@blubridge.com'. If the org adds more HR mailboxes this becomes a stale config; consider reading from settings/env.",
+    "On the FE EmployeeDocuments page, the 'photo.jpg / voter_id.jpg' rows show generic Cloudinary file names because we POSTed synthetic data — this is expected for testing but in prod the file_name comes from the real upload which is fine.",
+    "EmployeeLayout.js correctly removed docsBypassed filter for 'My Documents'; the comment block at line 59-62 explains the intent clearly — keep it on future refactors so the sidebar entry isn't accidentally re-hidden."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_employee_my_documents.py (new — 7 tests)"
+  ],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% on all verified My Documents flows + Verification page render"},
+  "test_credentials": "admin/pass123 (HR), kasper/pass123 (employee EMP0050)",
+  "seed_data_creation": "Test-only synthetic Cloudinary URLs posted to pan_card/photo/voter_id for kasper. After tests, pan_card was reset to 'rejected' (with original reason 'Image is blurry. Please re-upload a clearer scan.') to preserve a useful mixed-state for the next iteration. photo and voter_id remain in 'uploaded' state pointing to fake URLs — main agent may want to reset these if a clean state is required, but task notes said terminal state is flexible.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Kasper's current doc state after this session: aadhaar=verified, pan=rejected (reset), passport/education/experience/offer_letter/relieving_letter=not_uploaded, photo/voter_id=uploaded (synthetic URLs). The /api/onboarding/upload-document endpoint accepts {document_type,file_url,file_public_id,file_name} — does NOT require a real Cloudinary upload for backend coverage. HR notification API key in user.notifications: title, link='/verification', verb 'uploaded' vs 're-uploaded' (controlled by prior status==rejected). Token returned by /api/auth/login lives under key 'token' (not access_token).",
+  "rca of the issue": "N/A — no bugs found. All flows behave per spec."
+}

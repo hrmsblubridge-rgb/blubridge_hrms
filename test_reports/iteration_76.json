@@ -1,0 +1,25 @@
+{
+  "summary": "Iter-76 BRSF Star Reward regression verified end-to-end. Backend (pytest, 8/8): N03 uses duration equivalents (system_note 'Emergency leave equivalent X day(s)…'), value strictly 0 (<=2.0) or -3 (>2.0) — no -6/-9 anywhere; N03 children each carry equivalent 0.5 or 1.0. N01 lists ALL leave records regardless of type (Adwaid Aug-2026 has 8 children: 2 Preplanned, 5 Paid, 1 Emergency), each child exposes leave_validity + reason + value in {0,-1}. child-override endpoint rejects -2/1/0.5 (400) and accepts -1/0, reset works. Overall Star API returns active-first then inactive with names ascending within each group; Sep-2026 recalculate blocked (400); Auto Calculate for Aug-2026 idempotent (no net_total drift). Frontend (Playwright on preview URL): N01 child grid renders exactly the required 12 columns (Leave Date/Type/Duration/Applied Date/Applied Time/Leave Validity/Notes/System Star/Override/Final Star/Status/Action); all dates DD-MM-YYYY and times hh:mm AM/PM (0 ISO leaks, 0 24h times in the whole detail HTML). Notes eye buttons present with data-testid=brsf-reason-leave:{id}, dialog shows 'Leave Details — 22-08-2026', 'Employee leave reason', 'System decision' as separate blocks. N03 header label: 'Emergency leave equivalent 0.5 day(s) (Full Day 1.0 / Half Day 0.5); up to 2.0 allowed'. Overall Star tab: 21 Active first then 4 Inactive badges ('Inactive 07-08-2026', 'Inactive 21-07-2026', 'Inactive 15-07-2026', 'Inactive 11-07-2026') — DD-MM-YYYY confirmed, 0 ISO leaks. Unit probe /app/backend/tests/n01_precedence_probe.py: 13/13 N01 + 5/5 N03 cases still PASS.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_brsf_iter76.py",
+    "/app/backend/tests/n01_precedence_probe.py",
+    "/app/test_reports/pytest/iter76_brsf.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is still ~20k lines — not this iteration's fault but continues to worsen; brsf_stars.py at 857 lines is approaching the 700-line threshold.",
+    "brsf_stars.py:24 imports api_router from server, and brsf_overall.py:16 imports from server — the circular-import warning ('BRSF star module load failed: cannot import name _month_is_completed …') printed by the n01_precedence_probe when it imports brsf_stars stand-alone is harmless in-app (server imports brsf_stars in order) but indicates the module is only usable inside the running FastAPI process.",
+    "N01 child value validation currently reflects the {0,-1} rule; confirm the same rule is enforced on parent overrides for the N01 code (parent should still support the full negative cap). Not observed to break, worth an explicit unit test.",
+    "brsf_child_override returns 400 with a clean detail on out-of-range values; consider unifying to 422 with Pydantic validation for consistency with the rest of the API surface."
+  ],
+  "updated_files": ["/app/backend/tests/test_brsf_iter76.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin / HrAdmin786$ (localhost:8001 used for pytest — preview URL still blocks python-requests via Cloudflare; browser UI test uses the preview URL and works)",
+  "seed_data_creation": "None. test_n01_child_override_rejects_bad_values applies a temporary override=-1 to one N01 child then immediately posts /child-override/reset in the same test, restoring the original state. No leaves created, no employees modified, no rows left over.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Preview URL (blank-tab-debug.preview.emergentagent.com) blocks python-requests via Cloudflare — for backend pytest use http://localhost:8001 (already the default in test_brsf_iter76.py). Login via localhost takes ~40s (bcrypt + Atlas), so keep auth timeout >=90s. Opening an employee's 14-criteria detail on the UI takes 8-20s — wait for [data-testid='brsf-grid']. Aug-2026 is the latest completed month (today is 04-Sep-2026). Adwaid Suresh's Aug-2026 detail is the canonical N01/N03 fixture (8 leave records, one emergency First Half on 31-08-2026 giving 0.5 equivalent). BRSF child-override request shape: PUT /api/brsf/stars/{line_id}/child-override with body {\"key\": <system_children[].key>, \"value\": 0|-1, \"note\": \"...\"}. Overall report endpoint is /api/brsf/overall?from_month=YYYY-MM&to_month=YYYY-MM (not /overall-star). Employee stars endpoint requires BOTH employee_id and month query params; iterate over /api/brsf/summary rows.",
+  "rca of the issue": "n/a — no bugs observed this iteration."
+}

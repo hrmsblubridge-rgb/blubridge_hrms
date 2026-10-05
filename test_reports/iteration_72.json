@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 72 — BRSF Excel/CSV Export & Import verified end-to-end. Backend: 13/13 pytest cases PASSED in /app/backend/tests/test_brsf_excel_import.py against http://localhost:8001 covering (1) XLSX structural checks — merged E1:J1='Positive Stars' and K1:R1='Negative Stars', vertical A:D + S:U merges, freeze_panes='A3', real Excel formulas =SUM(E{r}:J{r}), =SUM(K{r}:R{r}), =S{r}+T{r} on every one of the 25 data rows, hidden _BRSF_Metadata sheet with the required 5-column header and matching month; (2) CSV header ordering and month scoping (August export ≠ September export in metadata); (3) RBAC — employee token (user/pass123) is 403 on GET /api/brsf/export (xlsx and csv), POST /api/brsf/import/preview, POST /api/brsf/import/confirm; (4) Wrong-month guard — Sep file previewed with month=2026-08 returns 400 with 'September' in detail; (5) Full round trip — export → set G3(P02) to a valid value (2), preview shows 1 Valid change with target='manual' + existing/final match, confirm applies (200), re-confirm returns 400, re-export shows imported value and S-column formula intact; (6) Audit — GET /api/brsf/audit returns an entry with action='Excel Import', import_batch_id matching, new_value=target, reason mentioning the filename; (7) Override survives Auto Calculate — POST /api/brsf/recalculate then GET /api/brsf/stars still shows manual_value=target with entry_mode='monthly'; (8) CSV round trip — edited CSV preview labels source='CSV Import', confirm applies the change and manual_value updates accordingly. Frontend (HR admin, /star-reward Employees tab, Sep-2026): the top controls show exactly ONE data-testid='brsf-month-picker' plus brsf-export-xlsx, brsf-export-csv, brsf-import-btn, brsf-import-input alongside the existing Auto Calculate button (screenshot in output). Clicking Export Excel and Export CSV triggers browser downloads with month-named filenames 'BRSF_Star_Reward_September_2026.xlsx/.csv'. Uploading a pre-edited xlsx (G3=+2 Performance valid, F4=5 Innovation invalid) opens brsf-import-preview-dialog with brsf-import-summary tiles reading '25 Employees in File / 25 Valid Employees / 1 Changed Values / 348 No Change / 1 Errors / 0 Skipped', one Valid row 'Adhitya Charan · P02 · Performance · 0 → 2' and one Invalid row 'Adwaid Suresh · P03 · Innovation · Invalid — Innovation stars must be between 0 and +3 per month.'. Clicking Confirm Import closes the dialog, shows a green success toast '1 star value(s) imported for September 2026. System values and child records untouched.' and the Table View refreshes IMMEDIATELY without reload — Adhitya Charan's row now shows +2 Positive Stars. Cleanup: uploaded a revert xlsx (G3 back to 0) and confirmed; verified via API that Adhitya Charan's P02 manual_value=0/final=0 after teardown. No residual data.",
+  "backend_issues": { "critical": [], "minor": [] },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_scenarios_verified": [
+    "XLSX: merged E1:J1 'Positive Stars', K1:R1 'Negative Stars', vertical A:D + S:U merges, freeze A3, =SUM/=SUM/=S+T formulas on every data row, hidden _BRSF_Metadata with month + email + batch id.",
+    "CSV headers in the exact business-column order; different month exports carry different metadata.",
+    "Employee token (user/pass123) is 403 on brsf/export (xlsx & csv), /brsf/import/preview and /brsf/import/confirm.",
+    "Sept file previewed with month=2026-08 → 400 with 'September' in message.",
+    "Preview shows Valid change (existing/final match, target='manual' for P02), an Invalid F4=5 rejection with 'Innovation stars must be between 0 and +3 per month.', blank cell leaves E3 (P01) untouched.",
+    "Confirm returns 200, re-confirm the same batch_id returns 400 (no duplicate lines).",
+    "Audit entry created with action='Excel Import', import_batch_id, new_value == imported value, reason mentioning filename.",
+    "Re-export after confirm shows the new Performance value in G{row} and the =SUM formula intact.",
+    "Auto Calculate (POST /api/brsf/recalculate) does NOT overwrite the imported manual_value — persists across recompute.",
+    "CSV import: source labelled 'CSV Import', preview.changes[0].code=='P02', confirm applies and manual_value updates.",
+    "Frontend controls: exactly ONE brsf-month-picker; Export Excel/CSV trigger downloads with month-named filenames; hidden brsf-import-input opens the preview dialog; brsf-import-summary tiles + brsf-import-change-0 (Valid) + brsf-import-error-0 (Invalid w/ message); Confirm applies, dialog closes, success toast fires, Table View refreshes inline (Adhitya Charan +2 immediately)."
+  ],
+  "test_report_links": [
+    "/app/backend/tests/test_brsf_excel_import.py",
+    "/app/test_reports/pytest/brsf_excel_import.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "brsf_excel.py _read_csv() splits rows with str.splitlines()+csv.reader but the CSV writer uses commas without quoting; if any employee full_name/team ever contains a comma the row will be misaligned. Add csv.reader over a StringIO of the raw text (already done) but the pytest here rebuilds the CSV with a naive ','.join which is only safe because no test names contain commas — production data should still be safe because openpyxl values are simple strings, but consider quoting on export for robustness.",
+    "brsf_excel.brsf_import_confirm() sets line['override_reason'] only for the override branch — manual entries do not record a distinct 'reason' field on the star line (only in the audit collection). If HR later views the manual dialog, they will see the imported value with no source hint. Consider stamping line['manual_reason'] = f\"{source} — {filename}\" for symmetry.",
+    "brsf_import_batches documents are never garbage-collected; a long-running system will accumulate one document per preview click even when the user cancels. Add a TTL index or a periodic cleanup job for batches with applied=false older than X days.",
+    "_read_xlsx() reads meta_month from the FIRST metadata row only (meta_month = meta_month or …). Since all rows share the same month this is fine, but if a file is manually re-saved with a modified metadata sheet the guard silently uses the first row. Consider asserting all rows share the same month.",
+    "BrsfExportImport.jsx download() uses `format` as the extension for both XLSX and CSV — 'xlsx' happens to be the correct extension but the code accepts arbitrary formats; harmless today, worth an allow-list.",
+    "Existing iteration_71 observations still apply: BrsfFramework.jsx is ~808 lines (recommend extracting dialog components) and StarReward.js still ships unreachable legacy dialogs — safe to prune."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_brsf_excel_import.py (new)"
+  ],
+  "success_rate": { "backend": "100% (13/13)", "frontend": "100% (all controls + preview dialog + confirm + inline refresh + toast verified)" },
+  "test_credentials": "admin / HrAdmin786$ (HR Admin), user / pass123 (Employee, used for 403 checks). Sourced from /app/memory/test_credentials.md.",
+  "seed_data_creation": "Backend test module (Sep-2026, employee row 3 = Adhitya Charan) set P02 manual_value to 4 → then 2 during CSV test → reverted to 0 via teardown_module using PUT /api/brsf/stars/{id}/manual. Frontend test set P02 manual_value=2 via UI import and then reverted to 0 via a second UI import. Verified post-run: P02 manual_value=0, final_value=0.0, entry_mode='monthly'. No other employees touched. Import-batch documents from these runs remain in db.brsf_import_batches (audit trail).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression file: /app/backend/tests/test_brsf_excel_import.py. Run with `BRSF_API=http://localhost:8001 pytest backend/tests/test_brsf_excel_import.py -v` — do NOT use the preview URL from python-requests (Cloudflare 403s). Round-trip module-scope fixture (round_trip) picks row 3 = Adhitya Charan for Sep-2026; if that employee is deactivated the test will still find whoever occupies row 3. All UI testids live under BrsfExportImport.jsx: brsf-export-xlsx, brsf-export-csv, brsf-import-btn, brsf-import-input, brsf-import-preview-dialog, brsf-import-summary, brsf-import-change-{N}, brsf-import-error-{N}, brsf-import-skipped-{N}, brsf-import-cancel, brsf-import-confirm. Iteration 71's tests remain the strict-validation regression; iteration 70's test_brsf_cleanup covers eligibility/idempotency.",
+  "rca of the issue": "N/A — feature working end-to-end. One test bug fixed during authoring: /api/brsf/audit response wraps the list under key 'audit' (not 'entries'); adjusted the assertion parser."
+}
