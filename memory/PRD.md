@@ -3123,3 +3123,9 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - TESTS: backend `tests/test_it_asset_module.py` 23/23 (lifecycle, dup serial/id, legacy import, dedupe, export, employee 403 + self 200). Frontend testing_agent iteration_80 100% (7/7: admin create/assign/import/export, employee self-view, employee blocked from /it-management → redirect, regression on Dashboard/Employees clean).
 - Also re-applied admin password `HrAdmin@2109` (had been rewritten to an unknown hash); verified persists.
 - DEFERRED (later phases): Maintenance, Software/Licenses, Network, Servers, Vendors, Warranty/AMC deep-dive, Asset Audit, IT Clearance in exit, IT Tickets, QR/Barcode, employee-profile IT tab, richer Reports.
+
+## 2026-10-13 — Admin "Consider as Paid Leave" (Leave Module)
+- Approve dialog: admin can mark a pending non-paid leave as paid; backend `_admin_mark_leave_paid_on_approval` validates confirmed Full-time + stored balance, claims the leave atomically, reserves via `_reserve_paid_leave`, finalized on approval, history row in `leave_change_history`.
+- Apply-for-Employee dialog: paid checkbox now shown only for eligible employees; LOP select hidden when paid is checked.
+- `GET /api/admin/employees/{id}/paid-leave-balance` now also returns `eligible`, `reason`.
+- Tested on local DB (iteration_92, 14/14 backend + UI); all test data deleted; preview restored to Atlas env.
