@@ -9651,6 +9651,7 @@ class LeaveApproveRequest(BaseModel):
     is_lop: Optional[bool] = None  # True=LOP, False=No LOP
     lop_remark: Optional[str] = None
     leave_validity: Optional[str] = None  # 'valid' | 'invalid' — mandatory on approval
+    consider_as_paid_leave: Optional[bool] = None  # Admin marks a non-paid pending request as paid
 
 class LeaveAdminEdit(BaseModel):
     """Admin/HR-side edit payload for a leave record. All fields optional —
@@ -9788,6 +9789,63 @@ async def admin_edit_leave(leave_id: str, data: LeaveAdminEdit, current_user: di
 
 
 
+async def _admin_mark_leave_paid_on_approval(leave: dict, current_user: dict) -> dict:
+    """Convert a pending non-paid leave to a checkbox paid leave during approval.
+    Claims the leave record first (idempotent guard), then reserves the stored
+    balance atomically; rolls the claim back if the balance is insufficient."""
+    if leave.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="Consider as Paid Leave can only be set while the request is Pending.")
+    emp = await db.employees.find_one(
+        {"id": leave["employee_id"], "is_deleted": {"$ne": True}},
+        {"_id": 0, "employment_type": 1, "confirmation_date": 1, "available_paid_leave": 1},
+    )
+    ok, reason = _is_confirmed_fulltime(emp or {})
+    if not ok:
+        raise HTTPException(status_code=403, detail=f"Cannot mark as Paid Leave: {reason}")
+    amount = _leave_days_count(leave.get("start_date"), leave.get("end_date") or leave.get("start_date"),
+                               leave.get("leave_split", "Full Day"))
+    available = round(float((emp or {}).get("available_paid_leave") or 0.0), 1)
+    insufficient_msg = (
+        f"Cannot mark as Paid Leave: insufficient available paid leave (Available: {available:g}, "
+        f"required: {amount:g}). If the paid leave for the leave month has not been generated yet, "
+        f"generate it first and try again."
+    )
+    if available + 1e-9 < amount:
+        raise HTTPException(status_code=400, detail=insufficient_msg)
+    claimed = await db.leaves.find_one_and_update(
+        {"id": leave["id"], "status": "pending", "consider_as_paid_leave": {"$ne": True}},
+        {"$set": {"consider_as_paid_leave": True, "paid_leave_amount": amount,
+                  "paid_leave_reservation_status": "reserved", "is_lop": False,
+                  "paid_marked_by_admin": current_user["id"],
+                  "paid_marked_by_admin_at": get_ist_now().isoformat()}},
+        projection={"_id": 0}, return_document=ReturnDocument.AFTER,
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="This leave request was already updated. Please refresh and try again.")
+    try:
+        await _reserve_paid_leave(leave["employee_id"], leave.get("emp_name"), amount, current_user,
+                                  note=f"Admin marked paid on approval {leave.get('start_date')} ({leave.get('leave_split', 'Full Day')})")
+    except HTTPException:
+        await db.leaves.update_one(
+            {"id": leave["id"]},
+            {"$set": {"consider_as_paid_leave": bool(leave.get("consider_as_paid_leave")),
+                      "paid_leave_amount": leave.get("paid_leave_amount"),
+                      "paid_leave_reservation_status": leave.get("paid_leave_reservation_status"),
+                      "is_lop": leave.get("is_lop")},
+             "$unset": {"paid_marked_by_admin": "", "paid_marked_by_admin_at": ""}},
+        )
+        raise HTTPException(status_code=400, detail=insufficient_msg)
+    await db.leave_change_history.insert_one({
+        "id": str(uuid.uuid4()), "leave_id": leave["id"],
+        "employee_id": leave["employee_id"], "leave_status": leave.get("status"),
+        "changes": [{"field": "Consider as Paid Leave", "previous": False, "new": True}],
+        "changed_by": current_user["id"],
+        "changed_by_name": current_user.get("full_name") or current_user.get("username"),
+        "changed_at": get_ist_now().isoformat(),
+    })
+    return claimed
+
+
 @api_router.put("/leaves/{leave_id}/approve")
 async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = None, current_user: dict = Depends(get_current_user)):
     if current_user["role"] not in [UserRole.HR]:
@@ -9816,12 +9874,15 @@ async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = Non
             ignore_leave_id=leave_id,
         )
 
+    validity = _clean_leave_validity(data.leave_validity if data else None, required=True)
+    if data and data.consider_as_paid_leave and not _leave_is_paid(leave):
+        leave = await _admin_mark_leave_paid_on_approval(leave, current_user)
+
     update_fields = {
         "status": "approved",
         "approved_by": current_user["id"],
         "approved_at": get_ist_now().isoformat(),
-        "leave_validity": _clean_leave_validity(data.leave_validity if data else None,
-                                                required=True),
+        "leave_validity": validity,
     }
     if data and data.is_lop is not None:
         update_fields["is_lop"] = data.is_lop
@@ -13590,8 +13651,13 @@ async def admin_get_paid_leave_balance(
     """Admin-side stored Paid Leave balance lookup for the apply-on-behalf dialog."""
     if current_user["role"] not in ALL_ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="Permission denied")
-    balance = await _get_paid_balance(employee_id)
-    return {"balance": balance, "earned": balance, "used": 0.0}
+    emp = await db.employees.find_one(
+        {"id": employee_id, "is_deleted": {"$ne": True}},
+        {"_id": 0, "employment_type": 1, "confirmation_date": 1, "available_paid_leave": 1},
+    )
+    eligible, reason = _is_confirmed_fulltime(emp or {})
+    balance = round(float((emp or {}).get("available_paid_leave") or 0.0), 1)
+    return {"balance": balance, "earned": balance, "used": 0.0, "eligible": eligible, "reason": reason}
 
 
 # ============== PAID LEAVE MANAGEMENT (Admin, 2026-06) ==============

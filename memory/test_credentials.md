@@ -110,3 +110,10 @@ Login endpoint: POST /api/auth/login with JSON {"username": "...", "password": "
   `/app/backend/tests/payslip_auth_probe.py`.
 
 - 2026-06-09: `madhan.s` password re-synced again to `Vigil@123` (method=agent_brsf_test_resync). It drifts often — re-sync via `db.users.update_one({'username':...},{'$set':{'password_hash': sha256('Vigil@123')}})` if a login returns 401.
+
+## Paid-Leave-on-Approval test accounts (LOCAL test_database ONLY — seeded by `python3 /app/backend/tests/seed_paid_leave_test_data.py seed`, removed by `... cleanup`)
+- Local HR admin: `admin` / `pass123`
+- `test_pl_fulltime2` / `Test@123` — Full-time, confirmed, balance 2
+- `test_pl_fulltime0` / `Test@123` — Full-time, confirmed, balance 0
+- `test_pl_halfbal` / `Test@123` — Full-time, confirmed, balance 0.5
+- `test_pl_intern` / `Test@123` — Intern, not eligible
