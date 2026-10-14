@@ -28,6 +28,7 @@ import { Input } from '../components/ui/input';
 import { DatePicker } from '../components/ui/date-picker';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Badge } from '../components/ui/badge';
+import { Tooltip as UiTooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../components/ui/tooltip';
 import {
   Sheet,
   SheetContent,
@@ -771,7 +772,16 @@ const Dashboard = () => {
                         <>
                           <td className="text-slate-600">
                             {item.leave_type && item.leave_type !== '-' && item.leave_split ? (
-                              <span title={item.leave_split} className="cursor-help" data-testid={`dash-leave-type-${index}`}>{item.leave_type}</span>
+                              <TooltipProvider delayDuration={150}>
+                                <UiTooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="cursor-default" data-testid={`dash-leave-type-${index}`}>{item.leave_type}</span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" collisionPadding={8} className="bg-white text-slate-700 border border-slate-200 shadow-md rounded-lg px-2.5 py-1 text-xs font-medium" data-testid={`dash-leave-duration-tooltip-${index}`}>
+                                    {item.leave_split}
+                                  </TooltipContent>
+                                </UiTooltip>
+                              </TooltipProvider>
                             ) : (item.leave_type || '-')}
                           </td>
                           <td className="text-slate-600">{formatDate(item.date)}</td>
