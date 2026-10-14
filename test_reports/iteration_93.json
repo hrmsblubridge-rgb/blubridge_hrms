@@ -1,0 +1,33 @@
+{
+  "summary": "Verified Dashboard 'Leave List / Not Logged In' fix on local test_database. Seeded 9 TEST_DL_ employees for 2026-10-14, ran /api/dashboard/leave-list, /api/dashboard/stats, UI dashboard, and transition tests. All backend assertions (13/13 pytest) and UI expectations met. Cleaned up seed afterwards.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_dashboard_leave_list.py", "/app/test_reports/pytest/dashboard_leave_list.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is >20k lines; get_dashboard_leave_list logic should move to a dedicated module. Not blocking, but maintainability concern."
+  ],
+  "updated_files": ["/app/backend/tests/test_dashboard_leave_list.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin / pass123 (per live DB; /app/memory/test_credentials.md claim of HrAdmin@2109 is STALE in this env — pass123 is current working admin password)",
+  "seed_data_creation": "Seeded 9 TEST_DL_* employees via /app/backend/tests/seed_dashboard_leave_test_data.py for 2026-10-14 and cleaned up at end (0 TEST_DL_ records remaining).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend .env points to mongodb://localhost:27017/test_database for this review. Admin login that works on preview URL is admin/pass123 (login response field is 'token', not 'access_token'). Seed script re-runs idempotently via cleanup+seed.",
+  "verification_matrix": {
+    "pending_full": "Sick / Fever / Pending",
+    "approved_full": "Preplanned / Personal work / Approved",
+    "rejected_full": "- / - / Not Login",
+    "cancelled_full": "- / - / Not Login",
+    "first_half_pending": "- / - / Not Login",
+    "second_half_approved": "- / - / Not Login",
+    "rejected_plus_pending": "Emergency / Valid pending / Pending (valid pending wins over rejected)",
+    "punched_in": "Excluded from list (has check_in attendance)",
+    "nologin": "- / - / Not Login",
+    "stats_not_logged == list_length": "8 == 8",
+    "status transitions": "pending->approved updates badge to Approved; approved->rejected drops leave details and shows Not Login",
+    "ui_eye_modal": "Opens with correct Employee Details (status/leave type)",
+    "tab_switch_LoggedIn": "Switches header and returns to Leave List fine",
+    "filter_reset": "Reset button clicks without error"
+  }
+}

@@ -3129,3 +3129,8 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - Apply-for-Employee dialog: paid checkbox now shown only for eligible employees; LOP select hidden when paid is checked.
 - `GET /api/admin/employees/{id}/paid-leave-balance` now also returns `eligible`, `reason`.
 - Tested on local DB (iteration_92, 14/14 backend + UI); all test data deleted; preview restored to Atlas env.
+
+## 2026-10-14 — Dashboard Leave List / Not Logged In fix
+- Root cause: `/api/dashboard/leave-list` fetched only APPROVED leaves, so Pending leave rows showed '-' / Not Login.
+- Now fetches Full-Day Pending + Approved (half-day, rejected, cancelled excluded); status label "Pending"/"Approved"; Date = dashboard date for single-day view. Badge styles added in Dashboard.js.
+- Tested on local DB (iteration_93, 13/13); test data deleted; preview restored to Atlas env.
