@@ -11603,9 +11603,12 @@ async def get_dashboard_leave_list(
     ymd_from = _dmy_to_ymd(from_date or query_date)
     ymd_to = _dmy_to_ymd(to_date or query_date)
 
+    # Full-Day Pending / Approved leaves only — half-day and rejected/cancelled
+    # requests never supply leave details to this list.
     leave_task = db.leaves.find(
         {
-            "status": {"$in": ["approved", "Approved", "APPROVED"]},
+            "status": {"$in": ["approved", "Approved", "APPROVED", "pending", "Pending", "PENDING"]},
+            "leave_split": {"$nin": ["First Half", "Second Half", "Half Day", "Half"]},
             "start_date": {"$lte": ymd_to},
             "end_date": {"$gte": ymd_from},
         },
@@ -11613,6 +11616,8 @@ async def get_dashboard_leave_list(
     ).to_list(5000)
 
     all_employees, logged_records, leave_docs = await asyncio.gather(emp_task, att_task, leave_task)
+    for lv in leave_docs:
+        lv["status"] = (lv.get("status") or "").lower()
 
     # Per-date eligibility — every employee is checked against their DOJ /
     # relieving date on the SPECIFIC calendar date. Employees not employed on
@@ -11673,6 +11678,8 @@ async def get_dashboard_leave_list(
             lv_start_display = datetime.strptime(lv.get("start_date", ""), "%Y-%m-%d").strftime("%d-%m-%Y")
         except (ValueError, TypeError):
             lv_start_display = lv.get("start_date") or query_date
+        if ymd_from == ymd_to:
+            lv_start_display = query_date
         result.append({
             "emp_name": emp["full_name"],
             "team": emp.get("team"),
@@ -11680,7 +11687,7 @@ async def get_dashboard_leave_list(
             "leave_type": lv.get("leave_type") or "Leave",
             "leave_split": lv.get("leave_split"),
             "date": lv_start_display,
-            "status": "Leave" if lv.get("status") == "approved" else "Pending Leave",
+            "status": "Approved" if lv.get("status") == "approved" else "Pending",
             "reason": lv.get("reason"),
         })
 
