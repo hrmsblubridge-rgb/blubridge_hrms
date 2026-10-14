@@ -21,6 +21,24 @@ CASES = {
     "second_half_approved": [("Second Half", "approved", "Preplanned", "Half approved reason")],
     "rejected_plus_pending": [("Full Day", "rejected", "Sick", "Old rejected"), ("Full Day", "pending", "Emergency", "Valid pending")],
     "punched_in": [("Full Day", "approved", "Preplanned", "Worked anyway")],
+    "fh_pending_late": [("First Half", "pending", "Sick", "FH pending late")],
+    "fh_approved_late": [("First Half", "approved", "Sick", "FH approved late")],
+    "fh_rejected_late": [("First Half", "rejected", "Sick", "FH rejected late")],
+    "fh_cancelled_late": [("First Half", "cancelled", "Sick", "FH cancelled late")],
+    "sh_approved_late": [("Second Half", "approved", "Sick", "SH approved late")],
+    "no_leave_late": [],
+    "fh_pending_late_short": [("First Half", "pending", "Sick", "FH pending late short")],
+}
+
+# key -> attendance (check_in, check_out, status, is_lop, lop_reason)
+LATE_ATT = {
+    "fh_pending_late": ("02:00 PM", "14:00", None, None, "Late Login", False, "Late login by 300 minute(s). Expected: 09:00, Actual: 14:00"),
+    "fh_approved_late": ("02:00 PM", "14:00", "07:00 PM", "19:00", "Late Login", False, "Late by 300 minute(s); required hours completed (5.00h ≥ 4.50h)."),
+    "fh_rejected_late": ("02:00 PM", "14:00", None, None, "Late Login", False, "Late login by 300 minute(s). Expected: 09:00, Actual: 14:00"),
+    "fh_cancelled_late": ("02:00 PM", "14:00", None, None, "Late Login", False, "Late login by 300 minute(s). Expected: 09:00, Actual: 14:00"),
+    "sh_approved_late": ("10:00 AM", "10:00", None, None, "Late Login", False, "Late login by 60 minute(s). Expected: 09:00, Actual: 10:00"),
+    "no_leave_late": ("10:00 AM", "10:00", None, None, "Late Login", False, "Late login by 60 minute(s). Expected: 09:00, Actual: 10:00"),
+    "fh_pending_late_short": ("02:00 PM", "14:00", "04:00 PM", "16:00", "Loss of Pay", True, "Late login by 300 minute(s) and short by 390 minute(s). Worked: 2.00h, Required: 8.50h"),
 }
 
 
@@ -49,6 +67,14 @@ def seed(ymd):
                 "team": "QA", "department": "QA", "leave_type": ltype, "leave_split": split,
                 "start_date": ymd, "end_date": ymd, "duration": "1 day(s)", "reason": reason,
                 "status": status, "created_at": datetime.now(IST).isoformat(),
+            })
+        if key in LATE_ATT:
+            ci, ci24, co, co24, st, lop, rsn = LATE_ATT[key]
+            db.attendance.insert_one({
+                "id": str(uuid.uuid4()), "employee_id": eid, "emp_name": f"{TAG}{key}",
+                "team": "QA", "department": "QA", "date": dmy, "check_in": ci, "check_in_24h": ci24,
+                "check_out": co, "check_out_24h": co24, "status": st, "is_lop": lop, "lop_reason": rsn,
+                "total_hours_decimal": 2.0 if co24 == "16:00" else (5.0 if co24 else None),
             })
         if key == "punched_in":
             db.attendance.insert_one({

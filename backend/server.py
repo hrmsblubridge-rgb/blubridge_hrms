@@ -7647,6 +7647,11 @@ async def get_attendance(
             attendance.append(stub)
         attendance.sort(key=date_sort_key, reverse=True)
 
+    attendance = await _apply_first_half_late_exemption(attendance)
+    if status and status != "All" and status != "Absent":
+        attendance = [a for a in attendance
+                      if not a.get("first_half_late_exempt") or a.get("status") == status]
+
     # FINAL SECURITY NET: no row belonging to another employee may leave this
     # endpoint for a non-admin caller (covers stubs/overlays added above).
     if self_only_employee_id:
@@ -8617,6 +8622,7 @@ async def get_attendance_stats(
         stub = _build_missed_punch_stub(mp, emp)
         _enforce_completed_hours_threshold(stub, emp_map)
         filtered.append(stub)
+    filtered = await _apply_first_half_late_exemption(filtered)
 
     total_employees = len(cohort_ids)
 
@@ -11603,12 +11609,11 @@ async def get_dashboard_leave_list(
     ymd_from = _dmy_to_ymd(from_date or query_date)
     ymd_to = _dmy_to_ymd(to_date or query_date)
 
-    # Full-Day Pending / Approved leaves only — half-day and rejected/cancelled
-    # requests never supply leave details to this list.
+    # Pending / Approved leaves only (Full Day + First/Second Half) — rejected /
+    # cancelled requests never supply leave details to this list.
     leave_task = db.leaves.find(
         {
             "status": {"$in": ["approved", "Approved", "APPROVED", "pending", "Pending", "PENDING"]},
-            "leave_split": {"$nin": ["First Half", "Second Half", "Half Day", "Half"]},
             "start_date": {"$lte": ymd_to},
             "end_date": {"$gte": ymd_from},
         },
@@ -11648,15 +11653,21 @@ async def get_dashboard_leave_list(
         if (mp.get("punch_type") in ("Check-in", "Both")) and mp.get("check_in_time"):
             logged_ids.add(emp_id)
 
-    # Index best leave per employee (approved wins over pending)
+    # Index best leave per employee (approved wins over pending; Full Day wins
+    # over a half-day request of the same status)
     leave_by_emp: dict = {}
     status_rank = {"approved": 2, "pending": 1}
+
+    def _lv_rank(lv):
+        is_full = lv.get("leave_split") not in ("First Half", "Second Half")
+        return (status_rank.get(lv.get("status"), 0), 1 if is_full else 0)
+
     for lv in leave_docs:
         emp_id = lv.get("employee_id")
         if not emp_id:
             continue
         current = leave_by_emp.get(emp_id)
-        if not current or status_rank.get(lv.get("status"), 0) > status_rank.get(current.get("status"), 0):
+        if not current or _lv_rank(lv) > _lv_rank(current):
             leave_by_emp[emp_id] = lv
 
     # --- Build response ---------------------------------------------------------
@@ -12032,6 +12043,57 @@ async def _apply_attendance_normalizations(records: list,
             _enforce_completed_hours_threshold(r, emp_map)
         keep.append(r)
     return keep
+
+
+async def _apply_first_half_late_exemption(records: list) -> list:
+    """Dashboard / Attendance module only (read-time overlay, nothing stored):
+    an employee with a Pending/Approved First Half leave on a date is NOT
+    classified as Late Login for that date. Rejected/Cancelled requests give
+    no exemption, so the stored (existing-rule) classification is used."""
+    late_recs = [r for r in records
+                 if (r.get("check_in") or r.get("check_in_24h")) and is_late_login_record(r)]
+    if not late_recs:
+        return records
+    ymds = set()
+    for r in late_recs:
+        try:
+            ymds.add(datetime.strptime(r.get("date") or "", "%d-%m-%Y").strftime("%Y-%m-%d"))
+        except ValueError:
+            continue
+    if not ymds:
+        return records
+    leaves = await db.leaves.find(
+        {"employee_id": {"$in": list({r.get("employee_id") for r in late_recs})},
+         "leave_split": "First Half",
+         "status": {"$in": ["pending", "Pending", "PENDING", "approved", "Approved", "APPROVED"]},
+         "start_date": {"$lte": max(ymds)}, "end_date": {"$gte": min(ymds)}},
+        {"_id": 0, "employee_id": 1, "start_date": 1, "end_date": 1},
+    ).to_list(5000)
+    if not leaves:
+        return records
+    by_emp: dict = {}
+    for lv in leaves:
+        by_emp.setdefault(lv["employee_id"], []).append((lv.get("start_date"), lv.get("end_date") or lv.get("start_date")))
+    for r in late_recs:
+        try:
+            ymd = datetime.strptime(r.get("date") or "", "%d-%m-%Y").strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+        if not any(s <= ymd <= e for s, e in by_emp.get(r.get("employee_id"), ())):
+            continue
+        has_out = bool(r.get("check_out") or r.get("check_out_24h"))
+        reason = r.get("lop_reason") or ""
+        m = re.search(r"short by (\d+) minute\(s\)\. (Worked: .*)$", reason)
+        if r.get("is_lop") and m:
+            # Same wording the engine uses for a non-late short-hours day.
+            r["lop_reason"] = f"Early out / short hours by {m.group(1)} minute(s). {m.group(2)}"
+        elif (r.get("status") or "").strip() == AttendanceStatus.LATE_LOGIN:
+            r["status"] = AttendanceStatus.PRESENT if has_out else AttendanceStatus.LOGIN
+            r["lop_reason"] = None
+        else:
+            continue
+        r["first_half_late_exempt"] = True
+    return records
 
 
 def _build_missed_punch_stub(mp: dict, emp: dict) -> dict:

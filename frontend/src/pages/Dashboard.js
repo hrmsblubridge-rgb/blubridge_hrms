@@ -769,7 +769,11 @@ const Dashboard = () => {
                       <td className="text-slate-600">{item.team}</td>
                       {activeAttendanceTab === 'not_logged' ? (
                         <>
-                          <td className="text-slate-600">{item.leave_type || '-'}</td>
+                          <td className="text-slate-600">
+                            {item.leave_type && item.leave_type !== '-' && item.leave_split ? (
+                              <span title={item.leave_split} className="cursor-help" data-testid={`dash-leave-type-${index}`}>{item.leave_type}</span>
+                            ) : (item.leave_type || '-')}
+                          </td>
                           <td className="text-slate-600">{formatDate(item.date)}</td>
                           <td className="text-slate-600 max-w-[240px]">
                             {item.reason ? (
