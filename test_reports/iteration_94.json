@@ -1,0 +1,42 @@
+{
+  "summary": "Verified Dashboard Leave List tooltip (leave_split as native title) + First-Half Late Login read-time exemption on Dashboard & Attendance module. Seeded 16 TEST_DL_* employees for 2026-10-14 (IST today), ran 22-case pytest (22/22 PASS), verified UI on /dashboard and /attendance via Playwright. Cleaned up all seed data at end.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_dashboard_leave_list.py",
+    "/app/test_reports/pytest/dashboard_leave_list.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 20,942 lines — _apply_first_half_late_exemption + get_dashboard_leave_list + attendance overlay logic should be factored into dedicated modules. Not blocking.",
+    "Leave list leave_split is sent even for full-day rows ('Full Day'), causing a 'Full Day' tooltip on every full-day Leave Type. Spec says duration tooltip should always be present on leave rows, so this matches the requirement — call out if product wants no tooltip on full-day rows.",
+    "_apply_first_half_late_exemption fetches leaves without a date index composite; fine for small windows but may be slow on month-range exports."
+  ],
+  "updated_files": ["/app/backend/tests/test_dashboard_leave_list.py"],
+  "success_rate": {"backend": "100% (22/22)", "frontend": "100%"},
+  "test_credentials": "admin / pass123 (live DB; HrAdmin@2109 from memory is NOT current on this env)",
+  "seed_data_creation": "16 TEST_DL_* employees + leaves + late attendance for 2026-10-14 via /app/backend/tests/seed_dashboard_leave_test_data.py seed; CLEANED UP (cleaned 16).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Dashboard leave-list now returns leave_split for Pending/Approved rows (Full Day/First Half/Second Half). Frontend renders <span title={leave_split} data-testid=dash-leave-type-{idx}>{leave_type}</span>; duration never shown as visible text. /api/attendance applies read-time First-Half exemption via _apply_first_half_late_exemption (server.py:12048) — stored docs untouched (regression test verifies). Status transitions (pending/approved -> rejected/cancelled) reinstate Late Login as expected.",
+  "verification_matrix": {
+    "leave_list.pending_full": "Sick / Fever / Pending, tooltip='Full Day'",
+    "leave_list.approved_full": "Preplanned / Personal work / Approved, tooltip='Full Day'",
+    "leave_list.first_half_pending": "Sick / Half pending reason / Pending, tooltip='First Half' (not visible as text)",
+    "leave_list.second_half_approved": "Preplanned / Half approved reason / Approved, tooltip='Second Half' (not visible as text)",
+    "leave_list.rejected_full|cancelled_full|nologin|first_half rejected/cancelled|SH rejected/cancelled": "- / - / Not Login, no tooltip span",
+    "leave_list.rejected_plus_pending": "picks Pending leave (Emergency/Valid pending)",
+    "leave_list.punched_in and all *_late": "excluded (checkin exists)",
+    "attendance.fh_pending_late": "status=Login (exempt), first_half_late_exempt=true",
+    "attendance.fh_approved_late": "status=Present (exempt, has checkout)",
+    "attendance.fh_pending_late_short": "status=Loss of Pay, is_lop=true, lop_reason starts 'Early out / short hours ...'",
+    "attendance.fh_rejected|fh_cancelled|sh_approved|no_leave": "status=Late Login (unchanged)",
+    "attendance?status=Late Login filter": "returns ONLY the 4 non-exempt employees",
+    "dashboard.stats.late_login": ">=4; UI tile shows 4 for TEST data",
+    "regression stored docs": "db.attendance for fh_pending_late still status='Late Login' (overlay not persisted)",
+    "status transitions fh_pending_late": "pending->rejected => Late Login; ->approved => Login (exempt); ->cancelled => Late Login",
+    "check-in move": "Inserting attendance for TEST_DL_first_half_pending removes from leave-list; leave doc unchanged",
+    "stats.not_logged == leave-list length": "8 == 8",
+    "cleanup": "16 records removed at end"
+  }
+}

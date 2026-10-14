@@ -3134,3 +3134,8 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - Root cause: `/api/dashboard/leave-list` fetched only APPROVED leaves, so Pending leave rows showed '-' / Not Login.
 - Now fetches Full-Day Pending + Approved (half-day, rejected, cancelled excluded); status label "Pending"/"Approved"; Date = dashboard date for single-day view. Badge styles added in Dashboard.js.
 - Tested on local DB (iteration_93, 13/13); test data deleted; preview restored to Atlas env.
+
+## 2026-10-14 — Dashboard half-day leave tooltip + First Half Late Login exemption
+- `/api/dashboard/leave-list`: Pending/Approved Full Day AND half-day leaves shown for no-punch employees (returns `leave_split`); Leave Type cell shows duration via hover `title` only.
+- `_apply_first_half_late_exemption` (read-time overlay, nothing stored): used only in `/api/attendance` and `/api/attendance/stats` (Dashboard). Pending/Approved First Half leave => not Late Login; rejected/cancelled/second-half unchanged. Payroll/Leave untouched.
+- Tested on local DB (iteration_94, 22/22); test data deleted; preview restored to Atlas env.
