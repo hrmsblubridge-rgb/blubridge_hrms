@@ -20537,6 +20537,29 @@ except Exception as _e:
     print(f"Module visibility guard install failed: {_e}")
 
 
+class NoIndexHeaderMiddleware:
+    """Pure ASGI: adds X-Robots-Tag to every HTTP response."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                headers = [h for h in message.get("headers", []) if h[0].lower() != b"x-robots-tag"]
+                headers.append((b"x-robots-tag", b"noindex, nofollow, noarchive"))
+                message["headers"] = headers
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
+app.add_middleware(NoIndexHeaderMiddleware)
+
+
+
 # CORS
 app.add_middleware(
     CORSMiddleware,

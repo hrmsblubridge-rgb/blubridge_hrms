@@ -3142,3 +3142,7 @@ RULE: never run payroll test files that seed employees without verified cleanup
 
 ## 2026-10-14 — Leave duration tooltip polish
 - Dashboard Leave Type cell: native `title` + `cursor-help` (question-mark cursor) replaced by shadcn/Radix Tooltip (white, border, shadow, rounded, portal + collision padding). Data still from `leave_split`.
+
+## 2026-10-19 — Search-engine noindex
+- `frontend/public/index.html`: `<meta name="robots" content="noindex, nofollow, noarchive">` (CRA SPA → every route incl. login/404).
+- `backend/server.py`: pure-ASGI `NoIndexHeaderMiddleware` adds `X-Robots-Tag: noindex, nofollow, noarchive` to every API response. No robots.txt added.
