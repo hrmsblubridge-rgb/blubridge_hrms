@@ -3146,3 +3146,7 @@ RULE: never run payroll test files that seed employees without verified cleanup
 ## 2026-10-19 — Search-engine noindex
 - `frontend/public/index.html`: `<meta name="robots" content="noindex, nofollow, noarchive">` (CRA SPA → every route incl. login/404).
 - `backend/server.py`: pure-ASGI `NoIndexHeaderMiddleware` adds `X-Robots-Tag: noindex, nofollow, noarchive` to every API response. No robots.txt added.
+
+## 2026-10-19 — Removed public sensitive/static files
+- Deleted `frontend/public/Employee_Credentials_2026-04-27.xlsx` (copy remains, not web-served, at `backend/scripts/`).
+- Deleted unused static `frontend/public/help/*` guides; in-app Help already uses auth-protected `GET /api/help/download`.
