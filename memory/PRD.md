@@ -3150,3 +3150,6 @@ RULE: never run payroll test files that seed employees without verified cleanup
 ## 2026-10-19 — Removed public sensitive/static files
 - Deleted `frontend/public/Employee_Credentials_2026-04-27.xlsx` (copy remains, not web-served, at `backend/scripts/`).
 - Deleted unused static `frontend/public/help/*` guides; in-app Help already uses auth-protected `GET /api/help/download`.
+
+## 2026-10-19 — Google HTML verification file
+- Added `frontend/public/googlea22597748e1bdd75.html` (byte-identical to Google original), served at site root.
