@@ -1,0 +1,19 @@
+{
+  "summary": "LOCAL DB only (IST today 2026-10-24). Tested the 3 Paid Leave enhancements. (1) Monthly generation now uses only Active + confirmed Full-time employees: status eligible_count equals the balances-table length (5 seeded), and the generate count/message match it. In the 2030-02 generation, inactive stayed at 1, intern and unconfirmed stayed at 0, negative went from -1 to 0 and fulltime2 from 2 to 3. A second generate for the same month returned 400 'already generated'; the generation was then reverted and its record deleted. (2) Rejecting an approved paid leave returns the balance exactly once: full day +1, First Half and Second Half +0.5 each, admin-created 2-day leave +2. Repeated rejects add nothing. Re-approving deducts again and leaves the status finalized. Re-approving with 0.5 balance against a 1-day leave returns 400 and the leave stays rejected/released. Repeated approve/reject cycles never inflate the balance. Rejecting a pending paid leave also returns the balance once; rejecting a normal leave changes nothing. An approved advance leave (Nov 2026) for fulltime0 went -1 -> 0 on reject with advance_settlement 'reversed'. All 3 balance endpoints showed the same value. (3) Export Excel (API): header row is exactly Employee Name/Team/Available Paid Leave; only Active confirmed FT rows; balance cells are numbers (-1, 0.5, 0 kept); search=TEST_PL_full returns only fulltime0 and fulltime2; employee token gets 403, no token 401/403. UI (Playwright): all buttons are present (Generate/Export/CSV/Import/History plus the new Export Excel next to search). Export Excel downloaded Employee_Paid_Leave_Balances_2026-10-24.xlsx with correct contents, the search was applied to the download, and the 'Export downloaded' toast appeared. New suite: 12/12 passed. Regression: test_advance_paid_leave.py + test_consider_as_paid_leave.py 30/30 passed. All test data was cleaned up (TEST_PL_ employees/users/leaves/history, notifications, generation records); verified 0 left.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_paid_leave_iter96.py", "/app/test_reports/pytest/pytest_iter96.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Pre-existing test hygiene risk: tests/test_consider_as_paid_leave.py::test_generate_future_month_then_approve_paid generates 2030-01 for ALL eligible employees but its teardown only deletes the generation record. It does not reverse the +1 for non-TEST employees. This is harmless on the current local DB (0 real employees) but would inflate real balances on a populated DB. Consider reverting via paid_leave_history like test_paid_leave_iter96._revert_generation.",
+    "Approve/reject still send emails whenever official_email is set (seed uses example.invalid, so nothing is delivered). Expected existing behaviour.",
+    "server.py is >21k lines; paid-leave logic would benefit from extraction into its own module."
+  ],
+  "updated_files": ["/app/backend/tests/test_paid_leave_iter96.py"],
+  "success_rate": {"backend": "100% (12/12 new + 30/30 regression)", "frontend": "100%"},
+  "test_credentials": "admin/pass123 works on LOCAL DB (memory file mentions HrAdmin@2109 for other env); test_pl_*/Test@123",
+  "seed_data_creation": "Seeded via tests/seed_paid_leave_test_data.py seed; fully cleaned up afterwards.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Employee apply returns {'leave_id', 'message'} (not 'id'). test_paid_leave_iter96.py uses generation month 2030-02 and reverts +1 through paid_leave_history in its setup/teardown. Playwright env has no openpyxl: save downloads to /tmp with save_as and check them from bash."
+}

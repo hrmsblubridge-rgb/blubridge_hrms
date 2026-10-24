@@ -3160,3 +3160,9 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - `GET /api/employee/paid-leave-advance`, `GET /api/admin/paid-leave/balances`; UI: EmployeeLeave.js checkbox logic, PaidLeaveBalanceTable.js in Paid Leave Management.
 - Tests: backend/tests/test_advance_paid_leave.py (16) + test_consider_as_paid_leave.py (14) all pass on local DB; data cleaned; preview restored to Atlas.
 - Known pre-existing (unchanged): generation counts Inactive confirmed employees; normal (non-advance) paid leave approved→rejected doesn't release; no employee cancel endpoint; Import overwrites balances.
+
+## 2026-10-24 — Paid Leave: active-only generation, approved→rejected restore, balances Excel
+- `_eligible_paid_employees(active_only=True)` used by generate + status (banner count = processed count). Month Export/Import unchanged.
+- Reject restores checkbox paid leave when pending (reserved) OR approved (finalized), exactly once (claim + revert on failure). Approving a released paid leave re-reserves (400 if insufficient) to prevent credit loops.
+- `GET /api/admin/paid-leave/balances/export?search=` → Employee_Paid_Leave_Balances_YYYY-MM-DD.xlsx; "Export Excel" button in PaidLeaveBalanceTable.js.
+- Tests: iteration_96 12/12 + 30/30 regression on local DB; data cleaned; preview restored to Atlas.
