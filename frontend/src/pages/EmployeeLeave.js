@@ -31,6 +31,7 @@ const EmployeeLeave = () => {
   const [viewReason, setViewReason] = useState(null); // { reason, leave_type, start_date, end_date }
   const [paidBalance, setPaidBalance] = useState(null);
   const [paidEligible, setPaidEligible] = useState(false);
+  const [paidAdvance, setPaidAdvance] = useState(null);
   const [paidIneligibleReason, setPaidIneligibleReason] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -93,6 +94,27 @@ const EmployeeLeave = () => {
       .catch(() => setPaidBalance(null));
   }, [showApplyDialog, getAuthHeaders]);
 
+  // Next-month advance paid leave: re-check whenever date / duration changes.
+  useEffect(() => {
+    if (!showApplyDialog || !paidEligible || !form.start_date) { setPaidAdvance(null); return; }
+    let active = true;
+    axios.get(`${API}/employee/paid-leave-advance`, {
+      headers: getAuthHeaders(),
+      params: { start_date: form.start_date, leave_split: form.leave_split, ...(editingId ? { leave_id: editingId } : {}) },
+    })
+      .then(r => { if (active) setPaidAdvance(r.data); })
+      .catch(() => { if (active) setPaidAdvance(null); });
+    return () => { active = false; };
+  }, [showApplyDialog, paidEligible, form.start_date, form.leave_split, editingId, getAuthHeaders]);
+
+  const noPaidBalance = !!paidBalance && Number(paidBalance.balance) <= 0;
+  const advanceApplies = noPaidBalance && !!paidAdvance?.applicable;
+  const paidCheckboxDisabled = noPaidBalance && !(advanceApplies && paidAdvance.allowed);
+
+  useEffect(() => {
+    if (paidCheckboxDisabled) setForm(prev => prev.consider_as_paid_leave ? { ...prev, consider_as_paid_leave: false } : prev);
+  }, [paidCheckboxDisabled]);
+
   const handleDocUpload = async (file) => {
     if (!file) return;
     setDocUploading(true);
@@ -115,7 +137,7 @@ const EmployeeLeave = () => {
       toast.error('Reason must be at least 10 characters');
       return;
     }
-    if (form.consider_as_paid_leave && paidBalance && Number(paidBalance.balance) <= 0) {
+    if (form.consider_as_paid_leave && paidCheckboxDisabled) {
       toast.error('No paid leave balance available.');
       return;
     }
@@ -348,18 +370,27 @@ const EmployeeLeave = () => {
             </div>
             {paidEligible && (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3" data-testid="consider-paid-leave-box">
-                <label className={`flex items-center gap-2.5 ${paidBalance && Number(paidBalance.balance) <= 0 ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+                <label className={`flex items-center gap-2.5 ${paidCheckboxDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
                   <input
                     type="checkbox"
                     checked={!!form.consider_as_paid_leave}
-                    disabled={paidBalance && Number(paidBalance.balance) <= 0}
+                    disabled={paidCheckboxDisabled}
                     onChange={(e) => setForm({ ...form, consider_as_paid_leave: e.target.checked })}
                     className="rounded w-4 h-4 accent-emerald-600"
                     data-testid="consider-paid-leave-checkbox"
                   />
                   <span className="text-sm font-medium text-slate-800">Consider as Paid Leave</span>
                 </label>
-                {paidBalance && Number(paidBalance.balance) <= 0 ? (
+                {advanceApplies && paidAdvance.allowed ? (
+                  <p className="text-[11px] text-emerald-700 mt-1.5 ml-6.5" data-testid="paid-leave-advance-hint">
+                    {paidAdvance.message}
+                    {form.consider_as_paid_leave && (
+                      <> Paid Leave Deduction: <strong>{form.leave_split === 'Full Day' ? '1' : '0.5'} Day</strong>.</>
+                    )}
+                  </p>
+                ) : advanceApplies && paidAdvance.message ? (
+                  <p className="text-[11px] text-red-600 mt-1.5 ml-6.5" data-testid="paid-leave-advance-blocked">{paidAdvance.message}</p>
+                ) : noPaidBalance ? (
                   <p className="text-[11px] text-red-600 mt-1.5 ml-6.5" data-testid="paid-leave-no-balance">No paid leave balance available.</p>
                 ) : (
                   <p className="text-[11px] text-emerald-700 mt-1.5 ml-6.5" data-testid="paid-leave-balance-hint">

@@ -12,10 +12,14 @@ TAG = "TEST_PL_"
 PWD = hashlib.sha256("Test@123".encode()).hexdigest()
 
 EMPS = [
-    ("fulltime2", "Full-time", "2025-01-01", 2.0),
-    ("fulltime0", "Full-time", "2025-01-01", 0.0),
-    ("halfbal", "Full-time", "2025-01-01", 0.5),
-    ("intern", "Intern", None, 0.0),
+    ("fulltime2", "Full-time", "2025-01-01", 2.0, "Active"),
+    ("fulltime0", "Full-time", "2025-01-01", 0.0, "Active"),
+    ("halfbal", "Full-time", "2025-01-01", 0.5, "Active"),
+    ("intern", "Intern", None, 0.0, "Active"),
+    ("advzero", "Full-time", "2025-01-01", 0.0, "Active"),
+    ("unconfirmed", "Full-time", None, 0.0, "Active"),
+    ("inactive", "Full-time", "2025-01-01", 1.0, "Inactive"),
+    ("negative", "Full-time", "2025-01-01", -1.0, "Active"),
 ]
 
 
@@ -31,12 +35,12 @@ def cleanup():
 
 def seed():
     cleanup()
-    for key, etype, conf, bal in EMPS:
+    for key, etype, conf, bal, status in EMPS:
         eid = str(uuid.uuid4())
         db.employees.insert_one({
             "id": eid, "full_name": f"{TAG}{key}", "team": "QA", "department": "QA",
             "employment_type": etype, "confirmation_date": conf, "date_of_joining": "2024-06-01",
-            "available_paid_leave": bal, "employee_status": "Active", "is_deleted": False,
+            "available_paid_leave": bal, "employee_status": status, "is_deleted": False,
             "official_email": f"{key}@example.invalid", "custom_employee_id": f"{TAG}{key}",
             "attendance_tracking_enabled": False,
         })

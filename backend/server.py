@@ -2773,6 +2773,151 @@ async def _release_paid_leave(employee_id, emp_name, amount, current_user,
     return new
 
 
+# ============== NEXT-MONTH ADVANCE PAID LEAVE (employee login) ==============
+# A confirmed Full-Time employee whose stored balance is 0 may borrow max 1.0
+# day from the IMMEDIATELY NEXT month's entitlement. The balance goes negative
+# (e.g. -1) and the existing monthly +1 generation offsets it. Usage per target
+# month is tracked on the employee (paid_leave_advance_month / _used) and every
+# change is a compare-and-set on the employee doc (safe under concurrency).
+ADVANCE_PAID_LEAVE_MAX = 1.0
+
+
+def _next_month_key(today=None) -> str:
+    t = today or get_ist_now().date()
+    y, m = (t.year + 1, 1) if t.month == 12 else (t.year, t.month + 1)
+    return f"{y:04d}-{m:02d}"
+
+
+def _month_key_label(key: str) -> str:
+    import calendar
+    try:
+        y, m = key.split("-")
+        return f"{calendar.month_name[int(m)]} {y}"
+    except (ValueError, AttributeError, IndexError):
+        return str(key)
+
+
+async def _month_paid_finalized(key: str) -> bool:
+    try:
+        y, m = key.split("-")
+    except (ValueError, AttributeError):
+        return False
+    return bool(await db.paid_leave_generation.find_one({"year": int(y), "month": int(m)}, {"_id": 1}))
+
+
+async def _advance_paid_context(emp: dict, start_date: str, end_date: str, leave_split: str,
+                                ignore_leave: Optional[dict] = None) -> dict:
+    """Decide whether an advance (next-month) paid leave is permitted. When
+    ``ignore_leave`` is given (edit), its own reservation is excluded first."""
+    target = _next_month_key()
+    amount = _leave_days_count(start_date, end_date or start_date, leave_split)
+    res = {"applicable": False, "allowed": False, "target_month": target,
+           "target_label": _month_key_label(target), "max": ADVANCE_PAID_LEAVE_MAX,
+           "used": 0.0, "remaining": ADVANCE_PAID_LEAVE_MAX, "amount": amount, "message": ""}
+    ok, reason = _is_confirmed_fulltime(emp or {})
+    if not ok:
+        res["message"] = reason
+        return res
+    if not (str(start_date or "")[:7] == target and str(end_date or start_date or "")[:7] == target):
+        return res
+    raw_bal = (emp or {}).get("available_paid_leave")
+    raw_month = (emp or {}).get("paid_leave_advance_month")
+    raw_used = (emp or {}).get("paid_leave_advance_used")
+    balance = float(raw_bal or 0.0)
+    adv_used = float(raw_used or 0.0)
+    if ignore_leave and ignore_leave.get("consider_as_paid_leave") \
+            and ignore_leave.get("paid_leave_reservation_status") == "reserved":
+        own = float(ignore_leave.get("paid_leave_amount") or 0.0)
+        balance += own
+        if ignore_leave.get("is_advance_paid_leave") and ignore_leave.get("advance_target_month") == raw_month:
+            adv_used = max(0.0, adv_used - own)
+    used = adv_used if raw_month == target else 0.0
+    base = round(balance + used, 1)
+    if base > 1e-9:
+        return res  # positive balance -> existing normal paid-leave rules apply
+    res["applicable"] = True
+    res["snapshot"] = (raw_bal, raw_month, raw_used)
+    if await _month_paid_finalized(target):
+        res["message"] = f"Paid leave for {_month_key_label(target)} has already been generated, so advance paid leave is not available for that month."
+        return res
+    if raw_month and raw_month != target and adv_used > 1e-9 and not await _month_paid_finalized(raw_month):
+        res["message"] = f"Your previous advance paid leave for {_month_key_label(raw_month)} is not settled yet."
+        return res
+    if base < -1e-9:
+        res["message"] = "Advance paid leave is available only when your available paid leave is 0."
+        return res
+    remaining = round(ADVANCE_PAID_LEAVE_MAX - used, 1)
+    res["used"], res["remaining"] = round(used, 1), remaining
+    if remaining <= 1e-9:
+        res["message"] = "Next month's advance paid leave limit has been reached."
+        return res
+    if amount - remaining > 1e-9:
+        res["message"] = f"Remaining advance paid leave: {remaining:g} day. This request needs {amount:g} day(s)."
+        return res
+    res["allowed"] = True
+    res["message"] = ("Advance paid leave is available for next month. Maximum 1 day."
+                      if used <= 1e-9 else f"Remaining advance paid leave: {remaining:g} day.")
+    return res
+
+
+async def _cas_paid_advance(employee_id, emp_name, snapshot, balance_delta, new_month, new_used,
+                            current_user, action_type, note=None) -> bool:
+    """Compare-and-set balance + advance usage. False when the record changed."""
+    raw_bal, raw_month, raw_used = snapshot
+    updated = await db.employees.find_one_and_update(
+        {"id": employee_id, "available_paid_leave": raw_bal,
+         "paid_leave_advance_month": raw_month, "paid_leave_advance_used": raw_used},
+        {"$inc": {"available_paid_leave": round(float(balance_delta), 1)},
+         "$set": {"paid_leave_advance_month": new_month,
+                  "paid_leave_advance_used": round(max(0.0, float(new_used or 0.0)), 1)}},
+        projection={"_id": 0, "available_paid_leave": 1},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        return False
+    prev = float(raw_bal or 0.0)
+    await _write_paid_history(employee_id, emp_name, prev, round(prev + float(balance_delta), 1),
+                              action_type, current_user, note=note)
+    return True
+
+
+async def _reserve_advance_paid_leave(emp: dict, ctx: dict, amount, current_user, note=None):
+    ok = await _cas_paid_advance(emp["id"], emp.get("full_name"), ctx["snapshot"], -float(amount),
+                                 ctx["target_month"], ctx["used"] + float(amount), current_user,
+                                 "PAID_LEAVE_ADVANCE_RESERVED", note)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Your paid leave balance just changed. Please try again.")
+
+
+async def _release_advance_paid_leave(employee_id, emp_name, amount, target_month, current_user,
+                                      action_type="PAID_LEAVE_REJECTED", note=None):
+    """Return an advance reservation exactly once (+amount) and free its usage."""
+    amount = round(float(amount or 0), 1)
+    if amount <= 0:
+        return
+    for _ in range(8):
+        emp = await db.employees.find_one({"id": employee_id}, {"_id": 0, "available_paid_leave": 1,
+                                                               "paid_leave_advance_month": 1,
+                                                               "paid_leave_advance_used": 1})
+        if not emp:
+            return
+        snap = (emp.get("available_paid_leave"), emp.get("paid_leave_advance_month"), emp.get("paid_leave_advance_used"))
+        used = float(snap[2] or 0.0)
+        new_used = used - amount if snap[1] == target_month else used
+        if await _cas_paid_advance(employee_id, emp_name, snap, amount, snap[1], new_used,
+                                   current_user, action_type, note):
+            return
+    raise HTTPException(status_code=409, detail="Paid leave balance is busy. Please try again.")
+
+
+async def _mark_advance_settled(y: int, m: int):
+    await db.leaves.update_many(
+        {"is_advance_paid_leave": True, "advance_target_month": f"{int(y):04d}-{int(m):02d}",
+         "advance_settlement": "outstanding"},
+        {"$set": {"advance_settlement": "settled", "advance_settled_at": get_ist_now().isoformat()}},
+    )
+
+
 async def calculate_paid_leave_balance(
     employee_id: str,
     reference_date=None,
@@ -9752,6 +9897,12 @@ async def admin_edit_leave(leave_id: str, data: LeaveAdminEdit, current_user: di
             delta = round(new_amt - old_amt, 1)
             if delta > 0:
                 await _reserve_paid_leave(leave["employee_id"], leave.get("emp_name"), delta, current_user, note="Admin edit")
+            elif delta < 0 and leave.get("is_advance_paid_leave") and old_reserved:
+                await _release_advance_paid_leave(leave["employee_id"], leave.get("emp_name"), -delta,
+                                                  leave.get("advance_target_month"), current_user,
+                                                  action_type="MANUAL_ADJUSTMENT", note="Admin edit")
+                if not want_paid:
+                    update["advance_settlement"] = "reversed"
             elif delta < 0:
                 await _release_paid_leave(leave["employee_id"], leave.get("emp_name"), -delta, current_user, action_type="MANUAL_ADJUSTMENT", note="Admin edit")
             update["consider_as_paid_leave"] = bool(want_paid)
@@ -9956,10 +10107,21 @@ async def reject_leave(leave_id: str, current_user: dict = Depends(get_current_u
     reject_set = {"status": "rejected", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
     # Release a reserved checkbox paid-leave back to the employee's balance.
     if leave.get("consider_as_paid_leave") and leave.get("paid_leave_reservation_status") == "reserved":
-        await _release_paid_leave(leave["employee_id"], leave.get("emp_name"),
-                                  leave.get("paid_leave_amount") or 0,
-                                  current_user, action_type="PAID_LEAVE_REJECTED",
-                                  note=f"Rejected {leave.get('start_date')}")
+        # Claim the release first so a repeated reject can never credit twice.
+        claimed = await db.leaves.update_one(
+            {"id": leave_id, "paid_leave_reservation_status": "reserved"},
+            {"$set": {"paid_leave_reservation_status": "released"}})
+        if claimed.modified_count and leave.get("is_advance_paid_leave"):
+            await _release_advance_paid_leave(leave["employee_id"], leave.get("emp_name"),
+                                              leave.get("paid_leave_amount") or 0,
+                                              leave.get("advance_target_month"), current_user,
+                                              note=f"Rejected advance {leave.get('start_date')}")
+            reject_set["advance_settlement"] = "reversed"
+        elif claimed.modified_count:
+            await _release_paid_leave(leave["employee_id"], leave.get("emp_name"),
+                                      leave.get("paid_leave_amount") or 0,
+                                      current_user, action_type="PAID_LEAVE_REJECTED",
+                                      note=f"Rejected {leave.get('start_date')}")
         reject_set["paid_leave_reservation_status"] = "released"
 
     result = await db.leaves.update_one(
@@ -10068,8 +10230,27 @@ async def reset_leave(leave_id: str, body: RequestResetBody = RequestResetBody()
             leave.get("start_date"), leave.get("end_date") or leave.get("start_date"),
             leave.get("leave_split", "Full Day"))
         if leave.get("paid_leave_reservation_status") == "released":
-            await _reserve_paid_leave(leave["employee_id"], leave.get("emp_name"), amt,
-                                      current_user, note=f"Reset re-reserve {leave.get('start_date')}")
+            adv_ctx = None
+            emp_r = {}
+            if leave.get("is_advance_paid_leave"):
+                emp_r = await db.employees.find_one({"id": leave["employee_id"]}, {"_id": 0}) or {}
+                if float(emp_r.get("available_paid_leave") or 0.0) + 1e-9 < float(amt):
+                    adv_ctx = await _advance_paid_context(emp_r, leave.get("start_date"),
+                                                          leave.get("end_date") or leave.get("start_date"),
+                                                          leave.get("leave_split", "Full Day"))
+                    if not adv_ctx["allowed"]:
+                        raise HTTPException(status_code=400, detail=adv_ctx["message"] or "Insufficient paid leave to reset this request.")
+            if adv_ctx:
+                await _reserve_advance_paid_leave(emp_r, adv_ctx, amt, current_user,
+                                                  note=f"Reset re-reserve advance {leave.get('start_date')}")
+                reset_set["advance_target_month"] = adv_ctx["target_month"]
+                reset_set["advance_settlement"] = "outstanding"
+            else:
+                await _reserve_paid_leave(leave["employee_id"], leave.get("emp_name"), amt,
+                                          current_user, note=f"Reset re-reserve {leave.get('start_date')}")
+                if leave.get("is_advance_paid_leave"):
+                    reset_set["is_advance_paid_leave"] = False
+                    reset_set["advance_settlement"] = None
         reset_set["paid_leave_reservation_status"] = "reserved"
     await db.leaves.update_one(
         {"id": leave_id},
@@ -13697,6 +13878,39 @@ async def get_paid_leave_eligibility(current_user: dict = Depends(get_current_us
     return {"eligible": eligible, "reason": reason, "balance": balance}
 
 
+@api_router.get("/employee/paid-leave-advance")
+async def get_paid_leave_advance(start_date: str, leave_split: str = "Full Day",
+                                 end_date: Optional[str] = None, leave_id: Optional[str] = None,
+                                 current_user: dict = Depends(get_current_user)):
+    """Next-month advance paid leave availability for the Apply-Leave form."""
+    if not current_user.get("employee_id"):
+        raise HTTPException(status_code=404, detail="No employee profile linked")
+    emp = await db.employees.find_one({"id": current_user["employee_id"], "is_deleted": {"$ne": True}}, {"_id": 0})
+    ignore = None
+    if leave_id:
+        ignore = await db.leaves.find_one({"id": leave_id, "employee_id": current_user["employee_id"]}, {"_id": 0})
+    ctx = await _advance_paid_context(emp or {}, start_date, end_date or start_date, leave_split, ignore_leave=ignore)
+    ctx.pop("snapshot", None)
+    return ctx
+
+
+@api_router.get("/admin/paid-leave/balances")
+async def paid_leave_balances(current_user: dict = Depends(get_current_user)):
+    """Active + confirmed Full-Time employees with their stored paid leave balance."""
+    require_any_admin(current_user)
+    emps = await db.employees.find(
+        {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE},
+        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1, "employment_type": 1,
+         "confirmation_date": 1, "available_paid_leave": 1, "custom_employee_id": 1, "emp_id": 1},
+    ).to_list(5000)
+    rows = [{"employee_id": e["id"], "emp_code": _emp_display_id(e), "emp_name": e.get("full_name") or "",
+             "team": e.get("team") or "", "department": e.get("department") or "",
+             "available_paid_leave": round(float(e.get("available_paid_leave") or 0.0), 1)}
+            for e in emps if _is_confirmed_fulltime(e)[0]]
+    rows.sort(key=lambda r: r["emp_name"].lower())
+    return rows
+
+
 @api_router.get("/employee/paid-leave-balance")
 async def get_paid_leave_balance(
     reference_date: Optional[str] = None,
@@ -13799,6 +14013,7 @@ async def paid_leave_generate(body: PaidLeaveMonthBody, current_user: dict = Dep
         "performed_by_name": current_user.get("full_name") or current_user.get("username"),
         "created_at": get_ist_now().isoformat(), "updated_at": get_ist_now().isoformat(),
     })
+    await _mark_advance_settled(y, m)
     return {"message": f"Generated 1 paid leave for {count} confirmed Full-Time employee(s) for {calendar.month_name[m]} {y}.", "count": count}
 
 
@@ -13986,6 +14201,7 @@ async def paid_leave_import(year: int, month: int, file: UploadFile = FastAPIFil
         "performed_by_name": current_user.get("full_name") or current_user.get("username"),
         "created_at": get_ist_now().isoformat(), "updated_at": get_ist_now().isoformat(),
     })
+    await _mark_advance_settled(y, m)
     return {"success": True, "applied": len(valid), "total": len(records), "errors": [],
             "message": f"Imported paid leave balances for {len(valid)} employee(s)."}
 
@@ -14102,13 +14318,24 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     # Paid Leave (checkbox): confirm eligibility on the LIVE record and RESERVE
     # the balance immediately so concurrent pending requests can't over-draw.
     paid_amount = None
+    adv_ctx = None
     if data.consider_as_paid_leave:
         ok, reason = _is_confirmed_fulltime(employee)
         if not ok:
             raise HTTPException(status_code=403, detail=reason)
         paid_amount = _leave_days_count(start_date, end_date, data.leave_split)
-        await _reserve_paid_leave(employee_id, employee["full_name"], paid_amount,
-                                  current_user, note=f"Applied {start_date} ({data.leave_split})")
+        if float(employee.get("available_paid_leave") or 0.0) + 1e-9 < paid_amount:
+            adv_ctx = await _advance_paid_context(employee, start_date, end_date, data.leave_split)
+            if adv_ctx["applicable"] and not adv_ctx["allowed"]:
+                raise HTTPException(status_code=400, detail=adv_ctx["message"])
+            if not adv_ctx["allowed"]:
+                adv_ctx = None
+        if adv_ctx:
+            await _reserve_advance_paid_leave(employee, adv_ctx, paid_amount, current_user,
+                                              note=f"Advance applied {start_date} ({data.leave_split})")
+        else:
+            await _reserve_paid_leave(employee_id, employee["full_name"], paid_amount,
+                                      current_user, note=f"Applied {start_date} ({data.leave_split})")
 
     leave = LeaveRequest(
         employee_id=employee_id,
@@ -14132,12 +14359,18 @@ async def apply_employee_leave(data: EmployeeLeaveCreate, current_user: dict = D
     
     doc = leave.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
+    if adv_ctx:
+        doc.update({"is_advance_paid_leave": True, "advance_target_month": adv_ctx["target_month"],
+                    "advance_settlement": "outstanding"})
     
     try:
         await db.leaves.insert_one(doc.copy())
     except Exception:
         # Roll back the reservation if the insert fails so no days are lost.
-        if paid_amount:
+        if paid_amount and adv_ctx:
+            await _release_advance_paid_leave(employee_id, employee["full_name"], paid_amount,
+                                              adv_ctx["target_month"], current_user, note="apply rollback")
+        elif paid_amount:
             await _release_paid_leave(employee_id, employee["full_name"], paid_amount,
                                       current_user, action_type="PAID_LEAVE_REJECTED", note="apply rollback")
         raise
@@ -14213,12 +14446,37 @@ async def update_employee_leave(leave_id: str, data: EmployeeLeaveCreate, curren
         if not ok:
             raise HTTPException(status_code=403, detail=reason)
         emp_name = (emp_rec or {}).get("full_name") or emp_name
-    delta = round(new_amt - old_amt, 1)
-    if delta > 0:
-        await _reserve_paid_leave(employee_id, emp_name, delta, current_user, note=f"Edit {data.start_date}")
-    elif delta < 0:
-        await _release_paid_leave(employee_id, emp_name, -delta, current_user,
-                                  action_type="MANUAL_ADJUSTMENT", note=f"Edit {data.start_date}")
+    old_adv = old_flag and bool(leave.get("is_advance_paid_leave"))
+    emp_full = await db.employees.find_one({"id": employee_id, "is_deleted": {"$ne": True}}, {"_id": 0}) or {}
+    need_adv = new_flag and float(emp_full.get("available_paid_leave") or 0.0) + old_amt + 1e-9 < new_amt
+    if old_adv or need_adv:
+        snap = (emp_full.get("available_paid_leave"), emp_full.get("paid_leave_advance_month"),
+                emp_full.get("paid_leave_advance_used"))
+        if need_adv:
+            adv = await _advance_paid_context(emp_full, data.start_date, data.end_date, data.leave_split,
+                                              ignore_leave=leave)
+            if not adv["allowed"]:
+                avail = round(float(emp_full.get("available_paid_leave") or 0.0) + old_amt, 1)
+                raise HTTPException(status_code=400, detail=adv["message"] if adv["applicable"] else
+                                    f"You do not have sufficient available paid leave for this request. Available: {avail:g}, requested: {new_amt:g}.")
+            new_month, new_used = adv["target_month"], adv["used"] + new_amt
+        else:
+            used = float(snap[2] or 0.0)
+            new_month = snap[1]
+            new_used = used - old_amt if snap[1] == leave.get("advance_target_month") else used
+        if not await _cas_paid_advance(employee_id, emp_name, snap, round(old_amt - new_amt, 1), new_month,
+                                       new_used, current_user, "MANUAL_ADJUSTMENT", note=f"Edit {data.start_date}"):
+            raise HTTPException(status_code=409, detail="Your paid leave balance just changed. Please try again.")
+        update_data["is_advance_paid_leave"] = bool(need_adv)
+        update_data["advance_target_month"] = new_month if need_adv else None
+        update_data["advance_settlement"] = "outstanding" if need_adv else ("reversed" if old_adv else None)
+    else:
+        delta = round(new_amt - old_amt, 1)
+        if delta > 0:
+            await _reserve_paid_leave(employee_id, emp_name, delta, current_user, note=f"Edit {data.start_date}")
+        elif delta < 0:
+            await _release_paid_leave(employee_id, emp_name, -delta, current_user,
+                                      action_type="MANUAL_ADJUSTMENT", note=f"Edit {data.start_date}")
     update_data["consider_as_paid_leave"] = new_flag
     update_data["paid_leave_amount"] = new_amt if new_flag else None
     update_data["paid_leave_reservation_status"] = "reserved" if new_flag else None

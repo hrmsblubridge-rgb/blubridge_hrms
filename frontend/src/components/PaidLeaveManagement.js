@@ -10,6 +10,7 @@ import { Badge } from './ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from './ui/dialog';
 import { Input } from './ui/input';
 import { formatDate } from '../lib/dateFormat';
+import { PaidLeaveBalanceTable } from './PaidLeaveBalanceTable';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -28,6 +29,7 @@ export const PaidLeaveManagement = () => {
   const [importFile, setImportFile] = useState(null);
   const [importResult, setImportResult] = useState(null);
   const [history, setHistory] = useState([]);
+  const [balanceRefresh, setBalanceRefresh] = useState(0);
   const years = [now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1];
 
   const fetchStatus = useCallback(async () => {
@@ -46,7 +48,7 @@ export const PaidLeaveManagement = () => {
     try {
       const r = await axios.post(`${API}/admin/paid-leave/generate`, { year, month }, { headers: getAuthHeaders() });
       toast.success(r.data.message);
-      setShowGenerate(false); fetchStatus();
+      setShowGenerate(false); fetchStatus(); setBalanceRefresh(k => k + 1);
     } catch (e) { toast.error(e.response?.data?.detail || 'Generate failed'); }
     finally { setActionLoading(false); }
   };
@@ -71,7 +73,7 @@ export const PaidLeaveManagement = () => {
       fd.append('file', importFile);
       const r = await axios.post(`${API}/admin/paid-leave/import?year=${year}&month=${month}`, fd, { headers: { ...getAuthHeaders(), 'Content-Type': 'multipart/form-data' } });
       setImportResult(r.data);
-      if (r.data.success) { toast.success(r.data.message); fetchStatus(); }
+      if (r.data.success) { toast.success(r.data.message); fetchStatus(); setBalanceRefresh(k => k + 1); }
       else toast.error(r.data.message || 'Import had validation errors');
     } catch (e) { toast.error(e.response?.data?.detail || 'Import failed'); }
     finally { setActionLoading(false); }
@@ -137,6 +139,8 @@ export const PaidLeaveManagement = () => {
           </>
         )}
       </div>
+
+      <PaidLeaveBalanceTable refreshKey={balanceRefresh} />
 
       {/* Generate confirm */}
       <Dialog open={showGenerate} onOpenChange={setShowGenerate}>
