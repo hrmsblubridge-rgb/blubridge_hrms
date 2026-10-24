@@ -10079,8 +10079,7 @@ async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = Non
     if _leave_is_paid(leave):
         update_fields["is_lop"] = False
     # Finalize the reservation for a checkbox paid-leave (balance stays deducted).
-    if leave.get("is_advance_paid_leave") and leave.get("consider_as_paid_leave") \
-            and leave.get("paid_leave_reservation_status") == "released":
+    if leave.get("consider_as_paid_leave") and leave.get("paid_leave_reservation_status") == "released":
         amt_r = leave.get("paid_leave_amount") or _leave_days_count(
             leave.get("start_date"), leave.get("end_date") or leave.get("start_date"),
             leave.get("leave_split", "Full Day"))
@@ -10148,23 +10147,30 @@ async def reject_leave(leave_id: str, current_user: dict = Depends(get_current_u
     
     reject_set = {"status": "rejected", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
     # Release a reserved checkbox paid-leave back to the employee's balance.
-    held = ["reserved", "finalized"] if leave.get("is_advance_paid_leave") else ["reserved"]
-    if leave.get("consider_as_paid_leave") and leave.get("paid_leave_reservation_status") in held:
+    held = ["reserved", "finalized"]  # pending (reserved) or approved (finalized)
+    prev_res = leave.get("paid_leave_reservation_status")
+    if leave.get("consider_as_paid_leave") and prev_res in held:
         # Claim the release first so a repeated reject can never credit twice.
         claimed = await db.leaves.update_one(
             {"id": leave_id, "paid_leave_reservation_status": {"$in": held}},
             {"$set": {"paid_leave_reservation_status": "released"}})
-        if claimed.modified_count and leave.get("is_advance_paid_leave"):
-            await _release_advance_paid_leave(leave["employee_id"], leave.get("emp_name"),
-                                              leave.get("paid_leave_amount") or 0,
-                                              leave.get("advance_target_month"), current_user,
-                                              note=f"Rejected advance {leave.get('start_date')}")
-            reject_set["advance_settlement"] = "reversed"
-        elif claimed.modified_count:
-            await _release_paid_leave(leave["employee_id"], leave.get("emp_name"),
-                                      leave.get("paid_leave_amount") or 0,
-                                      current_user, action_type="PAID_LEAVE_REJECTED",
-                                      note=f"Rejected {leave.get('start_date')}")
+        try:
+            if claimed.modified_count and leave.get("is_advance_paid_leave"):
+                await _release_advance_paid_leave(leave["employee_id"], leave.get("emp_name"),
+                                                  leave.get("paid_leave_amount") or 0,
+                                                  leave.get("advance_target_month"), current_user,
+                                                  note=f"Rejected advance {leave.get('start_date')}")
+                reject_set["advance_settlement"] = "reversed"
+            elif claimed.modified_count:
+                await _release_paid_leave(leave["employee_id"], leave.get("emp_name"),
+                                          leave.get("paid_leave_amount") or 0,
+                                          current_user, action_type="PAID_LEAVE_REJECTED",
+                                          note=(f"Approved leave rejected {leave.get('start_date')}"
+                                                if prev_res == "finalized" else f"Rejected {leave.get('start_date')}"))
+        except Exception:
+            if claimed.modified_count:
+                await db.leaves.update_one({"id": leave_id}, {"$set": {"paid_leave_reservation_status": prev_res}})
+            raise
         reject_set["paid_leave_reservation_status"] = "released"
 
     result = await db.leaves.update_one(
@@ -13921,17 +13927,46 @@ async def get_paid_leave_advance(start_date: str, leave_split: str = "Full Day",
 async def paid_leave_balances(current_user: dict = Depends(get_current_user)):
     """Active + confirmed Full-Time employees with their stored paid leave balance."""
     require_any_admin(current_user)
-    emps = await db.employees.find(
-        {"is_deleted": {"$ne": True}, "employee_status": EmployeeStatus.ACTIVE},
-        {"_id": 0, "id": 1, "full_name": 1, "team": 1, "department": 1, "employment_type": 1,
-         "confirmation_date": 1, "available_paid_leave": 1, "custom_employee_id": 1, "emp_id": 1},
-    ).to_list(5000)
+    return await _paid_leave_balance_rows()
+
+
+async def _paid_leave_balance_rows(search: Optional[str] = None) -> list:
+    emps = await _eligible_paid_employees(active_only=True)
     rows = [{"employee_id": e["id"], "emp_code": _emp_display_id(e), "emp_name": e.get("full_name") or "",
              "team": e.get("team") or "", "department": e.get("department") or "",
              "available_paid_leave": round(float(e.get("available_paid_leave") or 0.0), 1)}
-            for e in emps if _is_confirmed_fulltime(e)[0]]
+            for e in emps]
+    q = (search or "").strip().lower()
+    if q:
+        rows = [r for r in rows if q in r["emp_name"].lower() or q in r["team"].lower()]
     rows.sort(key=lambda r: r["emp_name"].lower())
     return rows
+
+
+@api_router.get("/admin/paid-leave/balances/export")
+async def paid_leave_balances_export(search: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    """Excel of the Employee Paid Leave Balances table (respects the search)."""
+    require_any_admin(current_user)
+    from openpyxl.styles import Font
+    rows = await _paid_leave_balance_rows(search)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Paid Leave Balances"
+    ws.append(["Employee Name", "Team", "Available Paid Leave"])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for r in rows:
+        v = r["available_paid_leave"]
+        ws.append([r["emp_name"], r["team"], int(v) if float(v).is_integer() else float(v)])
+    for col, width in (("A", 32), ("B", 22), ("C", 22)):
+        ws.column_dimensions[col].width = width
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"Employee_Paid_Leave_Balances_{get_ist_now().strftime('%Y-%m-%d')}.xlsx"
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
 @api_router.get("/employee/paid-leave-balance")
@@ -13983,9 +14018,14 @@ def _emp_display_id(e: dict) -> str:
     return str(e.get("custom_employee_id") or e.get("emp_id") or e.get("id") or "")
 
 
-async def _eligible_paid_employees(ref_date=None) -> list:
-    """All confirmed Full-Time employees eligible for Paid Leave as of ref_date."""
-    emps = await db.employees.find({"is_deleted": {"$ne": True}}, {"_id": 0}).to_list(5000)
+async def _eligible_paid_employees(ref_date=None, active_only: bool = False) -> list:
+    """All confirmed Full-Time employees eligible for Paid Leave as of ref_date.
+    ``active_only`` additionally applies the Employee Module Active status
+    (monthly generation + its banner count + the balances table)."""
+    q = {"is_deleted": {"$ne": True}}
+    if active_only:
+        q["employee_status"] = EmployeeStatus.ACTIVE
+    emps = await db.employees.find(q, {"_id": 0}).to_list(5000)
     out = []
     for e in emps:
         ok, _ = _is_confirmed_fulltime(e, ref_date)
@@ -13998,7 +14038,7 @@ async def _eligible_paid_employees(ref_date=None) -> list:
 async def paid_leave_status(year: int, month: int, current_user: dict = Depends(get_current_user)):
     require_any_admin(current_user)
     rec = await db.paid_leave_generation.find_one({"year": int(year), "month": int(month)}, {"_id": 0})
-    eligible = await _eligible_paid_employees()
+    eligible = await _eligible_paid_employees(active_only=True)
     return {
         "year": int(year), "month": int(month),
         "finalized": bool(rec), "method": (rec or {}).get("method"),
@@ -14020,7 +14060,7 @@ async def paid_leave_generate(body: PaidLeaveMonthBody, current_user: dict = Dep
         if existing.get("method") == "generate":
             raise HTTPException(status_code=400, detail=f"Paid Leave has already been generated for {mn} {y}.")
         raise HTTPException(status_code=400, detail=f"Paid Leave generation is not available for {mn} {y} because the month has already been finalized through Import/Export.")
-    eligible = await _eligible_paid_employees()
+    eligible = await _eligible_paid_employees(active_only=True)
     count = 0
     for e in eligible:
         prev = round(float(e.get("available_paid_leave") or 0.0), 1)

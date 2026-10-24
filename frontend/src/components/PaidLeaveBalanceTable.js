@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
-import { Search, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Users } from 'lucide-react';
+import { Search, ArrowUpDown, ChevronLeft, ChevronRight, RefreshCw, Users, Download } from 'lucide-react';
+import { toast } from 'sonner';
 import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { useAuth } from '../contexts/AuthContext';
@@ -47,6 +48,22 @@ export const PaidLeaveBalanceTable = ({ refreshKey }) => {
   const pages = Math.max(1, Math.ceil(view.length / PAGE_SIZE));
   const current = Math.min(page, pages);
   const pageRows = view.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE);
+  const [exporting, setExporting] = useState(false);
+  const handleExportExcel = async () => {
+    setExporting(true);
+    try {
+      const resp = await axios.get(`${API}/admin/paid-leave/balances/export`, {
+        headers: getAuthHeaders(), params: search.trim() ? { search: search.trim() } : {}, responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([resp.data]));
+      const a = document.createElement('a');
+      a.href = url; a.download = `Employee_Paid_Leave_Balances_${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })}.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      toast.success('Export downloaded');
+    } catch { toast.error('Export failed'); }
+    finally { setExporting(false); }
+  };
   const toggleSort = (key) => setSort(s => ({ key, dir: s.key === key && s.dir === 'asc' ? 'desc' : 'asc' }));
 
   const SortTh = ({ k, label, className = '' }) => (
@@ -70,6 +87,9 @@ export const PaidLeaveBalanceTable = ({ refreshKey }) => {
             <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <Input value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} placeholder="Search employee or team" className="pl-9 rounded-lg w-64 h-9" data-testid="pl-bal-search" />
           </div>
+          <Button variant="outline" size="sm" onClick={handleExportExcel} disabled={exporting || view.length === 0} className="rounded-lg h-9" data-testid="pl-bal-export-xlsx-btn">
+            <Download className="w-4 h-4 mr-2" /> Export Excel
+          </Button>
           <Button variant="outline" size="sm" onClick={fetchRows} disabled={loading} className="rounded-lg h-9" data-testid="pl-bal-refresh">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>
