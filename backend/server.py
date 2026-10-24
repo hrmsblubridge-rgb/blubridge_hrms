@@ -2910,6 +2910,34 @@ async def _release_advance_paid_leave(employee_id, emp_name, amount, target_mont
     raise HTTPException(status_code=409, detail="Paid leave balance is busy. Please try again.")
 
 
+async def _rereserve_released_paid_leave(leave: dict, amt, current_user, label: str) -> dict:
+    """Re-hold a RELEASED checkbox paid leave; advance leaves follow the advance
+    rules when the balance can't cover them. Returns leave fields to $set."""
+    out = {}
+    adv_ctx = None
+    emp_r = {}
+    if leave.get("is_advance_paid_leave"):
+        emp_r = await db.employees.find_one({"id": leave["employee_id"]}, {"_id": 0}) or {}
+        if float(emp_r.get("available_paid_leave") or 0.0) + 1e-9 < float(amt):
+            adv_ctx = await _advance_paid_context(emp_r, leave.get("start_date"),
+                                                  leave.get("end_date") or leave.get("start_date"),
+                                                  leave.get("leave_split", "Full Day"))
+            if not adv_ctx["allowed"]:
+                raise HTTPException(status_code=400, detail=adv_ctx["message"] or "Insufficient paid leave for this request.")
+    if adv_ctx:
+        await _reserve_advance_paid_leave(emp_r, adv_ctx, amt, current_user,
+                                          note=f"{label} re-reserve advance {leave.get('start_date')}")
+        out["advance_target_month"] = adv_ctx["target_month"]
+        out["advance_settlement"] = "outstanding"
+    else:
+        await _reserve_paid_leave(leave["employee_id"], leave.get("emp_name"), amt,
+                                  current_user, note=f"{label} re-reserve {leave.get('start_date')}")
+        if leave.get("is_advance_paid_leave"):
+            out["is_advance_paid_leave"] = False
+            out["advance_settlement"] = None
+    return out
+
+
 async def _mark_advance_settled(y: int, m: int):
     await db.leaves.update_many(
         {"is_advance_paid_leave": True, "advance_target_month": f"{int(y):04d}-{int(m):02d}",
@@ -10051,6 +10079,20 @@ async def approve_leave(leave_id: str, data: Optional[LeaveApproveRequest] = Non
     if _leave_is_paid(leave):
         update_fields["is_lop"] = False
     # Finalize the reservation for a checkbox paid-leave (balance stays deducted).
+    if leave.get("is_advance_paid_leave") and leave.get("consider_as_paid_leave") \
+            and leave.get("paid_leave_reservation_status") == "released":
+        amt_r = leave.get("paid_leave_amount") or _leave_days_count(
+            leave.get("start_date"), leave.get("end_date") or leave.get("start_date"),
+            leave.get("leave_split", "Full Day"))
+        claimed_r = await db.leaves.update_one(
+            {"id": leave_id, "paid_leave_reservation_status": "released"},
+            {"$set": {"paid_leave_reservation_status": "reserved"}})
+        if claimed_r.modified_count:
+            try:
+                update_fields.update(await _rereserve_released_paid_leave(leave, amt_r, current_user, "Approve"))
+            except HTTPException:
+                await db.leaves.update_one({"id": leave_id}, {"$set": {"paid_leave_reservation_status": "released"}})
+                raise
     if leave.get("consider_as_paid_leave") and leave.get("paid_leave_reservation_status") != "finalized":
         update_fields["paid_leave_reservation_status"] = "finalized"
         bal = await _get_paid_balance(leave["employee_id"])
@@ -10106,10 +10148,11 @@ async def reject_leave(leave_id: str, current_user: dict = Depends(get_current_u
     
     reject_set = {"status": "rejected", "approved_by": current_user["id"], "approved_at": get_ist_now().isoformat()}
     # Release a reserved checkbox paid-leave back to the employee's balance.
-    if leave.get("consider_as_paid_leave") and leave.get("paid_leave_reservation_status") == "reserved":
+    held = ["reserved", "finalized"] if leave.get("is_advance_paid_leave") else ["reserved"]
+    if leave.get("consider_as_paid_leave") and leave.get("paid_leave_reservation_status") in held:
         # Claim the release first so a repeated reject can never credit twice.
         claimed = await db.leaves.update_one(
-            {"id": leave_id, "paid_leave_reservation_status": "reserved"},
+            {"id": leave_id, "paid_leave_reservation_status": {"$in": held}},
             {"$set": {"paid_leave_reservation_status": "released"}})
         if claimed.modified_count and leave.get("is_advance_paid_leave"):
             await _release_advance_paid_leave(leave["employee_id"], leave.get("emp_name"),
@@ -10230,27 +10273,7 @@ async def reset_leave(leave_id: str, body: RequestResetBody = RequestResetBody()
             leave.get("start_date"), leave.get("end_date") or leave.get("start_date"),
             leave.get("leave_split", "Full Day"))
         if leave.get("paid_leave_reservation_status") == "released":
-            adv_ctx = None
-            emp_r = {}
-            if leave.get("is_advance_paid_leave"):
-                emp_r = await db.employees.find_one({"id": leave["employee_id"]}, {"_id": 0}) or {}
-                if float(emp_r.get("available_paid_leave") or 0.0) + 1e-9 < float(amt):
-                    adv_ctx = await _advance_paid_context(emp_r, leave.get("start_date"),
-                                                          leave.get("end_date") or leave.get("start_date"),
-                                                          leave.get("leave_split", "Full Day"))
-                    if not adv_ctx["allowed"]:
-                        raise HTTPException(status_code=400, detail=adv_ctx["message"] or "Insufficient paid leave to reset this request.")
-            if adv_ctx:
-                await _reserve_advance_paid_leave(emp_r, adv_ctx, amt, current_user,
-                                                  note=f"Reset re-reserve advance {leave.get('start_date')}")
-                reset_set["advance_target_month"] = adv_ctx["target_month"]
-                reset_set["advance_settlement"] = "outstanding"
-            else:
-                await _reserve_paid_leave(leave["employee_id"], leave.get("emp_name"), amt,
-                                          current_user, note=f"Reset re-reserve {leave.get('start_date')}")
-                if leave.get("is_advance_paid_leave"):
-                    reset_set["is_advance_paid_leave"] = False
-                    reset_set["advance_settlement"] = None
+            reset_set.update(await _rereserve_released_paid_leave(leave, amt, current_user, "Reset"))
         reset_set["paid_leave_reservation_status"] = "reserved"
     await db.leaves.update_one(
         {"id": leave_id},

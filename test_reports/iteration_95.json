@@ -1,0 +1,35 @@
+{
+  "summary": "Tested Next-Month Advance Paid Leave (employee) and the Admin 'Employee Paid Leave Balances' table on the LOCAL DB only (IST today 2026-10-24, so the target month is 2026-11). Backend: new pytest file with 16 tests, 15 passed. The only failure is an edge case: when an APPROVED advance leave is overridden to Rejected, the balance is not returned. The previous suite test_consider_as_paid_leave.py passed 14/14, so existing behaviour is unchanged. Playwright checks of the employee Apply dialog and the admin balance table (search, sort, pagination, red negatives, refresh after Generate) all passed. All test data was cleaned up.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/leaves/{id}/reject (approved -> rejected override, 'history-reject-btn-*' in Leave.js)", "issue": "Rejecting an already-APPROVED advance leave does not release it. Approve sets paid_leave_reservation_status to 'finalized', and reject only releases when the status is 'reserved'. Result: the balance stays at -1, paid_leave_advance_used stays at 1 and advance_settlement stays 'outstanding' on a rejected leave, so the employee loses next month's allowance. Normal paid leave has the same gap (approved then rejected kept 1.0 instead of returning to 2.0), so this pre-dates the feature, but it matters more for advance leave."},
+      {"endpoint": "PUT /api/leaves/{id}/approve (rejected -> approved override)", "issue": "Approving a previously rejected leave ('released') sets it to 'finalized' without deducting again. An advance leave therefore becomes an approved paid leave with no deduction (balance stays 0, advance_settlement 'reversed'). This also pre-dates the feature."},
+      {"endpoint": "POST /api/admin/paid-leave/generate and /api/admin/paid-leave/status", "issue": "The generate and status endpoints count employees with _eligible_paid_employees(), which does not filter by employee_status. Inactive confirmed Full-time employees therefore get +1, and TEST_PL_inactive went from 1 to 2. The banner said '18 eligible' while the new balances table, which lists Active only, showed 17. This pre-dates the feature; decide whether generation should skip Inactive employees so the banner and the table agree."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_advance_paid_leave.py", "/app/test_reports/pytest/iteration_95.xml", "/app/backend/tests/test_consider_as_paid_leave.py"],
+  "action_items": [
+    "Decide and implement what happens when an approved advance or paid leave is overridden to Rejected (reject_leave only releases 'reserved', not 'finalized'). Suggested: release once with a status claim, set advance_settlement to 'reversed' and give back the advance allowance.",
+    "Optional: when a 'released' leave is overridden to Approved, re-reserve it through the advance or normal rules, as reset_leave already does.",
+    "Optional: make _eligible_paid_employees exclude Inactive employees so the Generate count matches the Balances table (this was existing behaviour, so confirm with the user first)."
+  ],
+  "critical_code_review_comments": [
+    "_cas_paid_advance uses exact-match compare-and-set on available_paid_leave, paid_leave_advance_month and paid_leave_advance_used. It works because null matches a missing field, and the concurrency test passed (1 of 5 requests succeeded, balance -1).",
+    "Monthly generation never resets paid_leave_advance_month or paid_leave_advance_used. The outstanding check relies on the paid_leave_generation record, which is correct, but if an admin deletes a generation record the old advance shows as outstanding again.",
+    "server.py is more than 21k lines and should be split into modules."
+  ],
+  "updated_files": ["/app/backend/tests/test_advance_paid_leave.py"],
+  "success_rate": {"backend": "94% (15/16 new tests; 14/14 previous suite)", "frontend": "100% of tested flows"},
+  "test_credentials": "admin/pass123 works on the LOCAL DB. /app/memory/test_credentials.md lists HrAdmin@2109, which this local DB rejects. Employees: test_pl_*/Test@123 (seeded).",
+  "seed_data_creation": "Used seed_paid_leave_test_data.py and added 12 temporary TEST_PL_pg* employees for the pagination check. Everything was removed: TEST_PL_ employees, users, leaves and history are all 0, the 2026-11 generation record and its history rows were deleted, the +1 was reverted, and no TEST_PL_ notifications remain.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "test_advance_paid_leave.py reseeds itself, resets each employee's state directly in Mongo and, in teardown, reverts any Nov-2026 generation and deletes its record. test_zz_generate runs last. Calendar (react-day-picker v8) always opens on the current month, so use button[name=next-month] once for November and button[name=day]:not(.day-outside) to pick a day.",
+  "rca of the issue": "reject_leave (server.py about line 10109) only releases when paid_leave_reservation_status == 'reserved'. approve_leave (about line 10054) turns 'reserved' into 'finalized', so an approved-then-rejected override skips the release. To reproduce: apply an advance leave for 2026-11-05 as test_pl_fulltime0, approve it, then reject it. The balance stays at -1."
+}

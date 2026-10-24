@@ -3153,3 +3153,10 @@ RULE: never run payroll test files that seed employees without verified cleanup
 
 ## 2026-10-19 — Google HTML verification file
 - Added `frontend/public/googlea22597748e1bdd75.html` (byte-identical to Google original), served at site root.
+
+## 2026-10-24 — Next-month Advance Paid Leave + Admin balances table
+- Employee apply: confirmed FT with 0 balance may borrow max 1.0 day for the immediately next month (balance goes negative; monthly +1 offsets). Tracking: employee `paid_leave_advance_month/_used`; leave `is_advance_paid_leave`, `advance_target_month`, `advance_settlement` (outstanding/settled/reversed). Compare-and-set updates (concurrency safe). Blocks: later months, already-generated target month, unsettled previous advance, limit reached.
+- Reject releases advance once (incl. approved→rejected); approve of a released advance re-reserves; reset re-reserves; generate/import mark settled.
+- `GET /api/employee/paid-leave-advance`, `GET /api/admin/paid-leave/balances`; UI: EmployeeLeave.js checkbox logic, PaidLeaveBalanceTable.js in Paid Leave Management.
+- Tests: backend/tests/test_advance_paid_leave.py (16) + test_consider_as_paid_leave.py (14) all pass on local DB; data cleaned; preview restored to Atlas.
+- Known pre-existing (unchanged): generation counts Inactive confirmed employees; normal (non-advance) paid leave approved→rejected doesn't release; no employee cancel endpoint; Import overwrites balances.
