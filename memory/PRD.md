@@ -3171,3 +3171,8 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - brsf_stars.py: 15th criterion N09 (automated, monthly, cap 1). compute_monthly_late_n09: reporting 10:00 before 18-Sep-2026, 10:30 from then; excludes pending/approved First Half leave dates and pending/approved late requests created strictly before 09:30 IST on/before the date. >3 → -1. Overrides via existing override layer always win.
 - brsf_validation.py: N09 allowed 0/-1. brsf_excel.py: export/import column S = N09; totals moved to T/U/V. BrsfChildTable.jsx: N09 child columns.
 - Tests: backend/tests/test_brsf_n09_late_arrivals.py (12/12) on local DB; data cleaned; preview restored to Atlas.
+
+## 2026-10-27 — BRSF Late Days column + Finalize Month lock
+- /api/brsf/summary rows include late_count (N09 counted children) + month `finalized`; summary table "Late Days" column & grid line.
+- brsf_month_locks: POST /api/brsf/finalize (snapshots uncalculated employees), POST /api/brsf/reopen (reason required, history kept). While finalized all edits/recalc/import -> 400; GET stars returns frozen stored lines; export allowed. UI Finalize/Reopen buttons, dialog, banner.
+- Tests iteration_98: 10/10 + 12/12 regression; local DB; cleaned; preview restored to Atlas.

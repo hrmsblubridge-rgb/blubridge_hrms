@@ -1,0 +1,26 @@
+{
+  "summary": "Tested the BRSF 'Late Days' column and the Finalize/Reopen month lock end to end on the LOCAL DB. Backend: the new suite tests/test_brsf_finalize_late_days.py passed 10/10. It covered: late_count is null before calculation and 4/3 after recalculation; finalize works and a second finalize returns 400; while finalized, recalculate (whole month and single employee), override, reset-override, manual, instances add/edit/delete, child-override and its reset, import preview and import confirm all return 400 with the exact 'September 2026 is finalized...' message; XLSX and CSV export still work; values stay frozen after a new late attendance was inserted for TEST_N09_three (N09 still 0, late_count still 3), and after reopen + recalculate they move to -1 / 4; reopen with no reason or a blank reason returns 400, and reopening a month that is already open returns 400; the history has entries finalize then reopen; finalizing without a prior calculation snapshots 15 lines for each employee; sysadmin gets 403 on finalize and reopen. Regression: test_brsf_n09_late_arrivals.py passed 12/12. UI: the Late Days column shows '--' before calculation and then 4 (red) and 3 (slate); grid cards show 'Late Days: n' with the same colours; Finalize dialog with note, then confirm, then the banner appears, Auto Calculate and Import are disabled, Reopen Month shows and Export stays enabled. The lock still shows after a page reload. In employee detail, all override, manual and add-instance buttons are disabled. Reopen with an empty reason keeps the dialog open with the toast 'Please enter a reason to reopen'; with a reason, the banner goes away and editing works again. All test data was cleaned up (0 test employees, locks, lines, audits, batches or attendance left).",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Finalize/Reopen dialog", "issues": ["Title shows raw 'Finalize 2026-09' while the toast and banner say 'September 2026' (cosmetic inconsistency)", "The finalize sign-off note is not shown in the finalized banner (optional)"]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/test_brsf_finalize_late_days.py", "/app/backend/tests/test_brsf_n09_late_arrivals.py", "/app/test_reports/pytest/pytest_brsf_finalize.xml"],
+  "action_items": ["Optional: show the month label (e.g. 'September 2026') in the lock dialog title"],
+  "critical_code_review_comments": [
+    "brsf_stars frozen branch: an employee who becomes eligible after the month is finalized (e.g. confirmation date changed afterwards) has no stored lines, so the API returns lines=[] with zero totals and nothing tells HR why. Consider flagging this case or snapshotting on read.",
+    "Non-finalized GET /api/brsf/stars still runs sync_lines (a write on read). This is existing behaviour, but it means opening an employee's detail makes the summary show 'Calculated'.",
+    "month_lock returns the whole lock document, including the growing history array, on every summary/stars call. Fine at current scale; projecting the history out would keep the payload small.",
+    "brsf_stars.py is 1115 lines, over the 700-line guideline; consider splitting the routes from the engine."
+  ],
+  "updated_files": ["/app/backend/tests/test_brsf_finalize_late_days.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "admin/pass123 (local HR) works. /app/memory/test_credentials.md lists admin/HrAdmin@2109, which does NOT work locally. user/pass123 returns 401 locally, so the non-HR 403 check used sysadmin/pass123 (system_admin).",
+  "seed_data_creation": "Used seed_brsf_late_test_data.py seed; all removed by cleanup (including the 2026-09 lock). Also inserted one extra attendance record for TEST_N09_three and a fake import batch, both removed.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Run: cd /app/backend && REACT_APP_BACKEND_URL=... python3 -m pytest tests/test_brsf_finalize_late_days.py tests/test_brsf_n09_late_arrivals.py -v (both seed and clean up themselves; run them one after the other because they share TEST_N09_ data). UI: /star-reward; month picker is [data-testid=brsf-month-picker] button, then the 'Sep' button. The system date is Oct 2026, so the default month is 2026-10."
+}

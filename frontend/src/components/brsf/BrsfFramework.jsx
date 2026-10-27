@@ -295,7 +295,8 @@ const BrsfFramework = () => {
             data-testid="brsf-finalized-banner">
             <Lock className="w-4 h-4 shrink-0" />
             <span>Finalized by <strong>{finalized.finalized_by || 'HR'}</strong> on {fmtDateTime(finalized.finalized_at)}.
-              Stars are frozen — Auto Calculate, manual entries, overrides and sheet import are disabled until the month is reopened.</span>
+              Stars are frozen — Auto Calculate, manual entries, overrides and sheet import are disabled until the month is reopened.
+              {finalized.note && <> Note: <em data-testid="brsf-finalized-note">{finalized.note}</em></>}</span>
           </div>
         )}
         {!monthCompleted && (
@@ -608,7 +609,7 @@ const BrsfFramework = () => {
       <Dialog open={!!lockDialog} onOpenChange={(o) => { if (!o) setLockDialog(null); }}>
         <DialogContent className="max-w-md" data-testid="brsf-lock-dialog">
           <DialogHeader>
-            <DialogTitle>{lockDialog === 'finalize' ? `Finalize ${month}` : `Reopen ${month}`}</DialogTitle>
+            <DialogTitle>{lockDialog === 'finalize' ? 'Finalize' : 'Reopen'} {new Date(`${month}-01T00:00:00`).toLocaleString('en-US', { month: 'long', year: 'numeric' })}</DialogTitle>
             <DialogDescription>
               {lockDialog === 'finalize'
                 ? 'This freezes the stars of every eligible employee for this month. Auto Calculate, overrides, manual entries and sheet import will be disabled.'
