@@ -3166,3 +3166,8 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - Reject restores checkbox paid leave when pending (reserved) OR approved (finalized), exactly once (claim + revert on failure). Approving a released paid leave re-reserves (400 if insufficient) to prevent credit loops.
 - `GET /api/admin/paid-leave/balances/export?search=` → Employee_Paid_Leave_Balances_YYYY-MM-DD.xlsx; "Export Excel" button in PaidLeaveBalanceTable.js.
 - Tests: iteration_96 12/12 + 30/30 regression on local DB; data cleaned; preview restored to Atlas.
+
+## 2026-10-24 — BRSF N09 "Monthly Late Arrivals (More than 3)" (-1/month)
+- brsf_stars.py: 15th criterion N09 (automated, monthly, cap 1). compute_monthly_late_n09: reporting 10:00 before 18-Sep-2026, 10:30 from then; excludes pending/approved First Half leave dates and pending/approved late requests created strictly before 09:30 IST on/before the date. >3 → -1. Overrides via existing override layer always win.
+- brsf_validation.py: N09 allowed 0/-1. brsf_excel.py: export/import column S = N09; totals moved to T/U/V. BrsfChildTable.jsx: N09 child columns.
+- Tests: backend/tests/test_brsf_n09_late_arrivals.py (12/12) on local DB; data cleaned; preview restored to Atlas.
