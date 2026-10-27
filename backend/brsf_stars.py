@@ -308,6 +308,20 @@ def _require_completed_month(month: str):
                    "generated or edited after the selected month is completed.")
 
 
+async def month_lock(month: str) -> Optional[dict]:
+    """Finalize-month lock (HR sign-off). None when the month is open."""
+    return await db.brsf_month_locks.find_one(
+        {"year": int(month[:4]), "month": int(month[5:7]), "finalized": True}, {"_id": 0})
+
+
+async def require_open_month(month: str):
+    lock = await month_lock(month)
+    if lock:
+        label = f"{MONTH_LABELS[int(month[5:7]) - 1]} {month[:4]}"
+        raise HTTPException(status_code=400,
+                            detail=f"{label} is finalized. Reopen the month to change stars.")
+
+
 # --------------------------------------------------------------- engine
 async def _research_minutes(employee_id: str, start: date, end: date) -> dict:
     """Per-day TOTAL research minutes from the Vigilance module.
@@ -742,6 +756,7 @@ async def _get_line(line_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Star line not found")
     month = f"{line['year']:04d}-{line['month']:02d}"
     _require_completed_month(month)
+    await require_open_month(month)
     if not any(e["id"] == line["employee_id"] for e in await eligible_employees(month)):
         raise HTTPException(status_code=400,
                             detail="Employee is not eligible for BRSF stars in this month "
@@ -784,10 +799,13 @@ async def brsf_summary(month: str, current_user: dict = Depends(get_current_user
     totals = {}
     async for l in db.brsf_star_lines.find(
         {"year": year, "month": mon, "employee_id": {"$in": [e["id"] for e in emps]}},
-        {"_id": 0, "employee_id": 1, "sign": 1, "final_value": 1, "override_value": 1},
+        {"_id": 0, "employee_id": 1, "sign": 1, "final_value": 1, "override_value": 1,
+         "code": 1, "system_children.counted": 1},
     ):
         t = totals.setdefault(l["employee_id"], {"positive_total": 0.0, "negative_total": 0.0,
-                                                 "lines": 0, "overrides": 0})
+                                                 "lines": 0, "overrides": 0, "late_count": None})
+        if l.get("code") == "N09":
+            t["late_count"] = sum(1 for c in (l.get("system_children") or []) if c.get("counted"))
         t["lines"] += 1
         t["positive_total" if l["sign"] > 0 else "negative_total"] += (l.get("final_value") or 0)
         if l.get("override_value") is not None:
@@ -801,8 +819,10 @@ async def brsf_summary(month: str, current_user: dict = Depends(get_current_user
             **e,
             "positive_total": pos, "negative_total": neg, "net_total": round(pos + neg, 2),
             "calculated": bool(t), "overrides": t["overrides"] if t else 0,
+            "late_count": t.get("late_count") if t else None,
         })
-    return {"month": month, "rows": rows, "month_completed": _month_is_completed(month)}
+    return {"month": month, "rows": rows, "month_completed": _month_is_completed(month),
+            "finalized": await month_lock(month)}
 
 
 @api_router.get("/brsf/stars")
@@ -813,7 +833,18 @@ async def brsf_stars(employee_id: str, month: str, current_user: dict = Depends(
         raise HTTPException(status_code=400,
                             detail="Employee is not eligible for BRSF stars in this month "
                                    "(Research Unit + confirmed employees only).")
-    lines = await sync_lines(emp, month)
+    lock = await month_lock(month)
+    if lock:
+        stored = {l["code"]: l async for l in db.brsf_star_lines.find(
+            {"employee_id": employee_id, "year": int(month[:4]), "month": int(month[5:7])}, {"_id": 0})}
+        lines = []
+        for c in CRITERIA:
+            if c[0] in stored:
+                l = stored[c[0]]
+                l["limits"], l["validation"] = limits_for(l), line_violation(l)
+                lines.append(l)
+    else:
+        lines = await sync_lines(emp, month)
     m_start, m_end = _month_bounds(month)
     conf = _parse_iso(emp.get("confirmation_date"))
     win_start = max(m_start, conf) if conf else m_start
@@ -821,7 +852,7 @@ async def brsf_stars(employee_id: str, month: str, current_user: dict = Depends(
              for b in _week_buckets(win_start, m_end)]
     return {"employee": emp, "month": month, "lines": lines,
             "weeks": weeks, "totals": _totals(lines),
-            "month_completed": _month_is_completed(month)}
+            "month_completed": _month_is_completed(month), "finalized": lock}
 
 
 @api_router.post("/brsf/recalculate")
@@ -831,6 +862,7 @@ async def brsf_recalculate(payload: dict = Body(...), current_user: dict = Depen
     if not month or len(str(month)) < 7:
         raise HTTPException(status_code=400, detail="A month (YYYY-MM) is required for Auto Calculate")
     _require_completed_month(month)
+    await require_open_month(month)
     emps = await eligible_employees(month)
     if employee_id:
         emps = [e for e in emps if e["id"] == employee_id]
@@ -1011,6 +1043,57 @@ async def brsf_delete_instance(line_id: str, instance_id: str,
     return line
 
 
+@api_router.post("/brsf/finalize")
+async def brsf_finalize(payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    """HR sign-off: freeze every eligible employee's stars for the month."""
+    _require_star_admin(current_user)
+    month = str(payload.get("month") or "")
+    if len(month) < 7:
+        raise HTTPException(status_code=400, detail="A month (YYYY-MM) is required")
+    _require_completed_month(month)
+    await require_open_month(month)
+    year, mon = int(month[:4]), int(month[5:7])
+    emps = await eligible_employees(month)
+    have = set(await db.brsf_star_lines.distinct(
+        "employee_id", {"year": year, "month": mon, "employee_id": {"$in": [e["id"] for e in emps]}}))
+    for e in emps:  # snapshot employees that were never calculated
+        if e["id"] not in have:
+            await sync_lines(e, month)
+    by = current_user.get("full_name") or current_user.get("username")
+    now = get_ist_now().isoformat()
+    note = (payload.get("note") or "").strip() or None
+    await db.brsf_month_locks.update_one(
+        {"year": year, "month": mon},
+        {"$set": {"year": year, "month": mon, "finalized": True, "finalized_by": by,
+                  "finalized_by_id": current_user.get("id"), "finalized_at": now, "note": note,
+                  "employee_count": len(emps)},
+         "$push": {"history": {"action": "finalize", "by": by, "at": now, "note": note}}},
+        upsert=True)
+    return {"success": True, "finalized": await month_lock(month),
+            "message": f"{MONTH_LABELS[mon - 1]} {year} finalized for {len(emps)} employee(s)."}
+
+
+@api_router.post("/brsf/reopen")
+async def brsf_reopen(payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
+    """Undo a finalize (reason required). Stars become editable again."""
+    _require_star_admin(current_user)
+    month = str(payload.get("month") or "")
+    reason = (payload.get("reason") or "").strip()
+    if len(month) < 7:
+        raise HTTPException(status_code=400, detail="A month (YYYY-MM) is required")
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required to reopen a finalized month")
+    if not await month_lock(month):
+        raise HTTPException(status_code=400, detail="This month is not finalized")
+    by = current_user.get("full_name") or current_user.get("username")
+    now = get_ist_now().isoformat()
+    await db.brsf_month_locks.update_one(
+        {"year": int(month[:4]), "month": int(month[5:7])},
+        {"$set": {"finalized": False, "reopened_by": by, "reopened_at": now, "reopen_reason": reason},
+         "$push": {"history": {"action": "reopen", "by": by, "at": now, "note": reason}}})
+    return {"success": True, "message": f"{MONTH_LABELS[int(month[5:7]) - 1]} {month[:4]} reopened."}
+
+
 @api_router.get("/brsf/audit")
 async def brsf_audit(employee_id: str, month: str, current_user: dict = Depends(get_current_user)):
     _require_star_admin(current_user)
@@ -1026,6 +1109,7 @@ async def ensure_brsf_indexes():
         [("employee_id", 1), ("year", 1), ("month", 1), ("code", 1)],
         unique=True, name="brsf_line_unique")
     await db.brsf_star_lines.create_index("id", name="brsf_line_id")
+    await db.brsf_month_locks.create_index([("year", 1), ("month", 1)], unique=True, name="brsf_month_lock_unique")
     # import previews are short-lived working data
     await db.brsf_import_batches.create_index("created_dt", name="brsf_batch_ttl",
                                               expireAfterSeconds=7 * 24 * 3600)

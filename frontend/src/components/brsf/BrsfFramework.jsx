@@ -10,7 +10,7 @@ import { Textarea } from '../ui/textarea';
 import { MonthPicker } from '../ui/month-picker';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from '../ui/dialog';
-import { ChevronDown, ChevronRight, RefreshCw, Loader2, Pencil, RotateCcw, Plus, Trash2, History, Star, TrendingDown, Sigma, Download } from 'lucide-react';
+import { ChevronDown, ChevronRight, RefreshCw, Loader2, Pencil, RotateCcw, Plus, Trash2, History, Star, TrendingDown, Sigma, Download, Lock, LockOpen } from 'lucide-react';
 import EmployeeAvatar from '../EmployeeAvatar';
 import { BrsfChildTable, EXPANDABLE, childRowsFor } from './BrsfChildTable';
 import { fmtDate, fmtDateTime } from './format';
@@ -55,6 +55,11 @@ const BrsfFramework = () => {
   const [viewMode, setViewMode] = useState('table');
   const [monthCompleted, setMonthCompleted] = useState(true);
   const [childEdit, setChildEdit] = useState(null);
+  const [finalized, setFinalized] = useState(null);
+  const [lockDialog, setLockDialog] = useState(null);
+  const [lockNote, setLockNote] = useState('');
+  const [lockBusy, setLockBusy] = useState(false);
+  const canEdit = monthCompleted && !finalized;
 
   const loadEmployees = useCallback(async () => {
     setLoadingEmp(true);
@@ -94,6 +99,7 @@ const BrsfFramework = () => {
       const res = await axios.get(`${API}/brsf/summary`, { params: { month }, headers: getAuthHeaders() });
       setSummary(res.data.rows || []);
       setMonthCompleted(!!res.data.month_completed);
+      setFinalized(res.data.finalized || null);
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed to load star summary');
       setSummary([]);
@@ -122,6 +128,23 @@ const BrsfFramework = () => {
       toast.error(e.response?.data?.detail || 'Recalculation failed');
     } finally {
       setRecalculating(false);
+    }
+  };
+
+  const submitLock = async () => {
+    const finalize = lockDialog === 'finalize';
+    if (!finalize && !lockNote.trim()) { toast.error('Please enter a reason to reopen'); return; }
+    setLockBusy(true);
+    try {
+      const res = await axios.post(`${API}/brsf/${finalize ? 'finalize' : 'reopen'}`,
+        finalize ? { month, note: lockNote || undefined } : { month, reason: lockNote }, { headers: getAuthHeaders() });
+      toast.success(res.data.message);
+      setLockDialog(null); setLockNote('');
+      await Promise.all([loadSummary(), loadStars()]);
+    } catch (e) {
+      toast.error(e.response?.data?.detail || 'Action failed');
+    } finally {
+      setLockBusy(false);
     }
   };
 
@@ -229,13 +252,23 @@ const BrsfFramework = () => {
                 className={`rounded-none px-4 h-full ${viewMode === 'grid' ? 'bg-[#063c88] text-white hover:bg-[#052f6b]' : ''}`} data-testid="brsf-view-grid">Grid View</Button>
             </div>
           )}
-          <Button onClick={recalculate} disabled={recalculating || !monthCompleted} className="bg-amber-500 hover:bg-amber-600 text-white rounded-lg" data-testid="brsf-recalculate-btn"
-            title={!monthCompleted ? 'Star Rewards can be generated only after the selected month is completed'
+          <Button onClick={recalculate} disabled={recalculating || !canEdit} className="bg-amber-500 hover:bg-amber-600 text-white rounded-lg" data-testid="brsf-recalculate-btn"
+            title={finalized ? 'This month is finalized — reopen it to recalculate' : !monthCompleted ? 'Star Rewards can be generated only after the selected month is completed'
               : (employeeId ? `Auto Calculate ${month} for the selected employee` : `Auto Calculate ${month} for all eligible employees`)}>
             {recalculating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
             Auto Calculate
           </Button>
-          <BrsfExportImport month={month} headers={getAuthHeaders()} importDisabled={!monthCompleted}
+          {monthCompleted && !finalized && (
+            <Button variant="outline" onClick={() => { setLockNote(''); setLockDialog('finalize'); }} className="rounded-lg" data-testid="brsf-finalize-btn">
+              <Lock className="w-4 h-4 mr-2" /> Finalize Month
+            </Button>
+          )}
+          {finalized && (
+            <Button variant="outline" onClick={() => { setLockNote(''); setLockDialog('reopen'); }} className="rounded-lg" data-testid="brsf-reopen-btn">
+              <LockOpen className="w-4 h-4 mr-2" /> Reopen Month
+            </Button>
+          )}
+          <BrsfExportImport month={month} headers={getAuthHeaders()} importDisabled={!canEdit}
             onImported={() => { loadSummary(); loadStars(); }} />
           {employeeId && (
             <Button variant="outline" onClick={exportCsv} className="rounded-lg" data-testid="brsf-export-btn">
@@ -257,6 +290,14 @@ const BrsfFramework = () => {
           Eligibility: Research Unit · Full-time (non-intern) · Confirmed — from the confirmation month up to
           the month before the employee went inactive. Auto Calculate runs for the selected month only.
         </p>
+        {finalized && (
+          <div className="mt-3 p-3 rounded-lg bg-blue-50 border border-blue-200 text-sm text-blue-800 flex items-center gap-2"
+            data-testid="brsf-finalized-banner">
+            <Lock className="w-4 h-4 shrink-0" />
+            <span>Finalized by <strong>{finalized.finalized_by || 'HR'}</strong> on {fmtDateTime(finalized.finalized_at)}.
+              Stars are frozen — Auto Calculate, manual entries, overrides and sheet import are disabled until the month is reopened.</span>
+          </div>
+        )}
         {!monthCompleted && (
           <div className="mt-3 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-800"
             data-testid="brsf-incomplete-month-banner">
@@ -277,7 +318,7 @@ const BrsfFramework = () => {
           <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
             <div>
               <h3 className="font-semibold text-slate-900">Monthly Star Summary</h3>
-              <p className="text-xs text-slate-500">One row per eligible employee — select a row to open the 14-criteria detail.</p>
+              <p className="text-xs text-slate-500">One row per eligible employee — select a row to open the 15-criteria detail.</p>
             </div>
             {loadingSummary && <Loader2 className="w-4 h-4 animate-spin text-slate-400" />}
           </div>
@@ -288,6 +329,7 @@ const BrsfFramework = () => {
                   <th className="px-4 py-3">Employee</th>
                   <th className="px-4 py-3">Employee ID</th>
                   <th className="px-4 py-3">Designation</th>
+                  <th className="px-4 py-3 text-right" title="Qualifying late arrivals this month (more than 3 deducts 1 star)">Late Days</th>
                   <th className="px-4 py-3 text-right">Positive Stars</th>
                   <th className="px-4 py-3 text-right">Negative Stars</th>
                   <th className="px-4 py-3 text-right">Net Stars</th>
@@ -297,7 +339,7 @@ const BrsfFramework = () => {
               </thead>
               <tbody>
                 {summary.length === 0 && !loadingSummary && (
-                  <tr><td colSpan={8} className="px-4 py-10 text-center text-slate-500" data-testid="brsf-summary-empty">
+                  <tr><td colSpan={9} className="px-4 py-10 text-center text-slate-500" data-testid="brsf-summary-empty">
                     No eligible Research Unit employees for this month.
                   </td></tr>
                 )}
@@ -312,6 +354,9 @@ const BrsfFramework = () => {
                     </td>
                     <td className="px-4 py-3 text-slate-600">{r.custom_employee_id || r.emp_id || '--'}</td>
                     <td className="px-4 py-3 text-slate-600">{r.designation || '--'}</td>
+                    <td className={`px-4 py-3 text-right number-display font-semibold ${r.late_count > 3 ? 'text-rose-600' : 'text-slate-700'}`} data-testid={`brsf-summary-late-${r.id}`}>
+                      {r.late_count === null || r.late_count === undefined ? '--' : r.late_count}
+                    </td>
                     <td className="px-4 py-3 text-right number-display text-emerald-600 font-semibold">{fmt(r.positive_total)}</td>
                     <td className="px-4 py-3 text-right number-display text-rose-600 font-semibold">{fmt(r.negative_total)}</td>
                     <td className={`px-4 py-3 text-right number-display font-bold ${r.net_total > 0 ? 'text-emerald-600' : r.net_total < 0 ? 'text-rose-600' : 'text-slate-400'}`}>{fmt(r.net_total)}</td>
@@ -353,6 +398,7 @@ const BrsfFramework = () => {
                   <div className="min-w-0">
                     <p className="font-semibold text-slate-900 truncate">{r.full_name}</p>
                     <p className="text-xs text-slate-500 truncate">{r.custom_employee_id || r.emp_id} · {r.designation || '--'}</p>
+                    <p className={`text-xs ${r.late_count > 3 ? 'text-rose-600' : 'text-slate-500'}`} data-testid={`brsf-grid-late-${r.id}`}>Late Days: {r.late_count ?? '--'}</p>
                   </div>
                 </div>
                 <div className="grid grid-cols-3 gap-2 mb-4">
@@ -482,22 +528,22 @@ const BrsfFramework = () => {
                           <td className="px-3 py-3">
                             <div className="flex items-center justify-end gap-1">
                               {line.type === 'automated' && (
-                                <Button size="sm" variant="ghost" disabled={!monthCompleted} onClick={() => setOverrideLine(line)} title="Override" data-testid={`brsf-override-${line.code}`}>
+                                <Button size="sm" variant="ghost" disabled={!canEdit} onClick={() => setOverrideLine(line)} title="Override" data-testid={`brsf-override-${line.code}`}>
                                   <Pencil className="w-3.5 h-3.5" />
                                 </Button>
                               )}
                               {line.type === 'manual' && !['N07', 'N08'].includes(line.code) && (
-                                <Button size="sm" variant="ghost" disabled={!monthCompleted} onClick={() => setManualLine(line)} title="Manual entry" data-testid={`brsf-manual-${line.code}`}>
+                                <Button size="sm" variant="ghost" disabled={!canEdit} onClick={() => setManualLine(line)} title="Manual entry" data-testid={`brsf-manual-${line.code}`}>
                                   <Pencil className="w-3.5 h-3.5" />
                                 </Button>
                               )}
                               {['N07', 'N08'].includes(line.code) && (
-                                <Button size="sm" variant="ghost" disabled={!monthCompleted} onClick={() => setInstanceLine({ line, instance: null })} title="Add instance" data-testid={`brsf-add-instance-${line.code}`}>
+                                <Button size="sm" variant="ghost" disabled={!canEdit} onClick={() => setInstanceLine({ line, instance: null })} title="Add instance" data-testid={`brsf-add-instance-${line.code}`}>
                                   <Plus className="w-3.5 h-3.5" />
                                 </Button>
                               )}
                               {line.override_value !== null && line.override_value !== undefined && (
-                                <Button size="sm" variant="ghost" disabled={!monthCompleted} onClick={() => resetOverride(line)} title="Reset override" data-testid={`brsf-reset-${line.code}`}>
+                                <Button size="sm" variant="ghost" disabled={!canEdit} onClick={() => resetOverride(line)} title="Reset override" data-testid={`brsf-reset-${line.code}`}>
                                   <RotateCcw className="w-3.5 h-3.5" />
                                 </Button>
                               )}
@@ -510,7 +556,7 @@ const BrsfFramework = () => {
                               <BrsfChildTable
                                 line={line}
                                 rows={children}
-                                canEdit={monthCompleted}
+                                canEdit={canEdit}
                                 onEditChild={(child) => setChildEdit({ line, child })}
                                 onResetChild={async (child) => {
                                   try {
@@ -558,6 +604,30 @@ const BrsfFramework = () => {
       {instanceLine && (
         <InstanceDialog {...instanceLine} onClose={() => setInstanceLine(null)} onSaved={patchLine} headers={getAuthHeaders()} />
       )}
+
+      <Dialog open={!!lockDialog} onOpenChange={(o) => { if (!o) setLockDialog(null); }}>
+        <DialogContent className="max-w-md" data-testid="brsf-lock-dialog">
+          <DialogHeader>
+            <DialogTitle>{lockDialog === 'finalize' ? `Finalize ${month}` : `Reopen ${month}`}</DialogTitle>
+            <DialogDescription>
+              {lockDialog === 'finalize'
+                ? 'This freezes the stars of every eligible employee for this month. Auto Calculate, overrides, manual entries and sheet import will be disabled.'
+                : 'Reopening makes this month editable again. The reason is kept in the month history.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>{lockDialog === 'finalize' ? 'Sign-off note (optional)' : 'Reason (required)'}</Label>
+            <Textarea value={lockNote} onChange={(e) => setLockNote(e.target.value)} rows={3} data-testid="brsf-lock-note" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLockDialog(null)} data-testid="brsf-lock-cancel">Cancel</Button>
+            <Button onClick={submitLock} disabled={lockBusy} className="bg-[#063c88] hover:bg-[#052f6b] text-white" data-testid="brsf-lock-confirm">
+              {lockBusy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {lockDialog === 'finalize' ? 'Finalize Month' : 'Reopen Month'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={auditOpen} onOpenChange={setAuditOpen}>
         <DialogContent className="max-w-3xl" data-testid="brsf-audit-dialog">

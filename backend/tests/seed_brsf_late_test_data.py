@@ -34,6 +34,7 @@ def cleanup():
     for c in ("attendance", "leaves", "late_requests", "brsf_star_lines", "brsf_star_audit", "notifications"):
         db[c].delete_many({"employee_id": {"$in": ids}})
     db.employees.delete_many({"full_name": {"$regex": f"^{TAG}"}})
+    db.brsf_month_locks.delete_many({"year": 2026, "month": 9})  # local test DB only
     print("cleaned", len(ids))
 
 

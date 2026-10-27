@@ -23,6 +23,7 @@ from server import api_router, db, get_current_user, get_ist_now
 from brsf_stars import (
     _month_is_completed,
     _require_completed_month,
+    require_open_month,
     _require_star_admin,
     _save_line,
     _utc_now_iso,
@@ -279,6 +280,7 @@ async def brsf_import_preview(month: str = Form(...), file: UploadFile = FastAPI
     """Parse + validate the uploaded sheet. Nothing is written to the star lines."""
     _require_star_admin(current_user)
     _require_completed_month(month)
+    await require_open_month(month)
     content = await file.read()
     name = (file.filename or "").lower()
     if name.endswith(".xlsx") or name.endswith(".xlsm"):
@@ -386,6 +388,7 @@ async def brsf_import_confirm(payload: dict = Body(...),
     if batch.get("applied"):
         raise HTTPException(status_code=400, detail="This import batch has already been applied")
     _require_completed_month(batch["month"])
+    await require_open_month(batch["month"])
 
     applied, failed = 0, []
     for ch in batch["changes"]:
