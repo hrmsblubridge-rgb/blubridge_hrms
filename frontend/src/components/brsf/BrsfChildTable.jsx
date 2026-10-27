@@ -7,7 +7,7 @@ import { fmtDate, fmtDateTime, fmtTime } from './format';
 
 const VALIDITY_LABEL = { valid: 'Valid Leave', invalid: 'Invalid Leave' };
 
-export const EXPANDABLE = new Set(['P02', 'P04', 'P05', 'P06', 'N01', 'N02', 'N03', 'N04', 'N05', 'N06', 'N07', 'N08']);
+export const EXPANDABLE = new Set(['P02', 'P04', 'P05', 'P06', 'N01', 'N02', 'N03', 'N04', 'N05', 'N06', 'N07', 'N08', 'N09']);
 // criteria whose parent value is the aggregate of individually editable children
 export const CHILD_EDITABLE = new Set(['P05', 'P06', 'N01', 'N02', 'N04', 'N05']);
 
@@ -41,6 +41,7 @@ const INFO_HEADERS = {
   N06: ['Date', 'Source', 'Type', 'Duration', 'Equivalent'],
   N07: ['Date', 'Time', 'Remarks', 'Star', 'Added By', 'Actions'],
   N08: ['Date', 'Time', 'Remarks', 'Star', 'Added By', 'Actions'],
+  N09: ['Date', 'Reporting Time', 'Punch In', 'Result'],
 };
 
 const EDIT_HEADERS = ['System Star', 'Override', 'Final Star', 'Status', 'Action'];
@@ -73,6 +74,8 @@ const infoCells = (code, r, onReason) => {
         r.proof_uploaded ? 'Yes' : 'No'];
     case 'N06':
       return [fmtDate(r.date), dash(r.source), dash(r.leave_type), dash(r.duration), r.equivalent];
+    case 'N09':
+      return [fmtDate(r.date), fmtTime(r.reporting_time), fmtTime(r.punch_in), r.reason];
     default:
       return [JSON.stringify(r)];
   }

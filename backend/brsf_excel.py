@@ -55,6 +55,7 @@ SHEET_COLUMNS = [
     ("P", "N06", "Frequent Absences More than 4 Leave/Absence (-3 Monthly)", "Frequent Absences", (-3, 0)),
     ("Q", "N07", "No Show / Unreachable (-3 Per Instance)", "No Show", None),
     ("R", "N08", "Behavior / UnSafe Conduct (-4 star) per instance", "Unsafe Conduct", None),
+    ("S", "N09", "Late Arrivals More than 3 Per Month (-1 Monthly)", "Late Arrivals", (-1, 0)),
 ]
 CODE_BY_COLUMN = {c: code for c, code, _, _, _ in SHEET_COLUMNS}
 MONTHLY_MANUAL_CODES = {"P02", "P03", "P04"}   # imported value = manual monthly entry
@@ -109,17 +110,17 @@ def _build_workbook(month: str, rows: list, batch_id: str) -> io.BytesIO:
     ws["E1"] = "Positive Stars"
     ws.merge_cells("E1:J1")
     ws["K1"] = "Negative Stars"
-    ws.merge_cells("K1:R1")
+    ws.merge_cells("K1:S1")
     for col, label in (("A", "Employee Name"), ("B", "Team Name"), ("C", "Date Of Joining"),
-                       ("D", "Date Of Employee Confirmation"), ("S", "Total Positive Stars"),
-                       ("T", "Total Negative Stars"), ("U", "Total Stars")):
+                       ("D", "Date Of Employee Confirmation"), ("T", "Total Positive Stars"),
+                       ("U", "Total Negative Stars"), ("V", "Total Stars")):
         ws[f"{col}1"] = label
         ws.merge_cells(f"{col}1:{col}2")
     for col, _code, header, _csv, _rng in SHEET_COLUMNS:
         ws[f"{col}2"] = header
 
     for row in (1, 2):
-        for col in range(1, 22):
+        for col in range(1, 23):
             c = ws.cell(row=row, column=col)
             c.font = Font(bold=True, size=10)
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
@@ -127,8 +128,8 @@ def _build_workbook(month: str, rows: list, batch_id: str) -> io.BytesIO:
             c.fill = HEAD_FILL
     ws.row_dimensions[1].height = 22
     ws.row_dimensions[2].height = 78
-    widths = {"A": 20, "B": 20, "C": 14, "D": 18, "S": 12, "T": 12, "U": 11}
-    for col in range(1, 22):
+    widths = {"A": 20, "B": 20, "C": 14, "D": 18, "T": 12, "U": 12, "V": 11}
+    for col in range(1, 23):
         letter = get_column_letter(col)
         ws.column_dimensions[letter].width = widths.get(letter, 16)
     ws.freeze_panes = "A3"
@@ -146,15 +147,15 @@ def _build_workbook(month: str, rows: list, batch_id: str) -> io.BytesIO:
             cell.value = r["values"].get(code, 0)
             cell.alignment = Alignment(horizontal="center")
             cell.protection = Protection(locked=False)
-        ws[f"S{excel_row}"] = f"=SUM(E{excel_row}:J{excel_row})"
-        ws[f"T{excel_row}"] = f"=SUM(K{excel_row}:R{excel_row})"
-        ws[f"U{excel_row}"] = f"=S{excel_row}+T{excel_row}"
-        for col in range(1, 22):
+        ws[f"T{excel_row}"] = f"=SUM(E{excel_row}:J{excel_row})"
+        ws[f"U{excel_row}"] = f"=SUM(K{excel_row}:S{excel_row})"
+        ws[f"V{excel_row}"] = f"=T{excel_row}+U{excel_row}"
+        for col in range(1, 23):
             c = ws.cell(row=excel_row, column=col)
             c.border = BORDER
             if col <= 4:
                 c.alignment = Alignment(vertical="center", wrap_text=True)
-            if col >= 19:
+            if col >= 20:
                 c.fill = TOTAL_FILL
                 c.font = Font(bold=True)
                 c.alignment = Alignment(horizontal="center")
@@ -174,7 +175,7 @@ def _build_workbook(month: str, rows: list, batch_id: str) -> io.BytesIO:
         ws.add_data_validation(dv)
         dv.add(f"{col}{FIRST_DATA_ROW}:{col}{last_row}")
 
-    # totals keep their formulas: sheet is protected, only E:R is unlocked
+    # totals keep their formulas: sheet is protected, only E:S is unlocked
     ws.protection.sheet = True
     ws.protection.enable()
 
@@ -265,7 +266,7 @@ def _read_csv(content: bytes) -> dict:
         return {"file_month": None, "rows": []}
     rows = []
     for i, r in enumerate(all_rows[1:], start=2):
-        padded = r + [""] * (21 - len(r))
+        padded = r + [""] * (22 - len(r))
         cells = {col: padded[4 + idx] for idx, (col, *_) in enumerate(SHEET_COLUMNS)}
         rows.append({"row": i, "name": (padded[0] or "").strip(),
                      "employee_id": None, "cells": cells})

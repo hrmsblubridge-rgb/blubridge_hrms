@@ -4,7 +4,7 @@ Scope: Research Unit + Full-time (non-intern) + CONFIRMED employees only,
 eligible from the confirmation MONTH onwards (confirmation-month calculations
 start at the confirmation date).
 
-Exactly 14 parent criteria per employee/month, keyed uniquely on
+Exactly 15 parent criteria per employee/month, keyed uniquely on
 (employee_id, year, month, code) so recalculation is idempotent. Every line
 keeps three layers: system_calculated → manual override → final applied, plus
 audit history. Automated recalculation NEVER destroys an active override.
@@ -62,6 +62,7 @@ CRITERIA = [
     ("N06", "Frequent Absences", -1, "automated", "monthly", 3),
     ("N07", "No Show / Unreachable", -1, "manual", "instance", None),
     ("N08", "Unsafe Conduct", -1, "manual", "instance", None),
+    ("N09", "Monthly Late Arrivals (More than 3)", -1, "automated", "monthly", 1),
 ]
 CRITERIA_MAP = {c[0]: c for c in CRITERIA}
 AUTOMATED_CODES = {c[0] for c in CRITERIA if c[3] == "automated"}
@@ -74,6 +75,12 @@ HALF_LEAVE_CODES = {"PH", "SH", "EH", "PP"}
 ABSENT_CODES = {"A", "LOP"}
 WORKED_HOLIDAY_CODES = {"FD", "HD"}
 NON_REQUIRED_CODES = {"WO", "Su", "H", "R", "BLANK", "NA", ""}
+
+# N09 — star-reward-only reporting time history (attendance shifts untouched)
+N09_REPORTING_CHANGE = date(2026, 9, 18)          # inclusive
+N09_REPORTING_BEFORE, N09_REPORTING_FROM = 600, 630  # 10:00 / 10:30 (minutes)
+N09_REQUEST_CUTOFF = 9 * 60 + 30                   # late request must be BEFORE 09:30
+N09_MAX_LATE = 3
 
 RESEARCH_POSITIVE_MIN = 600  # >= 10:00 average → +1
 RESEARCH_NEGATIVE_MAX = 570  # < 09:30 average → -1
@@ -135,6 +142,92 @@ def _applied_at(leave: dict) -> Optional[datetime]:
 
 def _has_proof(leave: dict) -> bool:
     return bool(leave.get("supporting_document_url"))
+
+
+def _clock_minutes(rec: dict) -> Optional[int]:
+    """First punch-in of an attendance record as minutes after midnight."""
+    v = (rec.get("check_in_24h") or "").strip()
+    if v:
+        try:
+            h, m = v.split(":")[:2]
+            return int(h) * 60 + int(m)
+        except ValueError:
+            pass
+    v = (rec.get("check_in") or "").strip().upper()
+    for fmt in ("%I:%M %p", "%I:%M:%S %p", "%H:%M", "%H:%M:%S"):
+        try:
+            t = datetime.strptime(v, fmt)
+            return t.hour * 60 + t.minute
+        except ValueError:
+            continue
+    return None
+
+
+def _ist_naive(v) -> Optional[datetime]:
+    try:
+        dt = v if isinstance(v, datetime) else datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone(timedelta(hours=5, minutes=30))).replace(tzinfo=None)
+    return dt
+
+
+async def compute_monthly_late_n09(employee_id: str, win_start: date, m_end: date) -> dict:
+    """N09: > 3 qualifying late arrivals in the month → -1 (once per month)."""
+    days = [win_start + timedelta(days=i) for i in range((m_end - win_start).days + 1)]
+    first_in = {}
+    async for a in db.attendance.find(
+        {"employee_id": employee_id, "date": {"$in": [d.strftime("%d-%m-%Y") for d in days]}},
+        {"_id": 0, "date": 1, "check_in": 1, "check_in_24h": 1},
+    ):
+        mins = _clock_minutes(a)
+        if mins is None:
+            continue
+        try:
+            d = datetime.strptime(a["date"], "%d-%m-%Y").date()
+        except (KeyError, ValueError):
+            continue
+        first_in[d] = min(first_in.get(d, mins), mins)
+    fh_dates = set()
+    async for lv in db.leaves.find(
+        {"employee_id": employee_id, "leave_split": "First Half",
+         "status": {"$in": ["pending", "Pending", "approved", "Approved"]},
+         "start_date": {"$lte": _iso(m_end)}, "end_date": {"$gte": _iso(win_start)}},
+        {"_id": 0, "start_date": 1, "end_date": 1},
+    ):
+        s, e = _parse_iso(lv.get("start_date")), _parse_iso(lv.get("end_date") or lv.get("start_date"))
+        if s and e:
+            fh_dates.update(s + timedelta(days=i) for i in range((e - s).days + 1))
+    timely_req = set()
+    async for lr in db.late_requests.find(
+        {"employee_id": employee_id, "date": {"$gte": _iso(win_start), "$lte": _iso(m_end)},
+         "status": {"$in": ["pending", "Pending", "approved", "Approved"]}},
+        {"_id": 0, "date": 1, "created_at": 1},
+    ):
+        d, created = _parse_iso(lr.get("date")), _ist_naive(lr.get("created_at"))
+        if d and created and created < datetime.combine(d, datetime.min.time()) + timedelta(minutes=N09_REQUEST_CUTOFF):
+            timely_req.add(d)
+    children, counted = [], 0
+    for d in sorted(first_in):
+        rep_mins = N09_REPORTING_BEFORE if d < N09_REPORTING_CHANGE else N09_REPORTING_FROM
+        punch = first_in[d]
+        if punch <= rep_mins:
+            continue
+        if d in fh_dates:
+            reason, counts = "Excluded — First Half leave (pending/approved)", False
+        elif d in timely_req:
+            reason, counts = "Excluded — Late request submitted before 09:30 AM", False
+        else:
+            reason, counts = "Counted — late arrival", True
+        counted += counts
+        children.append({"key": f"date:{_iso(d)}", "date": _iso(d), "punch_in": _minutes_to_hhmm(punch),
+                         "reporting_time": _minutes_to_hhmm(rep_mins), "counted": counts,
+                         "reason": reason, "value": 0})
+    value = -1 if counted > N09_MAX_LATE else 0
+    return {"value": value, "children": children,
+            "note": f"{counted} qualifying late arrival(s) of {len(children)} late day(s) this month"
+                    f" — more than {N09_MAX_LATE} deducts 1 star"}
 
 
 def _leave_dates(leave: dict) -> list:
@@ -540,6 +633,8 @@ async def compute_system_values(employee: dict, month: str) -> dict:
     out["N05"] = {"value": sum(c["value"] for c in n05), "children": n05,
                   "note": f"{len(n05)} consecutive leave sequence(s) checked "
                           "(one document anywhere in a sequence satisfies it)"}
+
+    out["N09"] = await compute_monthly_late_n09(employee["id"], win_start, m_end)
     return out
 
 

@@ -13,7 +13,7 @@ from fastapi import HTTPException
 FIXED_INSTANCE_STAR = {"N07": -3, "N08": -4}
 
 # Criteria whose monthly parent value is a single all-or-nothing penalty.
-MONTHLY_FIXED = {"N03": (0, -3), "N06": (0, -3)}
+MONTHLY_FIXED = {"N03": (0, -3), "N06": (0, -3), "N09": (0, -1)}
 
 # Static parent ranges (min, max) for criteria that are not instance driven.
 STATIC_PARENT_RANGE = {
@@ -24,7 +24,7 @@ STATIC_PARENT_RANGE = {
 CHILD_ALLOWED = {
     "P02": [0, 1], "P04": [0, 1], "P05": [0, 1], "P06": [0, 1],
     "N01": [0, -1], "N02": [0, -2], "N03": [0, -3], "N04": [0, -1],
-    "N05": [0, -3], "N06": [0, -3], "N07": [-3], "N08": [-4],
+    "N05": [0, -3], "N06": [0, -3], "N07": [-3], "N08": [-4], "N09": [0, -1],
 }
 
 # Star magnitude carried by ONE instance/week/sequence of an instance-driven rule.
@@ -47,6 +47,7 @@ MESSAGES = {
     "N04": "Short Research Duration can only be 0 or -1 per week.",
     "N05": "No Proof / Verification can only be 0 or -3 per consecutive leave sequence.",
     "N06": "Frequent Absences can only be 0 or -3 for the selected month.",
+    "N09": "Monthly Late Arrivals can only be 0 or -1 for the selected month.",
     "N07": "No Show / Unreachable carries a fixed -3 stars per incident.",
     "N08": "Unsafe Conduct carries a fixed -4 stars per incident.",
 }
@@ -82,7 +83,7 @@ def parent_bounds(line: dict) -> dict:
     """Allowed parent (override / final) values for this line, given its children."""
     code, sign = line["code"], line["sign"]
     if code in MONTHLY_FIXED:
-        return {"allowed": list(MONTHLY_FIXED[code]), "min": -3, "max": 0}
+        return {"allowed": list(MONTHLY_FIXED[code]), "min": min(MONTHLY_FIXED[code]), "max": 0}
     if code in STATIC_PARENT_RANGE:
         lo, hi = STATIC_PARENT_RANGE[code]
         return {"allowed": None, "min": lo, "max": hi}
