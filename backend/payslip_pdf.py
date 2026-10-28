@@ -198,6 +198,8 @@ def build_payslip_pdf(slip: dict) -> bytes:
         ("Gratuity", gr_comp.get("amount") if gr_comp else 0),
         ("Other Deductions", sum((c.get("amount") or 0) for c in other_deds)),
     ]
+    if calc.get("calc_model") == "configured" and not gr_comp:
+        ded_rows = [r for r in ded_rows if r[0] != "Gratuity"]  # gratuity is an employer provision here
 
     total_a = sum((c.get("amount") or 0) for c in earnings)
     total_b = sum(v for _, v in ded_rows)
@@ -271,6 +273,20 @@ def build_payslip_pdf(slip: dict) -> bytes:
         ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ]))
     story += [perq_tbl, Spacer(1, 6 * mm)]
+
+    # ---- 4b) Employer contributions (informational — not deducted from Net Pay) ----
+    employer = calc.get("employer_contributions") or []
+    if employer:
+        er_grid = [[Paragraph("<b>Employer Contributions (not deducted from Net Pay)</b>", lbl_b), Paragraph("<b>Amount</b>", val_r_b)]]
+        er_grid += [[Paragraph(e.get("name") or "", val_l), Paragraph(_int_amt(e.get("amount") or 0), val_r)] for e in employer]
+        er_tbl = Table(er_grid, colWidths=[W * 0.30, W * 0.20], hAlign="LEFT")
+        er_tbl.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.75, BORDER), ("INNERGRID", (0, 0), (-1, -1), 0.4, BORDER),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6), ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story += [er_tbl, Spacer(1, 6 * mm)]
 
     # ---- 5) Net Pay in Words ----
     words_row = Table([[Paragraph("Net Pay In Words :", words_lbl),

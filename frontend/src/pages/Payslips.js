@@ -12,6 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { MonthPicker } from '../components/ui/month-picker';
 import { DatePicker } from '../components/ui/date-picker';
+import { VersionBar, EmployerPfSection, GratuitySection, EmployerContributions, AssignmentHistoryDialog, monthLabel } from '../components/payslip/TemplateExtras';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const inr = (n) => '₹' + Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -130,7 +131,7 @@ export const CalcBreakdown = ({ calc }) => {
             <td className="py-2 text-right font-semibold" data-testid="preview-gross">{inr(calc.gross_earnings)}</td>
           </tr>
           <tr className="text-sm">
-            <td colSpan="3" className="py-2 text-right text-slate-500">Total Deductions <span className="text-[10px] text-slate-400">(PF + Gratuity)</span></td>
+            <td colSpan="3" className="py-2 text-right text-slate-500">Total Deductions <span className="text-[10px] text-slate-400">{calc.calc_model === 'configured' ? '(Employee deductions)' : '(PF + Gratuity)'}</span></td>
             <td className="py-2 text-right font-semibold text-red-600" data-testid="preview-deductions">−{inr(calc.total_deductions)}</td>
           </tr>
           <tr className="text-base border-t">
@@ -145,25 +146,46 @@ export const CalcBreakdown = ({ calc }) => {
           )}
         </tfoot>
       </table>
+      <EmployerContributions calc={calc} />
+      {calc.template_version && (
+        <div className="text-[11px] text-slate-400" data-testid="calc-template-version">
+          Template version {calc.template_version.version_no} · {calc.template_version.effective_from_month ? `effective from ${monthLabel(calc.template_version.effective_from_month)}` : 'from the start'}
+        </div>
+      )}
     </div>
   );
 };
 
 // ---------- Template form ----------
+const pfState = (pf) => (pf ? { enabled: !!pf.enabled, percentage: pf.percentage ?? '', max_amount: pf.max_amount ?? '', components: pf.components || [] } : null);
+const pfPayload = (pf) => (pf?.enabled ? { enabled: true, percentage: Number(pf.percentage), max_amount: Number(pf.max_amount), components: pf.components } : { enabled: false });
+export const templateVersions = (t) => (t ? [{ version_no: 1, effective_from_month: null, components: t.components, pf_config: t.pf_config,
+  employer_pf_config: t.employer_pf_config, gratuity_config: t.gratuity_config, auto_reconcile: t.auto_reconcile }, ...(t.versions || [])] : []);
+
 const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
+  const versions = templateVersions(initial);
+  const latest = versions[versions.length - 1] || initial;
   const [name, setName] = useState(initial?.name || '');
   const [description, setDescription] = useState(initial?.description || '');
   const [status, setStatus] = useState(initial?.status || 'Active');
+  const [loaded, setLoaded] = useState(latest);
   const [components, setComponents] = useState(
-    initial?.components?.map((c, i) => ({ ...c, display_order: i })) || [emptyComponent(0)]
+    latest?.components?.map((c, i) => ({ ...c, display_order: i })) || [emptyComponent(0)]
   );
   const [saving, setSaving] = useState(false);
-  const [pfConfig, setPfConfig] = useState(() => (initial?.pf_config ? {
-    enabled: !!initial.pf_config.enabled,
-    percentage: initial.pf_config.percentage ?? '',
-    max_amount: initial.pf_config.max_amount ?? '',
-    components: initial.pf_config.components || [],
-  } : null));
+  const [pfConfig, setPfConfig] = useState(() => pfState(latest?.pf_config));
+  const [empPf, setEmpPf] = useState(() => pfState(latest?.employer_pf_config));
+  const [gratuity, setGratuity] = useState(latest?.gratuity_config || null);
+  const [autoReconcile, setAutoReconcile] = useState(!!latest?.auto_reconcile);
+  const [saveMode, setSaveMode] = useState('update');
+  const [newFrom, setNewFrom] = useState(() => new Date().toISOString().slice(0, 7));
+  const loadVersion = (vno) => {
+    const v = versions.find((x) => x.version_no === vno);
+    setLoaded(v);
+    setComponents(v.components.map((c, i) => ({ ...c, display_order: i })));
+    setPfConfig(pfState(v.pf_config)); setEmpPf(pfState(v.employer_pf_config));
+    setGratuity(v.gratuity_config || null); setAutoReconcile(!!v.auto_reconcile);
+  };
   const pfEligible = components
     .filter((c) => c.component_type === 'earning' && ['percentage', 'fixed'].includes(c.calc_type)
       && (c.name || '').trim() && !/pf|provident|gratuity/i.test(c.name || '') && c.active !== false)
@@ -191,6 +213,10 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
       const missing = pfConfig.components.filter((n) => !pfEligible.includes(n));
       if (missing.length) return toast.error(`PF component(s) no longer in this template: ${missing.join(', ')}. Update the PF selection.`);
     }
+    if (empPf?.enabled && !(Number(empPf.percentage) > 0 && Number(empPf.max_amount) > 0 && empPf.components.length))
+      return toast.error('Employer PF needs a percentage, a maximum and at least one component');
+    if (gratuity?.enabled && !(Number(gratuity.amount) > 0)) return toast.error('Gratuity provision amount must be greater than 0');
+    if (initial?.id && saveMode === 'new' && !newFrom) return toast.error('Pick the month the new version takes effect');
     const payload = {
       name: name.trim(), description, status,
       components: components.map((c, i) => ({
@@ -204,16 +230,17 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
         include_in_gross: c.component_type === 'earning'
           || /pf|provident|gratuity/i.test(c.name || ''),
       })),
-      ...(pfConfig ? { pf_config: pfConfig.enabled ? {
-        enabled: true, percentage: Number(pfConfig.percentage), max_amount: Number(pfConfig.max_amount),
-        components: pfConfig.components,
-      } : { enabled: false } } : {}),
+      ...(pfConfig ? {
+        pf_config: pfPayload(pfConfig), employer_pf_config: pfPayload(empPf), auto_reconcile: autoReconcile,
+        gratuity_config: gratuity?.enabled ? { enabled: true, amount: Number(gratuity.amount), prorate: gratuity.prorate !== false } : { enabled: false },
+      } : {}),
+      ...(initial?.id ? (saveMode === 'new' ? { new_version_from: newFrom } : { version_no: loaded?.version_no || 1 }) : {}),
     };
     setSaving(true);
     try {
       if (initial?.id) await axios.put(`${API}/payslips/templates/${initial.id}`, payload, { headers });
       else await axios.post(`${API}/payslips/templates`, payload, { headers });
-      toast.success(initial?.id ? 'Template updated' : 'Template created');
+      toast.success(initial?.id ? (saveMode === 'new' ? `New version saved — effective from ${monthLabel(newFrom)}` : 'Template updated') : 'Template created');
       onSaved();
     } catch (e) {
       toast.error(e.response?.data?.detail || 'Failed to save template');
@@ -244,6 +271,11 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
         <label className="text-xs font-medium text-slate-500">Description</label>
         <Input data-testid="template-description-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Optional description" />
       </div>
+
+      {initial?.id && (
+        <VersionBar versions={versions} selected={loaded?.version_no || 1} onSelect={loadVersion}
+          mode={saveMode} setMode={setSaveMode} newFrom={newFrom} setNewFrom={setNewFrom} />
+      )}
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -332,7 +364,7 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
           <h4 className="text-sm font-semibold">PF Configuration</h4>
           <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
             <input data-testid="pf-enabled-checkbox" type="checkbox" checked={!!pfConfig?.enabled}
-              onChange={(e) => (!e.target.checked && !initial?.pf_config ? setPfConfig(null) : setPf({ enabled: e.target.checked }))} />
+              onChange={(e) => (!e.target.checked && !loaded?.pf_config ? setPfConfig(null) : setPf({ enabled: e.target.checked }))} />
             PF Enabled
           </label>
         </div>
@@ -382,6 +414,19 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
             </div>
           </>
         )}
+        {pfConfig && (
+          <>
+            <label className="flex items-start gap-1.5 text-xs text-slate-600 cursor-pointer border-t pt-3" data-testid="auto-reconcile-label">
+              <input data-testid="auto-reconcile-checkbox" type="checkbox" className="mt-0.5" checked={autoReconcile} onChange={(e) => setAutoReconcile(e.target.checked)} />
+              <span><b>Auto Reconcile Gross Salary</b> — use the % values as weights so the earnings always add up to the Monthly Gross (after fixed amounts). Saved percentages are not changed.</span>
+            </label>
+            <EmployerPfSection value={empPf} onChange={setEmpPf} pfEligible={pfEligible} employeePf={pfConfig} />
+            <GratuitySection value={gratuity} onChange={setGratuity} />
+            <p className="text-[11px] text-amber-700" data-testid="pf-compliance-note">
+              PF %, maximums and gratuity are company-configured settings — they are not an automatic EPF compliance check.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
@@ -415,8 +460,10 @@ export default function Payslips() {
   // assign dialog (single or bulk)
   const [assignDialog, setAssignDialog] = useState(null); // {employees:[...]}
   const [assignTpl, setAssignTpl] = useState('');
-  const [assignEffType, setAssignEffType] = useState('custom_date');
-  const [assignDate, setAssignDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [assignEffType, setAssignEffType] = useState('custom_month');
+  const [assignDate, setAssignDate] = useState(() => new Date().toISOString().slice(0, 7));
+  const [assignUntil, setAssignUntil] = useState('');
+  const [historyEmp, setHistoryEmp] = useState(null);
   const [assignEWC, setAssignEWC] = useState('extra_pay');
   const [assignPay, setAssignPay] = useState({});
   const [assignSaving, setAssignSaving] = useState(false);
@@ -478,10 +525,12 @@ export default function Payslips() {
     const existing = single?.assignment;
     setAssignTpl(existing?.template_id || '');
     // Pre-populate Effective From from existing assignment when changing template for a single employee
-    const existingType = existing?.effective_from_type || 'custom_date';
-    setAssignEffType(existing ? existingType : 'custom_date');
-    const existingDate = (existing?.effective_from || '').slice(0, 10);
-    setAssignDate(existingDate || new Date().toISOString().slice(0, 10));
+    const existingType = existing?.effective_from_type || 'custom_month';
+    setAssignEffType(existing && ['joining_date', 'confirmation_date', 'joining_month', 'confirmation_month'].includes(existingType)
+      ? existingType.replace('_month', '_date') : 'custom_month');
+    const existingDate = (existing?.effective_from || '').slice(0, 7);
+    setAssignDate(existingDate || new Date().toISOString().slice(0, 7));
+    setAssignUntil('');
     setAssignEWC(existing?.extra_work_compensation || 'extra_pay');
     setAssignDialog({ employees: emps });
   };
@@ -489,13 +538,13 @@ export default function Payslips() {
   const resolvedEffFrom = (emp) => {
     if (assignEffType === 'joining_date') {
       const d = emp?.date_of_joining || '';
-      return typeof d === 'string' ? fmtDMY(d.slice(0, 10)) : '';
+      return typeof d === 'string' && d ? monthLabel(d.slice(0, 7)) : '';
     }
     if (assignEffType === 'confirmation_date') {
       const d = emp?.confirmation_date || '';
-      return typeof d === 'string' ? fmtDMY(d.slice(0, 10)) : '';
+      return typeof d === 'string' && d ? monthLabel(d.slice(0, 7)) : '';
     }
-    return fmtDMY(assignDate);
+    return monthLabel(assignDate);
   };
 
   // Interns don't have a Confirmation Date; if any selected employee lacks it,
@@ -506,7 +555,8 @@ export default function Payslips() {
     if (!assignTpl) return toast.error('Select a template');
     const items = assignDialog.employees.map((e) => ({ employee_id: e.id, monthly_pay: Number(assignPay[e.id] || 0) }));
     if (items.some((it) => it.monthly_pay <= 0)) return toast.error('Enter Monthly Pay for every employee');
-    if (assignEffType === 'custom_date' && !assignDate) return toast.error('Custom Date requires an Effective From date');
+    if (assignEffType === 'custom_month' && !assignDate) return toast.error('Custom Month requires an Effective From month');
+    if (assignUntil && assignEffType === 'custom_month' && assignUntil < assignDate) return toast.error('Effective Until cannot be before Effective From');
     if (assignEffType === 'confirmation_date' && assignDialog.employees.some((e) => !e.confirmation_date))
       return toast.error('Some employees have no Confirmation Date on record');
     if (assignEffType === 'joining_date' && assignDialog.employees.some((e) => !e.date_of_joining))
@@ -514,7 +564,7 @@ export default function Payslips() {
     setAssignSaving(true);
     try {
       const commonPayload = { template_id: assignTpl, effective_from_type: assignEffType,
-                               effective_from: assignDate, extra_work_compensation: assignEWC };
+                               effective_from: assignDate, effective_to_month: assignUntil || null, extra_work_compensation: assignEWC };
       if (items.length === 1) {
         await axios.post(`${API}/payslips/assignments`, { ...items[0], ...commonPayload }, { headers });
         toast.success('Template assigned');
@@ -551,7 +601,8 @@ export default function Payslips() {
       i++;
     }
     // Strip id + audit fields so the save flow POSTs a new template.
-    const cleanComps = (t.components || []).map((c) => {
+    const latest = templateVersions(t).slice(-1)[0];
+    const cleanComps = (latest.components || []).map((c) => {
       const { _id, ...rest } = c;
       return { ...rest };
     });
@@ -561,6 +612,8 @@ export default function Payslips() {
       _id: undefined,
       name: suggested,
       components: cleanComps,
+      pf_config: latest.pf_config, employer_pf_config: latest.employer_pf_config,
+      gratuity_config: latest.gratuity_config, auto_reconcile: latest.auto_reconcile, versions: undefined,
       created_at: undefined,
       updated_at: undefined,
     });
@@ -833,10 +886,15 @@ export default function Payslips() {
                       <td className="px-4 py-3">
                         <div className="font-medium text-slate-800">{t.name}</div>
                         {t.description && <div className="text-xs text-slate-400">{t.description}</div>}
+                        {(t.versions || []).length > 0 && (
+                          <div className="text-[11px] text-blue-600" data-testid={`template-versions-${t.name}`}>
+                            {t.versions.length + 1} versions · latest from {monthLabel(t.versions[t.versions.length - 1].effective_from_month)}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
-                          {t.components.map((c, i) => (
+                          {templateVersions(t).slice(-1)[0].components.map((c, i) => (
                             <Badge key={i} variant="outline" className={c.operation === 'add' ? 'text-emerald-700 border-emerald-200' : 'text-red-600 border-red-200'}>
                               {c.name} · {c.calc_type === 'percentage' ? `${c.percentage_value}%` : c.calc_type === 'fixed' ? inr(c.fixed_amount) : CALC_LABEL[c.calc_type]}
                             </Badge>
@@ -932,6 +990,9 @@ export default function Payslips() {
                     <td className="px-4 py-3 text-right font-medium">{r.assignment ? inr(r.assignment.monthly_pay) : '—'}</td>
                     <td className="px-4 py-3">{fmtDMY(r.assignment?.effective_from) || '—'}</td>
                     <td className="px-4 py-3 text-right">
+                      <Button data-testid={`history-btn-${r.full_name}`} size="sm" variant="ghost" title="Template history" className="mr-1" onClick={() => setHistoryEmp(r)}>
+                        <History className="w-4 h-4" />
+                      </Button>
                       <Button data-testid={`assign-btn-${r.full_name}`} size="sm" variant={r.assignment ? 'outline' : 'default'} onClick={() => openAssign([r])}>
                         {r.assignment ? 'Change' : 'Assign'}
                       </Button>
@@ -1210,6 +1271,7 @@ export default function Payslips() {
       </Dialog>
 
       {/* Assign dialog */}
+      {historyEmp && <AssignmentHistoryDialog employee={historyEmp} headers={headers} onClose={() => setHistoryEmp(null)} onChanged={fetchAll} />}
       <Dialog open={!!assignDialog} onOpenChange={(o) => !o && setAssignDialog(null)}>
         <DialogContent className="max-w-xl max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Assign Template {assignDialog?.employees.length > 1 ? `(${assignDialog.employees.length} employees)` : ''}</DialogTitle></DialogHeader>
@@ -1230,35 +1292,43 @@ export default function Payslips() {
                   <Select value={assignEffType} onValueChange={setAssignEffType}>
                     <SelectTrigger data-testid="assign-eff-type"><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="joining_date">Joining Date</SelectItem>
+                      <SelectItem value="joining_date">Joining Month</SelectItem>
                       {anySelectedHasConfirmation && (
-                        <SelectItem value="confirmation_date">Confirmation Date</SelectItem>
+                        <SelectItem value="confirmation_date">Confirmation Month</SelectItem>
                       )}
-                      <SelectItem value="custom_date">Custom Date</SelectItem>
+                      <SelectItem value="custom_month">Custom Month</SelectItem>
                     </SelectContent>
                   </Select>
                   {!anySelectedHasConfirmation && assignDialog.employees.some((e) => (e.employment_type || '').toLowerCase().includes('intern')) && (
                     <div className="text-[10px] text-slate-400 mt-1">Interns have no Confirmation Date — that option is hidden.</div>
                   )}
                 </div>
-                {assignEffType === 'custom_date' && (
-                  <div className="col-span-2">
-                    <label className="text-xs font-medium text-slate-500">Custom Effective Date *</label>
-                    <DatePicker
-                      value={assignDate}
-                      onChange={(val) => setAssignDate(val)}
-                      className="mt-1.5"
-                      data-testid="assign-effective-date"
-                    />
+                {assignEffType === 'custom_month' && (
+                  <div>
+                    <label className="text-xs font-medium text-slate-500">Effective From Month *</label>
+                    <div className="mt-1.5" data-testid="assign-effective-month"><MonthPicker value={assignDate} onChange={setAssignDate} /></div>
                   </div>
                 )}
-                {assignEffType !== 'custom_date' && (
+                <div className={assignEffType === 'custom_month' ? '' : 'col-span-2'}>
+                  <label className="text-xs font-medium text-slate-500">Effective Until</label>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <Select value={assignUntil ? 'custom' : 'ongoing'} onValueChange={(v) => setAssignUntil(v === 'custom' ? (assignEffType === 'custom_month' ? assignDate : new Date().toISOString().slice(0, 7)) : '')}>
+                      <SelectTrigger className="w-32" data-testid="assign-until-type"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="ongoing">Ongoing</SelectItem>
+                        <SelectItem value="custom">End Month</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {assignUntil && <div data-testid="assign-until-month"><MonthPicker value={assignUntil} onChange={setAssignUntil} /></div>}
+                  </div>
+                </div>
+                {assignEffType !== 'custom_month' && (
                   <div className="col-span-2 text-xs bg-slate-50 rounded p-2 space-y-1">
                     {assignDialog.employees.map((e) => {
                       const r = resolvedEffFrom(e);
                       return (
                         <div key={e.id} className={r ? 'text-slate-600' : 'text-amber-600'}>
-                          <span className="font-medium">{e.full_name}</span> → {r || 'MISSING — pick Custom Date instead'}
+                          <span className="font-medium">{e.full_name}</span> → {r || 'MISSING — pick Custom Month instead'}
                         </div>
                       );
                     })}
