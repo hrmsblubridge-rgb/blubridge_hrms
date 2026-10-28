@@ -158,6 +158,19 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
     initial?.components?.map((c, i) => ({ ...c, display_order: i })) || [emptyComponent(0)]
   );
   const [saving, setSaving] = useState(false);
+  const [pfConfig, setPfConfig] = useState(() => (initial?.pf_config ? {
+    enabled: !!initial.pf_config.enabled,
+    percentage: initial.pf_config.percentage ?? '',
+    max_amount: initial.pf_config.max_amount ?? '',
+    components: initial.pf_config.components || [],
+  } : null));
+  const pfEligible = components
+    .filter((c) => c.component_type === 'earning' && ['percentage', 'fixed'].includes(c.calc_type)
+      && (c.name || '').trim() && !/pf|provident|gratuity/i.test(c.name || '') && c.active !== false)
+    .map((c) => c.name.trim());
+  const setPf = (patch) => setPfConfig((prev) => ({ enabled: false, percentage: '', max_amount: '', components: [], ...(prev || {}), ...patch }));
+  const togglePfComp = (n) => setPf({ components: (pfConfig?.components || []).includes(n)
+    ? pfConfig.components.filter((x) => x !== n) : [...(pfConfig?.components || []), n] });
 
   const setComp = (i, patch) => setComponents((prev) => prev.map((c, idx) => {
     if (idx !== i) return c;
@@ -170,6 +183,14 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
 
   const save = async () => {
     if (!name.trim()) return toast.error('Template name is required');
+    if (pfConfig?.enabled) {
+      const pct = Number(pfConfig.percentage); const cap = Number(pfConfig.max_amount);
+      if (!(pct > 0 && pct <= 100)) return toast.error('PF Percentage must be greater than 0 and at most 100');
+      if (!(cap > 0)) return toast.error('Maximum PF Deduction must be greater than 0');
+      if (!pfConfig.components.length) return toast.error('Select at least one earning component for the PF calculation');
+      const missing = pfConfig.components.filter((n) => !pfEligible.includes(n));
+      if (missing.length) return toast.error(`PF component(s) no longer in this template: ${missing.join(', ')}. Update the PF selection.`);
+    }
     const payload = {
       name: name.trim(), description, status,
       components: components.map((c, i) => ({
@@ -183,6 +204,10 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
         include_in_gross: c.component_type === 'earning'
           || /pf|provident|gratuity/i.test(c.name || ''),
       })),
+      ...(pfConfig ? { pf_config: pfConfig.enabled ? {
+        enabled: true, percentage: Number(pfConfig.percentage), max_amount: Number(pfConfig.max_amount),
+        components: pfConfig.components,
+      } : { enabled: false } } : {}),
     };
     setSaving(true);
     try {
@@ -300,6 +325,63 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="border rounded-lg p-3 bg-slate-50 space-y-3" data-testid="pf-config-section">
+        <div className="flex items-center justify-between gap-2">
+          <h4 className="text-sm font-semibold">PF Configuration</h4>
+          <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
+            <input data-testid="pf-enabled-checkbox" type="checkbox" checked={!!pfConfig?.enabled}
+              onChange={(e) => setPf({ enabled: e.target.checked })} />
+            PF Enabled
+          </label>
+        </div>
+        {!pfConfig && (
+          <p className="text-xs text-slate-500" data-testid="pf-config-legacy-note">
+            This template uses the existing PF settings on its PF component. Tick “PF Enabled” to switch to the configurable PF calculation.
+          </p>
+        )}
+        {pfConfig && !pfConfig.enabled && (
+          <p className="text-xs text-slate-500">PF is disabled — no PF will be deducted for payslips from this template.</p>
+        )}
+        {pfConfig?.enabled && (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-xs text-slate-500">PF Percentage % *</label>
+                <Input data-testid="pf-percentage-input" type="number" min="0" max="100" step="0.01" value={pfConfig.percentage}
+                  onChange={(e) => setPf({ percentage: e.target.value })} placeholder="e.g. 12" />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500">Maximum PF Deduction ₹ *</label>
+                <Input data-testid="pf-max-input" type="number" min="0" step="0.01" value={pfConfig.max_amount}
+                  onChange={(e) => setPf({ max_amount: e.target.value })} placeholder="e.g. 3000" />
+              </div>
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">PF Calculation Components *</label>
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5 mt-1">
+                {pfEligible.length === 0 && <span className="text-xs text-slate-500">Add earning components first.</span>}
+                {pfEligible.map((n) => (
+                  <label key={n} className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
+                    <input data-testid={`pf-comp-${n}`} type="checkbox" checked={pfConfig.components.includes(n)} onChange={() => togglePfComp(n)} />
+                    {n}
+                  </label>
+                ))}
+              </div>
+              {pfConfig.components.filter((n) => !pfEligible.includes(n)).length > 0 && (
+                <p className="text-xs text-red-600 mt-1" data-testid="pf-missing-components">
+                  Removed from template: {pfConfig.components.filter((n) => !pfEligible.includes(n)).join(', ')} — restore them or{' '}
+                  <button type="button" className="underline" data-testid="pf-remove-missing-btn"
+                    onClick={() => setPf({ components: pfConfig.components.filter((n) => pfEligible.includes(n)) })}>remove them from PF</button>.
+                </p>
+              )}
+              <p className="text-[11px] text-slate-500 mt-1.5">
+                PF = selected payable components (after LOP) × PF %, limited to the maximum. Earning components must add up to the Monthly Gross Salary.
+              </p>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="flex justify-end gap-2 pt-2">

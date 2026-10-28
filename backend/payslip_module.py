@@ -4,6 +4,7 @@ Collections: payslip_templates, payslip_assignments, payslip_audit."""
 import uuid
 import calendar
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from fastapi import HTTPException, Depends, Query, Body
@@ -73,6 +74,46 @@ def _validate_components(components):
         c.setdefault("category", "")
 
 
+def _pf_eligible_names(components) -> list:
+    """Earning components that may form the PF base (not PF/Gratuity/Extra Pay)."""
+    return [c["name"] for c in components or []
+            if c.get("operation") == "add" and c.get("component_type") == "earning"
+            and c.get("calc_type") in ("percentage", "fixed") and c.get("active", True)
+            and not _is_pf(c.get("name")) and not _is_gratuity(c.get("name"))]
+
+
+def _validate_pf_config(pf, components):
+    """Template-level configurable PF (percentage, cap, base components)."""
+    if pf is None:
+        return None
+    if not isinstance(pf, dict):
+        raise HTTPException(status_code=400, detail="Invalid PF configuration")
+    enabled = bool(pf.get("enabled"))
+    out = {"enabled": enabled, "percentage": None, "max_amount": None, "components": []}
+    if not enabled:
+        return out
+    try:
+        pct = float(pf.get("percentage"))
+        cap = float(pf.get("max_amount"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="PF Percentage and Maximum PF Deduction must be valid numbers")
+    if not (0 < pct <= 100):
+        raise HTTPException(status_code=400, detail="PF Percentage must be greater than 0 and at most 100")
+    if cap <= 0:
+        raise HTTPException(status_code=400, detail="Maximum PF Deduction must be greater than 0")
+    names = [str(n) for n in (pf.get("components") or []) if str(n).strip()]
+    if not names:
+        raise HTTPException(status_code=400, detail="Select at least one earning component for the PF calculation")
+    eligible = set(_pf_eligible_names(components))
+    bad = [n for n in names if n not in eligible]
+    if bad:
+        raise HTTPException(status_code=400, detail=(
+            f"PF calculation component(s) not found among this template's earning components: {', '.join(bad)}. "
+            "Update the PF component selection before saving."))
+    out.update({"percentage": pct, "max_amount": cap, "components": list(dict.fromkeys(names))})
+    return out
+
+
 @api_router.post("/payslips/templates")
 async def create_payslip_template(payload: dict = Body(...), current_user: dict = Depends(get_current_user)):
     _hr_only(current_user)
@@ -82,11 +123,13 @@ async def create_payslip_template(payload: dict = Body(...), current_user: dict 
     if await db.payslip_templates.find_one({"name": name, "is_deleted": {"$ne": True}}):
         raise HTTPException(status_code=409, detail="Template with this name already exists")
     _validate_components(payload.get("components"))
+    pf_config = _validate_pf_config(payload.get("pf_config"), payload["components"])
     doc = {
         "id": str(uuid.uuid4()), "name": name,
         "description": payload.get("description") or "",
         "status": payload.get("status") or "Active",
         "components": payload["components"],
+        **({"pf_config": pf_config} if pf_config is not None else {}),
         "is_deleted": False, "created_at": _now(), "updated_at": _now(),
     }
     await db.payslip_templates.insert_one(dict(doc))
@@ -114,6 +157,13 @@ async def update_payslip_template(template_id: str, payload: dict = Body(...), c
     if "components" in payload:
         _validate_components(payload["components"])
         upd["components"] = payload["components"]
+    comps = upd.get("components", tpl.get("components"))
+    if "pf_config" in payload:
+        pf_config = _validate_pf_config(payload["pf_config"], comps)
+        if pf_config is not None:
+            upd["pf_config"] = pf_config
+    elif tpl.get("pf_config") and "components" in payload:
+        _validate_pf_config(tpl["pf_config"], comps)  # removed PF component must be fixed first
     upd["updated_at"] = _now()
     await db.payslip_templates.update_one({"id": template_id}, {"$set": upd})
     await _audit(current_user, "template_edited", ref_id=template_id, old=tpl.get("name"), new=upd.get("name"))
@@ -326,8 +376,13 @@ def _component_full_month(c: dict, monthly_pay: float, resolved: dict, per_day: 
 GRATUITY_FULL_MONTH_DEFAULT = 793.0  # Full-month reference gratuity amount (per PRD v6)
 
 
+def _money(v) -> Decimal:
+    return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
 def compute_payslip(monthly_pay: float, components: list, month: str, payable_days: float,
-                    extra_pay_days: float, extra_work_compensation: str = "extra_pay") -> dict:
+                    extra_pay_days: float, extra_work_compensation: str = "extra_pay",
+                    pf_config: Optional[dict] = None) -> dict:
     """Payroll-first calculation engine (PRD v6 · 2026-08-19).
 
     Sequence (do NOT change):
@@ -384,6 +439,14 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
         apply_cap = pf_component.get("apply_pf_cap", True) is not False
         pf_final = min(pf_raw, PF_CAP_MONTHLY) if apply_cap else pf_raw
         pf_capped = apply_cap and pf_raw > PF_CAP_MONTHLY
+
+    # Template-level configurable PF (new model) — only once Admin saved pf_config.
+    new_pf = isinstance(pf_config, dict) and "enabled" in pf_config
+    if new_pf:
+        pf_final = pf_raw = pf_base = 0.0
+        pf_capped = False
+        pf_base_pct = None
+        pf_contrib_pct = float(pf_config.get("percentage") or 0) if pf_config.get("enabled") else None
 
     # --- Step 4: Gratuity (template-driven, optional) ---
     gratuity_component = next((c for c in active if _is_gratuity(c["name"])
@@ -453,6 +516,30 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
             first_name = earning_components[0]["name"]
             split_amounts[first_name] = round(split_amounts[first_name] + (attendance_payable - running), 2)
 
+    # New PF model: PF base = actual PAYABLE (post-LOP) amounts of the selected components;
+    # capped at the template maximum; the uncapped excess is simply not deducted.
+    if new_pf:
+        full_total = _money(tmpl_total)
+        if abs(full_total - _money(monthly_pay)) > Decimal("1.00"):
+            raise HTTPException(status_code=400, detail=(
+                f"Template earning components total ₹{full_total:,.2f} but the Monthly Gross Salary is "
+                f"₹{_money(monthly_pay):,.2f}. Update the template so the earning components add up to the Gross Salary."))
+        if pf_config.get("enabled"):
+            selected = [n for n in (pf_config.get("components") or []) if n in split_amounts]
+            base_d = sum((_money(split_amounts[n]) for n in selected), Decimal("0"))
+            raw_d = (base_d * Decimal(str(pf_config.get("percentage") or 0)) / Decimal("100"))
+            cap_d = _money(pf_config.get("max_amount") or 0)
+            final_d = min(_money(raw_d), cap_d)
+            pf_base, pf_raw, pf_final = float(base_d), float(_money(raw_d)), float(final_d)
+            pf_capped = _money(raw_d) > cap_d
+            pf_selected = selected
+        else:
+            pf_selected = []
+        if pf_config.get("enabled") and not pf_component:
+            pf_component = {"name": "PF", "component_type": "deduction", "operation": "deduct",
+                            "calc_type": "system", "active": True, "proratable": True}
+            active = active + [pf_component]
+
     # --- Emit line items ---
     lines = []
     for c in active:
@@ -461,7 +548,19 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
         proratable = c.get("proratable", True)
         deduct_amount = None
         auto_note = None
-        if _is_pf(name):
+        if _is_pf(name) and new_pf:
+            monthly_amt = pf_final
+            amount = round(pf_final, 2)
+            deduct_amount = round(pf_final, 2)
+            if pf_config.get("enabled"):
+                cap_txt = f", capped at ₹{float(pf_config.get('max_amount')):,.2f}" if pf_capped else ""
+                auto_note = (f"{float(pf_config.get('percentage')):g}% of PF Base ₹{pf_base:,.2f} "
+                             f"({' + '.join(pf_selected) or 'no components'}) = ₹{pf_raw:,.2f}{cap_txt}")
+            else:
+                auto_note = "PF disabled in template"
+            operation = "deduct"
+            include_gross = False
+        elif _is_pf(name):
             monthly_amt = pf_final
             amount = round(pf_final, 2)
             deduct_amount = round(pf_final, 2)
@@ -568,6 +667,12 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
             "pf_raw": round(pf_raw, 2),
             "pf_final": round(pf_final, 2),
             "pf_capped": pf_capped,
+            **({"pf_model": "template_config",
+                "pf_enabled": bool(pf_config.get("enabled")),
+                "pf_percentage": pf_config.get("percentage"),
+                "pf_max_amount": pf_config.get("max_amount"),
+                "pf_components": pf_selected,
+                "gross_template_total": round(tmpl_total, 2)} if new_pf else {}),
             "gratuity_full_month": round(gratuity_full, 2),
             "gratuity_raw": round(gratuity_raw, 2),
             "gratuity_final": float(gratuity_final),
@@ -605,6 +710,7 @@ async def calculate_payslip_preview(payload: dict = Body(...), current_user: dic
         payable_days=float(payroll.get("final_payable_days") or 0),
         extra_pay_days=float(payroll.get("extra_pay") or 0),
         extra_work_compensation=assign.get("extra_work_compensation") or "extra_pay",
+        pf_config=tpl.get("pf_config"),
     )
     result.update({"employee_id": emp_id, "template_id": tpl["id"], "template_name": tpl["name"]})
     return result
@@ -671,7 +777,8 @@ async def generate_payslips(payload: dict = Body(...), current_user: dict = Depe
                 monthly_pay=float(a["monthly_pay"]), components=tpl["components"], month=month,
                 payable_days=float(payroll.get("final_payable_days") or 0),
                 extra_pay_days=float(payroll.get("extra_pay") or 0),
-                extra_work_compensation=a.get("extra_work_compensation") or "extra_pay")
+                extra_work_compensation=a.get("extra_work_compensation") or "extra_pay",
+                pf_config=tpl.get("pf_config"))
         except HTTPException as ex:
             errors.append({"name": name, "error": str(ex.detail)})
             continue
