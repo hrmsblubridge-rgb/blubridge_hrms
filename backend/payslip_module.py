@@ -76,7 +76,7 @@ def _validate_components(components):
 
 def _pf_eligible_names(components) -> list:
     """Earning components that may form the PF base (not PF/Gratuity/Extra Pay)."""
-    return [c["name"] for c in components or []
+    return [(c.get("name") or "").strip() for c in components or []
             if c.get("operation") == "add" and c.get("component_type") == "earning"
             and c.get("calc_type") in ("percentage", "fixed") and c.get("active", True)
             and not _is_pf(c.get("name")) and not _is_gratuity(c.get("name"))]
@@ -101,7 +101,7 @@ def _validate_pf_config(pf, components):
         raise HTTPException(status_code=400, detail="PF Percentage must be greater than 0 and at most 100")
     if cap <= 0:
         raise HTTPException(status_code=400, detail="Maximum PF Deduction must be greater than 0")
-    names = [str(n) for n in (pf.get("components") or []) if str(n).strip()]
+    names = [str(n).strip() for n in (pf.get("components") or []) if str(n).strip()]
     if not names:
         raise HTTPException(status_code=400, detail="Select at least one earning component for the PF calculation")
     eligible = set(_pf_eligible_names(components))
@@ -158,14 +158,15 @@ async def update_payslip_template(template_id: str, payload: dict = Body(...), c
         _validate_components(payload["components"])
         upd["components"] = payload["components"]
     comps = upd.get("components", tpl.get("components"))
-    if "pf_config" in payload:
-        pf_config = _validate_pf_config(payload["pf_config"], comps)
-        if pf_config is not None:
-            upd["pf_config"] = pf_config
+    unset = {}
+    if "pf_config" in payload and payload["pf_config"] is None:
+        unset["pf_config"] = ""  # back to the legacy PF-component behaviour
+    elif "pf_config" in payload:
+        upd["pf_config"] = _validate_pf_config(payload["pf_config"], comps)
     elif tpl.get("pf_config") and "components" in payload:
         _validate_pf_config(tpl["pf_config"], comps)  # removed PF component must be fixed first
     upd["updated_at"] = _now()
-    await db.payslip_templates.update_one({"id": template_id}, {"$set": upd})
+    await db.payslip_templates.update_one({"id": template_id}, {"$set": upd, **({"$unset": unset} if unset else {})})
     await _audit(current_user, "template_edited", ref_id=template_id, old=tpl.get("name"), new=upd.get("name"))
     return {"success": True}
 
@@ -525,7 +526,8 @@ def compute_payslip(monthly_pay: float, components: list, month: str, payable_da
                 f"Template earning components total ₹{full_total:,.2f} but the Monthly Gross Salary is "
                 f"₹{_money(monthly_pay):,.2f}. Update the template so the earning components add up to the Gross Salary."))
         if pf_config.get("enabled"):
-            selected = [n for n in (pf_config.get("components") or []) if n in split_amounts]
+            by_trim = {n.strip(): n for n in split_amounts}
+            selected = [by_trim[n] for n in (pf_config.get("components") or []) if n in by_trim]
             base_d = sum((_money(split_amounts[n]) for n in selected), Decimal("0"))
             raw_d = (base_d * Decimal(str(pf_config.get("percentage") or 0)) / Decimal("100"))
             cap_d = _money(pf_config.get("max_amount") or 0)

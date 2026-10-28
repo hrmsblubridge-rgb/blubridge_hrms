@@ -1,0 +1,35 @@
+{
+  "summary": "Tested configurable template-level PF (pf_config) on LOCAL DB. Backend: new suite tests/test_payslip_pf_config.py 25/25 PASS. It covers: engine at 30/25/24/20/0 payable days (PF 3000/3000/2880/2400/0; 24 days gives Basic 16000, DA 8000, HRA 5600, Phone 2400, Food 1600, Special 1600, gross 35200, net 31820; 30 days gives deductions 3500, net 40500); the 10%/2500 variant; disabled gives PF 0; legacy (no pf_config) still gives 1800; a 42000 vs 44000 mismatch raises a 400 reconciliation error and a 0.5 difference is allowed; a synthetic 'PF' line is added when the template has no PF component; extra pay is kept out of the PF base; ROUND_HALF_UP. API: create with a valid pf_config is stored; pct 0/150/'abc', max 0, empty components, unknown component, deduction component and PF component all give 400; removing DA via PUT gives 400 (also 400 when the stale pf_config is resent), and fixing the selection gives 200; a PUT with only pf_config updates it and keeps the components; a legacy template is untouched by an unrelated PUT. Preview and generate for a TEST_PF_ employee give the same PF and net (payable 4 days with no attendance, PF 480). After confirming, regenerate skips the slip and it stays unchanged. Frontend: the full PF Configuration flow passes: section and legacy note shown, validation toasts work, create → reopen keeps 12/3000/Basic+DA, removing the DA row shows the red warning and blocks saving with a toast, 'remove them from PF' clears it and the save then succeeds. All TEST_PF_ data was hard-deleted (5 templates, 1 assignment, 1 payslip, 14 audits, 3 employees); the payslip collections and employees are back to 0.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "PUT /api/payslips/templates/{id}", "issue": "pf_config: null is silently ignored (the _validate_pf_config(None) branch returns None and nothing is $unset). Once a template is on the new model it can never go back to legacy PF."},
+      {"endpoint": "POST/PUT /api/payslips/templates", "issue": "Name mismatch: the backend _pf_eligible_names uses the untrimmed c['name'], but the frontend uses name.trim() for eligibility and the pf_config component list. A component named 'Basic ' (trailing space) passes the UI check and then gets a 400 'not found' from the backend. Trim component names on save (frontend or _validate_components)."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "TemplateForm PF Configuration", "issue": "On a legacy template, ticking then unticking 'PF Enabled' sets pfConfig to {enabled:false} and removes the legacy note. Saving then sends pf_config {enabled:false}, which silently turns PF off entirely (PF = 0) for a template that had a legacy PF component. There is no way back to legacy in the UI. Suggest: unticking on a template that had no pf_config should reset pfConfig to null, or add a clear 'Use legacy PF' option.", "selector": "[data-testid='pf-enabled-checkbox']", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_payslip_pf_config.py", "/app/test_reports/pytest/pytest_pf_config.xml"],
+  "action_items": [
+    "TemplateForm: unticking PF Enabled on a template with no saved pf_config should go back to legacy (pfConfig=null) and not save {enabled:false}",
+    "Optional: let PUT pf_config:null $unset pf_config so a template can return to legacy",
+    "Trim component names (and pf_config component names) on save so frontend and backend eligibility agree"
+  ],
+  "critical_code_review_comments": [
+    "The earning-total vs Monthly Gross check only runs at preview/generate time (per assignment). A template whose earnings do not sum to the gross (for example 70% total) saves without any warning and only fails during generation, where it shows as a per-employee error. That is acceptable by design, but a hint in the UI would help.",
+    "Frontend eligibility regex /pf|provident|gratuity/ matches backend _is_pf/_is_gratuity. OK.",
+    "payslip_module.py is 919 lines (over 700). Consider splitting the engine (compute_payslip) into its own module."
+  ],
+  "updated_files": ["/app/backend/tests/test_payslip_pf_config.py"],
+  "success_rate": {"backend": "100% (25/25)", "frontend": "100% of the requested flows; 1 UX edge-case bug"},
+  "test_credentials": "admin/pass123 works on the LOCAL DB (test_credentials.md lists HrAdmin@2109, which fails locally). The payslip 6-digit code 082026 must be verified via POST /api/payslip-security/verify (with a browser User-Agent) before any /api/payslips* call.",
+  "seed_data_creation": "TEST_PF_ employee inserted directly into Mongo plus templates/assignment/payslip through the API. All were hard-deleted afterwards.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app/backend && python -m pytest tests/test_payslip_pf_config.py -v. The API tests leave TEST_PF_ templates, employee, assignment and payslip behind (no teardown fixture). Clean them via Mongo: payslip_templates name ^TEST_PF_, employees id ^TEST_PF_, plus their payslips, assignments and payslip_audit. UI: /payslips → auth code input [data-testid=payslip-auth-code-input] 082026 → tab-templates → new-template-btn."
+}

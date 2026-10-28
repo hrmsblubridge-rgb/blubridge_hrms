@@ -3176,3 +3176,8 @@ RULE: never run payroll test files that seed employees without verified cleanup
 - /api/brsf/summary rows include late_count (N09 counted children) + month `finalized`; summary table "Late Days" column & grid line.
 - brsf_month_locks: POST /api/brsf/finalize (snapshots uncalculated employees), POST /api/brsf/reopen (reason required, history kept). While finalized all edits/recalc/import -> 400; GET stars returns frozen stored lines; export allowed. UI Finalize/Reopen buttons, dialog, banner.
 - Tests iteration_98: 10/10 + 12/12 regression; local DB; cleaned; preview restored to Atlas.
+
+## 2026-10-28 — Configurable template PF (pf_config)
+- payslip_module.py: template `pf_config` {enabled, percentage, max_amount, components}; validated on create/update (null → back to legacy). compute_payslip new model: PF base = post-LOP payable amounts of selected earnings, Decimal ROUND_HALF_UP, min(PF, max), no redistribution, synthetic PF line if none; gross reconciliation (>₹1 mismatch → 400). Templates without pf_config keep legacy PF. Preview + generate share engine.
+- Payslips.js TemplateForm: PF Configuration section.
+- Tests: backend/tests/test_payslip_pf_config.py 25/25 + UI (iteration_99) on local DB; cleaned; preview restored to Atlas.

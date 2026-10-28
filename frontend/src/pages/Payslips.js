@@ -332,7 +332,7 @@ const TemplateForm = ({ initial, onSaved, onClose, headers }) => {
           <h4 className="text-sm font-semibold">PF Configuration</h4>
           <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
             <input data-testid="pf-enabled-checkbox" type="checkbox" checked={!!pfConfig?.enabled}
-              onChange={(e) => setPf({ enabled: e.target.checked })} />
+              onChange={(e) => (!e.target.checked && !initial?.pf_config ? setPfConfig(null) : setPf({ enabled: e.target.checked }))} />
             PF Enabled
           </label>
         </div>
