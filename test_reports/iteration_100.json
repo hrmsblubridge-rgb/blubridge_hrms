@@ -1,0 +1,31 @@
+{
+  "summary": "Frontend-only E2E test of the Payslip Module enhancement at desktop 1920x1080 (admin/pass123 on the local test DB, payslip code 082026). Everything requested passed. Templates: the new controls (auto-reconcile unchecked by default, employer PF copy-from-employee 12/3000/Basic Pay, gratuity 793 with prorate checked, compliance note) show up and save; the DB holds the correct pf/employer_pf/gratuity configs with auto_reconcile=false. Versions: saving a new version from Sep 2026 shows the toast, the row shows '2 versions · latest from September 2026', the select lists V1 'from the start' and V2 'from September 2026', and switching loads max 3000 or 1800. Assignments: Effective From offers Joining, Confirmation and Custom Month; Effective Until offers Ongoing and End Month with month pickers. An ongoing assignment from Aug 2026 saved. History shows the 'Current' badge, and Edit period saves ('Effective period updated'). A closed older period Jan-Jul 2026 on another template saved. Overlapping periods are rejected with an 'overlaps the existing assignment' toast, both in the assign dialog and in the period editor. Preview: Aug uses V1 (PF 300), Sep uses V2 with the employer contributions table (Employer PF 248, Gratuity 793x4/30=105.73, total 353.73) and the version label; Jul uses the old template with no employer section; Dec 2025 shows the 'No Payslip Template assignment is available ...' toast. Monthly: generating Sep 2026 works and the view dialog matches the preview; PDF download (Payslip_TEST_UI_Employee_2026-09.pdf) and Confirm work. Snapshot: after changing V2's PF max to 100, the confirmed slip still shows 248 while the preview shows 100. No layout breakage in the template form, assign dialog or history dialog.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Calculation breakdown (preview + view slip)", "issues": ["The PF (DEDUCTION) row in Retirement Benefits (C) shows the prorated amount in the FULL MONTH column (e.g. 248.00). The real full-month PF should be min(15500x12%, max), e.g. 1800, so the column is misleading."]},
+      {"screen": "Templates list", "issues": ["Templates using the new pf_config show no PF / Employer PF / Gratuity chip in the Components column (only the components). Older templates show a 'PF · 12%' chip. Consider a small indicator."]},
+      {"screen": "Calculation breakdown for templates without pf_config", "issues": ["The Total Deductions label reads '(PF + Gratuity)' even when no PF/gratuity applies (old template, deductions 0). Cosmetic."]}
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [
+    "Optional: show the true full-month PF (capped) in the FULL MONTH column of the PF row.",
+    "Optional: add a PF/Employer PF/Gratuity indicator chip in the templates list for configured templates.",
+    "Housekeeping: the local test DB still has leftover backend-pytest data (TEST_PF_* / TEST_VH_* templates, employees, and confirmed payslips for 2026-08/2026-09) from earlier runs. These appear in the UI lists and get picked up by 'Generate'."
+  ],
+  "critical_code_review_comments": [
+    "Payslips.js is about 1618 lines; it should be split further (TemplateForm, AssignDialog, MonthlyTab, PreviewTab) into separate modules.",
+    "submitAssign only checks until < from on the client for custom_month. For Joining/Confirmation Month with an End Month it relies on the backend.",
+    "The preview MonthPicker and the Monthly generate MonthPicker have no data-testid wrapper (unlike assign/new-version). Add preview-month / gen-month testids."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "N/A (not requested)", "frontend": "100% of requested flows"},
+  "seed_data_creation": "Seeded the employee TEST_UI_Employee (id TEST_UI_emp_001, DOJ 2025-01-01, confirmation 2025-07-01) directly in mongo, plus templates TEST_UI_Tpl and TEST_UI_Old via the UI. ALL cleaned up afterwards: templates, assignments, payslips, payslip_audit and the employee. I also deleted the TEST_VH_Employee 2026-09 draft that my 'Generate' created.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "MonthPicker selection: click the trigger button, then page.locator('[data-radix-popper-content-wrapper]').last.get_by_role('button', name='Sep', exact=True). The first button in the popover is the previous-year chevron. App date is Oct 2026. Generate on the Monthly tab also generates for every other assigned employee (TEST_VH/TEST_PF leftovers).",
+  "test_credentials": "admin/pass123 (local test DB), payslip code 082026"
+}

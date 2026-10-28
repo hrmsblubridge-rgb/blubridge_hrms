@@ -959,7 +959,8 @@ def _compute_configured(monthly_pay: float, components: list, month: str, cal_da
         deduct_amount, include_gross, operation = None, False, "deduct"
         if _is_pf(name) and c.get("operation") == "deduct":
             amt = float(emp_pf["final"]) if emp_pf else 0.0
-            monthly_amt, amount, deduct_amount = amt, amt, amt
+            amount, deduct_amount = amt, amt
+            monthly_amt = float(_pf_calc(pf_config, full)["final"]) if emp_pf else 0.0
             auto_note = _pf_note(emp_pf) if emp_pf else "PF disabled in template"
         elif _is_gratuity(name) and c.get("operation") == "deduct":
             if gr:

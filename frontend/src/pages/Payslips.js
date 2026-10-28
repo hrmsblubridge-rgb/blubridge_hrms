@@ -131,7 +131,7 @@ export const CalcBreakdown = ({ calc }) => {
             <td className="py-2 text-right font-semibold" data-testid="preview-gross">{inr(calc.gross_earnings)}</td>
           </tr>
           <tr className="text-sm">
-            <td colSpan="3" className="py-2 text-right text-slate-500">Total Deductions <span className="text-[10px] text-slate-400">{calc.calc_model === 'configured' ? '(Employee deductions)' : '(PF + Gratuity)'}</span></td>
+            <td colSpan="3" className="py-2 text-right text-slate-500">Total Deductions <span className="text-[10px] text-slate-400">(Employee deductions)</span></td>
             <td className="py-2 text-right font-semibold text-red-600" data-testid="preview-deductions">−{inr(calc.total_deductions)}</td>
           </tr>
           <tr className="text-base border-t">
@@ -899,6 +899,12 @@ export default function Payslips() {
                               {c.name} · {c.calc_type === 'percentage' ? `${c.percentage_value}%` : c.calc_type === 'fixed' ? inr(c.fixed_amount) : CALC_LABEL[c.calc_type]}
                             </Badge>
                           ))}
+                          {(() => {
+                            const lv = templateVersions(t).slice(-1)[0];
+                            return [['PF', lv.pf_config], ['Employer PF', lv.employer_pf_config]].filter(([, p]) => p?.enabled)
+                              .map(([l, p]) => <Badge key={l} variant="outline" className="text-red-600 border-red-200">{l} · {p.percentage}% (max {inr(p.max_amount)})</Badge>)
+                              .concat(lv.gratuity_config?.enabled ? [<Badge key="gr" variant="outline" className="text-slate-600">Gratuity · {inr(lv.gratuity_config.amount)} (employer)</Badge>] : []);
+                          })()}
                         </div>
                       </td>
                       <td className="px-4 py-3"><Badge className={t.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}>{t.status}</Badge></td>
